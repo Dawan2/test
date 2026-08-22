@@ -1,0 +1,416 @@
+# 虎鲸漫剧
+
+AI 短漫剧全流程智能创作平台。讲好每一个故事!
+
+## 启动(推荐)
+
+```bash
+cd modelvideo-hujing
+node server.js        # 默认 8000 端口,PORT=9000 node server.js 可改
+# 打开 http://localhost:8000
+```
+
+Windows 也可直接双击 `启动.bat`(自动起服务并打开浏览器)。
+纯前端离线用法仍可用:直接双击 `index.html`(自动进入离线模式,数据仅存 localStorage)。
+
+## 架构
+
+```
+浏览器 SPA(hash 路由,30+ 个 js 模块)
+   │  ├─ /api/auth/*  注册/登录(token,7 天)
+   │  ├─ /api/state   整树 state 同步(rev 乐观锁,409 重拉;计费键服务端权威)
+   │  ├─ /api/billing/* 计费镜像(退费镜像 + 旧版扣费镜像;幂等键 idem 防双扣/双退,付费代理入口由服务端按次原子扣费)
+   │  ├─ /api/jobs    生成任务中心(视频任务持久化登记/断点续查/同镜同输入幂等)
+   │  ├─ /api/upload  文件上传(uploads/<userId>/)
+   │  └─ /api/llm/*   LLM 代理(key 只在服务端)
+   │  └─ /api/volc/*  火山引擎生图/生视频代理(volcApiKey 只在服务端)
+   │  └─ /api/ffmpeg/* 本地视频处理(服务端 bin/ffmpeg:合成/超分/去字幕/抽帧/高光/合并)
+   ▼
+server.js(零依赖 Node,仅 http/fs/path/crypto)
+   ├─ 静态托管本项目(index.html/css/js/uploads,支持 Range 断点续传)
+   ├─ data/users.json          账号(scrypt 加盐哈希,绝不明文)
+   ├─ data/states/<userId>.json 每用户 state 树(含 rev)
+   ├─ uploads/<userId>/        上传文件(按用户隔离)
+   └─ config.json(可选)       覆盖 LLM baseUrl/apiKey(勿提交,模板见 config.example.json)
+```
+
+## REST API(统一 `{code:0,data}` / `{code:非0,message}`)
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | /api/auth/register | {username,password,phone?,accountType} → {token,user};注册送 100 积分(初始化在后端 state) |
+| POST | /api/auth/login | → {token,user}(同 IP 1 分钟失败 5 次锁 5 分钟) |
+| POST | /api/auth/logout | 注销当前 token |
+| POST | /api/auth/password | {oldPassword,newPassword} 修改密码(scrypt 重哈希) |
+| GET | /api/auth/me | 校验 token → {user}(预留,前端未接) |
+| GET | /api/state | 拉取 {rev,state} |
+| PUT | /api/state | {rev,state} 全量覆盖,或 {rev,changes:{meta?,projects:{id:obj},deletedProjects:[id]}} 增量合并(前端按桶只推变化);rev 不匹配返回 409,前端自动重拉;PUT 前自动快照旧版本;**users/creditLogs/orders/session 为服务端权威键,客户端载荷中的这些键会被剥离并回填服务端值**(防篡改积分) |
+| GET | /api/state/history | 列出 state 快照(最近 5 份:rev/时间/大小)(预留,前端未接) |
+| POST | /api/state/restore | {rev} 恢复快照为当前 state(rev 自增,恢复前留快照;计费键不随快照回滚)(预留,前端未接) |
+| POST | /api/billing/charge | (已废弃,2026-08 六轮移除)扣费由各付费入口按 billingAction 白名单原子完成,前端 U.charge 仅扣本地视图 |
+| POST | /api/billing/refund | 退款(六轮重写;七轮补交付校验;八轮退款即取消在途任务;十轮失败关闭+部分交付保护):{operationId,reason?} **只认 operationId,金额由服务端按原账本判定**——退该 operation 下全部"已扣未退"条目(与服务端未交付自动退费共用幂等键,天然防双退);**已 delivered 或已有成功步骤(部分交付)的 operation 拒绝退款(403,客户端与内部一致)**;**operation 登记缺失一律 refunded:0(失败关闭,不扫钱包)**;退款成功即把关联在途视频任务置 cancelled;客户端提交的 cost 不被采信;operation 记录保留 90 天(覆盖退款授权窗口) |
+| GET | /api/billing/actions | 计费动作白名单:{actions(全部动作→价格),costs(前端 COST 键投影)};价格唯一权威在服务端,前端登录/启动时同步(config.billingActions 可覆盖) |
+| GET | /api/jobs | 本人最近 100 条生成任务登记(upstreamId/项目/分集/镜头/inputHash/状态/时间/billingOperationId);**running/needs_reconcile/timed_out/cancelled 恒置前**(历史超 100 条时活动/待对账任务不被挤出截断窗口);配合前端断点续查;超时三档(十一轮):30 分钟标 stale(不退款)、60 分钟转 needs_reconcile 由对账查上游后再定(已成功交付落片/已失败或仍无终态终极退款,不盲退);查询即顺带触发后台对账(不阻塞响应) |
+| GET | /api/volc/video/:id | 视频任务轮询(仅本人登记任务);**timed_out/cancelled 直接返回退款终态**(不再查上游——上游晚成功不能翻转已退款的 operation/不能把视频发给已拿回积分的请求);**needs_reconcile 放行查上游(对账出口)**——查得 succeeded 正常交付、非终态则 timed_out+终极退款;succeeded 且无视频地址视同失败退款 |
+| POST | /api/upload | {name,dataBase64} → {url},单文件 ≤85MB(base64+JSON ×4/3 膨胀后仍在 120MB 请求体硬限内;可用 config.json uploadMaxMB 调),每用户配额 200MB |
+| GET | /api/uploads | 列本人上传文件(name/url/size/mtime)+已用/配额 |
+| DELETE | /api/uploads/:file | 删除本人目录内文件(防穿越);**删除前递归扫描本人 state 全树做引用检查**(仍被任何模块引用 → 409+引用位置清单;?force=1 强删) |
+| GET | /api/llm/models | 转发模型列表(服务端缓存 10 分钟) |
+| POST | /api/llm/chat | 转发 chat/completions;429/502/503/网络错误自动重试 2 次(退避 1s/3s);单用户并发≤4、每秒≤2 次;成功后按 usage 逐用户计量;**jsonMode(九轮)**:jsonMode:true 时服务端用同源宽松解析验证业务 JSON,失败自行修复(≤2 次,同一扣费内),最终失败未交付退费+502,parsed 随响应回传;**step(十轮)**:聚合流程步骤槽位(und/gen1/rev1/route/cmp 等,缺省 main)——同 step 同内容且未成功幂等重放、已成功且有缓存(≤8KB)直接返回缓存(不调上游)、无缓存拒绝重放、main 步成功即交付、交付后拒绝新步骤;mock 测试路径在动作校验之后(e2e 覆盖计费兼容矩阵) |
+| GET | /api/llm/usage | {today:{calls,tokens},total:{...},byModel top10,byDay 近 14 天逐日聚合} |
+| POST | /api/volc/image | 火山引擎生图代理:{prompt,size?,model?,image?(参考图 dataURL/url 透传,数组=多图融合≤6 张)} → {url,remoteUrl};成功后抓存本地 uploads/gen/,url 为本地路径(默认模型 doubao-seedream-5-0-pro-260628,超时 180s);计费动作按结构推导(多图≥2 一律 image.fusion;未捕获异常统一退款) |
+| POST | /api/volc/video | 火山引擎视频任务:{prompt,ratio?,duration?(按 volcVideoDurations 档位吸附),model?,image?(首帧 i2v),refImages?[{name,url}]≤8(主体参考打标,role=reference_image,始终随包发送;若上游不允许与首尾帧混用,自动去首尾帧重试一次并回执 droppedFrames),refVideo?(参考视频,≤20MB,公网中转;中转发生时回执 relayedVideo 并由前端 toast 告知,config relayUploadEnabled:false 可禁用),job?{projectId,episodeId,shotId}} → {id,duration,droppedFrames?,relayedVideo?,reused?};**任务中心持久化登记(data/jobs.json),同镜同 inputHash 的进行中任务直接复用 id(reused,防重复扣费)**;计费动作按时长推导(>10s 一律 video.beat,封死长视频低价标签) |
+| POST | /api/ffmpeg/frames | 关键帧提取:{video,count?≤24} → {frames:[url],duration}(按时间轴均匀抽帧,需服务端 FFmpeg) |
+| POST | /api/ffmpeg/suberase | 字幕擦除:{video,mode?} → {url}(delogo 区域修复;对白=底部居中横带,全局=顶部+底部整带) |
+| POST | /api/ffmpeg/upscale | 视频超清:{video,res?720P/1080P/2K/4K,quality?std/pro} → {url}(lanczos 放大 + unsharp 锐化);**计费按 quality 档位定死**(pro→ff.hdPro 100/std→ff.hdStd 20/缺省→ff.upscaleTool 2,客户端标签须一致);未知 ffmpeg 子路由读体/扣费前 404 |
+| POST | /api/ffmpeg/highlight | 高光智剪:{video,min_duration?,max_duration?,max_number?,cut_mode?} → {url,segments,scenes}(场景切换探测切段拼接) |
+| POST | /api/ffmpeg/compose | 合成成片:{items:[{video?|image?,dur?,text?,audio?,start?,end?,transition?}]≤80,ratio?,subtitle?} → {url,count,transitions}(逐段规格化 30fps + 拼接 + drawtext 字幕烧录,缺音轨补静音);**2026-08 六轮:items[i].transition={type,duration?} 表示第 i-1→i 段转场,视频 xfade/音频 acrossfade 真实渲染,不支持类型降级硬切并在 transitions.degraded 上报**) |
+| POST | /api/ffmpeg/merge | 音视频合并:{video,audio} → {url}(画面流拷贝 + 音轨混封,-shortest) |
+| POST | /api/ffmpeg/cut | 视频剪辑:{video,segments:[{start,end}]} → {url,segments}(保留所选段并拼接) |
+| GET | /api/thumb?src=/uploads/... | 400px 缩略图(图片→webp,视频→抽帧 jpg);懒生成按 路径+mtime 缓存 uploads/thumbs/,ffmpeg 缺失 302 回原图;**2026-08 六轮起与 /uploads 媒体路由同口径鉴权**(登录 + mediaAllowed ACL;cookie/Bearer 均可) |
+| POST | /api/volc/tts | 豆包语音合成(Agent Plan 专属通道 /api/v3/plan/tts/unidirectional):{text≤1000B,voice(voice_type),speed?0.5-2,volume?0.5-2,emotion?,emotionScale?1-5} → {url,duration};mp3 落 uploads/gen/;默认资源 seed-tts-2.0(Plan 语音仅含 2.0 音色);鉴权 X-Api-Key=ttsApiKey,缺省回退 apiKey;情感不被音色支持时自动降级重试 |
+| GET | /api/pay/config | 充值配置:{rate,packs,giftTiers,qrWechat,qrAlipay,isAdmin} |
+| POST | /api/pay/redeem | 卡密兑换:{code} → {credits};积分直写 state 树(rev 自增,前端 409 自动重拉) |
+| POST | /api/pay/request | 提交充值申请:{planName,yuan,channel,note?,proof?(须 /uploads/ 路径)} → pending,金额/赠送服务端按 rate+giftTiers 核算 |
+| GET | /api/pay/requests | 我的充值申请(含审核状态/管理员备注) |
+| GET | /api/admin/requests?status= | (管理员)全部申请列表 |
+| POST | /api/admin/handle | (管理员){id,action:approve/reject,note?};approve 即给对方 state 加分+写订单 |
+| POST/GET | /api/admin/codes | (管理员)生成 {count,credits,note?} → 明文卡密列表 / 列表查询(含使用状态;GET 预留,前端未接) |
+| POST | /api/admin/payconfig | (管理员)改费率/档位/收款码 {rate?,packs?,qrWechat?,qrAlipay?} |
+| POST | /api/admin/credits | (管理员){username,delta,reason} 手动加/扣积分 |
+
+- 管理员判定:`config.json` 的 `admins` 用户名列表;为空时**首个注册用户**默认管理员。
+- 支付数据:`data/payconfig.json`(费率/档位/收款码)、`data/paycodes.json`(卡密)、`data/payrequests.json`(申请单)。
+- 团队接口:/api/team 系列(GET 团队信息 / POST create·join·leave·kick·invite·refresh / GET stats 成员消耗统计),供团队管理页(js/team.js)使用。
+| GET | /api/assets/shared | 团队资产贯通:队友共享给我的资产(只读)。服务端按 teams.json 队友关系拉取各队友 state,收集"shared 含我的用户名"的分组内 本地可用/无检查记录/存量 approved 资产,附 ownerUsername/sharedGroup;前端资产库「协作者共享给我的资产」区据此渲染(可复制到自己的库后用于生成);对应文件访问经服务端 sharedPathsFor 精确授权(仅放行共享分组内资产实际引用的 /uploads/ 文件,10s 缓存) |
+| GET | /api/health | 免 token:{ok,uptime,users,version} |
+
+> 真实/离线行为约定:已登录后端(Media/API ready)时,生图/生视频一律走真实上游,失败如实报错并自动退费,不再用占位图/占位视频冒充产物,也不再有随机假失败;仅离线(未登录/后端不可达)时回退 PH 占位模拟。**离线生成的占位产物带 simulated 标记:重新在线后不计入"生成完成/成片完成",相关环节会要求真实重做(离线期间不受影响)。**UI 模型标签格式「渠道,名称,model-id」,标注(模拟)的模型不传给上游(走服务端默认)。
+
+- 除 `/api/auth/register|login` 与 `/api/health` 外全部需要 `Authorization: Bearer <token>`;**`/uploads/*` 媒体与 `/api/thumb` 自 2026-08 六轮起同样鉴权**——登录时种 `mv_token` HttpOnly cookie(供 `<img>/<video>` 标签),访问须通过 mediaAllowed ACL(本人目录 / 队友共享资产实际引用的文件 / 服务端产物 gen|thumbs),登出吊销会话并清 cookie。**canonical 路径判定(七轮)**:媒体 ACL 与 serveStatic 兜底统一用一次解码+规范化后的路径判定(`/uploads%2F…`、`/%75ploads/…`、`/UPLOADS/…` 等编码或大小写变体一律按本路由鉴权,普通静态服务硬性拒绝 canonical /uploads 路径)。**请求体分端点上限(七轮)**:全局 120MB 仅保留给 /api/upload(base64 通道);登录/注册/改密 16KB、LLM 2MB、FFmpeg 8MB、TTS 16MB、生图/生视频 64MB(dataURL 参考图)、state 推送 64MB、卡密/充值/团队/管理端 4~64KB,超限 413。
+- **统一服务端白名单计费(2026-08 六轮;七轮动作族/退款权限;八轮动作推导;九轮共享模块+步骤状态机+服务端修复)**:/api/llm/chat、/api/volc/image、/api/volc/video、/api/volc/tts、/api/ffmpeg/* 全部按 `billingAction` 白名单定价**按次原子扣费**(客户端只提交 billingAction + operationId,不提交金额;价格不可篡改;余额以钱包账本为准)。**共享模块(九轮)**:动作推导/校验/宽松解析抽到 `billing.js`(server.js 与 tests/unit.js 共用),单元测试含"客户端 billingAction ↔ 服务端端点"兼容矩阵——全量扫描 js/ 的动作字面量与 Media.ff* 调用点逐一验证端点接受性,封死"服务端收紧校验把前端正常动作 400 拒掉"的回归(八轮曾把 llm.agent/review/smartSB 等全拒,测试路径与 e2e mock 都绕过计费校验测不出来;九轮起 mock 也移到校验之后)。**动作推导**:ffmpeg/upscale 按 quality 档位定死 ff.hdPro/hdStd/upscaleTool(未知子路由在限流计数前 404,九轮修复并发计数泄漏)、视频时长>10s 一律 video.beat、多图(≥2)生图一律 image.fusion、单图 i2i 按 prompt 信号定死动作(宫格/多机位按分辨率档钉死渠道、高清化须 2K/4K、局部重绘/超写实/多视角话术命中即定——十一轮,生图的产品就是 prompt,标签不再参与定价)、字幕擦除双入口统一 5 分(十一轮);llm.* 同族内业务用途无法从消息体结构区分,族内全部放行、价格上界=白名单价(已知残留,彻底封死需服务端工作流编排)。**LLM 步骤状态机(九轮)**:聚合流程(智能分镜理解→拆解→评审修订、虎鲸路由→回复→蒸馏)同 opId 一次扣费多步调用,按 `step` 槽位管理——同 step 同内容幂等重放(网络重试)、同 step 换内容 409、新 step 仅未交付时允许且受 stepBudget(8)限制;main 步(不传 step)成功即交付 → 交付后拒绝新步骤(封死"delivered 后换提示词续调");辅助步成功不交付但计入"已有成功调用",客户端退款被拒。**jsonMode 服务端修复(九轮)**:chatJSON 声明期望 JSON,服务端用同源宽松解析验证,失败时自行让模型修复输出(≤2 次,同一扣费内),最终失败未交付退费+502——代理模式客户端不再修复重试,交付语义收敛为"本次请求成功解析"。**未交付自动退款(九轮)**:proxyRefund 按"operation 是否仍有有效未退扣费"判定(复用已扣费 operation 的重试失败同样退回原扣费)。**退款终态(八轮)**:客户端退款即取消关联在途视频任务(cancelled),timed_out/cancelled 轮询直接返回终态不再查上游;视频 succeeded 无地址视同失败退款。**退款权限(七轮+九轮)**:客户端退款仅限"未交付且无成功调用"的 operation;退款镜像无论服务端 成功/重复(0)/拒绝(403) 都以服务端余额回写本地(两端不漂移)。**视频 10 分钟超时(九轮;十一轮三档)**:前端到点不再退款,标"可续查"(重试同 opId 同内容幂等续查);服务端 30 分钟标 stale(不退款)、60 分钟转 needs_reconcile 由对账查上游后再定(已成功交付/已失败或仍无终态终极退款)——上游偶发慢任务不再被白白取消,也不再被盲退。前端 COST 经 GET /api/billing/actions 同步服务端价格,两端一致。
+- 安全响应头:`X-Content-Type-Options: nosniff` / `X-Frame-Options: DENY` / `Referrer-Policy: no-referrer`;请求日志写 `data/server.log`(5MB 滚动留 2 份)。
+- 安全加固:静态文件先 normalize 再判黑名单(防 Windows 反斜杠/双斜杠绕过读 data//config.json);注册接口每 IP 每小时限 10 次;改密后吊销该用户其他会话;上传禁 svg、存量 svg 强制 attachment 下载;LLM 计量 jsonl 超 2MB 自动按天×模型聚合压缩。
+
+## config.json 全字段(均可选,缺省用内置默认)
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| port | 8000 | 监听端口(环境变量 PORT 优先) |
+| baseUrl | https://api.qnaigc.com/v1 | LLM 上游 |
+| apiKey | (无,**必配**) | LLM Key,只存服务端;也可用环境变量 `LLM_API_KEY`。未配置时 /api/llm/* 返回 503 |
+| llmModel | (空=透传前端所选) | 强制覆盖 chat 上游模型;Agent/Coding Plan 套餐填套餐内模型名(如 `deepseek-v4-pro`)或路由模型 `ark-code-latest`(此时 /api/llm/models 上游无列表接口,自动按模型链合成列表) |
+| llmModelFallbacks | [] | 备用模型链:主模型请求失败时依次切换重试(如 `["glm-5.3","kimi-k3"]`),全部失败才报错 |
+| llmTimeoutMs | 120000 | 上游超时(含重试) |
+| volcBaseUrl | https://ark.cn-beijing.volces.com/api/v3 | 火山引擎(ARK)生图/生视频上游 |
+| volcApiKey | (无,生图/视频必配) | 火山引擎 Key,只存服务端;也可用环境变量 `VOLC_API_KEY`。未配置时 /api/volc/* 返回 503 |
+| volcTimeoutMs | 180000 | 生图上游超时(实测约 60-70s,需 ≥150s) |
+| volcVideoDurations | [](按模型自动) | 视频时长约束:空=按模型自动(Seedance 2.0 吸附 5s/10s 离散档,2.5+ 连续 4-30s 直通);数组=强制离散档吸附(如 `[5,10]`),对象 `{min,max}`=连续区间 |
+| billingActions | (内置白名单) | 计费动作价格覆盖(2026-08 六轮):`{"video.gen":5,"image.gen":2,"llm.chat":1,...}`——服务端唯一价格权威,前端 COST 经 /api/billing/actions 自动跟随;完整动作清单见 server.js BILLING_ACTIONS |
+| ttsApiKey | (空=回退 apiKey) | 语音合成 API Key(X-Api-Key);Agent Plan 套餐 key 与 LLM 共用,无需另配。也可用环境变量 `TTS_API_KEY` |
+| ttsAppId / ttsAccessKey | (无) | 旧版双因子鉴权(X-Api-App-Id / X-Api-Access-Key);仅 ttsApiKey 与 apiKey 都不可用时生效 |
+| ttsResourceId | seed-tts-2.0 | TTS 资源 ID(Agent Plan 语音仅含 doubao-seed-tts-2.0 音色) |
+| ttsBaseUrl | (空=Plan 专属通道) | TTS 上游;缺省 `https://openspeech.bytedance.com/api/v3/plan/tts/unidirectional`(勿改公共通道,否则走套餐外计费) |
+| uploadQuotaMB | 200 | 每用户上传配额 |
+| uploadMaxMB | 85 | 单文件上传上限(通道为 base64+JSON,×4/3 膨胀后须仍在 120MB 请求体硬限内) |
+| ffmpegPath | (空=自动) | FFmpeg 路径;缺省依次找 环境变量 `FFMPEG_PATH` → `bin/ffmpeg.exe` → 失败时 /api/ffmpeg/* 返回 503。ffprobe 取同目录 |
+| registerOpen | true | false 时注册接口返回 403 |
+| host | 127.0.0.1 | 监听地址;本地工具默认不出网卡,外部部署需显式改 `0.0.0.0`(并自行评估注册开放/管理员配置) |
+| corsOrigin | (空=同源) | 跨域来源;默认不放开,需要跨域时填完整 Origin(如 `http://localhost:3000`) |
+| relayUploadEnabled | true | 参考视频公网中转(litterbox/0x0)开关;false 时带本站参考视频的请求直接 400(隐私优先) |
+| genCacheDays | 3 | uploads/gen/ 未被任何用户 state 引用且超过该天数的文件自动清理(启动时+每日;0=不清理) |
+
+## 旁白配音体系
+
+- **音色库**(js/voice.js):50 个结构化音色(名称/性别/年龄/场景/多情感标记,如叙事氛围/甜心小美/高冷御姐/京腔侃爷…);收藏存 `state.favVoices`。
+- **音色选择弹窗** `Voice.pickModal`:系统/收藏 tab + 场景/年龄/性别三维筛选+重置+网格(▶试听/☆收藏/多情感绿标)。
+- **声音设置弹窗** `Voice.settingModal`:音色行联动选择、语速 0.5-2.0x/音量 0-10/语调 0.5-2.0x 滑块、情感八档(非多情感音色禁用并警示)、▶ 试听(Web Speech API speechSynthesis,zh-CN)。
+- 接入:分集工作区参数配置面板「⚙ 配音设置」(存 project.narration)、角色卡「🎙 绑定音色/✨ 推荐/🎵 音色参考」;生成音频的历史与任务名带"叙事氛围·1.2x·开心"参数标签;复刻音色功能已下线(2026-08 产品决策,音色库只含系统音色);旧字符串 voice 自动兼容。
+
+## 统一导出
+
+分集合成后(ep.composed),工作区顶部与成片库卡片出现绿色「导出 ⬇」下拉(js/exporter.js):
+- **导出成片**(免费):自包含 HTML 播放器(`成片_X.html`)——内嵌每镜帧图 dataURL+字幕+时长,纯内联 JS 按时间轴连播(播放/暂停/跳镜/进度条),片尾附分镜清单(真实上传素材会标注);任务中心二次下载不存内容,按 regenType 重新生成,避免撑爆 localStorage。
+- **导出剪映草稿**(3 积分):draft_content.json 三轨草稿 + 素材帧 ZIP(与批量操作入口同源)。
+- **批量导出素材**(2 积分):ZIP=每镜帧图 PNG+单镜提示词 txt+分镜表 CSV(可编辑后回导)+README。
+
+## 任务监控
+
+左侧栏「📋 任务监控」:所有 AI 生成任务(剧本解析/AI分镜师/文生视频/审片/修片/导出等 20+ 类型)统一登记在 `state.tasks`(上限 200 条,随 state 同步后端),记录"类型-模型-对象"、状态(进行中/已完成/失败+原因)、积分消耗、实际耗时、所属项目·分集、创建者、创建时间;支持项目/类型/状态/时间范围筛选、进行中任务 3s 自动刷新、每页 20 条、一键跳转对应页面/二次下载产物。顶部统计条:进行中/今日完成/今日消耗/今日失败。
+
+## 数据看板
+
+左侧栏「📊 数据看板」(js/dashboard.js):LLM 计量(今日/累计调用与 tokens、近 14 天逐日趋势图、模型消耗 top10,数据来自 `GET /api/llm/usage`,服务端 `aggregateUsage` 新增 `byDay` 逐日聚合)+ 任务统计(进行中/今日完成/今日失败/成功率、积分消耗类型分布 top8,来自 `state.tasks`)+ 最近 10 条积分流水(`state.creditLogs`)+ **合格片单位成本与抽卡成功率**(视频生成类任务的净消耗÷合格片数;净消耗=积分流水中 分镜视频生成/节拍板生成 的 spend−refund,无流水时回退任务 cost 合计)。服务端 `/api/health` 附带 `errors`(volc4xx/volc5xx/llm/ffmpeg 今日上游失败计数,按日落盘 data/errstats.json 留 30 天)。离线时 LLM 区块降级为提示,本地统计照常展示。
+
+## 文件资产与真人审核预审
+
+- **☁️ 文件资产**(资产库新 tab,js/assets.js):消费此前闲置的 `GET /api/uploads` / `DELETE /api/uploads/:file`,统一管理服务端上传文件——图片/音频/视频/其他筛选、配额进度条(已用/200MB)、☆ 收藏(存 `state.fileFavs`)、下载、一键存入素材库、删除;离线时降级为提示。
+- **🧑 真人审核预审**(js/humanreview.js):含真人人脸的参考素材(角色照/站位图等)先审后用。文件资产卡片点「🧑 真人审核」提交,记录存 `state.assetReviews`(状态机 **pending → local_available / rejected**;`approved` 为真实审核/管理员通道预留,当前不产生,存量数据按本地可用兼容);当前为本地模拟审核通道(素材可加载即"本地可用",与生图/生视频占位模拟一致,接真实视频 API 时替换 `runReview` 即可)。**生成时自动校验**:文生视频单镜与批量生成入口会收集分镜引用图片(分镜图/首尾帧/出场角色主体图),已驳回素材弹窗阻止生成、检查中需确认后放行、本地可用直接放行——避免正式任务因素材问题浪费积分。协作者共享视图只放行 本地可用/无检查记录 的资产并如实标注。审核记录集中在资产库「🧑 真人审核」tab,可重新提交/删除。
+
+## 镜头组
+
+分集工作区中栏「🗂 镜头组」tab(页内视图,js/shotgroups.js),解决跨镜角色/场景漂移:
+
+- **自动分组**:按"场景 + 出场角色"签名聚合分镜(`s.groupId` → `ep.groups`),组名自动生成为"场景-角色-组N"(可手动重命名,重命名后不被自动覆盖);重复执行保留已有组的前缀词/绑定资产。
+- **组级资产绑定**:每组为角色/场景选定一张参考主体图(候选=本项目主体+资产库主体,同名自动预选),只绑一次,存 `g.assets` / `g.sceneImage`;整组生成时作为参考图随真人审核一并校验。
+- **组级一致性前缀词**:默认填入防崩坏约束词("面部五官清晰稳定不变形,同一角色全程外貌一致…不出现重复人物、分身或双胞胎效果"),可编辑;整组生成时注入每镜 prompt(只写入生成历史,不污染原 prompt)。
+- **整组批量生成**:一键生成组内全部未出片分镜的视频,任务名与生成历史标注所属组,尾帧照常写入供下一镜继承。
+- **分镜时间线**:面板底部按顺序列出全部镜头(序号/名称/时长/所属组),下拉即可"移动到组",点名称直接定位到该分镜;组卡片可解散(分镜保留、仅解组)。
+- **双向联动**:分镜视频视图时间轴缩略图名称前显示所属组色点(组 id 哈希取色,悬浮见组名);组卡片标题行显示已绑定的节拍板 🥁 BeatN 标记(节拍板侧 b.groupId 绑定)。
+
+## 资产引用、音色参考与多形态
+
+- **＠ 引用资产 / ⌖ 智能识别**(js/storyboard.js 分镜提示词工具行):「＠」打开资产选择器(含形态资产),点击即把「@名称」注入提示词并关联为该镜参考素材;「⌖」扫描提示词+剧情文本,命中角色/场景/物品名(含"角色名-形态名"全称)自动加入出场列表。多图融合策略与真人审核校验自动使用这些关联。
+- **🎵 音色参考**(js/roles.js 角色卡):角色绑定一段音频(≤15MB,走 /api/upload)作音色参考,存 `s.refAudio`;分镜「素材」tab 可直接试听,文生视频时自动注入(任务模型标注"音色参考×N",同一角色的多形态只计一次,历史记录 voiceRef 字段)。
+- **🧩 多形态**(js/roles.js 角色/场景/物品卡):一个主体挂多个形态(`s.forms[]`,如"少年形态/战损形态"),按「主体名-形态名」全称在智能识别/@引用/镜头组资产绑定中检索引用;「设为主图」可与默认形象互换。`Store.findSubject(p, name)` 统一解析普通名与形态全称,`Store.subjectImage` 取图。
+- **🎬 视频参考图(大头照)**(js/roles.js 主体精修第四模式,`s.imgRef`):按官方指南,人物三视图易被视频模型误判为多个主体(ID 漂移/双胞胎),主体精修页可一键生成/上传"仅头部、中性表情、干净背景"的大头照;生成视频时主体参考图按 **形态自带图 > 视频参考大头照 > 权威参考图(三视图)** 优先级随包发送(`shotRefImages`,真人审核校验同链),未生成大头照时行为不变。
+
+## 工业级生成纪律
+
+- **分镜拆解硬规则**:智能分镜/AI分镜师的拆镜 prompt 内置完整拆分原则(`SPLIT_RULES`,js/storyboard.js):① 叙事细化而非形式拆分(判断标准=真人影视是否需要多镜);② 五层景别推进路径(大全景→全景→中景→近景→特写→超级特写,情绪转折越强镜头越靠后);③ 信息密度控制(台词超 40 字必拆、单镜单信息点、禁止单镜同时承载环境+动作+情绪+大量对白);④ 逐镜自检"只让观众记住一件事"。景别枚举已扩展大全景/超级特写;一键审片同步检查台词超 40 字、单镜信息过载、景别无递进(LLM 与离线本地评审均生效)。
+- **定稿预览键盘导航**:历史版本弹窗支持 ↑↓ 切换分镜、←→ 选择版本、Enter 应用此版(仅当弹窗在最上层时响应,关闭自动解绑)。
+- **计费透明 + 断点校准**:批量生成视频/镜头组整组生成超过 3 镜时,先弹确认(明示"逐条扣减:每镜单独扣费,余额不足仅该镜失败;单镜失败自动返还"),可选「先校准前 3 镜」→ 出片后确认再放量;扣费已改为逐镜单独扣减,余额不足只失败当前镜。
+- **📌 注册主体**(js/roles.js 角色卡):把角色当前形象注册为"模型侧主体"(`s.isSubject`),生成视频时按主体级参考优先(任务模型标注"主体×N",素材 tab 有主体徽标);换图后注册自动失效需重新注册——接真实视频 API 时注册主体走主体机制而非普通参考图。
+- **健壮性**:state 写 localStorage 超出配额时不再抛异常中断操作,仅提示一次并继续走云端同步(store.js)。
+
+## 影调风格双轴
+
+- 画面风格与**影调风格**拆成两个独立维度:新建项目可选影调(无/电影级逆光/怀旧香港/悬疑电影/纪实主义/赛博朋克/青橙电影感,`TONE_PRESETS`),存 `p.tone`;项目详情页头部「影调」标签点击可改。
+- `window.styleOf(p)` 合成"画风·影调"(如"漫剧·青橙电影感"),在库画风(`STYLE_LIB`)再追加关键词包 kw,已注入全部生成入口:智能分镜/AI分镜师提示词、动态提示词润色、角色立绘、本集理解视觉基调、审片/修片、导演助手、批量补提示词、导出清单等;`directorInject` 仍只按画面风格匹配导演设定。
+
+## 任务重试与官方案例
+
+- **失败任务 ↻ 重试**(js/tasks.js + storyboard.js 的 `window.__retryShotTask`):任务监控页失败行出现重试按钮——文生视频/生成音频等分镜级任务自动跳转对应分集并直接重跑;其余类型跳转对应页面提示重新发起。配合理念:失败≠白做,先看状态再决定重试还是回头补内容。
+- **📦 官方案例克隆**(js/projects.js):项目管理页顶部常驻「官方案例·雨夜便利店」卡片(2 角色 + 1 场景 + 3 个已填充分镜,青橙电影感影调),「⚡ 复制为新项目」深拷贝成全新 id 的自有项目,新用户可直接体验分镜/镜头组/生成/导出全流程。
+
+## 项目层进度与策划
+
+- **EP 卡片进度**(js/episodes.js renderEpisodes):分集卡片底部进度 tags——「分镜 N 镜」(green=已分镜)、「视频 x/y」(green=全部完成,cyan=进行中)、「已合成」(green);原封面「已分镜 · N镜」tag 已合并至此,不再重复显示。
+- **画风库卡片化**(js/projects.js `STYLE_LIB`,挂 window):12 个画风预设(漫剧/动漫/写实/经典古装/现代短剧/院线电影风/黑泽明/诺兰/王家卫/韦斯·安德森/邵氏武侠/银翼杀手),每个含 kw(prompt 关键词包)与 hue(占位卡渐变基色);新建项目弹窗风格选择改为渐变卡片网格,保留「⬆ 上传自定义风格」;老项目自定义风格不在库时 kw 为空,行为不变。
+- **创作进度步骤条 + 🤖 AI 策划**(js/episodes.js 项目详情页):头部步骤条「上传剧本→主体提取→分集→分镜→生成→成片」按项目数据推导 已完成✓(green)/进行中(cyan)/未开始,当前步高亮;「🤖 AI 策划」打开策划对话面板(system=资深短剧策划/编剧,上下文带项目名称/风格影调/剧本前 3000 字/分集列表),对话存 `p.plannerChat`(上限 50 条),「应用为剧本」把 AI 最新回复经确认后写入 select 指定分集的 content;纯咨询与应用均不收费,LLM 未配置时提示先去「API 设置」。
+- **悬念与期待**(js/understanding.js):本集理解新增第 6 维「悬念与期待」(suspense,LLM 生成 2-4 条悬念点/期待感设计,失败回退模板同步带该字段);toText/编辑弹窗自动包含,分镜生成 prompt 经 `Understanding.toText` 引用处自动带上。
+
+## 🥁 节拍板(BeatBoard 体系)
+
+分集工作区中栏「🥁 节拍板」tab(页内视图,js/beatboard.js),与分镜脚本/分镜视频/镜头组四视图统一切换(`settings.epViewMode` = board/shots/bb/groups,全局记忆、换集保持);**Seedance2.5 专属**(PRD:不支持多模型混用;默认模型 Seedance 2.0 Mini 控制成本,顶栏下拉可显式切 2.5 长段落,存 `ep.bbModel`;服务端默认同为 2.0-mini):
+
+- **5 段式黄金结构**(系统固化不可增删):开篇钩子→矛盾建立→打压升级→反转蓄力→断集留客;Beat1-4 固定 3 宫格节拍帧、Beat5 固定 2 宫格,宫格时序锁定即播放时序。
+- **节拍板编辑**:核心情绪/时长区间/本段 AI 风格参数即改即存;节拍帧支持图片上传(走 /api/upload)+ 画面描述,无图纯文本生成。
+- **✨ AI 拆解节拍板**(2×COST.smartSB 量级,Tasks.run 计费):LLM 按本集剧本+本集理解把内容拆进 5 段(核心情绪/节拍帧描述/衔接建议,注入 KB 编剧知识),只填空节拍帧不覆盖已有内容;LLM 不可用时按分镜脚本本地粗拆兜底。
+- **绑定镜头组(1节拍=1镜头组)**:每段可下拉绑定本集镜头组(`b.groupId`),「带入镜头组资产」绑定后只带本组参考图;左侧 Beat 导航显示绑定组名,镜头组卡片反向显示 🥁 BeatN 标记。
+- **长段落 Prompt 实时组装**:`buildPrompt` 自动携带 styleOf 画风影调 + 人物稳定性前缀 + 节拍名/情绪/时长 + 节拍帧时序 + AI 运镜授权,任何编辑实时刷新,一键复制可直接投喂模型。
+- **单段/批量生成**:单块节拍板独立出片(任务类型「节拍板生成」,2×COST.video,长段落时长由本段时长区间解析、≤30s,失败入「生成失败」态可重试、积分自动返还并按 内容违规/接口异常/参数问题 三类精准提示),支持批量依次生成(逐条扣费、失败返还即停)、真人审核 guard 校验节拍帧图片;生成中锁定本段编辑(PRD 12.2);Beat5 末段固定"无转场,截断黑屏留存悬念"。
+- **组间衔接规则库**:音频预接/螺口顺滑过渡/卡点硬切/BGM升调截断/黑屏断钩子 + 自定义话术,明确标注"后期剪辑参数,不参与 AI 生成"。
+- **工程治理**:「↺ 重置模板」仅清自定义内容(节拍帧/风格参数/衔接),结构宫格与已生成视频不动;「♻ 复用到新分集」复制 5 段结构/参数/衔接、清空节拍帧,直达新集继续量产;宫格图片支持上传/预览/删除,时序锁定不可增删拖拽。
+- **成片总览 + 五段合成 + 工程导出**:5 段归档卡片(预览/衔接规则);全部出片后「🎞 合成五段成片」(COST.compose,服务端 FFmpeg 按节拍顺序拼接,结果写入 `ep.composedUrl` 归档成片库并标 `composedVia='beats'`,与分镜合成同字段同出口);「♻ 复用到新分集」复制结构/参数/衔接,节拍帧清空;「⇄ 转回分镜表」把 5 段节拍转为本集 5 个分镜(带入已出片视频,plot 取节拍帧文本拼接,时长自动预估),转入后落分镜视频视图;一键导出节拍板工程 JSON(含全部 Prompt 与衔接方案)。
+
+## AI 导演与智能体
+
+- **两阶段分镜**:智能分镜/AI分镜师先跑「本集理解」(导演设定+剧本→剧情脉络/情绪曲线/节奏规划/视觉基调/关键场面,存 ep.understanding,左栏可查看/编辑/重生成),再把理解注入分镜生成提示词;全屏进度页展示两步状态与 ETA。
+- **🐋 虎鲸导演助手**:分集工作区右侧聊天面板,自然语言改分镜(update/insert/delete/move/batch 五种 ops),修改预览卡确认后应用、可一键撤销;快捷指令(全部改夜景/加运镜/润色台词/检查逻辑);纯咨询不收费,应用修改 1 积分;聊天记录按分集留存 50 条。**知识喂养**:系统提示词注入 `KB.block()`(js/knowledge.js 编剧/导演/AI抽卡三域压缩核心),长期记忆按"标准沉淀"种子(五段式提示词结构/景别衔接口诀/钩子六型/打脸四步/对话铁律/景别即情绪/抽卡五条军规)按关键词召回注入,用户修正经 memRemember 持续积累(上限 50 条)。**Harness 化机制**(自研零依赖):① 工具注册表 `OP_TOOLS` 分级审批——read 类直执行、edit 类预览确认(自动模式直执行)、exec 类(run 扣费动作)任何模式下都二次确认并费用明示、edit-hi(删除)红标警示;② 上下文压缩 `compactChat`——超 24 条自动把旧对话 LLM 蒸馏为会话纪要注入(免扣费静默,失败回退硬截),集级/全局助手均注入"纪要+最近 12 条";③ 执行闭环验证 `verifyOps`——ops 落数后逐项回读校验,回复尾注如实标注"已生效 N 项/X 项未生效"。
+
+## 专业知识库与专家体系(js/knowledge.js + gsettings.js)
+
+- **KB 知识库**:编剧域(八律/六阶段结构/单集三段式/钩子六型/反转五式/打脸四步/付费卡点/对话铁律/人物体系/剧本诊断)+ 导演域(场面调度/景别运镜情绪表/轴线匹配/剪辑节奏)+ AI 抽卡域(八维提示词公式/五条军规/多镜头写法),为短剧创作与提示词工程方法论的系统化整理;`KB.block()` 注入虎鲸助手(全局+分集)系统提示词,`KB.SECTIONS` 供各生成环节按名取用。
+- **专家雇佣扩充**:风格导演新增 暗黑复仇导演🗡️(打脸四步结构/压抑爆发)/古装权谋导演🏮(信息差智斗/仪式感构图);功能专家新增 钩子工程师🪝/爽点架构师⚡/对白医生💬/结构医师🩺/摄影指导📷/剪辑指导✂️——人设均以 KB 方法论为底座,可在「偏好学习→专家雇佣」全局雇佣(风格类)或「制片→智能体分工」板块雇佣(功能类),也可在助手身份下拉直接切换。**专家自进化**:自定义专家带「🧠 从使用记录进化」——把你的纠正/偏好(agentMemory)LLM 蒸馏为 ≤4 条进化条款追加进该专家 persona(1 积分,无新增退费),已进化专家带 🧠×N 角标。
+
+## 工程治理(2026-08 大审查后十一轮收敛)
+
+- **退款精确归属(十一轮 P0-1)**:operation 新记录保存本次扣费的完整 chargeIdem(含 ~n 重试后缀),refundPlan(billing.js 纯函数)按其一对一归属每笔扣费到创建它的记录——封死"退款重试后新扣费被映射到旧 refunded 记录、最新已交付扣费仍可被退回";refundJob 校验实退金额>0 才落 refunded 标记(此前不看退款返回值直接写 true,blocked 时假标已退)。
+- **executing 在途拒退(十一轮 P0-2)**:扣费成功后、调上游前把 operation 标 executing——新鲜 executing(10 分钟内)的客户端退款一律 409,封死"发起生成→立即退款→等原请求交付结果"的套利窗口(上游任务无法真正取消,退款后交付即平台净亏);超 10 分钟视为进程崩溃残留放行对账;失败路径的服务端退款是 executing 的正常出口,不受影响。
+- **生图信号定价(十一轮 P0-3)**:deriveImageAction 按请求结构+prompt 信号定死动作——多图(≥2)一律 image.fusion;单图 i2i 的宫格/多机位按分辨率档钉死 multiCam1/2、高清化须 2K/4K 目标档、局部重绘/超写实/多视角话术命中即定对应动作;生图的产品就是 prompt 本身,客户端标签不再参与定价,allowedSet 仅剩纯文生 {gen,tweetShot}(价差 1 分残留);字幕擦除双入口统一 5 分(ff.suberase 工具入口并入 ff.erase)。
+- **并发执行锁(十一轮 P0-4)**:execLock——同 (userId,opId,action) 的并发请求在首个执行期间直接 409,封死"同 operation 并发重放一次扣费多次调上游"(此前 LLM 走 replay-exec、非 LLM 复用已有扣费后都会继续执行上游);生图/视频/TTS/LLM/FFmpeg 五类付费端点全覆盖。
+- **canDeleteScope 异步删除守卫(十一轮 P1)**:`Tasks.canDeleteScope({projectId|episodeId|shotId})` 合并本地在飞任务与服务端 /api/jobs 的 running 任务判定——刷新后本地 background 已被 sweepStale 收敛为 failed,但服务端 job 仍在生成时项目/分集/镜头/全部分镜删除仍被拦截(孤儿上游成本);网络不可达时按本地结果保守判定(离线场景服务端本就无任务)。
+- **Agent 单镜删除闭环(十一轮 P1)**:applyOps 的镜头 delete 查在飞任务(与 UI 同口径);自动执行模式下镜头 delete 与分集 delep 一样始终先确认(edit-hi 全量)。
+- **理解 revision 断链修复(十一轮 P1)**:understanding 复用前查 `Store.understandingStale(ep)`(过期按新剧本重新生成,不再静默注入旧理解);手动保存/重新生成成功即刷 sourceRev;旧数据无 sourceRev 且 contentRev>0 判旧(此前即使正文修改过也永久被当当前版本)。
+- **视频超时三档(十一轮 P1,十轮两档升级)**:30 分钟标 stale(不退款,轮询先查上游再定);60 分钟转 **needs_reconcile**——由 reconcileStaleJobs(/api/jobs 与轮询入口触发 + 5 分钟周期兜底)对账查上游后再定:已成功交付落片(用户晚到也能拿到结果)、已失败或对账后仍无终态才终极退款(不再 60 分钟盲退);findActiveJob 幂等复用窗口同步延至 60 分钟(30~60 分钟间重试不再双开上游任务)。
+- **节拍板自动对账(十一轮 P1)**:Media.reconcileJobs 除 ep.shots 外同时扫描 ep.beats(按服务端复合键 beat:\<epId\>:\<idx\> 定位)——刷新后节拍段 generating 不再悬挂,登录即自动续查恢复(此前需手动再点「生成」)。
+- **operation 状态机服务器级单测(十轮)**:stepDecision/refundDecision/latestOp 判定核心抽到 `billing.js` 纯函数(server.js 只做 IO 编排),单元测试直接覆盖三个 P0 修复的判定路径——已成功步骤返回缓存/拒绝重放、聚合前序成功后退款保护、登记缺失失败关闭、退款重试取最新记录。
+- **步骤重放防护(十轮 P0-1)**:LLM 已成功步骤的同一请求重放——有缓存响应(≤8KB 存 steps[step].resp)直接返回缓存(真正幂等,网络重试可恢复结果),无缓存(超长结果)拒绝重放;此前会零扣费重新调用上游,重放遇上游失败还可能退掉首轮已交付扣费。
+- **部分交付退款保护(十轮 P0-2)**:refundOperation 判定统一(billing.js refundDecision)——已 delivered 或聚合 operation 已有任何成功步骤(steps[].ok,前序成果已消耗上游服务),客户端与**服务端内部**退款一律拒绝;此前内部路径不保护 steps[].ok,聚合流程前一步成功后一步失败会整笔退回,前序成果变免费交付。
+- **退款失败关闭(十轮 P0-3)**:客户端退款找不到 operation 记录(operations.json 损坏/超保留期被淘汰)一律 refunded:0;refundOperation 对 owner 缺失的扣费同样不退;operation 保留期从"全局最近 5000 条"改为按时间保留 90 天(覆盖退款授权窗口)——此前 ownerOf 落空后已交付扣费可被退回。
+- **退款重试取最新记录(十轮)**:opFind/latestOp 取最新一条匹配——退款后重试同 opId 会追加新扣费记录,交付/退款必须作用于最新扣费而非最早的旧记录(此前旧记录 delivered 而新扣费停留 charged)。
+- **剧本→下游失效传播(十轮,P1)**:`Store.updateEpisodeContent` 统一入口(分集正文编辑/AI 策划应用/译制写回/Agent 修改),每次修改递增 `ep.contentRev`;理解/分镜(智能分镜+本地拆分)/整集审片/成片在生成时记录 `sourceRev`,失配后工作区顶栏显示"剧本已修改·分镜待更新/理解为旧版/成片·剧本已改/均分·旧版"——旧成果保留可用,不再静默显示为最新。
+- **节拍板断点续查(十轮,P1)**:节拍段视频登记服务端任务中心(shotId 用 beat 复合键)+ upstreamId 落 state——超时/失败后再点「生成」优先续查原上游任务(已成功直接落片 0 积分恢复),不再重复创建 operation 与上游任务(此前十分钟后重试会双开上游,原任务可能继续成功形成重复成本)。
+- **Tasks.background 后台态(十轮,P1)**:视频 10 分钟超时后任务转 background(前端停止等待但上游仍在跑)——计入 runningInScope 删除/覆盖拦截(在飞保护),任务页显示"后台生成中"并支持重试续查;刷新后由 sweepStale 收敛为 failed(服务端对账给终态),窗口期内实体删除被拦截。
+- **视频超时两档(十轮,P1;十一轮升级三档见上)**:30 分钟未终态标 stale(不退款,轮询时先查上游再定——第 30 分钟附近刚成功的任务不再被直接退款+拒交付);60 分钟仍未终态不再直接退款,转 needs_reconcile 由对账查上游后再定。
+- **Agent 删除闭环(十轮,P1)**:delep 分集删除走与 UI 相同闭环(在飞任务拦截+回收站快照+order 重排,此前直接 splice);自动执行模式下删除类(edit-hi:镜头 delete/分集 delep)与 exec 类一样**始终先确认**——删除不可逆,自动模式不放行。
+- **交付边界收敛(十轮,P1)**:服务端已成功返回业务结果的场景不再本地退款——放弃优化弹窗(建议文本已完整展示)、专家自进化无新增条款(蒸馏已完成,业务结论≠失败)、宫格切分失败(原图已生成保留可用);这些退款均无 operationId,服务端余额不变,下次同步会把本地余额改回造成两端漂移。失败退款统一带 operationId 镜像到服务端按账本退。
+- **直连计费政策(如实记录)**:浏览器直连模式(自备 Key)不经服务端钱包,但本地视图仍按代理价扣积分显示——当前语义为"配额记账"而非真实扣费,云端同步后以服务端账本为准;后续应明确直连免平台积分或本地不计费,未排期。
+- **主体引用与领域命令(P2,未排期)**:主体引用仍是名称匹配(Agent 重命名主体后镜头 characters/scene 不联动,findSubject 失联);UI/Agent/批处理的实体修改未收口为领域命令(updateEpisodeContent 是首个样例,deleteEpisode/renameSubject/replaceShotVideo 待迁移);32 处手写 U.charge 与 17 处双参数退款待收敛。
+- **审片版本正向证明(八轮;九轮补 URL 维度)**:单镜报告以"报告指纹与当前视频指纹都存在且一致、且视频 URL 未变"为有效前提——超分/字幕擦除等后处理替换 URL 但保留原 inputHash,九轮起同样判"旧版";整集报告快照哈希含每镜视频版本+URL,新增/删除/调序/重生成/后处理任一变化 → 整集报告标"旧版";打开旧报告按 `reportId` 精确恢复参与单镜报告,报告对象被挤出最近 5 条时按快照得分展示并标"原报告已缺失"。
+- **审片计费步骤状态机(九轮)**:整集审片 N+2 步(单镜×N + 共性汇总 + 四维评审)每步显式 pending|done|refunded——步骤失败退款后再取消不重复计该步(八轮布尔标记会重复退);四维评审期间取消也走取消收尾(八轮漏:完成后仍存报告标 done);单镜自扣模式 LLM 失败回退本地同样退费(八轮只处理了整集 free 模式)。
+- **批量长镜头成本登记(九轮)**:批量生成逐镜按预估时长登记任务成本(>10s 长镜头按 2 镜计价)——任务监控/"今日消耗"与实际扣费一致(八轮前统一按单镜价少记一半)。
+- **删除拦截全统一(九轮;十一轮升级异步守卫)**:项目/分集/单镜/全部分镜删除 + 重新分集覆盖,五处入口全部走 `Tasks.runningInScope({projectId|episodeId|shotId})`——分集删除此前只扫 video.generating(漏配音/审片/合成);十一轮升级为 `Tasks.canDeleteScope` 异步守卫(本地在飞 + 服务端 running jobs 合并判定,刷新后仍拦截)。
+- **直连模式字段剥离(九轮)**:浏览器直连 OpenAI 兼容端点时不再透传 billingAction/operationId/jsonMode/step 代理专用字段(严格端点会因未知参数 400)。
+- **FFmpeg 限流泄漏(九轮)**:未知子路由在 rateLimitOk 之前 404——此前 404 分支不进 finally 的 rateLimitDone,同用户探 4 次未知路由并发计数占满到重启。
+- **canonical 合成快照(八轮,主线贯通)**:`Store.composeSeqOf(ep)` 成为时间线规则(tlOrder 定序/tlTrims 剔除裁剪)的唯一权威实现——sb-io.doCompose 的合成 items 与 composedInputHash 的就绪判定共用同一份序列,消除"合成用 shotsOverride、指纹却按 ep.shots 原序算"的口径分裂(时间线调序/裁剪/剔除此前不会使成片失效);无 composedInputHash 的旧成片一律判未就绪(重新合成一次即建立指纹)。
+- **整集审片 N+2 步计费闭环(八轮)**:取消退款按未交付步骤计(N 个单镜+共性汇总+四维评审,汇总期间取消也走取消收尾,不再把半成品报告存为完成);单镜/汇总/四维的 LLM 失败回退本地时,服务端已按次退费,本地预扣经 `Tasks.partialRefund(…, opId)` 同步核减同一 operation,两端一致。
+- **统一异常退款(八轮)**:生图/视频创建端点补 catch-all(上游 200 但非 JSON 体/缓存抓存失败等此前裸抛 500 不退款,现统一按未交付退费);FFmpeg 未知子路由在读体/扣费前 404;视频轮询 succeeded 无地址视同失败退款。
+- **删除在飞拦截统一(八轮)**:`Tasks.runningInScope({projectId,episodeId,shotId})` 统一项目删除/单镜删除/全部分镜删除三处入口(与分集删除同口径),防孤儿扣费。
+- **回收站恢复对账(八轮)**:恢复含 generating 状态的快照后重置 `__jobsReconciled` 并立即 `Media.reconcileJobs()`——恢复的在途任务重新接上,不因"本会话已对账过"而永久悬挂。
+- **401 统一清理(八轮)**:store.js 的 syncPush/pullState/mergeCloud 三处 401 全部走 `U.authExpired()`(此前被当普通网络错误吞掉或只清 token 留旧 session,造成假登录态反复重试)。
+- **上传引用递归扫描(八轮)**:删除前引用检查改为递归遍历用户 state 全树(带名称标注的结构路径),节拍板视频/整集成片/切片/剧壳海报/审片快照/回收站等任何模块的引用自动覆盖,不再依赖手写字段清单。
+- **fileFavs 三方合并(八轮)**:取消收藏(基线有、本地无)不再被云端并回;云端新增/本地新增都保留,同键取本地最近编辑。
+- **已知残留(如实记录)**:**llm.* 同族内动作标签由客户端声明——调用高价能力(llm.director 10 分)可提交低价 llm.chat 标签,价差上界 9 积分;本地自用风险低,对不可信用户开放前属 P0,彻底封死需服务端工作流端点或服务端签发的短期计费票据(未排期)**;生图十一轮起按 prompt 信号定死动作(宫格/高清/重绘/写实/多视角/多图融合),残留仅纯文生 {gen,tweetShot} 价差 1 分(推文模式与普通文生结构无差异);字幕擦除双入口已统一 5 分(十一轮);LLM 聚合流程的辅助步骤名由客户端声明(恶意全用辅助步名可推迟交付,但任一步成功即阻断退款,滥用上界=stepBudget 内的上游调用);聚合流程部分交付(前序步骤成功、主步骤失败)不退款——用户拿到部分结果但整笔消耗,边界场景如实记录;settings 等整体键的多端合并仍是"云端为底、本地改过覆盖"(键级三方合并未排期)。
+
+- **统一服务端白名单计费 + operation 状态机(2026-08 六轮;七轮复审 P0 四项全量落地)**:
+  - **退款漏洞封死**:/api/billing/refund 只认 operationId——客户端提交的 cost/reason 不再参与金额计算(原实现可直连接口把当天正常消费退回来);金额一律取自服务端原账单,退该 operation 下全部"已扣未退"条目;/api/billing/charge 旧镜像端点移除;**已 delivered(成功交付)的 operation 拒绝客户端退款(七轮)**,正常消费不可主动刷回。
+  - **operation 计费状态机(七轮全量版)**:具名操作登记 data/operations.json(userId/opId/action/endpoint/requestHash/status/attempts);非 LLM 端点(生图/视频/TTS/FFmpeg)同 opId 绑定请求体指纹——换提示词/素材/参数复用同 opId 一律 409,delivered 后同内容也不可重放,退款后同内容重试重新扣费(~n 新条目);LLM 聚合流程(理解→拆解→评审→修订需同 opId 多步调用)不绑定指纹,同 opId 已扣未退幂等执行,次数受 attemptBudget(默认 12)限制防无限重放;无 operationId 的直连调用每次全新扣费(不可退款)。
+  - **动作族校验(七轮)**:billAction() 按端点校验 billingAction 所属族——视频接口提 image.hd、LLM 接口提 ff.erase 等跨端点低价套利一律 400。
+  - **LLM/FFmpeg 纳入按次计费**:/api/llm/chat 与 /api/ffmpeg/* 七端点从"余额>0 闸门"升级为 billingAction 白名单原子扣费(未标注动作的 LLM 调用按 llm.chat=1 计——**虎鲸对话等此前免费的 LLM 调用现按 1 积分/次计费**,直连 API 无法再凭 1 积分无限调用)。
+  - **价格两端一致**:BILLING_ACTIONS 白名单(服务端唯一权威,config.billingActions 可覆盖)经 GET /api/billing/actions 投影为前端 COST,登录/启动自动同步——封死"节拍板前端 10/服务端 5、多机位前端 21/服务端 2"类不一致;客户端只提交 billingAction,不提交金额。
+  - **视频任务计费闭环**:job 登记 billingOperationId/cost;轮询检出 failed 时服务端自动按原账单幂等退费(晚失败退款,页面刷新后仍闭环);/api/volc/video/:id 关闭未登记 legacy 任务的首查认领(404),封死跨账号任务 id 探测;**超时清扫(七轮)**:30 分钟未终态任务 → timed_out 并按原账单退款,/api/jobs 与视频轮询入口统一 sweep(任何人查询即全量清扫,用户不再轮询也不悬挂)。
+- **409 合并结果强制回写(2026-08 六轮)**:mergeCloud 后基线置空 + _forceFullPush,随后的 syncPush 按最新云端 rev 整树提交合并树,成功后才重建增量基线——修复原实现"基线=合并树 → 下次增量判定无变化 → 云端停留旧版本"的漏洞(第三端拉不到合并结果)。
+- **canonical 视频生成请求(2026-08 六轮)**:`SB.buildVideoRequest(p,ep,s,{promptOverride})` 成为真实生成请求的唯一构造点——**运镜(s.camera)与机位(s.cameraSpec:视角/角度/景别/光圈)真实注入 prompt**(此前仅 UI 展示,不参与生成);Store.shotInputHash(v3) 对其稳定序列化,生成逻辑与过期判定共用同一份字段清单(含项目负面提示词/主体定义/参考图),不再两处维护。
+- **真实转场合成(2026-08 六轮)**:剪辑台转场(记在后一镜 s.transition)随段传服务端——视频 xfade(淡入淡出/叠化/黑场/闪白/推拉/旋转/甩镜)、音频 acrossfade;时长默认 0.6s 且钳制在相邻段 40% 内(不吃光短片);匹配剪辑等无滤镜类型降级硬切并 toast 如实提示,不静默忽略。
+- **审片报告绑定视频版本(2026-08 六轮;七轮补全整集报告)**:报告记录审片时的 videoInputHash/videoUrl;镜头重新生成后旧报告在右栏标"最近审片 X.X · 旧版"(黄色),不再冒充当前审片结论;缩略图低分徽标同样校验版本一致(旧版报告不显示低分红标);整集报告保存每镜 `perShot`(shotId/reportId/videoInputHash),任一镜头版本变化后整集报告标"旧版";视觉评审画面优先取当前视频首帧(s.video.frame),无真实视频才回退分镜图(防审到旧图);整集审片聚合价改为 (N+2)×COST.review(N 镜 + 共性汇总 + 四维成片评审),与服务端按次计费总额一致。
+- **成片输入指纹统一失效(2026-08 七轮,主线贯通)**:合成成功时记录 `ep.composedInputHash`(镜头顺序/各镜素材版本(URL·inputHash)/时间线裁剪(入出点)/转场/配音/字幕开关/画幅/合成来源轨);此后调序/删插回收镜头/转场修改/时间线裁剪/版本应用/超分·擦除换 URL/配音变更 → hash 失配,`epComposedReady()` 自动判 false(旧成片文件保留可看,但不再计为"已合成",创作主线成片步退回未完成)。
+- **登录过期统一清理(2026-08 七轮)**:`U.expireSession()` 一次清 token/cookie 对应状态/Store.state.session/对账与计费同步 guard(保留本地项目数据),封死"清了 token 却留旧 session → 登录页被重定向回项目页"的假登录态。
+- **生成策略显式映射(2026-08 七轮)**:分镜参考 ref→image=s.image(分镜图)、首尾帧 frames→firstFrame/lastFrame、多图融合 fusion→refImages(主体/场景/道具参考);在线 frames 策略缺真实首帧时前置拦截提示先生成首帧,不再用 dataURL 占位静默退化成文生视频。
+- **文件删除引用检查(2026-08 七轮)**:DELETE /api/uploads/<name> 先全量扫描用户 state(主体/分镜/素材库/真人审核/共享资产),仍有引用 → 409 返回引用位置清单;?force=1 强删(前端二次确认),删除后引用处显示"媒体缺失"。
+- **充值幂等键(2026-08 七轮)**:卡密兑换 `redeem_<code>`、充值审批 `payreq_<id>` 作为钱包账本幂等键——"先发积分再写业务状态"两步写之间进程退出的崩溃窗口内,重试不重复发放(账本级去重,不再依赖 catch 反向回收)。
+- **meta 键级三方合并(2026-08 七轮)**:mergeCloud 的 favorites/materials/assetReviews/portraitCerts 走 _merge3 逐项合并(两端各收藏互不覆盖),fileFavs 键值对象取并集,assets.subjects/groups 分桶逐项合并;其余键保持"云端为底、本地改过覆盖"语义。
+- **IDB 水合恢复确认集(2026-08 七轮)**:hydrate 成功的键写入 confirmed 集合——刷新后不再重写 IDB/重跑落定回调,孤儿标记置空串(不再原样保留,防其作为路径送入上游/FFmpeg)。
+- **转场降级如实上报(2026-08 七轮)**:全部转场均不受支持时也进入链式拼接路径,degraded 列表如实返回每个降级边界(此前 anyTrans=false 会静默整段硬切)。
+- **上传媒体鉴权(2026-08 六轮)**:/uploads/* 不再公开静态直读——登录(登录时种 mv_token HttpOnly cookie,供 img/video 标签)+ mediaAllowed ACL(本人目录/队友共享资产实际引用的文件且 review 状态放行/服务端产物 gen|thumbs);/api/thumb 同口径;登出吊销会话并清 cookie;Range/ETag/缓存行为不变。
+- **IDB 两阶段提交强化(2026-08 六轮)**:写入落定回调从一次性改为持久(每批新确认触发 store 重写标记版快照)——修复"新大对象首次保存时 IDB 写入成功但 marker 快照未再落盘,配额失败窗口内刷新整对象丢失";内容寻址键从 7 字符采样哈希升级为全串双哈希 64bit(消除 blob 增多后的键碰撞串值风险)。
+- **任务对账收敛(2026-08 六轮)**:/api/jobs running 恒置前(超 100 条历史时活动任务不被挤出);reconcileJobs 只扫描当前登录用户自己的项目(本地多账号共享 localStorage,混扫会拿别人账号处理他人镜头);"已对账"标记在对账确认成功后才落(会话未就绪/任务中心不可达下次路由重试,登录恢复后不漏对账)。
+
+- **生成任务中心与断点续查(2026-08 二轮)**:服务端 data/jobs.json 持久化登记视频任务(upstreamId/项目/分集/镜头/inputHash/状态);同镜同输入的进行中任务创建时幂等复用(防重复扣费/重复生成);前端 Media.genVideo 落 upstreamId 到 s.video,刷新中断后再点「生成」优先续查原上游任务——已成功直接落片(0 积分"恢复"任务)、仍在生成提示等待、已失败按普通生成重走;30 分钟未终态的任务标记超时;任务查询按归属校验(登记任务仅本人可查)。**登录自动对账(2026-08 四轮)**:登录/启动后前端拉取 /api/jobs 一次性对账——上游已成功的中断镜头直接恢复落片(不重复扣费)、仍在生成的保持/回标可续查、上游已失败或服务端无记录的标失败供重试,免手动逐镜点「生成」。
+- **真实/模拟产物区分(2026-08 二轮)**:离线占位视频标 `simulated: true`、离线合成标 `composedSimulated: true`;`Store.shotVideoReady/epComposedReady` 统一就绪判定——在线时模拟产物只作预览,不计入"生成完成/审片目标/成片完成/跑批跳过/导出统计"(离线时行为不变),杜绝离线模拟冒充真实出片。
+- **失效传播 inputHash(2026-08 二轮;四轮升级全量签名)**:视频生成时记录输入指纹 `Store.buildGenerationSignature`(v2,覆盖提示词/台词/旁白/轴线规则/美术风格后缀/画幅/模型/生成策略/首尾帧参考/主体参考换图改名/音色参考/素材版本戳);任一输入变更后旧视频经 `shotVideoStale` 标记"素材已更新·建议重生成",含过期镜头的分集在创作主线"成片"步退回未完成(旧成片保留可用,不自动删除);存量 v1 指纹加载/拉取时原位迁移(输入未变不误报)。
+- **409 冲突本地备份(2026-08 二轮)**:云端覆盖本地前自动留档最近 3 份(localStorage mv_hujing_conflict_bak),回收站页新增「🔀 本地冲突备份」卡片:恢复到本机/导出 JSON/删除。
+- **独立钱包 + 409 三方合并 + IndexedDB 大对象(2026-08 三轮)**:积分迁移到服务端独立只追加账本 data/wallets/<uid>.json(唯一权威,条目带幂等键 idem 防双扣;state 树 users/creditLogs/orders 降级为投影,读时注入余额)——充值/消费不再递增创作 rev,多端 409 冲突根源收敛,充值/卡密/管理员调整/扣退镜像统一走账本(已隔离冒烟验证:同 idem 重复扣费幂等、篡改 credits 的 PUT 被剥离、消费后 rev 不变);409 由"整树覆盖"升级为**三方合并**(本地/云端/上次推送基线):项目桶按"仅本地改→本地、仅云端改→云端、双改→**项目内部递归三方合并(2026-08 四轮:episode→shot/subject 逐级,两端各改不同分集/主体互不覆盖;删除vs修改→修改胜)**",meta 键级三方(本地改过的键覆盖),回收站按 id 并集,合并失败才回退整树拉取(冲突备份仍是兜底);新增 js/idb.js(IndexedDB 零依赖封装):本地持久化时 >64KB 的 dataURL 替换为 `idb:` 内容寻址标记存入 IndexedDB(localStorage 只留引用,配额压力解除;云端同步仍推全量,跨设备不破坏),启动时先水合再首渲,file:// 等受限环境自动退化纯 localStorage;**两阶段提交(2026-08 四轮)**:标记仅在对应键确认写入 IDB 后才落 localStorage(写入失败进重试队列,原值保留,断电最坏退化为全量落盘,不产生取不回的标记),孤儿标记水合时置空;新增 GET /api/wallet 余额与流水只读视图。
+- **服务端事务计费(2026-08 四轮)**:付费代理入口(volc/image、volc/video、volc/tts、ffmpeg/*)改为**服务端按次原子扣费**——operationId 幂等(同操作重复请求只扣一次,直连 API 的登录用户无法凭低余额反复调用)、余额不足 402 拒绝、未交付路径(创建失败/超时/上游异常)自动按同一幂等键退费;视频任务命中"同镜同输入进行中"复用原上游任务时服务端不扣费,前端已扣的本地镜像即时退回;彻底移除"2.5s 同额同名"时间窗推测幂等(不再误合并快速连续的合法同类操作),幂等一律以 idem/operationId 为准且持久化在账本条目上(重启不清零)。
+- **安全与合规收紧(2026-08 二轮)**:默认只监听 127.0.0.1(config host 可改);CORS 默认同源不放开(config corsOrigin 显式配置);参考视频公网中转发生时前端 toast 明确告知(可 relayUploadEnabled:false 禁用);"肖像白名单认证"更名为「肖像授权声明」(本地自我承诺,非平台审核);真人审核/资产报白更名为「本地可用性检查」并如实注明"未接真实审核通道";**文件所有权隔离(2026-08 四轮)**:服务端本地路径解析强制限定在本人 uploads/<userId>/ 目录(及带归属记录的服务端生成物),跨用户路径访问被拒;**参考图内联旁路封堵 + 共享精确授权(2026-08 五轮)**:inlineRefImage(生图/生视频参考图读盘)此前无所有权校验,现统一走 localUploadPath 判定;团队共享授权精确到路径(仅放行共享分组内资产实际引用的文件,队友目录其他文件仍不可越权)。
+- **团队↔资产贯通(2026-08 五轮)**:此前团队关系(teams.json)与资产共享(用户私有 state 的用户名列表)是两套互不相通的系统,跨账号共享实际不可见。现打通:共享对象限同项目组成员(邀请弹窗校验并提示队友名单);GET /api/assets/shared 按队友关系聚合"共享给我的"资产(本地可用/无检查记录,只读);资产库共享区显示属主与来源分组,支持「复制到我的资产库」(引用队友文件,经 sharedPathsFor 授权放行进生成链路;共享取消后可能失效)。
+- **存储与上传性能(2026-08 二轮)**:Store.save 本地落盘 250ms 防抖(pagehide/beforeunload 冲刷兜底,云端同步不受影响);uploads/gen 未被任何 state 引用且超 genCacheDays(默认 3 天)的文件启动+每日自动清理;单文件上传上限对齐 base64 现实(85MB);state 增加 schemaVersion:1。
+- **断点闭环(2026-08 强化)**:页面刷新/关闭后,启动时自动清扫悬挂的 running 任务与 generating 镜头/节拍(回退为失败并注明"页面刷新中断"),侧栏徽标与任务页轮询不再永久卡死;分集删除改为软删除(进回收站 7 天可恢复,kind=episode),删除/重新分集前拦截在飞生成与整集审片,防孤儿扣费。
+- **登录数据安全**:pullState 三态返回(ok/empty/error),登录后云端拉取失败时保留本机数据(离线账号/离线创作不再被静默清空);API/生图链路 401 统一处理(清 token→跳登录页,重登后回到来源页)。
+- **服务端权威计费(2026-08)**:U.refund 经 /api/billing/refund 镜像到服务端账本(U.charge 只扣本地视图,真实扣费由付费代理入口服务端按次原子完成,见「服务端事务计费」);state 同步剥离 users/creditLogs/orders/session(客户端不可篡改/回滚刷积分);退费窗卫(近 24h 退费≤扣费,账本统计持久化);五个付费代理入口(llm/chat、volc/image、volc/video、volc/tts、ffmpeg/*)扣费闸门;卡密兑换/充值审批两步写失败自动回收;生成物抓存按 remoteUrl 内容寻址去重(不再重复下载 50MB 副本);静态服务支持 Range(视频拖进度条不整文件重下)。
+- **计费登记补全**:AI 主海报/专家工坊/专家自进化/智能分镜全部走 Tasks 五件套(登记→扣费→执行→失败退费),任务监控可对账;智能分镜先登记后扣费,理解链异常自动退费。
+- **批量计费统一生命周期(2026-08 五轮)**:新增 `Tasks.runBatch`(批量五件套:逐条 登记→扣费→执行→失败退费;单条失败不阻断其余、余额不足仅该条失败、err.stopBatch 取消剩余且不扣费、err.refundReason 保持账本逐镜可读、onEach 逐条回调驱动 dock/即时渲染)与 `Tasks.partialRefund`(聚合任务按未交付条数退费并核减登记成本,"今日消耗"只计已交付)。批量音频/智能修片/字幕擦除从"整批预扣+手写逐镜退费"迁移为逐条扣费(批量中断不搁浅未执行条目的积分);整集审片取消改走 partialRefund(原 U.refund 不核减登记成本,取消后今日消耗虚增);旁白改写/画面调整导出补齐五件套登记(原为裸 U.charge,任务监控不可对账)。
+
+- **创作路径**:分集工作区顶栏=主流程链「智能分镜 → 快速编辑 → 生成视频 → 整集审片 → 合成成片」+ 右侧「参数配置/显示方式▾/批量▾/导入/导出▾」;中栏按生成模式分两族独立页面(分集卡片「📋 分镜表/🥁 节拍板」双入口):分镜表族=分镜脚本/分镜视频(已拆镜直达分镜视频页),节拍板族=节拍板/镜头组;**✂ 剪辑**为独立页面,只从创作主线「剪辑」步骤(原「生成」步骤更名)点击进入——分镜视频=逐镜生成(提示词/参考图/抽卡),剪辑=镜头间衔接(时间轴转场槽/拖动调序/转场卡/版本与审片/时间线微调/预览/合成成片,复用播放器与缩略图共用件);分集卡片进度标签含 分镜N镜/镜头组N组/视频x-y/已合成,未拆镜时按剧本体量预估(约55字/镜、4镜/组,标注"预估");项目详情页 tab:制片/剧本/导演/主体/分集/成片库/剧壳/切片(分镜工作台从分集卡片进入);快捷键 ←→ 切镜、G 生成当前镜(分镜视频/剪辑视图);多选操作带"全选未出片"。新建项目不再选制作模式(四视图统一直用),仅保留「一键跑批」开关;项目管理首页两大模式介绍卡已移除。
+- **断点修复**:主体可无图后补「✨ AI 生图」(roles 卡);导出未合成时点击有提示;合成去掉冗余确认、成功弹窗主按钮直接导出真成片;分镜发布后接力提示批量生成。
+- **代码收敛**:`Tasks.run()` 任务生命周期封装(登记→扣费→执行→done/失败退费)迁移 13 处;`U.readAndUpload` 上传九件套收敛 7 处;`U.refund` 与 U.charge 对称;`Store.setShotPrompt` 统一 prompt 写入并记历史(20 条);音色预设单一来源(voice.js,复刻音色已下线);**分镜提示词单一出口 `SB.buildShotPrompt(p,{plot,emotion,camera,scene,characters})`**(5 处拼装点收敛,补齐 globalSetting/negOf 遗漏);**主体图 prompt 单一出口 `EpisodeUtil.buildSubjectPrompt(s,mode)`**(废弃"半身像三视图/全身像"矛盾措辞,统一白底三视图口径,视频参考大头照分支不动);**进度停靠栏统一 `U.bgDock`**(新增 steps 卡片模式带失败重试,导演解析/本集理解两处手写 dock 已收编)。
+- **结构**:storyboard.js 已拆六文件——storyboard.js(主入口/分集工作区/参数配置,约 640 行)+ js/sb-board.js(分镜脚本编辑器)+ js/sb-llm.js(LLM 拆镜/智能分镜/本地分集生成)+ js/sb-batch.js(批量操作/确认闸/失败重试)+ js/sb-views.js(四视图中栏/右栏,`window.SBViews`)+ js/sb-gen.js(视频生成链路,`window.SBGen`),另有 js/sb-io.js(CSV 导入导出/剪映桥接/预览播放器/合成)与 js/produce.js(量产跑批+智能审片闭环 autoSmartReview/一键成片 oneClickProduce,`Object.assign` 回挂 window.SB);`window.SB` 透出全部跨模块成员、外部调用点零改动。episodes.js 同步拆分:js/episode-util.js(剧本解析/主体提取/分集工具,`window.EpisodeUtil`)+ js/proj-planner.js(AI 策划/剧本译制,`window.EpisodeLab`)+ js/proj-upload.js(上传剧本/主体确认/生成分集)+ js/proj-shell.js(剧壳 tab)+ js/proj-clips.js(切片/成片库 tab,`window.ProjTabs`),projectDetail 巨型闭包已瘦身(2218→约 1120 行)。roles.js 拆出 js/role-editor.js(主体编辑页大弹窗,共享操作经 `window.RoleOps` 桥接)。agent.js 拆三文件:js/agent.js(板块智能体/记忆/集级聊天面板,约 540 行,建 `window.AgentCore` 共享状态)+ js/agent-ops.js(ops 执行域:动作执行器/预排模式/上下文压缩/ops 应用器/执行闭环验证,`window.AgentOps`)+ js/agent-global.js(全局虎鲸助手抽屉,`window.AgentG`),`window.Agent` 出口契约不变。gsettings.js 拆出 js/experts.js(专家体系:预置库/雇佣·解雇/自进化/工坊元智能体,`window.Experts`;偏好设置域常量经 `window.GSettings` 桥接)。节拍板生成注入一致性前缀(`ep.bbPrefix`,可编辑,与镜头组共用 `window.CONSIST_PREFIX` 单一来源)并把镜头组绑定资产纳入真人审核校验。2026-08 全库审查后清理:旧 AI分镜师弹窗链/孤儿 LLM 管线函数/死 CSS 类已删除,`defaultSBConfig`/`STRATEGIES`/`CAMERAS` 统一导出供跨模块复用。
+
+## 工作区与项目层体验
+
+- **📦 剧壳 = 项目级发行物料包**(项目详情页「剧壳」tab,数据存 `p.shell.dist`):发行信息(发行剧名/别名/出品方/署名/一句话卖点/长短双版简介/题材与话题标签/目标平台)+ 视觉物料(全剧一张主视觉:竖版 3:4 主海报 + 横版 16:9 海报,AI 生成/上传/下载,**不做每集海报**)+ 合规授权(备案号/发行许可证号、AI 生成内容标识开关、肖像白名单与驳回素材状态联动展示)+ 宣发物料(定档官宣文案、投流文案×3、预告切片指引);「✨ AI 生成文案包」一次产出卖点/双版简介/话题/定档/投流文案(注入 KB 钩子与付费卡点方法论,1 积分/次·失败退费,按钮明示价格);「⬇ 导出物料包 TXT」一键汇总。
+
+- **剧情概要联动轨**(分集工作区中栏,时间轴下方):逐镜剧情概要横排,与时间轴同格同宽、双向滚动联动,播哪镜高亮哪镜、点击概要格切镜;生成入口(模型/时长/＠引用资产/⚡快捷提示词/生成视频)统一收在右栏,批量/审片等生成入口全部标注积分;镜头确认闸并入缩略图角标(点「待确认/✓」切换)。
+- **右栏抽卡台**(分镜视频视图,按 生成→对比→选优 动线分区):① 内容区(剧情单份呈现,点块即编;出场主体缺图红标;镜头意图保留,运镜/轴线不设用户字段——由分镜智能体按 KB 景别运镜/轴线规则自主推荐,生成时系统默认注入"180度轴线、机位同侧不越轴")→ ② 提示词区(字数统计/识别参考图缩略行点图核对;一级横栏:⌖智能识别/＠引用资产/🔍大屏编辑,润色/历史/收藏并入大屏编辑弹窗)→ ③ 生成设置(策略/首尾帧)+ 底部生成条(单镜时长**按提示词+台词自动预估**(`SB.estShotDuration`,约 4.5 字/秒台词+动作密度,3-15s),输入提示词实时刷新,不再手填;**连抽 ×1-3** 合计积分透明、**🔁 再抽**同参数一键重抽)→ ④ 版本与审片(创作历史/历史版本/审片记录合并,版本卡点入对比回滚);防废片警示条(出场主体缺图/素材审核未过)在生成前黄条提醒;审片低于 7.0 的镜头时间轴缩略图左上角红标「审 x.x」。连抽逐版扣费、失败退费即停,余额不足自动降级次数。
+- **文本内联资产高亮**:剧情/提示词中出现的资产名(含形态全称)渲染为彩色 chip(角色/场景/物品三色),出场区旁有"已识别"区。
+- **跨集尾帧继承**:参数配置开启「续写上一集末镜」后,本集第一镜首帧自动接上一集末镜尾帧(顶栏显示 🔗 续接上集)。
+- **分场元数据**:镜头组可加 日夜/内外/功能(铺垫·冲突·高潮·反转·悬念)/情绪 标签,整组生成时注入 prompt。
+- **圆点切分镜头**:快速编辑抽屉内点圆点按光标位置把一个分镜切成两个。
+- **画风库**:12 个带 prompt 关键词包的风格预设(漫剧/经典古装/王家卫/黑泽明/诺兰/韦斯·安德森/邵氏武侠/银翼杀手…),`styleOf(p)` 输出"画风·影调+关键词包",新建项目为渐变卡片网格。
+- **项目层**:分集卡片显示 分镜数/视频 x-y/已合成 进度;项目详情页头部六步创作进度条;「🤖 AI 策划」对话面板(剧本级咨询,可应用回复为分集剧本,存 p.plannerChat);本集理解加第六维「悬念与期待」并自动注入分镜 prompt。
+
+## 百宝箱增强
+
+- **🧬 融合生成**(js/tools.js):资产库多选/本地上传 2-6 张参考图 + 融合提示词 + 生图模型/比例选择,多图融合重绘(`/api/volc/image` 的 `image` 支持数组透传,服务端≤6 张);结果可下载或「保存为主体」(名称/类型/标签/分组,入库即完成本地可用性检查,与 saveSubjectToAssets 同规);Tasks.run 计费(COST.fusion=3),失败自动退费。
+
+## 智能审片体系(四维标准)
+
+- **四维成片评审**(review.js `reviewEpisodeCut`):整集审片在逐镜三维评审后追加整集级四维——镜头语言自然度/衔接流畅度/景别合理性/剪辑节奏适配,LLM prompt 内置好坏案例,离线回退本地启发式(景别多样性/时长节奏统计);结果存 `ep.lastReview.cut`,报告页与导出 TXT 均含四维区块。
+- **KB 评审口径**:逐镜评审注入 `KB.reviewBlock()`(知识库蒸馏的钩子/打脸/景别运镜/抽卡军规口径,评分以此为准);离线本地评审新增两条硬检查——景别衔接(相同/相邻/两极对切记轻微 issue)与提示词缺稳定约束词(不含"稳定/不变形"类词)提醒。
+- **审片反哺生成**:报告弹窗在不达标(有 issues 且 <7 分)时出现主按钮「✨ 按意见修订并重抽」——先把 issues 建议 LLM 落到提示词,确认费用后单镜重新生成(真人素材预审 guard 照走),审片从"打分"闭环为"改分"。
+- **智能审片闭环**:参数配置开启「智能审片」+ 最大重生成次数(1-5,`sbConfig.maxRetry`)后,批量/整组生成完成自动逐镜评审(达标线 7.0),不达标自动重生成直至达标或超限转人工,全程日志弹窗(`autoSmartReview`,storyboard.js);每镜评审 COST.review、重生成 COST.video,逐次扣费。
+- **⚡ 一键成片**:分集卡片一键执行 批量生成 → 智能审片 → 合成成片(`SB.oneClickProduce`,含真人审核 guard 与确认)。
+- **问题严重级别**:审片 issues 增加 severity(严重=穿帮/主体崩坏必返工,轻微=质感瑕疵),报告表格红/黄标签区分,分析文案为"第 X 秒处+缺陷描述"格式。
+
+## 量产配置
+
+- **人物脸型风格**:新建项目可选 亚洲/非亚洲/混合(`p.faceStyle`),`faceOf(p)` 注入角色立绘 prompt(欧美面孔/亚洲面孔),出海剧脸型不跑偏。
+- **反向提示词**:项目级负面约束字段(`p.negPrompt`,默认"无字幕,无水印,无logo,人物不变形,不模糊"),`negOf(p)` 自动追加到分镜/角色立绘/节拍板等生成 prompt 尾部。
+- **目标总时长换算**:参数配置可填目标成片总时长(分钟),保存时按 总时长÷单镜时长 自动换算分镜数(2-40 封顶)。
+
+## 🏭 量产跑批中心(js/produce.js)
+
+项目详情页「🏭 量产跑批」进入(`#/project/:id/produce`)。工业化量产轨:用户只做三个决策——选哪几集、设跑批模板(智能审片开关/最大重抽次数/跳过已合成)、点开始。
+
+- 逐集串行执行流水线:**批量生成(逐条扣费/失败返还)→ 智能审片(quiet)→ 合成成片(quiet)**;分镜缺失的集自动跳过,中断后再开始即断点续跑(已完成环节自动跳过)。
+- 每集行内实时状态(生成 N 镜/审片达标·重抽·待人工/合成),结束弹汇总报告(成功数/总耗时/逐集结果),可导出 TXT。
+- 无值守改造:`composeVideo/doCompose` 与 `autoSmartReview` 支持 quiet 模式(不弹确认/成功窗);批量渲染写入 detached sink,不干扰跑批页;合成完成按任务状态轮询判定。
+
+## 协同层(创作主线贯通)
+
+- **🧭 创作主线**(js/pipeline.js):剧本→主体→分集→分镜→生成→成片 六步状态由项目数据实时推导,项目详情/分集工作区/跑批中心三页同一组件贯穿;每步可点击直达对应页面,当前步高亮。
+- **下一步引导**:项目页与分集工作区常驻「下一步」按钮——项目级按缺啥跳啥(缺剧本跳上传、缺主体跳提取、未分镜跳工作区…),分集级直接执行动作(生成分镜/批量生成视频/合成成片/导出)。
+- **数据双向流通**:主体管理页「📥 从资产库导入」(与「存入资产库」闭环,同名覆盖图片与提示词);节拍板「🗂 带入镜头组资产」把组绑定参考图按序填入空宫格。
+
+## 海外本土剧定向优化
+
+- **语言层**:新建项目选目标市场/语言(`p.locale`:国内/欧美/东南亚/日韩),`langOf(p)` 把台词语言指令注入智能分镜/AI分镜师/AI 策划 prompt;`faceOf(p)` 在未显式设置脸型时按市场推导(欧美→欧美面孔、东南亚→东南亚面孔、日韩→东亚面孔);项目详情页头部显示市场 tag。
+- **译制层**:项目详情页「🌐 剧本译制」(2 积分)——非直译而是本土化译制:人名本地化、台词口语化、文化梗替换、保留分集结构与爽点节奏;弹窗预览后确认写回分集(分集数不一致只覆盖前 N 集并提示)。
+- **题材/风格包**:画风库追加 4 个海外向预设(欧美竖屏剧/韩剧风尚/东南亚热剧/暗黑狼人);新建项目可加「题材看点」多选(复仇逆袭/霸总契约/狼人吸血鬼…),注入分镜生成 prompt。
+
+## 界面美化(2026-08 视觉优化)
+
+登录页(渐变光晕背景+玻璃拟态卡片+虎鲸浮动动画)、侧边栏分组(创作/监控/工具与设置)+激活竖条、卡片 hover 抬升、按钮微交互、弹窗缩放淡入、toast 滑入、tab 激活指示条、空状态光晕、表格 hover、滚动条美化、进度条渐微光——全部纯 CSS 追加,不改功能逻辑。
+
+## 数据目录
+
+```
+data/
+├── users.json(.bak)          账号(scrypt 加盐哈希)
+├── sessions.json(.bak)       会话 token(7 天,重启不失效)
+├── jobs.json(.bak)           生成任务中心(视频任务登记:upstreamId/归属/inputHash/状态)
+├── wallets/<uid>.json(.bak)  独立钱包:只追加账本(唯一积分权威;条目带幂等键 idem,保留最近 3000 条)
+├── server.log(.1)            请求日志(5MB 滚动,留 2 份)
+├── states/<uid>.json(.bak)   每用户 state 树(含 rev)
+├── states/<uid>.history/     state 快照(最近 5 份 <rev>.json)
+└── usage/<uid>.jsonl         LLM 逐次计量
+uploads/<uid>/                上传文件(按用户隔离,配额 200MB)
+uploads/gen/                  火山引擎生成结果本地缓存(内容寻址去重;未引用超期自动清理)
+```
+
+## 离线降级行为
+
+- 后端不可达时:注册/登录自动回退本地 localStorage 账号体系,toast 提示"离线模式"。
+- state 每次保存都写 localStorage;有 token 时防抖 1s 同步 PUT /api/state,失败静默、下次自动重试;登录后云端拉取失败保留本机数据(三态判定,不再误清空)。
+- 上传(主体图/素材/音效):有后端走 /api/upload 返回 URL;离线维持 base64(素材限 2MB,后端模式 10MB)。
+- LLM:默认代理模式(免 key,需登录);API 设置页可切「自定义直连」填自己的 Base URL+Key。
+
+## 已接入的真实 LLM 环节
+
+主体提取(**八维度人设**:外形 五官/发型/身材/服饰 + 内在 性格/特技/弱点/语气,支持按八维度重写提示词、按性格推荐音色)、剧本分集、AI分镜师(节拍拆解/动态提示词/多轮评审,支持审核模式)、智能分镜、提示词工具、画布 LLM 节点、漫剧 AI 对白、**一键审片**(三维评分 + 视觉降级链)。全部遵循"LLM 优先、失败回退本地模拟"。**生图/视频已接入火山引擎真实模型**(doubao-seedream-5-0-pro / doubao-seedance-2-0-mini(默认;2.5 长段落 doubao-seedance-2-5-260628 可在节拍板/镜头组显式选用),经服务端 /api/volc 代理,生成结果缓存到 uploads/gen/);在线时失败如实报错并自动退费,仅离线(未登录/后端不可达)才回退 canvas 占位模拟(带 simulated 标记)。
+
+## 工业级创作能力
+
+- **三种生成策略**:多图融合 / 首尾帧(首帧→尾帧→插值,支持**继承前镜尾帧**保持画面连贯)/ 分镜参考,单镜可选、参数配置可批量设置,生成历史记录策略。
+- **历史版本**:分镜版本列表(时间/模型/策略/提示词摘要/审核分)、双栏对比、一键"应用此版"回滚。
+- **剪映导入包导出**:零依赖 ZIP(STORE+CRC32),含 draft_content.json(视频/音频/文本三轨,微秒时长)、draft_meta_info.json、materials/ 占位帧 PNG、README.txt。
+- **全局配置页**(左侧栏 🛠):文生图/文生视频/审片提示词模板(变量 {style}{subject}{shot})、默认 LLM/生图/视频模型/音色、默认画质与比例,注入各生成入口。
+
+## 剧本上传支持的格式
+
+「上传剧本」支持粘贴文本或上传文件,前端本地解析(离线零 CDN,vendor 已本地化到 `js/vendor/`):
+
+| 格式 | 解析方式 |
+|---|---|
+| .txt / .md | 编码探测(BOM → UTF-8 → GBK),修复 Windows 记事本 GBK 乱码 |
+| .docx | mammoth.browser.min.js(628K)提取纯文本 |
+| .pdf | pdf.js 3.11 UMD(313K + worker 1.0M + cmaps 169 文件 CJK 映射 + standard_fonts),逐页按 y 坐标分行提取,扫描件提示"无文字层" |
+| .doc(旧版二进制) | UTF-16LE 可打印段尽力提取,不足 50 字提示"建议另存为 .docx 或 .txt" |
+
+统一 10 万字上限;提取后走原有主体提取/分集 LLM 流程。
+
+## 数据
+
+- 业务数据:localStorage `mv_hujing_state_v1` + 服务端 `data/states/<userId>.json`(登录后服务端为准)。
+- API 配置:`mv_hujing_api_cfg`(前端);LLM key:服务端 `config.json`(不存在则用内置默认值,可创建覆盖)。
+
+## 技术
+
+前端纯 HTML+CSS+原生 JS,无构建、无 npm、无 CDN;后端零依赖 Node.js。
+
+## 回归测试
+
+`node tests/unit.js` — 单元测试(60 项断言,零依赖):Node `vm` 沙箱注入浏览器全局与依赖 stub(Store/U/Tasks/API),加载真实源码断言纯逻辑域;覆盖 `agent-ops.js`(ops 应用器含同批删插序号结算/执行闭环验证/预排参数钳制/上下文压缩/工作台定位/动作执行器)、`experts.js`(16 预置专家/雇佣·解雇·级联恢复默认模板/自进化计费五件套/工坊草稿规范化)、`produce.js`(智能审片闭环:达标自动确认/不达标重试/重生成失败转人工/积分不足中止/超限转人工/quiet 模式;一键成片三段编排顺序与确认拒止)、`store.js`(三方合并/输入指纹迁移/**understandingStale 旧数据判旧语义**/合成快照/成片就绪/fileFavs 合并)、`billing.js`(服务端计费核心与单测共享:动作推导/校验、**客户端 billingAction↔服务端端点兼容矩阵**(全量扫描 js/ 动作字面量与 Media.ff* 调用点)、宽松解析、**operation/步骤状态机判定**(stepDecision:已成功步骤返回缓存/拒绝重放;refundDecision:已交付/有成功步骤/登记缺失不可退;latestOp:退款重试后取最新记录;refundPlan:按 chargeIdem 精确归属,旧 refunded 记录不再吞掉新扣费的退款判定;clientRefundBlocked:executing 在途拒退)——server.js 只做 IO 编排,判定逻辑与单测同源)。可单套件运行:`node tests/unit.js agent-ops|experts|produce|store|billing`。无网络无服务,秒级完成;DOM 重交互(卡片绑定等)仍由 e2e 承担。
+
+`node tests/e2e.js` — 全功能冒烟(63 项断言):无头 Chrome + CDP 驱动真实页面,覆盖登录/项目/主体/分集/分镜脚本/分镜视频/剪辑台/节拍板/镜头组/资产库/百宝箱/偏好学习/看板/个人中心/团队/回收站与离线模式;自带临时服务与测试数据清理;**LLM 链路走 MOCK_LLM=1 罐头返回**(server.js /api/llm/chat 测试模式,mock 在计费动作校验之后返回——e2e 同时覆盖动作兼容);智能分镜全链路不花上游费用也可回归;真实生成链路验收用 `node tests/live-gen.js`(⚠ 真实调用上游计费,节拍板+镜头组全链)。需要回归时手动运行。

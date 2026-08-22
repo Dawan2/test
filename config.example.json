@@ -1,0 +1,17 @@
+{
+  "baseUrl": "https://ark.cn-beijing.volces.com/api/plan/v3",
+  "apiKey": "在此填入你的 LLM 平台 apiKey",
+  "llmModel": "deepseek-v4-pro",
+  "llmModelFallbacks": [
+    "glm-5.3",
+    "kimi-k3"
+  ],
+  "volcBaseUrl": "https://ark.cn-beijing.volces.com/api/v3",
+  "volcApiKey": "在此填入你的火山引擎 volcApiKey",
+  "billingActions": {
+    "video.gen": 5,
+    "image.gen": 2,
+    "llm.chat": 1
+  },
+  "admins": []
+}

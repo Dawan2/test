@@ -1,0 +1,23 @@
+# 敏感配置(真实密钥,切勿提交;使用 config.example.json 作模板)
+config.json
+
+# 运行时数据与用户上传
+data/
+uploads/
+
+# 本地二进制(FFmpeg,体积大,按需另行放置)
+bin/
+
+# 依赖与临时产物
+node_modules/
+*.tmp
+*.log
+*.out
+
+# 测试浏览器配置残留
+tests/.chrome-e2e/
+tests/.chrome-live/
+
+# 系统文件
+Thumbs.db
+.DS_Store
