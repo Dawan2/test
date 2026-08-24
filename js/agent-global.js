@@ -120,6 +120,13 @@
         Object.entries(op.fields || {}).forEach(([k, v]) => {
           const key = S_FIELDS[k] || k;
           if (!['name', 'prompt', 'description'].includes(key)) return;
+          if (key === 'name') {
+            /* 十三轮:改名走领域命令——旧名入 formerNames + 镜头/镜头组引用级联,
+             * 此前直接改 s.name 会让镜头 characters/scene/props 的旧名引用失联(丢参考图/形态/音色) */
+            const r = Store.renameSubject(p, s, String(v));
+            changes.push(r.ok ? r.msg : `主体改名失败:${r.msg}`);
+            return;
+          }
           const old = s[key];
           s[key] = String(v);
           if (old !== s[key]) changes.push(`主体 ${s.name}:${k} 已更新`);

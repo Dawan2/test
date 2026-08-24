@@ -711,6 +711,32 @@ const storeTests = [
     old.composedSourceRev = 0; old.composedGraphRev = 1;
     assertEq(sb.Store.composedStaleByScript(old), true, '成片同样按图谱版本判旧');
   } },
+  { name: 'renameSubject(十三轮):级联镜头/镜头组引用 + formerNames 兜底解析 + 撞名拒绝', fn: async () => {
+    const sb = loadStore();
+    const sub = { id: 'sj_1', name: '林晚', kind: 'character', image: '/u/a.png', forms: [{ id: 'fm_1', name: '少年', image: '/u/b.png' }] };
+    const other = { id: 'sj_2', name: '沈默', kind: 'character' };
+    const p = { id: 'p1', userId: 'u1', subjects: [sub, other], episodes: [{ id: 'e1', shots: [{ id: 's1', characters: ['林晚', '林晚-少年'], scene: '', props: ['怀表'] }], groups: [{ id: 'sg1', scene: '', chars: ['林晚'], assets: { '林晚': '/u/a.png', '林晚-少年': '/u/b.png' } }] }] };
+    /* 1. 级联:镜头与镜头组的名称引用全部更新(含"名-形态"全称与 assets 键) */
+    const r = sb.Store.renameSubject(p, sub, '林晚儿');
+    assertEq(r.ok, true, '改名成功');
+    const s1 = p.episodes[0].shots[0], g1 = p.episodes[0].groups[0];
+    assertEq(s1.characters.join(','), '林晚儿,林晚儿-少年', '镜头引用级联(含形态全称)');
+    assertEq(g1.chars[0], '林晚儿', '镜头组 chars 级联');
+    assertEq(!!g1.assets['林晚儿'], true, '镜头组 assets 键级联');
+    assertEq(!!g1.assets['林晚儿-少年'], true, '镜头组 assets 形态键级联');
+    assertEq(!!g1.assets['林晚'], false, '旧键不再存在');
+    /* 2. formerNames 兜底:级联遗漏的旧名引用(跨端合并竞态/快照恢复)仍解析到主体 */
+    assertEq(!!sb.Store.findSubject(p, '林晚'), true, '旧名经 formerNames 仍可解析');
+    assertEq(sb.Store.findSubject(p, '林晚').s.id, 'sj_1', '旧名解析到同一主体');
+    const fm = sb.Store.findSubject(p, '林晚-少年');
+    assertEq(!!(fm && fm.form && fm.form.id === 'fm_1'), true, '"旧名-形态"经 formerNames 解析出形态');
+    assertEq(sb.Store.subjectImage(p, '林晚-少年'), '/u/b.png', '旧名引用仍能取形态图');
+    /* 3. 撞名拒绝 */
+    const r2 = sb.Store.renameSubject(p, sub, '沈默');
+    assertEq(r2.ok, false, '与其他主体撞名应拒绝');
+    /* 4. 新名精确解析优先于曾用名 */
+    assertEq(sb.Store.findSubject(p, '林晚儿').s.id, 'sj_1', '新名正常解析');
+  } },
   { name: 'shotVideoReady/beatVideoReady:在线时 simulated 占位不算就绪', fn: async () => {
     const sb = loadStore();
     sb.Media = { isReady: () => true }; // window.Media 在线

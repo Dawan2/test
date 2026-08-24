@@ -910,7 +910,16 @@ function proxyCharge(res, userId, action, reason, operationId, endpoint, reqBody
     if (op) {
       const dec = BILLING.stepDecision(op, step, rh, { isLlm, stepBudget });
       if (dec === 'non-llm-conflict') { fail(res, 409, '该 operationId 已绑定其他请求内容,不能复用(每次生成请使用新的任务)', 409); return null; }
-      if (dec === 'non-llm-delivered') { fail(res, 409, '该操作已成功交付,不能重复执行', 409); return null; }
+      /* 十三轮结果恢复:已交付 operation 的同内容重放先查结果日志——命中直接带回已付费结果
+       * (recovered:true),不再 409;无日志(旧数据/超保留期)维持 409 失败关闭 */
+      if (dec === 'non-llm-delivered') {
+        const rec = resultFind(userId, opId);
+        if (rec && rec.payload) {
+          resultMarkClaimed(userId, opId);
+          return { cost: 0, serverCharged: false, refundIdem: null, opId, action, recovered: rec.payload };
+        }
+        fail(res, 409, '该操作已成功交付,不能重复执行(结果已生成,请到原任务查看)', 409); return null;
+      }
       if (dec === 'conflict') { fail(res, 409, '该步骤的请求内容已变化,不能复用(请使用新的任务或步骤)', 409); return null; }
       if (dec === 'replay-cached') return { cost: 0, serverCharged: false, refundIdem: null, opId, action, cachedResp: op.steps[step].resp };
       if (dec === 'replay-denied') { fail(res, 409, '该步骤已成功执行且结果过大未缓存,不能重放(请使用新的任务)', 409); return null; }
@@ -1004,6 +1013,48 @@ function sweepStaleOps() {
     if (cur && cur.status === 'executing') { cur.status = 'failed'; cur.updatedAt = Date.now(); dirty = true; }
   });
   if (dirty) saveOps(odb);
+}
+
+/* ---------- operation 结果日志(十三轮):与账本分离的结果恢复 ----------
+ * 生图/TTS/FFmpeg 交付成功即把结果 URL 落 data/results.json(不含金额,与 operations.json 账本分工)——
+ * 此前"服务端已 delivered 但响应在网络中丢失/进程在回包前崩溃"后,同 opId 重试只得到 409,
+ * 用户已付费的结果永久丢失(视频有任务中心续查,同步端点无恢复通道)。
+ * 恢复:proxyCharge 对 non-llm-delivered(同 opId 同请求体重放)先查日志,命中直接返回结果
+ * (recovered:true),不再 409;GET /api/operations/:opId/result 供客户端主动领取(标 claimed)。
+ * LLM 走 steps[].resp 缓存(≤8KB)不重复入日志;直连(direct_)无 operationId 不入日志。 */
+const RESULTS_FILE = path.join(DATA_DIR, 'results.json');
+const RESULTS_KEEP_MS = 7 * 24 * 3600 * 1000; // 保留期对齐生成缓存清理窗口(结果引用的 uploads/gen 文件最长存活)
+const RESULTS_MAX = 3000;
+function resultsDB() {
+  const db = readJSON(RESULTS_FILE, { list: [] });
+  if (!Array.isArray(db.list)) return { list: [] };
+  return db;
+}
+function saveResults(db) {
+  const cutoff = Date.now() - RESULTS_KEEP_MS;
+  const kept = db.list.filter(r => (r.savedAt || 0) >= cutoff);
+  db.list = kept.length > RESULTS_MAX ? kept.slice(-RESULTS_MAX) : kept;
+  writeJSON(RESULTS_FILE, db);
+}
+function resultPut(userId, opId, action, endpoint, payload) {
+  if (!opId || String(opId).startsWith('direct_')) return;
+  try {
+    const db = resultsDB();
+    const i = db.list.findIndex(r => r.userId === userId && r.opId === opId);
+    const rec = { userId, opId, action, endpoint, payload: payload || {}, savedAt: Date.now(), claimed: false };
+    if (i >= 0) db.list[i] = rec; else db.list.push(rec);
+    saveResults(db);
+  } catch (_) { /* 结果日志失败不阻断交付 */ }
+}
+function resultFind(userId, opId) {
+  return resultsDB().list.find(r => r.userId === userId && r.opId === opId) || null;
+}
+function resultMarkClaimed(userId, opId) {
+  try {
+    const db = resultsDB();
+    const r = db.list.find(x => x.userId === userId && x.opId === opId);
+    if (r && !r.claimed) { r.claimed = true; saveResults(db); }
+  } catch (_) {}
 }
 
 /* ---------- 生成任务中心(data/jobs.json:断点续查/幂等/审计的持久化登记) ----------
@@ -1649,6 +1700,18 @@ const server = http.createServer(async (req, res) => {
       }
       return ok(res, { refunded, balance: readWallet(user.id).balance, deduped: refunded === 0 });
     }
+
+    /* ---- operation 结果领取(十三轮):结果日志的主动恢复入口 ----
+     * 生图/TTS/FFmpeg 交付成功即落结果日志;同 opId 重试在 proxyCharge 内自动恢复(recovered:true),
+     * 本端点供客户端按 operationId 主动领取(标记 claimed,幂等——重复领取返回同一结果)。 */
+    if (pathname.startsWith('/api/operations/') && pathname.endsWith('/result') && req.method === 'GET') {
+      const opId = sanitizeOpId(decodeURIComponent(pathname.slice('/api/operations/'.length, -'/result'.length)));
+      if (!opId) return fail(res, 400, '缺少 operationId', 400);
+      const rec = resultFind(user.id, opId);
+      if (!rec) return ok(res, { found: false });
+      resultMarkClaimed(user.id, opId);
+      return ok(res, { found: true, action: rec.action, endpoint: rec.endpoint, payload: rec.payload, savedAt: rec.savedAt, claimed: true });
+    }
     /* ---- 钱包账本:余额 + 最近 100 条流水(审计/对账只读视图) ---- */
     if (pathname === '/api/wallet' && req.method === 'GET') {
       const w = readWallet(user.id);
@@ -1882,6 +1945,8 @@ const server = http.createServer(async (req, res) => {
         if (!action) return; // 400 已返回(结构/信号不符)
         charge = proxyCharge(res, user.id, action, '生图(' + action + '):' + prompt.slice(0, 24), b.operationId, 'volc/image', b);
         if (!charge) return; // 402/409 已返回
+        /* 十三轮结果恢复:同 opId 同内容重放且日志命中 → 直接带回已付费结果(响应丢失/崩溃后重试) */
+        if (charge.recovered) return ok(res, Object.assign({}, charge.recovered, { recovered: true }));
         /* 十一轮 P0-2/P0-4:executing 标记(客户端在途退款被拒)+ 并发锁(同 opId 并发不再复用扣费双开上游) */
         const imgLock = 'img:' + user.id + ':' + charge.opId + ':' + action;
         if (!execLock(imgLock)) return fail(res, 409, '该操作正在执行中,请勿并发重复提交', 409);
@@ -1918,6 +1983,7 @@ const server = http.createServer(async (req, res) => {
         const local = await cacheGenFile(remoteUrl, '.jpeg'); // 临时签名 URL → 本地缓存
         /* 十二轮交付守卫:operation 已被看门狗/对账退款 → 不再把成品发给客户端(退款+白拿成品竞态) */
         if (!opDelivered(user.id, charge.opId, action)) return fail(res, 409, '该操作已退款,结果不再交付', 409);
+        resultPut(user.id, charge.opId, action, 'volc/image', { url: local || remoteUrl, remoteUrl }); // 十三轮:结果日志(重放恢复)
         return ok(res, { url: local || remoteUrl, remoteUrl });
         } finally { execUnlock(imgLock); } // 十一轮并发锁统一释放
       } catch (e) {
@@ -2185,6 +2251,8 @@ const server = http.createServer(async (req, res) => {
         ffActionUsed = ffAction;
         charge = proxyCharge(res, user.id, ffAction, 'FFmpeg(' + ffAction + ')', b.operationId, 'ffmpeg/' + ff, b);
         if (!charge) return; // 402/409 已返回
+        /* 十三轮结果恢复:同 opId 同内容重放且日志命中 → 直接带回已付费处理结果(响应丢失/崩溃后重试) */
+        if (charge.recovered) return ok(res, Object.assign({}, charge.recovered, { recovered: true }));
         /* 十一轮 P0-2/P0-4:executing 标记 + 并发锁(同 opId 并发不再复用扣费后重复执行 FFmpeg) */
         const ffLock = 'ff:' + user.id + ':' + charge.opId + ':' + ffAction;
         if (!execLock(ffLock)) return fail(res, 409, '该操作正在执行中,请勿并发重复提交', 409);
@@ -2197,6 +2265,7 @@ const server = http.createServer(async (req, res) => {
         const ffOk = data => {
           /* 十二轮交付守卫:已退款的 operation 不再回传处理结果(退款+白拿成品竞态) */
           if (!opDelivered(user.id, charge.opId, ffAction)) return fail(res, 409, '该操作已退款,结果不再交付', 409);
+          resultPut(user.id, charge.opId, ffAction, 'ffmpeg/' + ff, data); // 十三轮:结果日志(重放恢复;各子路由结果含 url 等字段)
           return ok(res, data);
         };
 
@@ -2450,6 +2519,8 @@ const server = http.createServer(async (req, res) => {
         if (!tAction) return; // 400 已返回(动作族不符)
         charge = proxyCharge(res, user.id, tAction, '语音合成:' + text.slice(0, 30), b.operationId, 'volc/tts', b);
         if (!charge) return; // 402/409 已返回
+        /* 十三轮结果恢复:同 opId 同内容重放且日志命中 → 直接带回已付费音频(响应丢失/崩溃后重试) */
+        if (charge.recovered) return ok(res, Object.assign({}, charge.recovered, { recovered: true }));
         /* 十一轮 P0-2/P0-4:executing 标记 + 并发锁(同 opId 并发不再重复调 TTS 上游) */
         const ttsLock = 'tts:' + user.id + ':' + charge.opId + ':' + tAction;
         if (!execLock(ttsLock)) return fail(res, 409, '该操作正在执行中,请勿并发重复提交', 409);
@@ -2518,6 +2589,7 @@ const server = http.createServer(async (req, res) => {
         fs.writeFileSync(path.join(GEN_CACHE_DIR, name), Buffer.from(out.audio, 'base64'));
         /* 十二轮交付守卫:已退款的 operation 不再回传音频地址(退款+白拿成品竞态) */
         if (!opDelivered(user.id, charge.opId, tAction)) return fail(res, 409, '该操作已退款,结果不再交付', 409);
+        resultPut(user.id, charge.opId, tAction, 'volc/tts', { url: '/uploads/gen/' + name, duration: out.duration, voice: speaker }); // 十三轮:结果日志(重放恢复)
         return ok(res, { url: '/uploads/gen/' + name, duration: out.duration, voice: speaker });
         } finally { execUnlock(ttsLock); } // 十一轮并发锁统一释放
       } catch (e) {

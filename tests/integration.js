@@ -70,10 +70,10 @@ const WALLETS = () => path.join(TMP, 'data', 'wallets');
 const walletFile = uid => path.join(WALLETS(), uid + '.json');
 
 /* 直接落一份 operation + 钱包扣费条目(模拟"扣费后进程崩溃/已交付"等编排层到不了的状态) */
-function craftOp(userId, opId, action, status, chargeIdem, ageMs) {
+function craftOp(userId, opId, action, status, chargeIdem, ageMs, rh) {
   const ops = fs.existsSync(path.join(TMP, 'data', 'operations.json')) ? OPS() : { list: [] };
   ops.list.push({
-    userId, opId, action, endpoint: 'volc/image', requestHash: 'x', status,
+    userId, opId, action, endpoint: 'volc/image', requestHash: rh || 'x', status,
     chargeIdem, createdAt: Date.now() - (ageMs || 0), updatedAt: Date.now() - (ageMs || 0),
   });
   fs.writeFileSync(path.join(TMP, 'data', 'operations.json'), JSON.stringify(ops));
@@ -83,6 +83,21 @@ function craftOp(userId, opId, action, status, chargeIdem, ageMs) {
   w.entries.push({ seq: w.entries.length + 1, ts: Date.now() - (ageMs || 0), type: 'charge', amount: -cost, balanceAfter: w.balance - cost, reason: 'craft:' + opId, idem: chargeIdem });
   w.balance -= cost;
   fs.writeFileSync(wf, JSON.stringify(w));
+}
+
+/* 服务端同源请求指纹:与 server.js requestHashOf 一致(剔除计费元数据后 sha256 前 32 位) */
+const crypto = require('crypto');
+function requestHashOf(obj) {
+  const o = Object.assign({}, obj);
+  delete o.operationId; delete o.billingAction; delete o.step;
+  return crypto.createHash('sha256').update(JSON.stringify(o)).digest('hex').slice(0, 32);
+}
+/* 直接落一条结果日志(模拟"已交付但响应丢失"后的重放恢复) */
+function craftResult(userId, opId, action, payload) {
+  const fp = path.join(TMP, 'data', 'results.json');
+  const db = fs.existsSync(fp) ? JSON.parse(fs.readFileSync(fp, 'utf8')) : { list: [] };
+  db.list.push({ userId, opId, action, endpoint: 'volc/image', payload, savedAt: Date.now(), claimed: false });
+  fs.writeFileSync(fp, JSON.stringify(db));
 }
 
 /* ---------- 主流程 ---------- */
@@ -152,6 +167,24 @@ async function main() {
   wallet = (await req('GET', '/api/wallet', null, token)).data;
   report('已交付拒退 403', rf4.status === 403, 'HTTP ' + rf4.status + ' ' + rf4.msg);
   report('已交付余额不动(基线 - exec1 2 - done1 2)', wallet.balance === BASE_BAL - 4, '实际 ' + wallet.balance);
+
+  /* ============ 测试 6(十三轮):operation 结果日志——同 opId 重放恢复 + 主动领取 ============
+   * 场景:已交付但响应在网络中丢失 → 客户端同 opId 同内容重试;此前 409 结果永久丢失,
+   * 现在从结果日志带回已付费结果(recovered:true),不再调上游、不再扣费。 */
+  const recBody = { prompt: '结果恢复测试图', billingAction: 'image.gen', operationId: 'it.rec1' };
+  craftOp(uid, 'it.rec1', 'image.gen', 'delivered', `px_${uid}_it.rec1@image.gen`, 0, requestHashOf(recBody));
+  craftResult(uid, 'it.rec1', 'image.gen', { url: '/uploads/gen/fake_rec.jpeg', remoteUrl: 'https://fake/img.jpeg' });
+  const rec1 = await req('POST', '/api/volc/image', recBody, token);
+  report('同 opId 重放恢复 200(不再 409)', rec1.status === 200 && rec1.data && rec1.data.recovered === true, 'HTTP ' + rec1.status + ' ' + JSON.stringify(rec1.data));
+  report('恢复结果带回已付费 URL', rec1.data && rec1.data.url === '/uploads/gen/fake_rec.jpeg', JSON.stringify(rec1.data));
+  wallet = (await req('GET', '/api/wallet', null, token)).data;
+  report('恢复不重复扣费', wallet.balance === BASE_BAL - 6, '实际 ' + wallet.balance + '(基线-6:exec1/done1/rec1 各占 2)');
+  const g1 = await req('GET', '/api/operations/it.rec1/result', null, token);
+  report('结果领取端点 found+claimed', g1.status === 200 && g1.data && g1.data.found === true && g1.data.claimed === true && g1.data.payload.url === '/uploads/gen/fake_rec.jpeg', JSON.stringify(g1.data));
+  const g2 = await req('GET', '/api/operations/it.rec1/result', null, token);
+  report('重复领取幂等(同一结果)', g2.status === 200 && g2.data && g2.data.found === true && g2.data.payload.url === '/uploads/gen/fake_rec.jpeg', JSON.stringify(g2.data));
+  const g3 = await req('GET', '/api/operations/it.none/result', null, token);
+  report('无记录 found:false(失败关闭)', g3.status === 200 && g3.data && g3.data.found === false, JSON.stringify(g3.data));
 
   console.log(`\n===== ${PASS}/${PASS + FAIL} PASS, ${FAIL} FAIL =====`);
 }

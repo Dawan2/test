@@ -481,7 +481,9 @@
       return this.state.projects.filter(p => p.userId === (u && u.id));
     },
     getProject(id) { return this.state.projects.find(p => p.id === id) || null; },
-    /* 按名称查找项目主体,支持多形态全称"角色名-形态名";命中返回 {s, form},否则 null */
+    /* 按名称查找项目主体,支持多形态全称"角色名-形态名";命中返回 {s, form},否则 null。
+     * 十三轮:曾用名兜底——主体改名后 formerNames 记录旧名,镜头/镜头组里未级联到的旧名引用
+     * (跨端合并竞态/快照恢复/级联前旧数据)仍能解析到主体,参考图/形态/音色/imgVer 不失联 */
     findSubject(p, name) {
       const subs = (p && p.subjects) || [];
       const s = subs.find(x => x.name === name);
@@ -490,7 +492,62 @@
         const f = (x.forms || []).find(f => (x.name + '-' + f.name) === name);
         if (f) return { s: x, form: f };
       }
+      /* 曾用名兜底:旧名或"旧名-形态名"仍指向当前主体(形态按名匹配) */
+      for (const x of subs) {
+        if (!(x.formerNames || []).includes(name)) continue;
+        return { s: x, form: null };
+      }
+      for (const x of subs) {
+        if (!(x.formerNames || []).length) continue;
+        const hit = name.startsWith(x.name + '-') ? name.slice(x.name.length + 1) : null;
+        // "旧名-形态名":旧名段匹配任一曾用名,形态名按当前形态表解析
+        const oldHead = (x.formerNames || []).find(fn2 => name.startsWith(fn2 + '-'));
+        const formName = hit || (oldHead ? name.slice(oldHead.length + 1) : null);
+        if (!formName) continue;
+        const f = (x.forms || []).find(fm => fm.name === formName);
+        if (f) return { s: x, form: f };
+      }
       return null;
+    },
+    /* 主体改名领域命令(十三轮):旧名入 formerNames(兜底解析),级联更新镜头与镜头组的名称引用。
+     * 此前 Agent 直接改 s.name,镜头 characters/scene/props 与镜头组 assets 键仍持旧名 →
+     * findSubject 失联,丢参考图/形态/音色/素材版本检测。返回 {ok,msg} */
+    renameSubject(p, sub, newName) {
+      newName = String(newName || '').trim();
+      if (!newName) return { ok: false, msg: '名称不能为空' };
+      if (!sub || !p || !p.subjects || !p.subjects.includes(sub)) return { ok: false, msg: '主体不存在' };
+      if (newName === sub.name) return { ok: true, msg: '' };
+      if (p.subjects.some(x => x !== sub && x.name === newName)) return { ok: false, msg: `已有同名主体「${newName}」` };
+      const old = sub.name;
+      sub.formerNames = sub.formerNames || [];
+      if (!sub.formerNames.includes(old)) sub.formerNames.push(old);
+      if (sub.formerNames.length > 10) sub.formerNames.splice(0, sub.formerNames.length - 10); // 上限防膨胀
+      sub.name = newName;
+      /* 级联 1:镜头 characters/scene/props(含"名-形态"全称) */
+      const mapRef = ref => {
+        if (ref === old) return newName;
+        if (ref && ref.startsWith(old + '-')) return newName + ref.slice(old.length);
+        return ref;
+      };
+      (p.episodes || []).forEach(ep => {
+        (ep.shots || []).forEach(s => {
+          if (Array.isArray(s.characters)) s.characters = s.characters.map(mapRef);
+          if (Array.isArray(s.props)) s.props = s.props.map(mapRef);
+          if (s.scene != null) s.scene = mapRef(s.scene);
+        });
+        /* 级联 2:镜头组(存于分集)scene/chars/assets 键(assets 按出场名挂图) */
+        (ep.groups || []).forEach(g => {
+          if (g.scene === old) g.scene = newName;
+          if (Array.isArray(g.chars)) g.chars = g.chars.map(mapRef);
+          if (g.assets && typeof g.assets === 'object') {
+            const na = {};
+            Object.entries(g.assets).forEach(([k, v]) => { na[mapRef(k)] = v; });
+            g.assets = na;
+          }
+        });
+      });
+      this.save();
+      return { ok: true, msg: `主体「${old}」已改名为「${newName}」,引用已级联更新` };
     },
     /* 主体(或形态)的展示图 */
     subjectImage(p, name) {

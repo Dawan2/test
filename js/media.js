@@ -81,14 +81,25 @@
       if (!prompt) throw new Error('prompt 不能为空');
       // 八轮:失败统一附 err.__opId(与 genVideo 同约)——调用方 Tasks.run/U.refund 镜像后服务端按原账单退该 operation
       const tag = e => { if (e && typeof e === 'object' && !e.__opId) e.__opId = operationId; return e; };
+      const post = opId => this._req('/api/volc/image', {
+        method: 'POST',
+        body: JSON.stringify({ prompt, size, model, image, operationId: opId, billingAction }),
+      }, 180000);
       try {
-        return await this._req('/api/volc/image', {
-          method: 'POST',
-          body: JSON.stringify({ prompt, size, model, image, operationId, billingAction }),
-        }, 180000);
+        return await post(operationId);
       } catch (e) {
         tag(e);
         if (this._isAuditError(e)) throw e; // 审核拦截换线路无意义,直接抛
+        /* 十三轮:网络层错误(超时/断连)先按同 opId 原请求重试一次——首轮可能已交付只是响应
+         * 丢失,服务端结果日志直接恢复(recovered:true 不重复扣费);首轮仍在执行则 409 落到
+         * 备用线路;真失败则复用已有扣费(non-llm-recharge)重执行,均不产生额外计费 */
+        if (/^请求超时|^无法连接本地后端/.test(String(e.message || ''))) {
+          try {
+            const r = await post(operationId);
+            r.__line = 'retry-same';
+            return r;
+          } catch (_) { /* 原线路重试仍失败:继续走备用线路 */ }
+        }
         const backup = this._switchBackup('image', model, e);
         if (!backup) throw e;
         try {

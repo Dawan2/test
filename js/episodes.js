@@ -401,36 +401,35 @@
       if (!(ep.content || '').trim()) return U.toast(ep.title + ' 正文为空,请先在「内容」页写正文', 'error');
       if (!API.isReady()) return U.toast('改写为旁白型需要真实 LLM,请先配置/登录后端', 'error', 3500);
       U.confirm(`将把「${ep.title}」正文改写为旁白解说体剧本(第三人称旁白转述,剧情节点与分集结构不变),消耗 2 积分。${ep.narrationContent ? '\n该集已有旁白稿,改写将覆盖现有内容。' : ''}确定改写吗?`, async () => {
-        // 统一五件套:登记→扣费→执行→失败退费(原为裸 U.charge,无任务登记,任务监控不可对账)
-        const tk = Tasks.start({ type: '旁白改写', model: 'LLM', target: ep.title, cost: 2, projectId: p.id, episodeId: ep.id });
-        if (!U.charge(2, '改写为旁白型剧本', tk.id)) { Tasks.fail(tk, '积分不足'); return; }
+        // 十三轮:收敛到 Tasks.run 五件套(登记→扣费→执行→失败退费;原手写 start/charge/refund/fail)
         const label = btn ? btn.innerHTML : '';
         if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> 改写中…'; }
-        try {
-          const out = await API.chatJSON({
-            model: (Store.state.settings || {}).defLLM || API.getConfig().model,
-            system: '你是资深短剧解说编剧,擅长把短剧剧本改写成旁白解说体(解说模式)。',
-            billingAction: 'llm.narration', operationId: tk.id,
-            messages: [{ role: 'user', content: `把以下短剧单集剧本改写为旁白解说体剧本,返回 JSON {"narration":"改写后的旁白稿全文"}。
+        const out = await Tasks.run({ type: '旁白改写', model: 'LLM', target: ep.title, cost: 2, actionName: '改写为旁白型剧本', projectId: p.id, episodeId: ep.id }, async tk => {
+          try {
+            const out = await API.chatJSON({
+              model: (Store.state.settings || {}).defLLM || API.getConfig().model,
+              system: '你是资深短剧解说编剧,擅长把短剧剧本改写成旁白解说体(解说模式)。',
+              billingAction: 'llm.narration', operationId: tk.id,
+              messages: [{ role: 'user', content: `把以下短剧单集剧本改写为旁白解说体剧本,返回 JSON {"narration":"改写后的旁白稿全文"}。
 要求:以第三人称旁白叙述为主;保留全部剧情节点与关键信息(不遗漏转折与钩子);角色台词转化为旁白转述(如"他怒吼着让她滚开"而非直接引用对白);分集结构不变,仍是这一集的完整内容;语言口语流畅,适合配音解说。
 集标题:${ep.title}
 剧本正文:
 ${(ep.content || '').slice(0, 8000)}` }],
-            temperature: 0.5, max_tokens: 6000,
-          });
-          const narration = String(out && out.narration || '').trim();
-          if (!narration) throw new Error('返回为空');
-          ep.narrationContent = narration;
-          Store.save();
-          Tasks.done(tk, { filename: `${ep.title}_旁白稿.txt`, text: narration });
-          U.toast(ep.title + ' 旁白稿已生成,可到「剧本 → 旁白稿」查看', 'success', 3500);
-          render();
-        } catch (e) {
-          U.refund(2, '改写为旁白型剧本失败:' + (e.message || '未知错误'));
-          Tasks.fail(tk, e.message);
-          U.toast('改写失败:' + e.message + '(已退回 2 积分)', 'error', 3500);
-          if (btn) { btn.disabled = false; btn.innerHTML = label; }
-        }
+              temperature: 0.5, max_tokens: 6000,
+            });
+            const narration = String(out && out.narration || '').trim();
+            if (!narration) throw new Error('返回为空');
+            ep.narrationContent = narration;
+            Store.save();
+            return { filename: `${ep.title}_旁白稿.txt`, text: narration }; // Tasks.run 以返回值作下载物
+          } catch (e) {
+            U.toast('改写失败:' + e.message + '(已退回 2 积分)', 'error', 3500);
+            if (e && typeof e === 'object') e.__opId = tk.id; // LLM 错误不带操作键,手动补上 → Tasks.run 退费镜像到服务端同一 operation
+            throw e; // Tasks.run 统一退费+置失败
+          }
+        });
+        if (btn) { btn.disabled = false; btn.innerHTML = label; }
+        if (out) { U.toast(ep.title + ' 旁白稿已生成,可到「剧本 → 旁白稿」查看', 'success', 3500); render(); }
       });
     }
 
@@ -556,35 +555,35 @@ ${(ep.content || '').slice(0, 8000)}` }],
         if (!API.isReady()) return U.toast('AI 生成构思需要真实 LLM(请登录后端)', 'error', 3000);
         const btn = main.querySelector('[data-x=cc-gen]');
         btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> AI 导演定调中…';
-        const tk = Tasks.start({ type: 'AI 构思定调', model: 'LLM', target: p.name, cost: 1, projectId: p.id });
-        if (!U.charge(1, 'AI 生成构思', tk.id)) { Tasks.fail(tk, '积分不足'); btn.disabled = false; btn.textContent = '✨ AI 生成构思(读剧本出定调,-1积分)'; return; }
-        try {
-          const out = await API.chatJSON({
-            model: (Store.state.settings || {}).defLLM || API.getConfig().model,
-            system: '你是资深短剧/漫剧导演,在项目开拍前做导演阐述(Director Treatment)。',
-            messages: [{ role: 'user', content: `通读以下短剧剧本信息,为这部剧做开拍前的整体创作定调,返回 JSON:
+        // 十三轮:收敛到 Tasks.run 五件套(登记→扣费→执行→失败退费;原手写 start/charge/refund/fail)
+        const out = await Tasks.run({ type: 'AI 构思定调', model: 'LLM', target: p.name, cost: 1, actionName: 'AI 生成构思', projectId: p.id }, async tk => {
+          try {
+            const out = await API.chatJSON({
+              model: (Store.state.settings || {}).defLLM || API.getConfig().model,
+              system: '你是资深短剧/漫剧导演,在项目开拍前做导演阐述(Director Treatment)。',
+              messages: [{ role: 'user', content: `通读以下短剧剧本信息,为这部剧做开拍前的整体创作定调,返回 JSON:
 {"statement":"导演阐述(一句话定调,有美学主张)","positioning":"题材定位","audience":"目标受众","reference":"美学参考(作品/美学)","artStyle":"美术风格(具体可执行)","palette":"影调(从 ${(window.TONE_PRESETS || []).join('/')} 中选最贴合的一个)","lighting":"光影基调","ratio":"画幅(16:9 或 9:16 或 1:1,按发布平台惯用)","platform":"发布平台(抖音/快手/红果/视频号/TikTok(出海))","epDur":"单集时长目标","editPace":"整体剪辑节奏","hookSec":"开场钩子时长","epStruct":"单集结构","emotion":"情绪总谱","performance":"表演气质","voiceMusic":"配音与音乐音效基调","density":"分镜密度","maxShot":"单镜时长上限","continuity":"一致性约束"}
 要求:具体可执行、风格统一、贴合剧本题材;所有字段为中文短句。
 项目风格:${p.style}(${window.projType && projType() === 'narration' ? '解说模式(重旁白叙述,出海解说剧导演雇佣中)' : '剧情模式(重台词表演)'})${p.globalSetting ? ';全局设定:' + p.globalSetting : ''}
 一句话卖点:${(p.scriptMeta && p.scriptMeta.logline) || '(无)'}
 剧本节选:${(p.script || '').slice(0, 5000)}` }],
-            temperature: 0.6, max_tokens: 4000,
-            billingAction: 'llm.agent', operationId: tk.id,
-          });
-          if (!out || !out.statement) throw new Error('LLM 返回结构不完整');
-          ['statement', 'positioning', 'audience', 'reference', 'artStyle', 'palette', 'lighting', 'ratio', 'platform', 'epDur', 'editPace', 'hookSec', 'epStruct', 'emotion', 'performance', 'voiceMusic', 'density', 'maxShot', 'continuity']
-            .forEach(k => { if (out[k] !== undefined) c[k] = String(out[k]); });
-          c.time = Store.now();
-          Store.save();
-          Tasks.done(tk);
-          U.toast('AI 构思已生成,请审阅后「保存定调」生效', 'success', 3000);
-          render();
-        } catch (e) {
-          U.refund(1, 'AI 生成构思失败退费', tk.id);
-          Tasks.fail(tk, e.message);
-          U.toast('AI 生成构思失败:' + e.message, 'error', 3500);
-          btn.disabled = false; btn.textContent = '✨ AI 生成构思(读剧本出定调,-1积分)';
-        }
+              temperature: 0.6, max_tokens: 4000,
+              billingAction: 'llm.agent', operationId: tk.id,
+            });
+            if (!out || !out.statement) throw new Error('LLM 返回结构不完整');
+            ['statement', 'positioning', 'audience', 'reference', 'artStyle', 'palette', 'lighting', 'ratio', 'platform', 'epDur', 'editPace', 'hookSec', 'epStruct', 'emotion', 'performance', 'voiceMusic', 'density', 'maxShot', 'continuity']
+              .forEach(k => { if (out[k] !== undefined) c[k] = String(out[k]); });
+            c.time = Store.now();
+            Store.save();
+            return true;
+          } catch (e) {
+            U.toast('AI 生成构思失败:' + e.message, 'error', 3500);
+            if (e && typeof e === 'object') e.__opId = tk.id; // LLM 错误不带操作键,手动补上 → Tasks.run 退费镜像到服务端同一 operation
+            throw e; // Tasks.run 统一退费+置失败
+          }
+        });
+        btn.disabled = false; btn.textContent = '✨ AI 生成构思(读剧本出定调,-1积分)';
+        if (out) { U.toast('AI 构思已生成,请审阅后「保存定调」生效', 'success', 3000); render(); }
       };
     }
 
