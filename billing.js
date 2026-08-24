@@ -87,13 +87,17 @@ function deriveImageAction(b) {
   return { derived: 'image.gen', allowedSet: ['image.gen', 'image.tweetShot'] };
 }
 
-/* 视频端点推导:请求时长>10s 一律 video.beat(长视频按 2 镜计价,封死长视频提 video.gen 低价);
- * ≤10s 允许 {gen,beat}(节拍板短段落按 2 镜平价属产品定价,非套利方向) */
+/* 视频端点推导(十二轮收紧):>10s 一律 video.beat(长视频按 2 镜计价);≤10s 再按结构信号区分——
+ * 节拍板任务在服务端以复合键 beat:<epId>:<idx> 登记(beatboard.js 固定前缀),命中即定死
+ * video.beat(节拍段按 2 镜计价),其余为普通镜头 video.gen。此前 ≤10s 允许客户端在
+ * {gen,beat} 中自选(短节拍段提 video.gen 5 分而非 beat 10 分),结构信号封死该二选一 */
 function deriveVideoAction(b, rawDur) {
   const d = Number.isFinite(+rawDur) ? +rawDur : 5;
-  return d > 10
+  if (d > 10) return { derived: 'video.beat', allowedSet: null };
+  const isBeat = !!(b && b.job && b.job.shotId && String(b.job.shotId).startsWith('beat:'));
+  return isBeat
     ? { derived: 'video.beat', allowedSet: null }
-    : { derived: 'video.gen', allowedSet: ['video.gen', 'video.beat'] };
+    : { derived: 'video.gen', allowedSet: null };
 }
 
 /* FFmpeg 端点推导:路由唯一确定;upscale 再按 quality 档位细分(pro→hdPro/std→hdStd/缺省→工具级);
@@ -188,13 +192,12 @@ function refundPlan(ops, charges) {
   });
 }
 
-/* 在途执行判定(十一轮):executing 且 updatedAt 未超时 → 客户端退款被拒(请求可能正在调上游,
- * 退款后原请求仍能交付);executing 超过 staleMs(默认 10 分钟)视为进程崩溃残留 → 放行退款。
- * 服务端内部退款(失败路径)不受此限——它正是 executing 的正常出口 */
-function clientRefundBlocked(op, now, staleMs) {
-  if (!op || op.status !== 'executing') return false;
-  const t = now || Date.now();
-  return (t - (op.updatedAt || 0)) < (staleMs || 10 * 60 * 1000);
+/* 在途执行判定(十一轮引入;十二轮收紧):executing 一律拒绝客户端退款——原"超 10 分钟视为
+ * 崩溃残留放行"存在竞态(FFmpeg 等合法长任务可超 10 分钟,第 11 分钟退款后原请求完成仍会
+ * 把结果发给客户端=退款+白拿成品)。崩溃残留改由服务端看门狗 sweepStaleOps 转终态退款,
+ * 客户端不再参与 executing 的退款判定;服务端内部退款(失败路径)不受此限 */
+function clientRefundBlocked(op) {
+  return !!(op && op.status === 'executing');
 }
 
 /* 取最新一条匹配记录(退款重试会追加新记录,交付/退款必须作用于最新扣费,而非最早的旧记录) */

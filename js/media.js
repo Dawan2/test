@@ -194,6 +194,7 @@
       let jobs;
       try { jobs = ((await this._req('/api/jobs', null, 20000)) || {}).list || []; }
       catch (_) { return false; } // 任务中心不可达:下次启动再试
+      if (window.Tasks && Tasks._cacheRemoteJobs) Tasks._cacheRemoteJobs(jobs); // 十二轮:刷新同步删除路径共享的远端任务快照
       const pend = [];
       (Store.state.projects || []).forEach(p => {
         if (p.userId !== me.id) return; // 只对账本人项目

@@ -145,7 +145,7 @@
         if (i < 0) { changes.push(`分集「${op.ep}」未找到,跳过`); return; }
         const target = p.episodes[i];
         if (window.__epReviewEpId === target.id) { changes.push(`分集「${target.title}」整集审片进行中,未删除`); return; }
-        const inflight = window.Tasks ? Tasks.runningInScope({ episodeId: target.id }) : [];
+        const inflight = window.Tasks ? Tasks.runningInScope({ episodeId: target.id }) : []; // 十二轮:含近 2 分钟服务端任务快照(同步路径无法 await canDeleteScope)
         if (inflight.length) { changes.push(`分集「${target.title}」有 ${inflight.length} 个任务进行中,未删除`); return; }
         Store.trashPut('episode', target.title, { projectId: p.id, ep: target }); // 软删除:回收站 7 天可恢复
         p.episodes.splice(i, 1);

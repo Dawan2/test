@@ -85,6 +85,7 @@ ${(ep.content || '').slice(0, 12000)}`;
     ep.status = 'storyboarded';
     ep.composed = false;
     ep.shotsSourceRev = ep.contentRev || 0; // 十轮:记录分镜对应的剧本版本(剧本修改后判旧)
+    ep.shotsGraphRev = ep.graphRev || 0;    // 十二轮:记录分镜对应的事件图谱版本(图谱修订后判旧)
     Store.save();
     U.toast(`LLM 已生成并发布 ${shots.length} 个分镜(${modelName})`, 'success', 3000);
     Views.episode(main, p.id, ep.id);
@@ -237,6 +238,7 @@ ${JSON.stringify(brief)}`;
     ep.status = 'storyboarded';
     ep.composed = false;
     ep.shotsSourceRev = ep.contentRev || 0; // 十轮:记录分镜对应的剧本版本(剧本修改后判旧)
+    ep.shotsGraphRev = ep.graphRev || 0;    // 十二轮:记录分镜对应的事件图谱版本(图谱修订后判旧)
     Store.save();
     U.confirm(`已发布 ${shots.length} 个分镜。下一步:批量生成视频?`, () => SB.runBatchOp(p, ep, main, 'video'), '批量生成视频');
     Views.episode(main, p.id, ep.id);

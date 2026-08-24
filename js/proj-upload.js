@@ -277,10 +277,12 @@
         { label: '分集落盘', ms: 700 },
       ],
       onDone: async () => {
-        // 九轮统一在飞拦截:重新分集会覆盖全部旧分集,项目内任何 running 任务(配音/审片/合成/生成等)
-        // 进行中禁止执行(此前只扫视频/节拍 generating,漏其他任务类型)
-        const inflight = window.Tasks ? Tasks.runningInScope({ projectId: p.id }) : [];
-        if (inflight.length) { U.toast(`有 ${inflight.length} 个任务正在进行(${inflight[0].type} 等),请等待完成后再重新分集`, 'error'); return; }
+        // 九轮统一在飞拦截;十二轮升级异步守卫:本地任务 + 服务端 running/needs_reconcile jobs
+        // 合并判定(重新分集会覆盖全部旧分集,刷新后本地已 failed 但服务端仍在生成时同样禁止)
+        const guard = window.Tasks ? await Tasks.canDeleteScope({ projectId: p.id }) : { local: [], remote: [] };
+        if (guard.remote == null) { U.toast('任务中心暂时不可达,无法确认是否有在途生成任务,请稍后重试', 'error'); return; }
+        if (guard.local.length) { U.toast(`有 ${guard.local.length} 个任务正在进行(${guard.local[0].type} 等),请等待完成后再重新分集`, 'error'); return; }
+        if (guard.remote.length) { U.toast(`服务端仍有 ${guard.remote.length} 个生成任务在跑,请等待完成或超时后再重新分集`, 'error'); return; }
         let eps = null;
         const hasMarkers = (scriptText.match(/第[一二三四五六七八九十百千0-9]+[集章回篇]/g) || []).length >= 2;
         const tk = Tasks.start({ type: '剧本分集', model: !hasMarkers && API.isReady() ? API.getConfig().model : '本地拆分', target: p.name, projectId: p.id });

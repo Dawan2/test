@@ -54,37 +54,57 @@
       this._fin(t, 'background', reason || '上游仍在生成,可续查');
     },
     running() { return list().filter(t => t.status === 'running').length; },
-    /** 按作用域查在飞任务(八轮;十轮补 background):删除项目/分集/分镜、覆盖导入、重新拆分前的统一拦截。
-     * running(前端等待中)与 background(前端已放弃等待但上游仍在跑)都算在飞;
+    /** 服务端任务快照(十二轮):canDeleteScope/Media.reconcileJobs 每次拉取 /api/jobs 时刷新,
+     * 供同步路径(runningInScope → Agent ops 应用器等无法 await 的删除点)共享远端在飞判定;
+     * 快照 2 分钟内有效——UI 异步守卫仍是权威,缓存只是同步路径的保守补充 */
+    _remoteJobs: [], _remoteJobsAt: 0,
+    _cacheRemoteJobs(list) { this._remoteJobs = Array.isArray(list) ? list : []; this._remoteJobsAt = Date.now(); },
+    _freshRemoteJobs() {
+      if (Date.now() - this._remoteJobsAt > 120 * 1000) return [];
+      return this._remoteJobs.filter(j => j.status === 'running' || j.status === 'needs_reconcile');
+    },
+    /** 按作用域查在飞任务(八轮;十轮补 background;十二轮补远端快照):删除项目/分集/分镜、覆盖导入、
+     * 重新拆分前的统一拦截。running(前端等待中)与 background(前端已放弃等待但上游仍在跑)都算在飞;
+     * 十二轮:近 2 分钟内的服务端任务快照(running/needs_reconcile)同样计入——Agent ops 应用器是
+     * 同步路径无法 await canDeleteScope,靠快照兜住"刷新后本地已 failed 但服务端仍在生成"的删除。
      * scope 任一维度命中即算;返回在飞任务数组(空数组=可安全删除),调用方据此弹提示阻断 */
     runningInScope({ projectId, episodeId, shotId } = {}) {
-      return list().filter(t => {
+      const local = list().filter(t => {
         if (t.status !== 'running' && t.status !== 'background') return false;
         if (projectId != null && t.projectId === projectId) return true;
         if (episodeId != null && t.episodeId === episodeId) return true;
         if (shotId != null && t.shotId === shotId) return true;
         return false;
       });
+      const remote = this._freshRemoteJobs().filter(j => {
+        if (projectId != null && j.projectId === projectId) return true;
+        if (episodeId != null && j.episodeId === episodeId) return true;
+        if (shotId != null && j.shotId === shotId) return true;
+        return false;
+      }).map(j => ({ type: '服务端生成:' + (j.status === 'needs_reconcile' ? '待对账' : '进行中'), _remote: true }));
+      return local.concat(remote);
     },
-    /** 异步领域守卫(十一轮):本地在飞任务 + 服务端任务中心 running/stale jobs 合并判定。
-     * 刷新后本地 background 已被 sweepStale 收敛为 failed,但服务端 job 可能仍在生成——
-     * 此前删除入口只查本地列表,刷新一次即可删掉仍有上游任务在跑的实体(孤儿上游成本)。
+    /** 异步领域守卫(十一轮;十二轮收紧):本地在飞任务 + 服务端任务中心 running/needs_reconcile
+     * jobs 合并判定。刷新后本地 background 已被 sweepStale 收敛为 failed,但服务端 job 可能仍在
+     * 生成——此前删除入口只查本地列表,刷新一次即可删掉仍有上游任务在跑的实体(孤儿上游成本)。
      * 返回 {local, remote}:local=本地任务数组,remote=服务端匹配 job 数(带 type 标注);
-     * 两者皆空才可安全删除。网络不可达时保守放行本地判定结果(离线场景服务端本就无任务)。 */
+     * 两者皆空才可安全删除。十二轮:已登录后端但 /api/jobs 查询失败 → remote=null(调用方须阻断,
+     * 后端临时断线时不再放行删除在途实体);未登录后端(离线)本就无服务端任务,照常只看本地。 */
     async canDeleteScope({ projectId, episodeId, shotId } = {}) {
       const local = this.runningInScope({ projectId, episodeId, shotId });
       let remote = [];
       if (window.Media && Media.isReady() && Media._req) {
         try {
           const jobs = ((await Media._req('/api/jobs', null, 15000)) || {}).list || [];
+          this._cacheRemoteJobs(jobs); // 十二轮:刷新同步路径共享的远端快照
           remote = jobs.filter(j => {
-            if (j.status !== 'running') return false;
+            if (j.status !== 'running' && j.status !== 'needs_reconcile') return false;
             if (projectId != null && j.projectId === projectId) return true;
             if (episodeId != null && j.episodeId === episodeId) return true;
             if (shotId != null && j.shotId === shotId) return true;
             return false;
           });
-        } catch (_) { /* 服务端不可达:按本地结果判定(离线场景无服务端任务) */ }
+        } catch (_) { return { local, remote: null, unreachable: true }; } // 查询失败:保守拒绝(调用方按 remote==null 阻断)
       }
       return { local, remote };
     },

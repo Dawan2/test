@@ -93,6 +93,7 @@ function installCommon(sb) {
     start: opt => { const t = Object.assign({ status: 'running' }, opt); sb.__tasks.push(t); return t; },
     done: t => { t.status = 'done'; },
     fail: (t, reason) => { t.status = 'failed'; t.reason = reason; },
+    runningInScope: () => [], // 十二轮:agent-ops 镜头删除查在飞(单测无在飞任务,恒空=放行)
   };
   sb.API = {
     isReady: () => sb.__apiReady,
@@ -695,6 +696,21 @@ const storeTests = [
     sb.Store.updateEpisodeContent(ep, 'v3');
     assertEq(sb.Store.understandingStale(ep), true, '再次修改正文后判旧');
   } },
+  { name: 'stale 谓词 graphRev 维度(十二轮):图谱修订传播到分镜/审片/成片', fn: async () => {
+    const sb = loadStore();
+    const ep = { id: 'e1', content: 'v1', contentRev: 2, graphRev: 1, shots: [{ id: 's1' }], shotsSourceRev: 2, shotsGraphRev: 1 };
+    assertEq(sb.Store.shotsStale(ep), false, '正文与图谱版本都对齐:分镜为当前');
+    ep.graphRev = 2; // 图谱手动编辑/重生成
+    assertEq(sb.Store.shotsStale(ep), true, '图谱修订后分镜判旧(此前图谱与下游完全断链)');
+    ep.shotsGraphRev = 2;
+    assertEq(sb.Store.shotsStale(ep), false, '重新拆镜后恢复当前');
+    const old = { id: 'e2', content: 'x', shots: [{ id: 's2' }], lastReview: { sourceRev: 0 } }; // 旧数据无 graphRev 记录
+    assertEq(sb.Store.reviewStaleByScript(old), false, '旧报告无 graphRev 记录:保持原语义不判旧(迁移兼容)');
+    old.lastReview.graphRev = 1; old.graphRev = 2;
+    assertEq(sb.Store.reviewStaleByScript(old), true, '记录过 graphRev 的报告在图谱修订后判旧');
+    old.composedSourceRev = 0; old.composedGraphRev = 1;
+    assertEq(sb.Store.composedStaleByScript(old), true, '成片同样按图谱版本判旧');
+  } },
   { name: 'shotVideoReady/beatVideoReady:在线时 simulated 占位不算就绪', fn: async () => {
     const sb = loadStore();
     sb.Media = { isReady: () => true }; // window.Media 在线
@@ -801,14 +817,19 @@ const billingTests = [
     assert(ok(BILLING.deriveImageAction({}), 'image.tweetShot'), '文生接受 tweetShot');
     assert(!ok(BILLING.deriveImageAction({}), 'image.fusion'), '文生不应接受 fusion');
   } },
-  { name: 'video/ff 推导:>10s 一律 beat;upscale 档位;suberase 统一 5 分;未知路由 null', fn: async () => {
+  { name: 'video/ff 推导(十二轮):>10s 一律 beat;≤10s 按 beat: 前缀结构定死(封 gen/beat 客户端自选);upscale 档位;suberase 统一 5 分;未知路由 null', fn: async () => {
     const table = BILLING.DEFAULT_ACTIONS;
     const ok = (d, act, fam) => BILLING.validateBillingAction(fam, table, act, d.derived, d.allowedSet).ok;
     assert(ok(BILLING.deriveVideoAction({}, 12), 'video.beat', 'video'), '>10s 接受 beat');
     assert(!ok(BILLING.deriveVideoAction({}, 12), 'video.gen', 'video'), '>10s 拒绝 gen 低价');
     const d5 = BILLING.deriveVideoAction({}, 5);
-    assert(ok(d5, 'video.gen', 'video'), '≤10s 接受 gen');
-    assert(ok(d5, 'video.beat', 'video'), '≤10s 允许 beat 平价');
+    assert(ok(d5, 'video.gen', 'video'), '≤10s 普通镜头接受 gen');
+    assert(!ok(d5, 'video.beat', 'video'), '十二轮:≤10s 普通镜头拒绝 beat(推导钉死 gen,防结构外自选)');
+    // 十二轮:节拍板任务以复合键 beat:<epId>:<idx> 登记(beatboard.js 固定前缀)——命中即定死 beat
+    const dB = BILLING.deriveVideoAction({ job: { shotId: 'beat:e1:2' } }, 5);
+    assertEq(dB.derived, 'video.beat', '≤10s 节拍板任务(beat: 前缀)定死 video.beat');
+    assert(ok(dB, 'video.beat', 'video'), '节拍板短段落接受 beat(按 2 镜计价)');
+    assert(!ok(dB, 'video.gen', 'video'), '十二轮:节拍板短段落拒绝 gen 低价(此前客户端可在 {gen,beat} 自选)');
     assertEq(BILLING.deriveFFAction('upscale', { quality: 'pro' }).derived, 'ff.hdPro');
     assertEq(BILLING.deriveFFAction('upscale', { quality: 'std' }).derived, 'ff.hdStd');
     assertEq(BILLING.deriveFFAction('upscale', {}).derived, 'ff.upscaleTool');
@@ -969,12 +990,12 @@ const billingTests = [
     const plan4 = BILLING.refundPlan([{ userId: 'u1', opId: 'op1', action: 'llm.chat', status: 'refunded', chargeIdem: 'px_u1_op1@llm.chat~2' }], charges);
     assertEq(plan4[0].decision, 'blocked-refunded');
   } },
-  { name: 'clientRefundBlocked:executing 在途拒退(10 分钟陈旧豁免)', fn: async () => {
+  { name: 'clientRefundBlocked(十二轮):executing 一律拒退——陈旧豁免已移除(竞态),崩溃残留由服务端看门狗清算', fn: async () => {
     const now = 1000000000;
-    const fresh = { status: 'executing', updatedAt: now - 60 * 1000 };   // 1 分钟前标记
-    assertEq(BILLING.clientRefundBlocked(fresh, now), true, '新鲜 executing 应拒绝客户端退款(请求可能正在调上游)');
-    const stale = { status: 'executing', updatedAt: now - 11 * 60 * 1000 }; // 11 分钟前(进程崩溃残留)
-    assertEq(BILLING.clientRefundBlocked(stale, now), false, '陈旧 executing 放行对账');
+    const fresh = { status: 'executing', updatedAt: now - 60 * 1000 };      // 1 分钟前标记
+    assertEq(BILLING.clientRefundBlocked(fresh, now), true, '新鲜 executing 拒绝客户端退款(请求可能正在调上游)');
+    const stale = { status: 'executing', updatedAt: now - 45 * 60 * 1000 }; // 45 分钟前(原 10 分钟豁免口径)
+    assertEq(BILLING.clientRefundBlocked(stale, now), true, '十二轮:陈旧 executing 同样拒绝——按时间放行存在"退款后原请求仍交付成品"竞态,残留由 sweepStaleOps 服务端清算');
     assertEq(BILLING.clientRefundBlocked({ status: 'charged', updatedAt: now }, now), false, 'charged 不阻断');
     assertEq(BILLING.clientRefundBlocked({ status: 'delivered', updatedAt: now }, now), false, 'delivered 由 refundDecision 另行阻断');
     assertEq(BILLING.clientRefundBlocked(null, now), false, '无记录不在此层阻断');

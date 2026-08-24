@@ -658,6 +658,7 @@
       else if (act === 'del') U.confirm('删除该分镜?', async () => {
         // 在飞拦截(十一轮):本地任务 + 服务端 running jobs 合并判定(防刷新后孤儿上游任务)
         const guard = window.Tasks ? await Tasks.canDeleteScope({ shotId: sel.id }) : { local: [], remote: [] };
+        if (guard.remote == null) return U.toast('任务中心暂时不可达,无法确认是否有在途生成任务,请稍后重试', 'error');
         if (guard.local.length) return U.toast('该分镜正在生成/处理中,请等待完成后再删除', 'error');
         if (guard.remote.length) return U.toast('服务端仍有该镜的生成任务在跑,请等待完成或超时后再删除', 'error');
         ep.shots = ep.shots.filter(x => x.id !== sel.id); ep.shots.forEach((x, i) => x.order = i); ep.uiSel = ep.shots[0] ? ep.shots[0].id : null; rerender(); U.toast('已删除', 'success');

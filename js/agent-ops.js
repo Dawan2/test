@@ -539,7 +539,13 @@ action 二选一:
         // 推迟结算:立即 splice 会让同批后续 op 的原始镜头号位移
         inserts.push({ after: Math.max(0, Math.min(ep.shots.length, +op.after || 0)), shot: op.shot });
       } else if (op.op === 'delete') {
-        dels.push(n);
+        /* 十二轮:删除前查在飞任务(本地 + 近 2 分钟服务端任务快照,与 UI 删除同口径)——
+         * Agent ops 应用器是同步路径无法 await canDeleteScope,靠 runningInScope 的快照兜底,
+         * 刷新后本地已 failed 但服务端仍在生成时不删(孤儿上游成本) */
+        const s = ep.shots[n];
+        if (s && window.Tasks && Tasks.runningInScope({ shotId: s.id }).length) {
+          changes.push(`镜头${n + 1}「${(s.plot || '').slice(0, 12)}」有生成/处理任务进行中,未删除`);
+        } else dels.push(n);
       } else if (op.op === 'move') {
         moves.push({ from: n, to: (+op.to) - 1 });
       } else if (op.op === 'batch') {

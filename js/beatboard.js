@@ -230,6 +230,7 @@ ${frames}${b.styleParam ? '\n本段生成参数:' + b.styleParam : ''}${p.global
       ep.composedVia = 'beats'; // 来源轨:节拍板五段合成(成片库据此标「节拍板」)
       ep.composedInputHash = Store.composedInputHash(ep); // 七轮:节拍段素材变化 → 成片自动失效
       ep.composedSourceRev = ep.contentRev || 0; // 十轮:记录合成时的剧本版本(剧本修改后提示重合成)
+      ep.composedGraphRev = ep.graphRev || 0;    // 十二轮:记录合成时的图谱版本(图谱修订后判旧)
       Store.save();
       BeatBoard.render(main, p, ep);
       U.toast('五段成片已合成,已归档成片库', 'success');

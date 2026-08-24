@@ -208,6 +208,7 @@
         // 在飞拦截(十一轮):本地 running/background 任务 + 服务端 running jobs 合并判定——
         // 刷新后本地 background 已收敛为 failed,但服务端 job 可能仍在生成(防孤儿上游成本)
         const guard = window.Tasks ? await Tasks.canDeleteScope({ projectId: p.id }) : { local: [], remote: [] };
+        if (guard.remote == null) return U.toast('任务中心暂时不可达,无法确认是否有在途生成任务,请稍后重试', 'error');
         if (guard.local.length) return U.toast(`该项目有 ${guard.local.length} 个任务正在进行(${guard.local[0].type} 等),请等待完成后再删除`, 'error');
         if (guard.remote.length) return U.toast(`服务端仍有 ${guard.remote.length} 个生成任务在跑(刷新后本地已不可见),请等待完成或超时后再删除`, 'error');
         U.confirm(`确定删除项目「${p.name}」吗？项目内分集、分镜数据将一并删除;删除后可在回收站恢复(保留 7 天)。`, () => {

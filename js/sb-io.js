@@ -490,6 +490,7 @@
         ep.composedVia = 'shots'; // 来源轨:分镜合成(成片库据此标「分镜表」)
         ep.composedInputHash = Store.composedInputHash(ep); // 七轮:记录合成输入指纹,之后调序/裁剪/换素材/改转场 → 自动失效
         ep.composedSourceRev = ep.contentRev || 0; // 十轮:记录合成时的剧本版本(剧本修改后提示重合成)
+        ep.composedGraphRev = ep.graphRev || 0;    // 十二轮:记录合成时的图谱版本(图谱修订后判旧)
         Store.save();
         Tasks.done(tk, { filename: `${p.name}_${ep.title}_成片.mp4`, dataURL: r.url });
         if (quiet) { U.toast(`「${ep.title}」合成完成`, 'success'); return; }

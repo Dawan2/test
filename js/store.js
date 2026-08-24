@@ -614,22 +614,27 @@
       if (ep.understanding.sourceRev === undefined) return (ep.contentRev || 0) > 0;
       return ep.understanding.sourceRev !== (ep.contentRev || 0);
     },
-    /* 分镜表是否拆自当前剧本(shotsSourceRev 在拆镜发布时记录;无记录的旧数据视为当前) */
+    /* 分镜表是否拆自当前剧本(shotsSourceRev 在拆镜发布时记录;无记录的旧数据视为当前;
+     * 十二轮补图谱维度:shotsGraphRev 在拆镜发布时记录,事件图谱编辑/重生成后失配判旧) */
     shotsStale(ep) {
       if (!ep || !ep.shots || !ep.shots.length) return false;
-      if (ep.shotsSourceRev === undefined) return false;
-      return ep.shotsSourceRev !== (ep.contentRev || 0);
+      if (ep.shotsSourceRev !== undefined && ep.shotsSourceRev !== (ep.contentRev || 0)) return true;
+      if (ep.shotsGraphRev !== undefined && ep.shotsGraphRev !== (ep.graphRev || 0)) return true;
+      return false;
     },
-    /* 整集审片/成片是否基于当前剧本与分镜(报告与成片的快照都含 contentRev 维度) */
+    /* 整集审片/成片是否基于当前剧本与分镜(报告与成片的快照都含 contentRev 维度;
+     * 十二轮补图谱维度 graphRev——图谱是拆解/分镜的剧情骨架,图谱修订后旧报告/成片同样判旧) */
     reviewStaleByScript(ep) {
       if (!ep || !ep.lastReview) return false;
-      if (ep.lastReview.sourceRev === undefined) return false;
-      return ep.lastReview.sourceRev !== (ep.contentRev || 0);
+      if (ep.lastReview.sourceRev !== undefined && ep.lastReview.sourceRev !== (ep.contentRev || 0)) return true;
+      if (ep.lastReview.graphRev !== undefined && ep.lastReview.graphRev !== (ep.graphRev || 0)) return true;
+      return false;
     },
     composedStaleByScript(ep) {
       if (!ep) return false;
-      if (ep.composedSourceRev === undefined) return false;
-      return ep.composedSourceRev !== (ep.contentRev || 0);
+      if (ep.composedSourceRev !== undefined && ep.composedSourceRev !== (ep.contentRev || 0)) return true;
+      if (ep.composedGraphRev !== undefined && ep.composedGraphRev !== (ep.graphRev || 0)) return true;
+      return false;
     },
     /* 视频就绪(真实):done 且非"离线模拟冒充"——simulated 产物仅离线(后端不可达)时才算就绪,
        在线时只作预览,不计入"生成完成/审片/成片" */

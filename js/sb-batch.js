@@ -212,6 +212,7 @@
       U.confirm(`确定删除本集全部 ${ep.shots.length} 个分镜吗?此操作不可恢复。`, async () => {
         // 在飞拦截(十一轮):本地任务 + 服务端 running jobs 合并判定(防刷新后孤儿上游任务)
         const guard = window.Tasks ? await Tasks.canDeleteScope({ episodeId: ep.id }) : { local: [], remote: [] };
+        if (guard.remote == null) return U.toast('任务中心暂时不可达,无法确认是否有在途生成任务,请稍后重试', 'error');
         if (guard.local.length) return U.toast(`本集有 ${guard.local.length} 个任务正在进行(${guard.local[0].type} 等),请等待完成后再全删`, 'error');
         if (guard.remote.length) return U.toast(`服务端仍有 ${guard.remote.length} 个生成任务在跑,请等待完成或超时后再全删`, 'error');
         ep.shots = [];

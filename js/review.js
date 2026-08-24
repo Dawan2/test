@@ -575,6 +575,7 @@ ${JSON.stringify(brief)}` }],
       // 每镜记录 报告id + 审片时的视频输入指纹,旧报告打开时按 reportId 精确恢复
       snapshotHash: reviewSnapshotHashOf(ep),
       sourceRev: ep.contentRev || 0,
+      graphRev: ep.graphRev || 0, // 十二轮:事件图谱修订后整集报告判旧(图谱是拆解/分镜的剧情骨架)
       perShot: reports.map(x => ({ shotId: x.shot.id, order: x.shot.order, score: x.report.score, reportId: x.report.id, videoInputHash: x.report.videoInputHash || '' })),
       common, cut,
     };

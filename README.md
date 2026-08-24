@@ -48,10 +48,10 @@ server.js(零依赖 Node,仅 http/fs/path/crypto)
 | GET | /api/state/history | 列出 state 快照(最近 5 份:rev/时间/大小)(预留,前端未接) |
 | POST | /api/state/restore | {rev} 恢复快照为当前 state(rev 自增,恢复前留快照;计费键不随快照回滚)(预留,前端未接) |
 | POST | /api/billing/charge | (已废弃,2026-08 六轮移除)扣费由各付费入口按 billingAction 白名单原子完成,前端 U.charge 仅扣本地视图 |
-| POST | /api/billing/refund | 退款(六轮重写;七轮补交付校验;八轮退款即取消在途任务;十轮失败关闭+部分交付保护):{operationId,reason?} **只认 operationId,金额由服务端按原账本判定**——退该 operation 下全部"已扣未退"条目(与服务端未交付自动退费共用幂等键,天然防双退);**已 delivered 或已有成功步骤(部分交付)的 operation 拒绝退款(403,客户端与内部一致)**;**operation 登记缺失一律 refunded:0(失败关闭,不扫钱包)**;退款成功即把关联在途视频任务置 cancelled;客户端提交的 cost 不被采信;operation 记录保留 90 天(覆盖退款授权窗口) |
+| POST | /api/billing/refund | 退款(六轮重写;七轮补交付校验;八轮退款即取消在途任务;十轮失败关闭+部分交付保护;十二轮 executing 一律拒退+看门狗):{operationId,reason?} **只认 operationId,金额由服务端按原账本判定**——退该 operation 下全部"已扣未退"条目(与服务端未交付自动退费共用幂等键,天然防双退);**已 delivered 或已有成功步骤(部分交付)的 operation 拒绝退款(403,客户端与内部一致)**;**executing 一律 409(十二轮移除 10 分钟陈旧豁免——按时间放行存在"退款后原请求仍交付成品"竞态;崩溃残留由 sweepStaleOps 看门狗在 30 分钟后服务端自动清算)**;**operation 登记缺失一律 refunded:0(失败关闭,不扫钱包)**;退款成功即把关联在途视频任务置 cancelled;客户端提交的 cost 不被采信;operation 记录保留 90 天(覆盖退款授权窗口) |
 | GET | /api/billing/actions | 计费动作白名单:{actions(全部动作→价格),costs(前端 COST 键投影)};价格唯一权威在服务端,前端登录/启动时同步(config.billingActions 可覆盖) |
-| GET | /api/jobs | 本人最近 100 条生成任务登记(upstreamId/项目/分集/镜头/inputHash/状态/时间/billingOperationId);**running/needs_reconcile/timed_out/cancelled 恒置前**(历史超 100 条时活动/待对账任务不被挤出截断窗口);配合前端断点续查;超时三档(十一轮):30 分钟标 stale(不退款)、60 分钟转 needs_reconcile 由对账查上游后再定(已成功交付落片/已失败或仍无终态终极退款,不盲退);查询即顺带触发后台对账(不阻塞响应) |
-| GET | /api/volc/video/:id | 视频任务轮询(仅本人登记任务);**timed_out/cancelled 直接返回退款终态**(不再查上游——上游晚成功不能翻转已退款的 operation/不能把视频发给已拿回积分的请求);**needs_reconcile 放行查上游(对账出口)**——查得 succeeded 正常交付、非终态则 timed_out+终极退款;succeeded 且无视频地址视同失败退款 |
+| GET | /api/jobs | 本人最近 100 条生成任务登记(upstreamId/项目/分集/镜头/inputHash/状态/时间/billingOperationId);**running/needs_reconcile/timed_out/cancelled 恒置前**(历史超 100 条时活动/待对账任务不被挤出截断窗口);配合前端断点续查;超时三档(十一轮):30 分钟标 stale(不退款)、60 分钟转 needs_reconcile 由对账查上游后再定(已成功交付落片/已失败或仍无终态终极退款,不盲退);查询即顺带触发后台对账(不阻塞响应);**十二轮:jobUpdate 单向状态机(running→needs_reconcile→succeeded/failed/timed_out/cancelled,终态不可被并发旧响应翻转)+ 顺带清扫 executing 崩溃残留** |
+| GET | /api/volc/video/:id | 视频任务轮询(仅本人登记任务);**timed_out/cancelled 直接返回退款终态**(不再查上游——上游晚成功不能翻转已退款的 operation/不能把视频发给已拿回积分的请求);**needs_reconcile 放行查上游(对账出口)**——查得 succeeded 正常交付、非终态则 timed_out+终极退款;succeeded 且无视频地址视同失败退款;**十二轮交付守卫:operation 已退款时 succeeded 也不回传视频地址(job 转 cancelled 终态),封死"退款+白拿成品"竞态** |
 | POST | /api/upload | {name,dataBase64} → {url},单文件 ≤85MB(base64+JSON ×4/3 膨胀后仍在 120MB 请求体硬限内;可用 config.json uploadMaxMB 调),每用户配额 200MB |
 | GET | /api/uploads | 列本人上传文件(name/url/size/mtime)+已用/配额 |
 | DELETE | /api/uploads/:file | 删除本人目录内文件(防穿越);**删除前递归扫描本人 state 全树做引用检查**(仍被任何模块引用 → 409+引用位置清单;?force=1 强删) |
@@ -214,14 +214,22 @@ server.js(零依赖 Node,仅 http/fs/path/crypto)
 - **KB 知识库**:编剧域(八律/六阶段结构/单集三段式/钩子六型/反转五式/打脸四步/付费卡点/对话铁律/人物体系/剧本诊断)+ 导演域(场面调度/景别运镜情绪表/轴线匹配/剪辑节奏)+ AI 抽卡域(八维提示词公式/五条军规/多镜头写法),为短剧创作与提示词工程方法论的系统化整理;`KB.block()` 注入虎鲸助手(全局+分集)系统提示词,`KB.SECTIONS` 供各生成环节按名取用。
 - **专家雇佣扩充**:风格导演新增 暗黑复仇导演🗡️(打脸四步结构/压抑爆发)/古装权谋导演🏮(信息差智斗/仪式感构图);功能专家新增 钩子工程师🪝/爽点架构师⚡/对白医生💬/结构医师🩺/摄影指导📷/剪辑指导✂️——人设均以 KB 方法论为底座,可在「偏好学习→专家雇佣」全局雇佣(风格类)或「制片→智能体分工」板块雇佣(功能类),也可在助手身份下拉直接切换。**专家自进化**:自定义专家带「🧠 从使用记录进化」——把你的纠正/偏好(agentMemory)LLM 蒸馏为 ≤4 条进化条款追加进该专家 persona(1 积分,无新增退费),已进化专家带 🧠×N 角标。
 
-## 工程治理(2026-08 大审查后十一轮收敛)
+## 工程治理(2026-08 大审查后十二轮收敛)
 
+- **退款运行时崩溃修复(十二轮 P0)**:refundOperation 误用 `item.char`(refundPlan 返回键为 `charge`)→ 所有退款路径(客户端退款 HTTP/生图·视频·LLM·TTS·FFmpeg 上游失败自动退费/任务对账退款)抛 TypeError 返回 500 且扣费悬挂、operation 永停 executing;单测只测纯函数发现不了,本轮新增 `tests/integration.js` 服务器级集成测试(真实子进程 + HTTP,临时目录隔离)覆盖退款闭环全路径——生图失败自动退费/退款幂等重放/executing 拒退/看门狗清算/已交付拒退。
+- **executing 永久拒退 + 看门狗(十二轮 P1)**:clientRefundBlocked 移除"超 10 分钟放行"豁免(FFmpeg 等合法长任务可超任意时限,按时间放行必有"第 N 分钟退款→稍后收到成品"竞态);executing 一律 409,崩溃残留由 sweepStaleOps 看门狗清算(30 分钟未终态且无活动 job → 服务端自动退款;部分交付 blocked-ok-step 不退只转 failed 终态),5 分钟周期 + 退款端点/任务中心入口触发。
+- **交付守卫(十二轮 P1)**:opDelivered/opStepDelivered 返回布尔,生图/TTS/FFmpeg/LLM/视频轮询/后台对账六处在回传结果前校验——operation 已退款则 409 不交付(job 转 cancelled 终态),封死"退款+白拿成品";此前只挡数据库状态翻转,原 HTTP 请求仍会把成品返回给客户端。
+- **jobs 单向状态机(十二轮 P1)**:jobUpdate 终态保护(succeeded/failed/timed_out/cancelled 不可被并发旧响应翻转)——后台对账与视频轮询并发查询同一任务时,旧响应不再覆盖另一路刚写入的 succeeded。
+- **删除守卫全量收口(十二轮 P1)**:canDeleteScope 远端判定纳入 needs_reconcile、查询失败保守拒绝(remote=null,调用方阻断——后端临时断线不再放行删除在途实体);runningInScope 合并近 2 分钟服务端任务快照(canDeleteScope/reconcileJobs 刷新),Agent 单镜删除(agent-ops)与分集删除(agent-global)经此共享远端判定;重新分集(proj-upload)升级为异步守卫;五处 UI 删除点全部接入 unreachable 阻断。
+- **生成缓存引用根扩容(十二轮 P1)**:sweepGenCache 引用扫描从"仅用户 state"扩为 state + jobs.json videoUrl——后台对账成功后视频先落 jobs、用户未打开项目时 state 尚无引用,此前默认 3 天被清理后 jobs 返回失效地址;job 记录同步存 remoteUrl 兜底溯源。
+- **事件图谱 revision 链(十二轮 P1)**:图谱条目记录 sourceRev(AI 拆解时),eventsOfEpisode 对失配(或旧数据无 sourceRev 且正文改过)的图谱不再注入 AI 拆解/智能分镜——封死"新正文+旧图谱"喂给模型;图谱手动编辑/增删/AI 重生成递增 ep.graphRev,分镜(shotsGraphRev)/整集审片(lastReview.graphRev)/成片(composedGraphRev)在生成时记录并失配判旧,旧数据无记录保持原语义(迁移兼容)。
+- **视频 ≤10s 结构定价(十二轮)**:deriveVideoAction ≤10s 再按结构信号区分——节拍板任务以复合键 beat:\<epId\>:\<idx\> 登记(beatboard.js 固定前缀),命中定死 video.beat,其余定死 video.gen;此前 ≤10s 允许客户端在 {gen,beat} 自选(短节拍段可提 gen 5 分避 beat 10 分),现标签不再参与定价。
 - **退款精确归属(十一轮 P0-1)**:operation 新记录保存本次扣费的完整 chargeIdem(含 ~n 重试后缀),refundPlan(billing.js 纯函数)按其一对一归属每笔扣费到创建它的记录——封死"退款重试后新扣费被映射到旧 refunded 记录、最新已交付扣费仍可被退回";refundJob 校验实退金额>0 才落 refunded 标记(此前不看退款返回值直接写 true,blocked 时假标已退)。
-- **executing 在途拒退(十一轮 P0-2)**:扣费成功后、调上游前把 operation 标 executing——新鲜 executing(10 分钟内)的客户端退款一律 409,封死"发起生成→立即退款→等原请求交付结果"的套利窗口(上游任务无法真正取消,退款后交付即平台净亏);超 10 分钟视为进程崩溃残留放行对账;失败路径的服务端退款是 executing 的正常出口,不受影响。
+- **executing 在途拒退(十一轮 P0-2;十二轮收紧见上)**:扣费成功后、调上游前把 operation 标 executing——客户端退款对 executing 一律 409,封死"发起生成→立即退款→等原请求交付结果"的套利窗口(上游任务无法真正取消,退款后交付即平台净亏);失败路径的服务端退款是 executing 的正常出口,不受影响。
 - **生图信号定价(十一轮 P0-3)**:deriveImageAction 按请求结构+prompt 信号定死动作——多图(≥2)一律 image.fusion;单图 i2i 的宫格/多机位按分辨率档钉死 multiCam1/2、高清化须 2K/4K 目标档、局部重绘/超写实/多视角话术命中即定对应动作;生图的产品就是 prompt 本身,客户端标签不再参与定价,allowedSet 仅剩纯文生 {gen,tweetShot}(价差 1 分残留);字幕擦除双入口统一 5 分(ff.suberase 工具入口并入 ff.erase)。
 - **并发执行锁(十一轮 P0-4)**:execLock——同 (userId,opId,action) 的并发请求在首个执行期间直接 409,封死"同 operation 并发重放一次扣费多次调上游"(此前 LLM 走 replay-exec、非 LLM 复用已有扣费后都会继续执行上游);生图/视频/TTS/LLM/FFmpeg 五类付费端点全覆盖。
-- **canDeleteScope 异步删除守卫(十一轮 P1)**:`Tasks.canDeleteScope({projectId|episodeId|shotId})` 合并本地在飞任务与服务端 /api/jobs 的 running 任务判定——刷新后本地 background 已被 sweepStale 收敛为 failed,但服务端 job 仍在生成时项目/分集/镜头/全部分镜删除仍被拦截(孤儿上游成本);网络不可达时按本地结果保守判定(离线场景服务端本就无任务)。
-- **Agent 单镜删除闭环(十一轮 P1)**:applyOps 的镜头 delete 查在飞任务(与 UI 同口径);自动执行模式下镜头 delete 与分集 delep 一样始终先确认(edit-hi 全量)。
+- **canDeleteScope 异步删除守卫(十一轮 P1;十二轮全量收口见上)**:`Tasks.canDeleteScope({projectId|episodeId|shotId})` 合并本地在飞任务与服务端 /api/jobs 的 running/needs_reconcile 任务判定——刷新后本地 background 已被 sweepStale 收敛为 failed,但服务端 job 仍在生成时项目/分集/镜头/全部分镜删除仍被拦截(孤儿上游成本)。
+- **Agent 单镜删除闭环(十一轮 P1;十二轮补远端快照)**:applyOps 的镜头 delete 查在飞任务(与 UI 同口径);自动执行模式下镜头 delete 与分集 delep 一样始终先确认(edit-hi 全量)。
 - **理解 revision 断链修复(十一轮 P1)**:understanding 复用前查 `Store.understandingStale(ep)`(过期按新剧本重新生成,不再静默注入旧理解);手动保存/重新生成成功即刷 sourceRev;旧数据无 sourceRev 且 contentRev>0 判旧(此前即使正文修改过也永久被当当前版本)。
 - **视频超时三档(十一轮 P1,十轮两档升级)**:30 分钟标 stale(不退款,轮询先查上游再定);60 分钟转 **needs_reconcile**——由 reconcileStaleJobs(/api/jobs 与轮询入口触发 + 5 分钟周期兜底)对账查上游后再定:已成功交付落片(用户晚到也能拿到结果)、已失败或对账后仍无终态才终极退款(不再 60 分钟盲退);findActiveJob 幂等复用窗口同步延至 60 分钟(30~60 分钟间重试不再双开上游任务)。
 - **节拍板自动对账(十一轮 P1)**:Media.reconcileJobs 除 ep.shots 外同时扫描 ep.beats(按服务端复合键 beat:\<epId\>:\<idx\> 定位)——刷新后节拍段 generating 不再悬挂,登录即自动续查恢复(此前需手动再点「生成」)。
@@ -241,7 +249,7 @@ server.js(零依赖 Node,仅 http/fs/path/crypto)
 - **审片版本正向证明(八轮;九轮补 URL 维度)**:单镜报告以"报告指纹与当前视频指纹都存在且一致、且视频 URL 未变"为有效前提——超分/字幕擦除等后处理替换 URL 但保留原 inputHash,九轮起同样判"旧版";整集报告快照哈希含每镜视频版本+URL,新增/删除/调序/重生成/后处理任一变化 → 整集报告标"旧版";打开旧报告按 `reportId` 精确恢复参与单镜报告,报告对象被挤出最近 5 条时按快照得分展示并标"原报告已缺失"。
 - **审片计费步骤状态机(九轮)**:整集审片 N+2 步(单镜×N + 共性汇总 + 四维评审)每步显式 pending|done|refunded——步骤失败退款后再取消不重复计该步(八轮布尔标记会重复退);四维评审期间取消也走取消收尾(八轮漏:完成后仍存报告标 done);单镜自扣模式 LLM 失败回退本地同样退费(八轮只处理了整集 free 模式)。
 - **批量长镜头成本登记(九轮)**:批量生成逐镜按预估时长登记任务成本(>10s 长镜头按 2 镜计价)——任务监控/"今日消耗"与实际扣费一致(八轮前统一按单镜价少记一半)。
-- **删除拦截全统一(九轮;十一轮升级异步守卫)**:项目/分集/单镜/全部分镜删除 + 重新分集覆盖,五处入口全部走 `Tasks.runningInScope({projectId|episodeId|shotId})`——分集删除此前只扫 video.generating(漏配音/审片/合成);十一轮升级为 `Tasks.canDeleteScope` 异步守卫(本地在飞 + 服务端 running jobs 合并判定,刷新后仍拦截)。
+- **删除拦截全统一(九轮;十一轮升级异步守卫;十二轮全量收口)**:项目/分集/单镜/全部分镜删除 + 重新分集覆盖,全部入口先走 `Tasks.runningInScope({projectId|episodeId|shotId})`(十二轮起含服务端任务快照),UI 五处入口与重新分集再经 `Tasks.canDeleteScope` 异步守卫(本地在飞 + 服务端 running/needs_reconcile jobs 合并判定,查询失败保守拒绝);Agent 单镜 delete/分集 delep 走同一 runningInScope(同步路径共享快照)——分集删除此前只扫 video.generating(漏配音/审片/合成)。
 - **直连模式字段剥离(九轮)**:浏览器直连 OpenAI 兼容端点时不再透传 billingAction/operationId/jsonMode/step 代理专用字段(严格端点会因未知参数 400)。
 - **FFmpeg 限流泄漏(九轮)**:未知子路由在 rateLimitOk 之前 404——此前 404 分支不进 finally 的 rateLimitDone,同用户探 4 次未知路由并发计数占满到重启。
 - **canonical 合成快照(八轮,主线贯通)**:`Store.composeSeqOf(ep)` 成为时间线规则(tlOrder 定序/tlTrims 剔除裁剪)的唯一权威实现——sb-io.doCompose 的合成 items 与 composedInputHash 的就绪判定共用同一份序列,消除"合成用 shotsOverride、指纹却按 ep.shots 原序算"的口径分裂(时间线调序/裁剪/剔除此前不会使成片失效);无 composedInputHash 的旧成片一律判未就绪(重新合成一次即建立指纹)。
@@ -252,7 +260,7 @@ server.js(零依赖 Node,仅 http/fs/path/crypto)
 - **401 统一清理(八轮)**:store.js 的 syncPush/pullState/mergeCloud 三处 401 全部走 `U.authExpired()`(此前被当普通网络错误吞掉或只清 token 留旧 session,造成假登录态反复重试)。
 - **上传引用递归扫描(八轮)**:删除前引用检查改为递归遍历用户 state 全树(带名称标注的结构路径),节拍板视频/整集成片/切片/剧壳海报/审片快照/回收站等任何模块的引用自动覆盖,不再依赖手写字段清单。
 - **fileFavs 三方合并(八轮)**:取消收藏(基线有、本地无)不再被云端并回;云端新增/本地新增都保留,同键取本地最近编辑。
-- **已知残留(如实记录)**:**llm.* 同族内动作标签由客户端声明——调用高价能力(llm.director 10 分)可提交低价 llm.chat 标签,价差上界 9 积分;本地自用风险低,对不可信用户开放前属 P0,彻底封死需服务端工作流端点或服务端签发的短期计费票据(未排期)**;生图十一轮起按 prompt 信号定死动作(宫格/高清/重绘/写实/多视角/多图融合),残留仅纯文生 {gen,tweetShot} 价差 1 分(推文模式与普通文生结构无差异);字幕擦除双入口已统一 5 分(十一轮);LLM 聚合流程的辅助步骤名由客户端声明(恶意全用辅助步名可推迟交付,但任一步成功即阻断退款,滥用上界=stepBudget 内的上游调用);聚合流程部分交付(前序步骤成功、主步骤失败)不退款——用户拿到部分结果但整笔消耗,边界场景如实记录;settings 等整体键的多端合并仍是"云端为底、本地改过覆盖"(键级三方合并未排期)。
+- **已知残留(如实记录)**:**llm.* 同族内动作标签由客户端声明——调用高价能力(llm.director 10 分)可提交低价 llm.chat 标签,价差上界 9 积分;本地自用风险低,对不可信用户开放前属 P0,彻底封死需服务端工作流端点或服务端签发的短期计费票据(未排期)**;生图十一轮起按 prompt 信号定死动作(宫格/高清/重绘/写实/多视角/多图融合),**但信号是前端固定话术——恶意客户端改写提示词避开关键词即可把 21 分的多机位宫格降为 image.gen 2 分(同一上游请求),对不可信用户开放前同为 P0,根治同样依赖服务端工作流票据**;残留仅纯文生 {gen,tweetShot} 价差 1 分(推文模式与普通文生结构无差异);视频 ≤10s 已按 beat: 结构前缀定死(十二轮);字幕擦除双入口已统一 5 分(十一轮);LLM 聚合流程的辅助步骤名由客户端声明(恶意全用辅助步名可推迟交付,但任一步成功即阻断退款,滥用上界=stepBudget 内的上游调用);聚合流程部分交付(前序步骤成功、主步骤失败)不退款——用户拿到部分结果但整笔消耗,边界场景如实记录;**隐私保留期:operations.json(含 ≤8KB 的 LLM 步骤响应缓存)按 90 天保留,与退款授权窗口共用——结果恢复数据与长期退款授权记录分离保存未排期**;settings 等整体键的多端合并仍是"云端为底、本地改过覆盖"(键级三方合并未排期)。
 
 - **统一服务端白名单计费 + operation 状态机(2026-08 六轮;七轮复审 P0 四项全量落地)**:
   - **退款漏洞封死**:/api/billing/refund 只认 operationId——客户端提交的 cost/reason 不再参与金额计算(原实现可直连接口把当天正常消费退回来);金额一律取自服务端原账单,退该 operation 下全部"已扣未退"条目;/api/billing/charge 旧镜像端点移除;**已 delivered(成功交付)的 operation 拒绝客户端退款(七轮)**,正常消费不可主动刷回。
@@ -411,6 +419,8 @@ uploads/gen/                  火山引擎生成结果本地缓存(内容寻址�
 
 ## 回归测试
 
-`node tests/unit.js` — 单元测试(60 项断言,零依赖):Node `vm` 沙箱注入浏览器全局与依赖 stub(Store/U/Tasks/API),加载真实源码断言纯逻辑域;覆盖 `agent-ops.js`(ops 应用器含同批删插序号结算/执行闭环验证/预排参数钳制/上下文压缩/工作台定位/动作执行器)、`experts.js`(16 预置专家/雇佣·解雇·级联恢复默认模板/自进化计费五件套/工坊草稿规范化)、`produce.js`(智能审片闭环:达标自动确认/不达标重试/重生成失败转人工/积分不足中止/超限转人工/quiet 模式;一键成片三段编排顺序与确认拒止)、`store.js`(三方合并/输入指纹迁移/**understandingStale 旧数据判旧语义**/合成快照/成片就绪/fileFavs 合并)、`billing.js`(服务端计费核心与单测共享:动作推导/校验、**客户端 billingAction↔服务端端点兼容矩阵**(全量扫描 js/ 动作字面量与 Media.ff* 调用点)、宽松解析、**operation/步骤状态机判定**(stepDecision:已成功步骤返回缓存/拒绝重放;refundDecision:已交付/有成功步骤/登记缺失不可退;latestOp:退款重试后取最新记录;refundPlan:按 chargeIdem 精确归属,旧 refunded 记录不再吞掉新扣费的退款判定;clientRefundBlocked:executing 在途拒退)——server.js 只做 IO 编排,判定逻辑与单测同源)。可单套件运行:`node tests/unit.js agent-ops|experts|produce|store|billing`。无网络无服务,秒级完成;DOM 重交互(卡片绑定等)仍由 e2e 承担。
+`node tests/unit.js` — 单元测试(61 项断言,零依赖):Node `vm` 沙箱注入浏览器全局与依赖 stub(Store/U/Tasks/API),加载真实源码断言纯逻辑域;覆盖 `agent-ops.js`(ops 应用器含同批删插序号结算/执行闭环验证/预排参数钳制/上下文压缩/工作台定位/动作执行器)、`experts.js`(16 预置专家/雇佣·解雇·级联恢复默认模板/自进化计费五件套/工坊草稿规范化)、`produce.js`(智能审片闭环:达标自动确认/不达标重试/重生成失败转人工/积分不足中止/超限转人工/quiet 模式;一键成片三段编排顺序与确认拒止)、`store.js`(三方合并/输入指纹迁移/understandingStale 旧数据判旧语义/**stale 谓词 graphRev 维度:图谱修订传播到分镜/审片/成片**/合成快照/成片就绪/fileFavs 合并)、`billing.js`(服务端计费核心与单测共享:动作推导/校验、**客户端 billingAction↔服务端端点兼容矩阵**(全量扫描 js/ 动作字面量与 Media.ff* 调用点)、宽松解析、**operation/步骤状态机判定**(stepDecision:已成功步骤返回缓存/拒绝重放;refundDecision:已交付/有成功步骤/登记缺失不可退;latestOp:退款重试后取最新记录;refundPlan:按 chargeIdem 精确归属,旧 refunded 记录不再吞掉新扣费的退款判定;clientRefundBlocked:executing 一律拒退,十二轮移除陈旧豁免)——server.js 只做 IO 编排,判定逻辑与单测同源)。可单套件运行:`node tests/unit.js agent-ops|experts|produce|store|billing`。无网络无服务,秒级完成;DOM 重交互(卡片绑定等)仍由 e2e 承担。
+
+`node tests/integration.js` — **服务器级集成测试(十二轮新增,14 项断言,零依赖)**:spawn 真实 server.js 子进程 + HTTP 直打,覆盖单元测试到不了的编排层——生图上游失败自动退费闭环(余额恢复 + operation refunded;十二轮 P0 崩溃的回归测试)、退款端点幂等重放、executing 在途拒退 409、崩溃残留看门狗清算(sweepStaleOps:30 分钟 executing 无活动 job → 服务端自动退款)、已交付拒退 403。隔离:MV_DATA_DIR/MV_UPLOADS_DIR/MV_CONFIG 环境变量重定向到临时目录(不触碰真实用户数据/密钥/缓存;server.js 仅在这三个 env 存在时改变路径,缺省行为不变),VOLC_API_KEY 给假值让生图在真实上游处快速失败(401/网络错误/超时殊途同归走退费路径)。
 
 `node tests/e2e.js` — 全功能冒烟(63 项断言):无头 Chrome + CDP 驱动真实页面,覆盖登录/项目/主体/分集/分镜脚本/分镜视频/剪辑台/节拍板/镜头组/资产库/百宝箱/偏好学习/看板/个人中心/团队/回收站与离线模式;自带临时服务与测试数据清理;**LLM 链路走 MOCK_LLM=1 罐头返回**(server.js /api/llm/chat 测试模式,mock 在计费动作校验之后返回——e2e 同时覆盖动作兼容);智能分镜全链路不花上游费用也可回归;真实生成链路验收用 `node tests/live-gen.js`(⚠ 真实调用上游计费,节拍板+镜头组全链)。需要回归时手动运行。

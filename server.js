@@ -14,14 +14,16 @@ const { spawn } = require('child_process');
 const https = require('https');
 
 const ROOT = __dirname;
-const DATA_DIR = path.join(ROOT, 'data');
+/* MV_DATA_DIR / MV_UPLOADS_DIR / MV_CONFIG 环境变量可重定向数据·上传·配置文件
+ * (十二轮:tests/integration.js 用临时目录隔离真实用户数据/密钥/缓存,缺省与原行为完全一致) */
+const DATA_DIR = process.env.MV_DATA_DIR ? path.resolve(process.env.MV_DATA_DIR) : path.join(ROOT, 'data');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const STATES_DIR = path.join(DATA_DIR, 'states');
 const USAGE_DIR = path.join(DATA_DIR, 'usage');
-const UPLOADS_DIR = path.join(ROOT, 'uploads');
+const UPLOADS_DIR = process.env.MV_UPLOADS_DIR ? path.resolve(process.env.MV_UPLOADS_DIR) : path.join(ROOT, 'uploads');
 const GEN_CACHE_DIR = path.join(UPLOADS_DIR, 'gen'); // 火山引擎生成结果本地缓存(图片/视频)
-const CONFIG_FILE = path.join(ROOT, 'config.json');
+const CONFIG_FILE = process.env.MV_CONFIG ? path.resolve(process.env.MV_CONFIG) : path.join(ROOT, 'config.json');
 const LOG_FILE = path.join(DATA_DIR, 'server.log');
 
 const BODY_LIMIT = 120 * 1024 * 1024; // 视频上传需要(单文件上限见 uploadMaxMB)
@@ -842,15 +844,16 @@ function requestHashOf(obj) {
   delete o.operationId; delete o.billingAction; delete o.step;
   return crypto.createHash('sha256').update(JSON.stringify(o)).digest('hex').slice(0, 32);
 }
-/* 步骤交付(十一轮):标记 step.ok=true 并缓存响应文本;final=true(main 步/非 LLM 端点)时
- * operation 进入 delivered——已 refunded 的 operation 不再翻转(此前客户端在途退款后,
- * 原请求完成仍会把 refunded 改成 delivered) */
+/* 步骤交付(十一轮;十二轮返回布尔):标记 step.ok=true 并缓存响应文本;final=true(main 步/
+ * 非 LLM 端点)时 operation 进入 delivered——已 refunded 的 operation 不再翻转。
+ * 返回 false=该 operation 已退款(或无登记),调用方据此不再把结果发给客户端——
+ * 此前只挡数据库状态翻转,原 HTTP 请求仍会把成品返回(退款+白拿成品竞态) */
 function opStepDelivered(userId, opId, action, step, final, respText) {
-  if (!opId || String(opId).startsWith('direct_')) return;
+  if (!opId || String(opId).startsWith('direct_')) return true; // 直连/无登记:无退款语义,照常交付
   const db = opsDB();
   const op = opFind(db, userId, opId, action);
-  if (!op) return;
-  if (op.status === 'refunded') return; // 已退款:不再交付(退款即终态)
+  if (!op) return true; // 登记缺失(旧数据):不阻断正常交付
+  if (op.status === 'refunded') return false; // 已退款:不再交付(退款即终态)
   if (step) {
     op.steps = op.steps || {};
     if (op.steps[step]) { op.steps[step].ok = true; }
@@ -860,8 +863,9 @@ function opStepDelivered(userId, opId, action, step, final, respText) {
   if (final && op.status !== 'delivered') op.status = 'delivered';
   op.updatedAt = Date.now();
   saveOps(db);
+  return true;
 }
-function opDelivered(userId, opId, action) { opStepDelivered(userId, opId, action, null, true); }
+function opDelivered(userId, opId, action) { return opStepDelivered(userId, opId, action, null, true); }
 /* 在途执行标记(十一轮 P0-2):扣费成功后、调上游前标记——客户端退款对新鲜 executing 一律拒绝
  * (请求可能正在调上游,退款后原请求完成仍会交付结果);失败路径的 proxyRefund 是 executing 的
  * 正常出口(refunded 覆盖),不受影响 */
@@ -967,7 +971,7 @@ function refundOperation(userId, opId, reason, clientInitiated) {
   let total = 0, dirty = false;
   for (const item of BILLING.refundPlan(ops, eff)) {
     if (item.decision !== 'refundable') continue; // blocked-delivered/refunded/ok-step/missing:一律不退
-    const c = item.char;
+    const c = item.charge; // 十二轮 P0:refundPlan 返回键为 charge(此前误用 item.char → undefined.amount 崩溃,所有退款路径 500)
     const r = walletAppend(userId, 'refund', -c.amount, '退费:' + String(reason || c.reason || '').slice(0, 50), c.idem + '_rf');
     if (!r.dup) {
       syncWalletProjection(userId, r.wallet, r.entry, {});
@@ -977,6 +981,29 @@ function refundOperation(userId, opId, reason, clientInitiated) {
   }
   if (dirty) saveOps(odb);
   return total;
+}
+/* executing 崩溃残留看门狗(十二轮 P1):同步付费端点(生图/TTS/FFmpeg/LLM)请求最长数分钟,
+ * executing 超 30 分钟必为进程崩溃/重启残留(扣费后未走到交付/退款任一出口);有活动 job 的
+ * operation(视频等异步任务)跳过——其终态/退款由任务中心对账闭环负责。
+ * 残留走内部退款(refundPlan 判定;部分交付 blocked-ok-step 不退,只收敛为 failed 终态不再悬挂)。
+ * 5 分钟周期 + 退款端点/任务中心入口触发(幂等)——executing 对客户端永久拒退后,
+ * 崩溃残留的退款出口完全由本看门狗承担 */
+const OP_EXECUTE_STALE_MS = 30 * 60 * 1000;
+function sweepStaleOps() {
+  let odb = opsDB();
+  const stale = odb.list.filter(o => o.status === 'executing' && Date.now() - (o.updatedAt || o.createdAt || 0) > OP_EXECUTE_STALE_MS);
+  if (!stale.length) return;
+  const jdb = jobsDB();
+  const activeOps = new Set(jdb.list.filter(j => j.status === 'running' || j.status === 'needs_reconcile').map(j => j.billingOperationId).filter(Boolean));
+  let dirty = false;
+  stale.forEach(o => {
+    if (activeOps.has(o.opId)) return;
+    refundOperation(o.userId, o.opId, '执行残留看门狗(进程崩溃/重启,' + Math.round(OP_EXECUTE_STALE_MS / 60000) + ' 分钟未终态)', false);
+    odb = opsDB(); // 重新读取(refundOperation 已按其判定落盘 refunded)
+    const cur = opFind(odb, o.userId, o.opId, o.action);
+    if (cur && cur.status === 'executing') { cur.status = 'failed'; cur.updatedAt = Date.now(); dirty = true; }
+  });
+  if (dirty) saveOps(odb);
 }
 
 /* ---------- 生成任务中心(data/jobs.json:断点续查/幂等/审计的持久化登记) ----------
@@ -1074,9 +1101,15 @@ async function reconcileStaleJobs() {
         const remoteUrl = data && data.content && data.content.video_url;
         if (st === 'succeeded' && remoteUrl) {
           const videoUrl = (await cacheGenFile(remoteUrl, '.mp4')) || remoteUrl;
-          jobUpdate(jobsDB(), j.upstreamId, { status: 'succeeded', videoUrl });
-          const jD = jobsDB().list.find(x => x.upstreamId === j.upstreamId);
-          if (jD && jD.billingOperationId && !jD.refunded) opDelivered(j.userId, jD.billingOperationId, jD.billingAction);
+          /* 十二轮交付守卫:operation 已退款(看门狗等路径)→ 结果不再交付,job 转 cancelled,
+           * 防客户端 reconcileJobs 从任务中心把已退款视频拉回本地(退款+白拿成品) */
+          const jPre = jobsDB().list.find(x => x.upstreamId === j.upstreamId);
+          if (jPre && jPre.billingOperationId && !jPre.refunded
+            && !opDelivered(j.userId, jPre.billingOperationId, jPre.billingAction)) {
+            jobUpdate(jobsDB(), j.upstreamId, { status: 'cancelled', error: '该操作已退款,结果不再交付' });
+            continue;
+          }
+          jobUpdate(jobsDB(), j.upstreamId, { status: 'succeeded', videoUrl, remoteUrl }); // remoteUrl 兜底存档:本地缓存被清理后仍可溯源
         } else if (st === 'succeeded' || st === 'failed') {
           const msg = st === 'failed' ? ((data.error && data.error.message) || '上游生成失败') : 'succeeded 无视频地址';
           jobUpdate(jobsDB(), j.upstreamId, { status: 'failed', error: msg });
@@ -1089,10 +1122,15 @@ async function reconcileStaleJobs() {
     }
   } finally { RECONCILING = false; }
 }
-setInterval(() => { try { sweepJobs(); } catch (_) {} reconcileStaleJobs().catch(() => {}); }, 5 * 60 * 1000).unref();
+setInterval(() => { try { sweepJobs(); sweepStaleOps(); } catch (_) {} reconcileStaleJobs().catch(() => {}); }, 5 * 60 * 1000).unref();
+/* 单向状态机(十二轮 P1):running → needs_reconcile → succeeded/failed/timed_out/cancelled,
+ * 任一终态不可再翻转——后台对账与视频轮询可并发查询同一任务,旧响应(如 running 空回写)
+ * 此前可覆盖另一路刚写入的 succeeded。终态后的非状态字段(refunded/videoUrl 等)仍可补写 */
+const JOB_TERMINAL = new Set(['succeeded', 'failed', 'timed_out', 'cancelled']);
 function jobUpdate(db, upstreamId, patch) {
   const j = db.list.find(x => x.upstreamId === upstreamId);
   if (!j) return;
+  if (JOB_TERMINAL.has(j.status) && patch.status && patch.status !== j.status) return; // 终态保护:旧响应不得翻转
   Object.assign(j, patch, { updatedAt: Date.now() });
   // 八轮:超时判定统一收口到 sweepJobs(timed_out+退款)——此处不再顺带标 failed,
   // 消除"另一条路径标记超时但不退款"的分叉(jobUpdate 的调用方 GET 已先 sweep,该分支本已不可达)
@@ -1101,7 +1139,9 @@ function jobUpdate(db, upstreamId, patch) {
 
 /* ---------- uploads/gen/ 缓存清理:引用扫描 + 保留期 ----------
  * 删除「未被任何用户 state 引用」且「超过 genCacheDays 天」的生成缓存文件(默认 3 天,0=关闭)。
- * state 中的引用形态为 /uploads/gen/<name> 字符串,全量扫描 data/states/*.json 汇总名单。 */
+ * 引用根(十二轮扩):用户 state(data/states/*.json 中的 /uploads/gen/<name> 字符串)
+ * + 任务中心 jobs.json 的 videoUrl——后台对账成功后视频先落 jobs、用户未打开项目时 state
+ * 尚无引用,此前默认 3 天即被清理,jobs 随后返回失效地址。 */
 function sweepGenCache() {
   try {
     const days = +(CONFIG.genCacheDays === undefined ? 3 : CONFIG.genCacheDays);
@@ -1114,6 +1154,16 @@ function sweepGenCache() {
           const txt = fs.readFileSync(path.join(STATES_DIR, f), 'utf8');
           for (const m of txt.matchAll(/\/uploads\/gen\/([\w.-]+)/g)) referenced.add(m[1]);
         } catch (_) {}
+      }
+    } catch (_) {}
+    /* 十二轮:任务中心兜底引用——非终态与已成功任务的 videoUrl 同样计入引用名单
+     * (已成功但用户尚未领取的结果不能清理;cancelled/timed_out 已退款不含可领取结果) */
+    try {
+      const jdb = readJSON(JOBS_FILE, { list: [] });
+      for (const j of (jdb && jdb.list) || []) {
+        if (!j.videoUrl) continue;
+        const m = String(j.videoUrl).match(/\/uploads\/gen\/([\w.-]+)/);
+        if (m) referenced.add(m[1]);
       }
     } catch (_) {}
     const cutoff = Date.now() - days * 24 * 3600 * 1000;
@@ -1563,7 +1613,8 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/billing/refund' && req.method === 'POST') {
       const b = await readJSONBody(req, 4096);
       const opId = sanitizeOpId(b.operationId) || sanitizeOpId(String(b.idem || '').replace(/_rf$/, ''));
-      if (!opId) return fail(res, 400, '退款需提供 operationId(金额由服务端按原账单判定,不接受客户端提交金额)', 400);
+      if (!opId) return fail(res, 400, '退款需提供 operationId(金额由服务端按原账本判定,不接受客户端提交金额)', 400);
+      sweepStaleOps(); // 十二轮:先清扫 executing 崩溃残留(无活动 job 且超 30 分钟 → 服务端自动退款/转终态)
       const odb = opsDB();
       const ops = odb.list.filter(o => o.userId === user.id && o.opId === opId);
       /* 十轮:客户端退款授权失败关闭——operation 登记缺失(operations.json 损坏/超保留期被淘汰)时
@@ -1571,11 +1622,12 @@ const server = http.createServer(async (req, res) => {
       if (!ops.length) {
         return ok(res, { refunded: 0, balance: readWallet(user.id).balance, deduped: true, noRecord: true });
       }
-      /* 十一轮:最新记录正在执行(新鲜 executing)→ 拒绝退款——"发起生成→立即退款→等原请求返回
-       * 结果"的套利窗口(此前退款后原请求完成仍会交付);executing 超 10 分钟视为进程崩溃残留,放行对账 */
+      /* 十一轮 P0-2(十二轮收紧):executing 一律拒绝客户端退款——"发起生成→立即退款→等原请求返回
+       * 结果"的套利窗口(退款后原请求完成仍会交付);崩溃残留已由上方 sweepStaleOps 服务端清算,
+       * 不再按时间放行客户端在途退款(FFmpeg 等合法长任务可超任意时限,按时间放行必有竞态) */
       const latest = opFind(odb, user.id, opId, null);
       if (latest && BILLING.clientRefundBlocked(latest)) {
-        return fail(res, 409, '该操作正在执行中,请等待完成后按结果处理(成功不可退,失败自动退费)', 409);
+        return fail(res, 409, '该操作正在执行中,请等待完成后按结果处理(成功不可退,失败/崩溃残留由服务端自动退费)', 409);
       }
       /* 九轮:客户端退款须逐条"确无可退"才拒——已 delivered,或聚合 operation 已有任何成功步骤
        * (辅助步成功=已消耗上游服务)都视为已交付,不可客户端退款;服务端内部失败退款不受此限 */
@@ -1804,7 +1856,8 @@ const server = http.createServer(async (req, res) => {
          * 辅助步(und/gen/rev/route/cmp,客户端显式声明)成功 → 仅标记该步 ok(聚合流程可继续),
          * 但"已有成功调用"同样阻断退款;响应文本缓存到步骤(≤8KB)供同内容重放恢复 */
         const step = sanitizeOpId(b.step) || 'main';
-        opStepDelivered(user.id, charge.opId, llmAction, step, step === 'main', content);
+        /* 十二轮交付守卫:已退款的 operation 不再回传 LLM 响应内容(退款+白拿成品竞态) */
+        if (!opStepDelivered(user.id, charge.opId, llmAction, step, step === 'main', content)) return fail(res, 409, '该操作已退款,结果不再交付', 409);
         res.writeHead(200, Object.assign({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, SEC_HEADERS));
         return res.end(JSON.stringify(b.jsonMode ? { code: 0, data, parsed } : { code: 0, data }));
         } finally { execUnlock(lockKey); } // 十一轮并发锁:请求结束(成功/失败/异常)统一释放
@@ -1863,7 +1916,8 @@ const server = http.createServer(async (req, res) => {
         const remoteUrl = data.data && data.data[0] && data.data[0].url;
         if (!remoteUrl) return failRefund(502, '生图返回内容为空', 502);
         const local = await cacheGenFile(remoteUrl, '.jpeg'); // 临时签名 URL → 本地缓存
-        opDelivered(user.id, charge.opId, action); // 交付成功:operation 终态(不可客户端退款/不可重放)
+        /* 十二轮交付守卫:operation 已被看门狗/对账退款 → 不再把成品发给客户端(退款+白拿成品竞态) */
+        if (!opDelivered(user.id, charge.opId, action)) return fail(res, 409, '该操作已退款,结果不再交付', 409);
         return ok(res, { url: local || remoteUrl, remoteUrl });
         } finally { execUnlock(imgLock); } // 十一轮并发锁统一释放
       } catch (e) {
@@ -2065,10 +2119,16 @@ const server = http.createServer(async (req, res) => {
           jobUpdate(jobsDB(), taskId, { status: 'failed', error: out.error });
           refundJob(jobsDB().list.find(x => x.upstreamId === taskId), 'succeeded 无视频地址');
         } else {
-          jobUpdate(jobsDB(), taskId, { status: 'succeeded', videoUrl: out.videoUrl || remoteUrl || '' });
-          const jdbD = jobsDB();
-          const jD = jdbD.list.find(x => x.upstreamId === taskId);
-          if (jD && jD.billingOperationId && !jD.refunded) opDelivered(user.id, jD.billingOperationId, jD.billingAction);
+          /* 十二轮交付守卫:operation 已退款 → 不回传视频地址,job 转 cancelled 终态
+           * (退款+白拿成品竞态;jobUpdate 终态保护下此转换不可再被旧响应翻转) */
+          const jdbD0 = jobsDB();
+          const jD0 = jdbD0.list.find(x => x.upstreamId === taskId);
+          if (jD0 && jD0.billingOperationId && !jD0.refunded
+            && !opDelivered(user.id, jD0.billingOperationId, jD0.billingAction)) {
+            jobUpdate(jobsDB(), taskId, { status: 'cancelled', error: '该操作已退款,结果不再交付' });
+            return ok(res, { status: 'cancelled', error: '该操作已退款,结果不再交付' });
+          }
+          jobUpdate(jobsDB(), taskId, { status: 'succeeded', videoUrl: out.videoUrl || remoteUrl || '', remoteUrl: remoteUrl || '' });
         }
       }
       else if (out.status === 'failed') {
@@ -2094,6 +2154,7 @@ const server = http.createServer(async (req, res) => {
     /* ---- 任务中心:本人最近生成任务(视频断点续查/审计) ---- */
     if (pathname === '/api/jobs' && req.method === 'GET') {
       sweepJobs(); // 超时清扫(七轮):任何查询都顺带全量清扫过期任务(用户不再轮询也不再悬挂)
+      sweepStaleOps(); // 十二轮:顺带清扫 executing 崩溃残留(幂等)
       reconcileStaleJobs().catch(() => {}); // 十一轮 P1-4:待对账任务后台查上游再定退款(不阻塞本次响应)
       const db = jobsDB();
       const mine = db.list.filter(j => j.userId === user.id);
@@ -2117,7 +2178,7 @@ const server = http.createServer(async (req, res) => {
         const b = await readJSONBody(req, 8 * 1024 * 1024);
         /* 各子路由的推导计费动作(九轮:推导核心在 billing.js,与单元测试共享)——路由唯一确定;
          * upscale 按 quality 档位细分(pro→ff.hdPro/std→ff.hdStd/缺省→工具级),客户端标签不再参与定价;
-         * suberase 允许 {erase,eraseTool}(同一 delogo 操作的两个产品入口价,结构无法区分,价差 3 为已知残留) */
+         * suberase 十一轮统一 ff.erase(5)——deriveFFAction 钉死单一价,客户端标签不再参与定价) */
         const dFF = BILLING.deriveFFAction(ff, b);
         const ffAction = billAction(res, 'ff', b, dFF.derived, dFF.allowedSet);
         if (!ffAction) return; // 400 已返回(动作族不符/推导不符)
@@ -2134,7 +2195,8 @@ const server = http.createServer(async (req, res) => {
           return fail(res, code, msg, status);
         };
         const ffOk = data => {
-          opDelivered(user.id, charge.opId, ffAction); // 交付成功:operation 终态
+          /* 十二轮交付守卫:已退款的 operation 不再回传处理结果(退款+白拿成品竞态) */
+          if (!opDelivered(user.id, charge.opId, ffAction)) return fail(res, 409, '该操作已退款,结果不再交付', 409);
           return ok(res, data);
         };
 
@@ -2454,7 +2516,8 @@ const server = http.createServer(async (req, res) => {
         }
         const name = 'tts_' + Date.now().toString(36) + crypto.randomBytes(3).toString('hex') + '.mp3';
         fs.writeFileSync(path.join(GEN_CACHE_DIR, name), Buffer.from(out.audio, 'base64'));
-        opDelivered(user.id, charge.opId, tAction); // 交付成功:operation 终态
+        /* 十二轮交付守卫:已退款的 operation 不再回传音频地址(退款+白拿成品竞态) */
+        if (!opDelivered(user.id, charge.opId, tAction)) return fail(res, 409, '该操作已退款,结果不再交付', 409);
         return ok(res, { url: '/uploads/gen/' + name, duration: out.duration, voice: speaker });
         } finally { execUnlock(ttsLock); } // 十一轮并发锁统一释放
       } catch (e) {

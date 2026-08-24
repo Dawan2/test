@@ -211,6 +211,7 @@
           menu.remove();
           // 在飞拦截(十一轮):本地任务 + 服务端 running jobs 合并判定(防刷新后孤儿上游任务)
           const guard = window.Tasks ? await Tasks.canDeleteScope({ episodeId: ep.id }) : { local: [], remote: [] };
+          if (guard.remote == null) return U.toast('任务中心暂时不可达,无法确认是否有在途生成任务,请稍后重试', 'error');
           if (guard.local.length) return U.toast(`该分集有 ${guard.local.length} 个任务正在进行(${guard.local[0].type} 等),请等待完成后再删除`, 'error');
           if (guard.remote.length) return U.toast(`服务端仍有 ${guard.remote.length} 个生成任务在跑,请等待完成或超时后再删除`, 'error');
           if (window.__epReviewEpId === ep.id) return U.toast('该分集整集审片进行中,请等待完成或先取消审片', 'error');
@@ -979,18 +980,25 @@ ${(ep.content || '').slice(0, 8000)}` }],
         const b = main.querySelector(`[data-eg-body="${h.dataset.egFold}"]`);
         if (b) b.style.display = b.style.display === 'none' ? '' : 'none';
       });
+      // 十二轮:图谱手动编辑/增删递增 ep.graphRev——图谱是拆解/分镜的剧情骨架,
+      // 修订后旧分镜/审片/成片经 shotsGraphRev/lastReview.graphRev/composedGraphRev 判旧
+      const bumpGraphRev = gi => {
+        const g = (p.eventGraph || [])[+gi];
+        const ep2 = g && (p.episodes || []).find(e => e.id === g.epId);
+        if (ep2) ep2.graphRev = (ep2.graphRev || 0) + 1;
+      };
       main.querySelectorAll('[data-eg]').forEach(inp => inp.onchange = () => {
         const [gi, ei, f] = inp.dataset.eg.split('_');
         const g = (p.eventGraph || [])[+gi];
-        if (g && g.events[+ei]) { g.events[+ei][f] = inp.value.trim(); Store.save(); }
+        if (g && g.events[+ei]) { g.events[+ei][f] = inp.value.trim(); bumpGraphRev(gi); Store.save(); }
       });
       main.querySelectorAll('[data-egdel]').forEach(b => b.onclick = () => {
         const [gi, ei] = b.dataset.egdel.split('_').map(Number);
-        p.eventGraph[gi].events.splice(ei, 1); Store.save(); render();
+        p.eventGraph[gi].events.splice(ei, 1); bumpGraphRev(gi); Store.save(); render();
       });
       main.querySelectorAll('[data-egadd]').forEach(b => b.onclick = () => {
         p.eventGraph[+b.dataset.egadd].events.push({ who: '', where: '', what: '', result: '' });
-        Store.save(); render();
+        bumpGraphRev(b.dataset.egadd); Store.save(); render();
       });
       const egBtn = main.querySelector('[data-x=eg-gen]');
       if (egBtn) egBtn.onclick = async () => {
@@ -1013,13 +1021,14 @@ ${(ep.content || '').slice(0, 8000)}` }],
           const events = (Array.isArray(out && out.events) ? out.events : []).map(ev => ({
             who: String(ev.who || ''), where: String(ev.where || ''), what: String(ev.what || ''), result: String(ev.result || ''),
           })).filter(ev => ev.what);
-          return { epId: e.id, title: e.title, events };
+          return { epId: e.id, title: e.title, events, sourceRev: e.contentRev || 0 }; // 十二轮:记录拆解时的正文版本(正文改后不再注入旧图谱)
         }, (e, ok, out) => {
           total++;
           if (ok) {
             p.eventGraph = p.eventGraph || [];
             const i = p.eventGraph.findIndex(g => g.epId === e.id);
             if (i >= 0) p.eventGraph[i] = out; else p.eventGraph.push(out);
+            e.graphRev = (e.graphRev || 0) + 1; // 十二轮:重生成同样使旧分镜/审片/成片判旧
             Store.save();
           }
           egBtn.innerHTML = `<span class="spinner"></span> 拆解中 ${total}/${p.episodes.length}…`;

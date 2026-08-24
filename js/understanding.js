@@ -7,10 +7,14 @@
   /* 带重试+修复的 JSON 调用(R1 收敛:转发到 API.chatJSONRobust,4 个调用点不动) */
   const chatJSONRobust = opt => API.chatJSONRobust(opt);
 
-  /* 章节事件图谱:取本集结构化事件,供分镜/拆解精准调用剧情骨架 */
+  /* 章节事件图谱:取本集结构化事件,供分镜/拆解精准调用剧情骨架。
+   * 十二轮:图谱与正文版本断链修复——sourceRev 失配(或旧数据无 sourceRev 且正文改过)时不再注入,
+   * 防"新正文+旧图谱"同时喂给 AI 拆解/智能分镜;旧图谱仍可在剧本页查看编辑,重新生成后恢复注入 */
   window.eventsOfEpisode = function (p, ep) {
     const g = ((p && p.eventGraph) || []).find(x => x.epId === (ep && ep.id));
     if (!g || !g.events || !g.events.length) return '';
+    const stale = g.sourceRev === undefined ? (ep.contentRev || 0) > 0 : g.sourceRev !== (ep.contentRev || 0);
+    if (stale) return '';
     return g.events.map((e, i) => `E${i + 1} [${e.who || '?'}@${e.where || '?'}] ${e.what || ''}${e.result ? ' → ' + e.result : ''}`).join('\n');
   };
 
