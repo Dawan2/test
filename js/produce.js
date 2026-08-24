@@ -22,15 +22,18 @@
     };
     const selected = () => (p.episodes || []).filter(e => e.__sel);
 
+    /* 全链路预估(逐镜时长计价):视频(长镜头按 2 镜)+ 配音(开启同步语音的集)+ 审片(N+2 步,重抽另计)+ 合成 */
     function estimate() {
-      let video = 0, review = 0, compose = 0;
+      let video = 0, audio = 0, review = 0, compose = 0;
       selected().forEach(ep => {
-        const { shots, vDone } = epProgress(ep);
-        video += (shots - vDone) * COST.video;
-        if (cfg.smartReview) review += shots * COST.review; // 按每镜一次评审估算,重抽另计;未开智能审片不计
+        (ep.shots || []).forEach(s => {
+          if (!s.final && !Store.shotVideoReady(s)) video += s.duration > 10 ? COST.video * 2 : COST.video;
+        });
+        if (ep.sbConfig && ep.sbConfig.syncVoice) audio += (ep.shots || []).filter(s => !s.audio).length * COST.audio;
+        if (cfg.smartReview) review += ((ep.shots || []).length + 2) * COST.review; // N 镜 + 共性汇总 + 四维评审,重抽另计
         if (!Store.epComposedReady(ep)) compose += COST.compose; // 离线模拟合成的集在线时重新合成
       });
-      return { video, review, compose, total: video + review + compose };
+      return { video, audio, review, compose, total: video + audio + review + compose };
     }
 
     function render() {
@@ -60,7 +63,7 @@
               ${[1, 2, 3].map(n => `<span class="tag ${cfg.maxRetry === n ? 'cyan' : ''}" style="cursor:pointer" data-mr="${n}">${n} 次</span>`).join('')}
             </span>
             <span class="check-line" data-cfg="skipComposed" style="margin:0"><span class="switch ${cfg.skipComposed ? 'on' : ''}"></span><span class="small">跳过已合成集</span></span>
-            <span class="small muted" style="margin-left:auto">预估:生成 ${est.video} + 审片 ${est.review} + 合成 ${est.compose} 积分</span>
+            <span class="small muted" style="margin-left:auto" title="逐镜时长计价(长镜头按 2 镜);审片重抽另计">预估:视频 ${est.video} + 配音 ${est.audio} + 审片 ${est.review} + 合成 ${est.compose} = <b style="color:var(--yellow)">${est.total}</b> 积分</span>
           </div>
         </div>
 
@@ -265,12 +268,19 @@
   async function oneClickProduce(p, ep, main) {
     if (!ep.shots.length) return U.toast('该集还没有分镜,请先生成分镜', 'error');
     const pend = ep.shots.filter(s => !s.final && (!s.video || !Store.shotVideoReady(s)));
+    /* 全链路预估明细(与跑批中心同口径):视频逐镜时长计价 + 配音(未出音频镜)+ 审片(N+2 步,重抽另计)+ 合成 */
+    const vCost = pend.reduce((n, s) => n + (s.duration > 10 ? COST.video * 2 : COST.video), 0);
+    const audioPend = ep.sbConfig && ep.sbConfig.syncVoice ? ep.shots.filter(s => !s.audio).length : 0;
+    const rCost = (ep.shots.length + 2) * COST.review;
+    const cCost = Store.epComposedReady(ep) ? 0 : COST.compose;
+    const estLine = [pend.length ? `视频 ${vCost}` : '', audioPend ? `配音 ${audioPend * COST.audio}` : '', `审片 ${rCost}`, cCost ? `合成 ${cCost}` : '']
+      .filter(Boolean).join(' + ');
     const run = async () => {
       if (pend.length) await SBGen.batchGenVideos(p, ep, main, pend, { skipSmartReview: true });
       if (window.Review) await autoSmartReview(p, ep, main, ep.shots);
       window.SB.composeVideo(p, ep, main);
     };
-    U.confirm(`一键成片将依次执行:${pend.length ? `批量生成 ${pend.length} 镜(逐条扣费)→ ` : ''}智能审片(不达标自动重生成)→ 合成成片。开始吗?`, () => {
+    U.confirm(`一键成片将依次执行:${pend.length ? `批量生成 ${pend.length} 镜 → ` : ''}智能审片(不达标自动重生成)→ 合成成片。\n预计消耗:${estLine} = ${vCost + audioPend * COST.audio + rCost + cCost} 积分(逐条扣减、失败返还;审片重抽另计)。开始吗?`, () => {
       if (pend.length && window.HumanReview) {
         const urls = [...new Set(pend.flatMap(s => HumanReview.shotImageUrls(p, s)))];
         return HumanReview.guard(urls, run);

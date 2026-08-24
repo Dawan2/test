@@ -71,6 +71,7 @@ function installCommon(sb) {
     uid: p => p + '_u1',
     myProjects() { return []; },
     getProject() { return null; },
+    epComposedReady: () => false, // oneClickProduce 全链路预估引用(恒未合成=全额预估)
     setShotPrompt(s, v) { s.prompt = String(v); },
     shotVideoReady: s => !!(s.video && s.video.status === 'done'),
   };
@@ -142,6 +143,7 @@ function loadExperts() {
 function loadProduce() {
   const sb = makeSandbox();
   installCommon(sb);
+  sb.COST = { image: 2, video: 5, audio: 1, review: 1, compose: 3, tool: 2 }; // 全局费率 stub(oneClickProduce 全链路预估引用)
   Object.assign(sb.SB, {
     renderShots() {},
     composeVideo: (p, ep, main) => { sb.__called.push('composeVideo'); },

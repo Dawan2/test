@@ -357,6 +357,7 @@
           ${STRATEGIES.map(st => `<div class="rpill ${((sel.genStrategy || 'ref') === st.id ? 'sel' : '')}" data-strategy="${st.id}" style="min-width:0;padding:6px 12px;font-size:12px"><i></i>${st.name}</div>`).join('')}
         </div>
         <div class="hint" style="margin-top:5px">${STRATEGIES.find(st => st.id === (sel.genStrategy || 'ref')).desc}</div>
+        ${sel.strategyHint && (sel.genStrategy || 'ref') !== sel.strategyHint ? `<div class="row" style="gap:6px;margin-top:6px;align-items:center"><span class="tag purple" style="font-size:10px" title="拆镜时按画面动态给出的策略建议">拆镜建议:${(STRATEGIES.find(st => st.id === sel.strategyHint) || {}).name || sel.strategyHint}</span><button class="btn ghost sm" data-ract="adopthint">采纳</button></div>` : ''}
         ${(sel.genStrategy === 'frames') ? `
         <div class="row" style="gap:10px;margin-top:10px">
           <div style="flex:1">
@@ -641,6 +642,17 @@
       const act = b.dataset.ract;
       if (act === 'ffirst') { SBGen.genShotFrame(p, ep, sel, 'first', main); return; }
       if (act === 'flast') { SBGen.genShotFrame(p, ep, sel, 'last', main); return; }
+      if (act === 'adopthint') { // 采纳拆镜策略建议(与手动点选策略同一套 frames 初始化)
+        if (!sel.strategyHint) return;
+        sel.genStrategy = sel.strategyHint;
+        if (sel.genStrategy === 'frames' && !sel.firstFrame) {
+          if (sel.inheritTail) SBGen.syncFrames(ep, p);
+          if (!sel.firstFrame) sel.firstFrame = SBGen.framePH(sel, 'first');
+        }
+        Store.save(); Views.episode(main, p.id, ep.id);
+        U.toast('已按拆镜建议切换生成策略', 'success');
+        return;
+      }
       if (act === 'inherit') {
         if (selIdx === 0) return U.toast('第一镜无上一镜,无法继承尾帧', 'error');
         sel.inheritTail = !sel.inheritTail;
@@ -665,7 +677,7 @@
       }, '删除');
       else if (act === 'dl') downloadShot(sel);
       else if (act === 'recycle') { if (sel.final) return U.toast('该分镜已定为终稿,请先「解锁终稿」', 'error'); snapshotShot(sel, '回收前状态'); sel.video = { status: 'none' }; sel.image = null; rerender(); U.toast('已回收到待生成状态', 'success'); }
-      else if (act === 'more') openMoreTools(sel);
+      else if (act === 'more') openMoreTools(p, sel);
       else if (act === 'artsuffix') openArtSuffix(p, ep, main);
       else if (act === 'bigprompt') openPromptPanel(p, ep, sel, main, true);
       else if (act === 'atref') openAssetPicker(p, ep, sel, main);
@@ -999,12 +1011,101 @@
   }
 
   /* ================= 更多工具 ================= */
-  function openMoreTools(s) {
+  /* 分镜画面沉淀为主体新形态(素材反哺):某镜出图效果好→挂为主体形态,分镜按「名-形态」全称引用 */
+  function saveShotAsForm(p, s) {
+    const src = (s.video && s.video.status === 'done' && s.video.frame) || s.image;
+    if (!src || String(src).startsWith('data:')) return U.toast('该分镜暂无真实画面(占位图不能作形态图),请先生成', 'error');
+    if (!(p.subjects || []).length) return U.toast('项目还没有主体,请先到「主体」创建', 'error');
+    U.openModal({
+      title: '存为主体形态 · 镜头' + (s.order + 1),
+      body: `
+      <div class="row" style="gap:12px;align-items:flex-start">
+        <div class="ws-thumb-img" style="width:150px;flex:none;aspect-ratio:16/9"><img src="${U.thumb(src)}"></div>
+        <div style="flex:1">
+          <label class="field"><span>选择主体</span>
+            <select class="select" data-f="subj">${p.subjects.map(x => `<option value="${x.id}">${U.esc(x.name)}(${{ character: '角色', scene: '场景', prop: '道具' }[x.kind] || x.kind})</option>`).join('')}</select>
+          </label>
+          <label class="field"><span>形态名称</span><input class="input" data-f="fname" placeholder="如:战损妆 / 少年期 / 发光态"></label>
+          <div class="hint">创建后分镜可用「主体名-形态名」全称引用该画面;同名形态自动追加序号。</div>
+        </div>
+      </div>`,
+      footer: `<button class="btn" data-x="cancel">取消</button><button class="btn primary" data-x="ok">创建形态</button>`,
+      onMount(m, close) {
+        m.querySelector('[data-x=cancel]').onclick = close;
+        m.querySelector('[data-x=ok]').onclick = () => {
+          const sub = p.subjects.find(x => x.id === m.querySelector('[data-f=subj]').value);
+          let name = m.querySelector('[data-f=fname]').value.trim();
+          if (!sub) return U.toast('请选择主体', 'error');
+          if (!name) return U.toast('请输入形态名称', 'error');
+          if (name.includes('-')) return U.toast('形态名不能包含 "-"', 'error');
+          sub.forms = sub.forms || [];
+          if (sub.forms.some(f => f.name === name)) name = name + '-' + (sub.forms.length + 1);
+          sub.forms.push({ id: Store.uid('fm'), name, image: src, time: Store.now() });
+          Store.save();
+          U.toast(`已创建「${sub.name}-${name}」,分镜可按全称引用`, 'success');
+          close();
+        };
+      },
+    });
+  }
+
+  /* 分镜画面沉淀为资产库主体(与便捷工具融合入库同规:名称/类型/标签/分组 + 入库自动报白) */
+  function saveShotAsAsset(p, s) {
+    const src = (s.video && s.video.status === 'done' && s.video.frame) || s.image;
+    if (!src || String(src).startsWith('data:')) return U.toast('该分镜暂无真实画面(占位图不能入库),请先生成', 'error');
+    const groups = Store.myGroups();
+    U.openModal({
+      title: '存入资产库 · 镜头' + (s.order + 1),
+      body: `
+      <div class="row" style="gap:12px;align-items:flex-start;margin-bottom:10px">
+        <div class="ws-thumb-img" style="width:150px;flex:none;aspect-ratio:16/9"><img src="${U.thumb(src)}"></div>
+        <label class="field" style="flex:1;margin:0"><span>主体名称</span><input class="input" data-f="name" value="${U.esc('镜头' + (s.order + 1) + '·' + (s.plot || '').slice(0, 10))}"></label>
+      </div>
+      <label class="field"><span>主体类型</span>
+        <div class="model-row">${[['character', '角色'], ['scene', '场景'], ['prop', '道具']].map(([v, n], i) => `<div class="model-opt ${i === 0 ? 'sel' : ''}" data-kind="${v}">${n}</div>`).join('')}</div>
+      </label>
+      <label class="field"><span>选择标签</span>
+        <div class="model-row wrap">${['主角', '配角', '反派', '核心场景', '关键道具'].map((t, i) => `<div class="model-opt ${i === 0 ? 'sel' : ''}" data-tag="${t}">${t}</div>`).join('')}</div>
+      </label>
+      <label class="field"><span>选择分组</span>
+        <select class="select" data-f="group">
+          <option value="">未分组</option>
+          ${groups.map(g => `<option value="${g.id}">${U.esc(g.name)}</option>`).join('')}
+        </select>
+      </label>`,
+      footer: `<button class="btn" data-x="cancel">取消</button><button class="btn primary" data-x="ok">保存主体</button>`,
+      onMount(m, close) {
+        let kind = 'character', tag = '主角';
+        m.querySelectorAll('[data-kind]').forEach(o => o.onclick = () => { kind = o.dataset.kind; m.querySelectorAll('[data-kind]').forEach(x => x.classList.toggle('sel', x === o)); });
+        m.querySelectorAll('[data-tag]').forEach(o => o.onclick = () => { tag = o.dataset.tag; m.querySelectorAll('[data-tag]').forEach(x => x.classList.toggle('sel', x === o)); });
+        m.querySelector('[data-x=cancel]').onclick = close;
+        m.querySelector('[data-x=ok]').onclick = () => {
+          const name = m.querySelector('[data-f=name]').value.trim();
+          if (!name) return U.toast('请填写主体名称', 'error');
+          const u = Store.currentUser();
+          const item = {
+            id: Store.uid('as'), userId: u.id, kind, name,
+            image: src, prompt: (s.prompt || '').slice(0, 200), tags: [tag], forms: [],
+            groupId: m.querySelector('[data-f=group]').value || null,
+            fromProject: p.name, time: Store.now(),
+          };
+          Store.state.assets.subjects.push(item);
+          Store.save(); close();
+          U.toast(`「${name}」已保存到资产库,已自动提交报白审核`, 'success');
+          if (window.HumanReview) HumanReview.submitAsset(item);
+        };
+      },
+    });
+  }
+
+  function openMoreTools(p, s) {
     const tools = [
       ['✂', '视频剪辑', '对视频进行裁剪、分割与拼接。'],
       ['🎬', '视频编辑', '基于提示词对视频内容进行编辑(人物替换/背景替换)。'],
       ['🔍', '视频超分', '提升视频分辨率,支持 2K/4K。'],
       ['🧹', '视频去字幕', '智能擦除视频中的对白字幕。'],
+      ['🧬', '存为主体形态', '把本镜画面存为某主体的新形态(战损妆/特殊状态等),分镜按「名-形态」全称引用。'],
+      ['🗂', '存入资产库', '把本镜画面沉淀为资产库主体,跨项目复用(入库自动报白)。'],
     ];
     U.openModal({
       title: '更多工具(镜头 ' + (s.order + 1) + ')',
@@ -1013,6 +1114,8 @@
         m.querySelectorAll('[data-tool]').forEach(c => c.onclick = () => {
           const name = c.dataset.tool;
           close();
+          if (name === '存为主体形态') { saveShotAsForm(p, s); return; }
+          if (name === '存入资产库') { saveShotAsAsset(p, s); return; }
           // 视频超分/视频去字幕:跳转便捷工具页的真功能(带分镜素材预填),不再占位
           if (name === '视频超分' || name === '视频去字幕') {
             const src = (s.video && s.video.status === 'done' && s.video.frame) || s.image;

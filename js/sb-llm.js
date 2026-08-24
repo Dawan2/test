@@ -13,7 +13,7 @@
     const sceneNames = p.subjects.filter(s => s.kind === 'scene').map(withForms).join('、') || '无';
     const propNames = p.subjects.filter(s => s.kind === 'prop').map(withForms).join('、') || '无';
     const user = `将以下剧集剧本拆分为约 ${count} 个专业分镜(拆解规则优先,可略超),返回 JSON 数组,每个元素:
-{"plot":"剧情内容(一句话)","camera":"运镜(从 固定镜头/推镜头/拉镜头/摇镜头/移镜头/跟镜头/环绕镜头/俯拍/仰拍/特写 中选)","view":"视角(正面/侧面/背面)","angle":"拍摄角度(仰拍/平视/俯拍/高角度)","shotSize":"景别(大全景/全景/中景/近景/特写/超级特写)","characters":["出场人物名"],"scene":"场景名","props":["道具名"],"narration":"旁白(没有则空字符串)","dialogue":"台词(没有则空字符串)","prompt":"文生视频中文画面提示词","duration":时长秒数}
+{"plot":"剧情内容(一句话)","camera":"运镜(从 固定镜头/推镜头/拉镜头/摇镜头/移镜头/跟镜头/环绕镜头/俯拍/仰拍/特写 中选)","view":"视角(正面/侧面/背面)","angle":"拍摄角度(仰拍/平视/俯拍/高角度)","shotSize":"景别(大全景/全景/中景/近景/特写/超级特写)","characters":["出场人物名"],"scene":"场景名","props":["道具名"],"narration":"旁白(没有则空字符串)","dialogue":"台词(没有则空字符串)","prompt":"文生视频中文画面提示词","duration":时长秒数,"strategy":"生成策略(ref/frames/fusion)"}
 要求:
 - 项目风格:${styleOf(p)}${p.globalSetting ? ',全局美学设定:' + p.globalSetting : ''};项目类型:${window.projType && projType() === 'narration' ? '解说模式(重旁白叙述)' : '剧情模式(重台词表演)'}${window.directorInject ? directorInject(p.style) : ''}${window.conceptInject ? conceptInject(p) : ''}
 ${langOf(p) ? '- 语言要求:' + langOf(p).slice(1) : ''}
@@ -22,6 +22,7 @@ ${ep.understanding && window.Understanding ? '- 本集导演理解(必须遵循)
 - 分镜模式:${mode === 'tweet' ? '推文模式(画面信息密度高、海报感强)' : '创作模式'}
 ${adv ? `- 视觉风格:${adv.visual};全片总时长约 ${adv.totalSec} 秒;单镜最长 ${adv.maxShotSec} 秒;分镜密度:${adv.density}` : ''}
 - 剧本缺少旁白/台词时请补写,须贴合剧情与人物性格
+- strategy 按画面动态选型:静态对白/动作幅度小→ref(分镜图参考);大动作/打斗/需衔接上一镜→frames(首尾帧链);多主体同框且一致性要求高→fusion(多图融合)
 - ${SPLIT_RULES}
 - ${PROMPT5}
 - ${optimize ? 'prompt 要电影级详尽:构图/光影/氛围/风格限定词' : 'prompt 简洁准确,一句话'}
@@ -75,6 +76,9 @@ ${(ep.content || '').slice(0, 12000)}`;
       aperture: 'ƒ/4',
     };
     s.duration = Math.max(2, Math.min(15, +raw.duration || 5));
+    /* 拆镜策略建议:LLM 按画面动态为每镜标注建议生成策略(静态对白→ref/大动作→frames/多主体→fusion),
+     * 仅作建议存 strategyHint(不直接覆盖 genStrategy,用户在右栏/批量入口一键采纳) */
+    s.strategyHint = ['ref', 'frames', 'fusion'].includes(raw.strategy) ? raw.strategy : null;
     s.history = [{ type: '分镜', model: modelName, time: Store.now() }];
     if (tweet) s.image = PH.shot(s.plot, s.order);
     return s;

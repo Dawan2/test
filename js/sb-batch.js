@@ -90,18 +90,35 @@
     if (op === 'video:noguard') {
       const pend = ep.shots.filter(s => !s.final && (!s.video || !Store.shotVideoReady(s)));
       if (!pend.length) return U.toast('所有分镜视频均已生成', 'info');
-      const per = COST.video;
+      const per = s => (s.duration > 10 ? COST.video * 2 : COST.video); // 长镜头(>10s)按 2 镜计价
+      const total = pend.reduce((n, s) => n + per(s), 0);
+      // 拆镜策略建议:LLM 拆镜时按画面动态标注的建议策略,批量入口可一键采纳后执行
+      const hints = pend.filter(s => s.strategyHint && (s.genStrategy || 'ref') !== s.strategyHint);
       // 逐条扣减:每镜单独扣费,余额不足时仅该镜失败
       const run = shots => SBGen.batchGenVideos(p, ep, main, shots);
       if (pend.length <= 3) { await run(pend); return; }
       // >3 镜:断点校准(先校准 3 张再放量)
       U.openModal({
         title: '批量生成视频',
-        body: `<p style="line-height:2">将为 <b>${pend.length}</b> 个未出片分镜生成视频(每镜 <b style="color:var(--yellow)">${per}</b> 积分)。<br>· <b>逐条扣减</b>:每镜单独扣费,余额不足时仅该镜失败<br>· 单镜失败自动返还该镜积分<br>· 建议先校准前 3 镜,确认效果后再放量,避免批量返工</p>`,
-        footer: `<button class="btn" data-x="cancel">取消</button><button class="btn" data-x="all">直接全部生成</button><button class="btn primary" data-x="first3">先校准前 3 镜(-${3 * per}积分)</button>`,
+        body: `<p style="line-height:2">将为 <b>${pend.length}</b> 个未出片分镜生成视频(合计约 <b style="color:var(--yellow)">${total}</b> 积分,长镜头按 2 镜计价)。${hints.length ? `<br>· <b>${hints.length}</b> 镜有拆镜建议策略(与当前设置不同,可按建议生成)` : ''}<br>· <b>逐条扣减</b>:每镜单独扣费,余额不足时仅该镜失败<br>· 单镜失败自动返还该镜积分<br>· 建议先校准前 3 镜,确认效果后再放量,避免批量返工</p>`,
+        footer: `<button class="btn" data-x="cancel">取消</button>${hints.length ? '<button class="btn" data-x="hint">按建议策略生成</button>' : ''}<button class="btn" data-x="all">直接全部生成</button><button class="btn primary" data-x="first3">先校准前 3 镜(-${pend.slice(0, 3).reduce((n, s) => n + per(s), 0)}积分)</button>`,
         onMount(m, close) {
           m.querySelector('[data-x=cancel]').onclick = close;
           m.querySelector('[data-x=all]').onclick = async () => { close(); await run(pend); };
+          const hintBtn = m.querySelector('[data-x=hint]');
+          if (hintBtn) hintBtn.onclick = async () => {
+            // 采纳建议:hint 写入 genStrategy(frames 补首帧,与右栏采纳同一套初始化)
+            hints.forEach(s => {
+              s.genStrategy = s.strategyHint;
+              if (s.genStrategy === 'frames' && !s.firstFrame) {
+                if (s.inheritTail) SBGen.syncFrames(ep, p);
+                if (!s.firstFrame) s.firstFrame = SBGen.framePH(s, 'first');
+              }
+            });
+            Store.save();
+            close();
+            await run(pend);
+          };
           m.querySelector('[data-x=first3]').onclick = async () => {
             close();
             await run(pend.slice(0, 3));
@@ -109,7 +126,7 @@
             if (!rest.length) return;
             U.openModal({
               title: '校准完成',
-              body: `<p style="line-height:2">前 3 镜已生成,可回工作区查看效果。<br>继续生成剩余 <b>${rest.length}</b> 镜(约 <b style="color:var(--yellow)">${rest.length * per}</b> 积分,逐条扣减)?</p>`,
+              body: `<p style="line-height:2">前 3 镜已生成,可回工作区查看效果。<br>继续生成剩余 <b>${rest.length}</b> 镜(约 <b style="color:var(--yellow)">${rest.reduce((n, s) => n + per(s), 0)}</b> 积分,逐条扣减)?</p>`,
               footer: `<button class="btn" data-x="no">先不生成</button><button class="btn primary" data-x="yes">继续生成剩余 ${rest.length} 镜</button>`,
               onMount(m2, close2) {
                 m2.querySelector('[data-x=no]').onclick = close2;
