@@ -2,6 +2,24 @@
 (function () {
   window.Views = window.Views || {};
 
+  /* 项目页角标 Bus 订阅(二十轮:提升为模块级单次注册——此前每次 render 注册一个新闭包,
+   * Set 按引用去重失效,每次切 tab/重渲染泄漏一个 '*' 通配订阅,长期会话冗余 DOM 写) */
+  let badgeCtx = null; // {main, p} 当前项目页上下文,随 render 更新;页面销毁(isConnected=false)后静默空转
+  let badgeBusBound = false;
+  function bindBadgeBus() {
+    if (badgeBusBound || !window.Bus) return;
+    badgeBusBound = true;
+    Bus.on('*', () => {
+      const ctx = badgeCtx;
+      if (!ctx || !ctx.main.isConnected) return;
+      const { main, p } = ctx;
+      const tabRow = main.querySelector('[data-x=pissues]'); if (tabRow && window.Issues) tabRow.innerHTML = Issues.badgeHTML(p);
+      const planB = main.querySelector('[data-x=pplan]'); if (planB && window.Plans) planB.innerHTML = Plans.badgeHTML(p);
+      const relB = main.querySelector('[data-x=prelease]'); if (relB && window.Release) relB.outerHTML = Release.badgeHTML(p);
+      const nb = main.querySelector('[data-x=prelease]'); if (nb) nb.onclick = () => window.Release && Release.openModal(p, main);
+    });
+  }
+
   /* 剧本解析/主体提取/分集工具域(启发式解析、LLM 提取、规范文本信息提取、LLM 分集)
    * 已拆至 episode-util.js,经 window.EpisodeUtil 调用;执行侧入口由 proj-upload.js 增补 */
 
@@ -73,13 +91,9 @@
       const releaseBtn = main.querySelector('[data-x=prelease]');
       if (releaseBtn) releaseBtn.onclick = () => window.Release && Release.openModal(p, main);
       // Bus 订阅:问题/计划/交付角标随主线事件实时刷新(项目页不切换不重建 render,避免每事件整页刷新)
-      if (window.Bus) Bus.on('*', function refreshB(ev) {
-        if (!ev || !ev.name) return;
-        const tabRow = main.querySelector('[data-x=pissues]'); if (tabRow && window.Issues) tabRow.innerHTML = Issues.badgeHTML(p);
-        const planB = main.querySelector('[data-x=pplan]'); if (planB && window.Plans) planB.innerHTML = Plans.badgeHTML(p);
-        const relB = main.querySelector('[data-x=prelease]'); if (relB && window.Release) relB.outerHTML = Release.badgeHTML(p);
-        const nb = main.querySelector('[data-x=prelease]'); if (nb) nb.onclick = () => window.Release && Release.openModal(p, main);
-      });
+      // 二十轮:订阅本体在模块级只注册一次,此处仅更新当前页上下文
+      badgeCtx = { main, p };
+      bindBadgeBus();
       fillCostLine(); // 项目成本汇总(服务端 operation 台账聚合,异步填充,失败静默)
       // 「量产跑批」入口已从项目页移除(保留在分镜工作台顶部「🏭 一键跑批」与分镜表模式内)
       if (tab === '导演') bindConcept();

@@ -79,55 +79,102 @@
     if (!ep.shots.length) return U.toast('暂无分镜', 'error');
     if (op === 'video') {
       // 执行走统一领域命令(ui 模式):真人预审 guardAsync/镜头确认闸/合规承诺/失败重试汇总由命令层与引擎保留;
-      // 本函数只承担 UI 决策壳:成本预估 + 断点校准(先 3 镜再放量)+ 采纳拆镜建议策略
-      const pend = ep.shots.filter(s => !s.final && (!s.video || !Store.shotVideoReady(s)));
-      if (!pend.length) return U.toast('所有分镜视频均已生成', 'info');
-      const per = s => (s.duration > 10 ? COST.video * 2 : COST.video); // 长镜头(>10s)按 2 镜计价
+      // 本函数只承担 UI 决策壳:二十轮收敛为「出片前置检查」单屏——成本预估 + 未确认清单 + 合规/审核状态一页问清
+      // (原链路:成本弹窗 → 确认闸 → 合规承诺 → 真人预审最多 4 层;合规承诺/真人预审保留下游执行,此处降级为状态条展示)
+      const pend = ep.shots.filter(s => !s.final && (!s.video || !Store.shotVideoReady(s)) && !(s.video && s.video.status === 'generating') && !(SBGen.isInflight && SBGen.isInflight(s.id))); // 防重闸:排除在飞/生成中镜
+      if (!pend.length) return U.toast('所有分镜视频均已生成或正在生成中', 'info');
+      const per = s => SBGen.shotVideoBilling(s).cost; // 预估与实际扣费同口径(estShotDuration 推导长镜头×2)
       const total = pend.reduce((n, s) => n + per(s), 0);
       // 拆镜策略建议:LLM 拆镜时按画面动态标注的建议策略,批量入口可一键采纳后执行
       const hints = pend.filter(s => s.strategyHint && (s.genStrategy || 'ref') !== s.strategyHint);
+      const unconfirmed = pend.filter(s => !s.confirm);
+      const confirmed = pend.filter(s => s.confirm);
+      // 合规/真人审核状态条(记忆型承诺降级为状态展示,不再单占一屏)
+      const accepted = !!(window.Compliance && (Store.state.settings || {}).complianceAccepted);
+      const hrCnt = window.HumanReview && HumanReview.shotImageUrls ? new Set(pend.flatMap(s => HumanReview.shotImageUrls(p, s))).size : 0;
+      const statusHTML = `
+        <div class="small muted" style="line-height:1.9;margin-top:10px;border-top:1px dashed var(--border);padding-top:8px">
+          · 合计约 <b style="color:var(--yellow)">${total}</b> 积分(长镜头按 2 镜计价);逐条扣减:每镜单独扣费,余额不足仅该镜失败,单镜失败自动退费<br>
+          · 合规承诺:${accepted ? '✓ 已签署' : '未签署——执行时将要求签署一次'}${hrCnt ? `<br>· 真人素材 ${hrCnt} 项:执行前将有真人素材预审` : ''}${hints.length ? `<br>· <b>${hints.length}</b> 镜有拆镜建议策略(与当前设置不同,可按建议生成)` : ''}
+        </div>`;
       // 逐条扣减:每镜单独扣费,余额不足时仅该镜失败;shotIds 子集执行(校准/放量两段)
       const run = shots => Commands.execute('episode.generateVideos', { pid: p.id, epid: ep.id, main, ui: true, shotIds: shots.map(s => s.id) }).then(r => Commands.digest(r));
-      if (pend.length <= 3) { await run(pend); return; }
-      // >3 镜:断点校准(先校准 3 张再放量)
-      U.openModal({
-        title: '批量生成视频',
-        body: `<p style="line-height:2">将为 <b>${pend.length}</b> 个未出片分镜生成视频(合计约 <b style="color:var(--yellow)">${total}</b> 积分,长镜头按 2 镜计价)。${hints.length ? `<br>· <b>${hints.length}</b> 镜有拆镜建议策略(与当前设置不同,可按建议生成)` : ''}<br>· <b>逐条扣减</b>:每镜单独扣费,余额不足时仅该镜失败<br>· 单镜失败自动返还该镜积分<br>· 建议先校准前 3 镜,确认效果后再放量,避免批量返工</p>`,
-        footer: `<button class="btn" data-x="cancel">取消</button>${hints.length ? '<button class="btn" data-x="hint">按建议策略生成</button>' : ''}<button class="btn" data-x="all">直接全部生成</button><button class="btn primary" data-x="first3">先校准前 3 镜(-${pend.slice(0, 3).reduce((n, s) => n + per(s), 0)}积分)</button>`,
-        onMount(m, close) {
-          m.querySelector('[data-x=cancel]').onclick = close;
-          m.querySelector('[data-x=all]').onclick = async () => { close(); await run(pend); };
-          const hintBtn = m.querySelector('[data-x=hint]');
-          if (hintBtn) hintBtn.onclick = async () => {
-            // 采纳建议:hint 写入 genStrategy(frames 补首帧,与右栏采纳同一套初始化)
-            hints.forEach(s => {
-              s.genStrategy = s.strategyHint;
-              if (s.genStrategy === 'frames' && !s.firstFrame) {
-                if (s.inheritTail) SBGen.syncFrames(ep, p);
-                if (!s.firstFrame) s.firstFrame = SBGen.framePH(s, 'first');
-              }
-            });
-            Store.save();
-            close();
-            await run(pend);
-          };
-          m.querySelector('[data-x=first3]').onclick = async () => {
-            close();
-            await run(pend.slice(0, 3));
-            const rest = pend.slice(3).filter(s => !s.video || !Store.shotVideoReady(s));
-            if (!rest.length) return;
-            U.openModal({
-              title: '校准完成',
-              body: `<p style="line-height:2">前 3 镜已生成,可回工作区查看效果。<br>继续生成剩余 <b>${rest.length}</b> 镜(约 <b style="color:var(--yellow)">${rest.reduce((n, s) => n + per(s), 0)}</b> 积分,逐条扣减)?</p>`,
-              footer: `<button class="btn" data-x="no">先不生成</button><button class="btn primary" data-x="yes">继续生成剩余 ${rest.length} 镜</button>`,
-              onMount(m2, close2) {
-                m2.querySelector('[data-x=no]').onclick = close2;
-                m2.querySelector('[data-x=yes]').onclick = async () => { close2(); await run(rest); };
-              },
-            });
-          };
-        },
-      });
+      const applyHints = () => {
+        // 采纳建议:hint 写入 genStrategy(frames 补首帧,与右栏采纳同一套初始化)
+        hints.forEach(s => {
+          s.genStrategy = s.strategyHint;
+          if (s.genStrategy === 'frames' && !s.firstFrame) {
+            if (s.inheritTail) SBGen.syncFrames(ep, p);
+            if (!s.firstFrame) s.firstFrame = SBGen.framePH(s, 'first');
+          }
+        });
+        Store.save();
+      };
+      // 成本决策屏(全部已确认时直接到此;含校准/放量/建议策略三选)
+      const openCostScreen = list => {
+        if (list.length <= 3) { run(list); return; }
+        U.openModal({
+          title: '出片前置检查',
+          body: `<p style="line-height:2">将为 <b>${list.length}</b> 个未出片分镜生成视频。<br>· 建议先校准前 3 镜,确认效果后再放量,避免批量返工</p>${statusHTML}`,
+          footer: `<button class="btn" data-x="cancel">取消</button>${hints.length ? '<button class="btn" data-x="hint">按建议策略生成</button>' : ''}<button class="btn" data-x="all">直接全部生成</button><button class="btn primary" data-x="first3">先校准前 3 镜(-${list.slice(0, 3).reduce((n, s) => n + per(s), 0)}积分)</button>`,
+          onMount(m, close) {
+            m.querySelector('[data-x=cancel]').onclick = close;
+            m.querySelector('[data-x=all]').onclick = async () => { close(); await run(list); };
+            const hintBtn = m.querySelector('[data-x=hint]');
+            if (hintBtn) hintBtn.onclick = async () => { applyHints(); close(); await run(list); };
+            m.querySelector('[data-x=first3]').onclick = async () => {
+              close();
+              await run(list.slice(0, 3));
+              const rest = list.slice(3).filter(s => !s.video || !Store.shotVideoReady(s));
+              if (!rest.length) return;
+              U.openModal({
+                title: '校准完成',
+                body: `<p style="line-height:2">前 3 镜已生成,可回工作区查看效果。<br>继续生成剩余 <b>${rest.length}</b> 镜(约 <b style="color:var(--yellow)">${rest.reduce((n, s) => n + per(s), 0)}</b> 积分,逐条扣减)?</p>`,
+                footer: `<button class="btn" data-x="no">先不生成</button><button class="btn primary" data-x="yes">继续生成剩余 ${rest.length} 镜</button>`,
+                onMount(m2, close2) {
+                  m2.querySelector('[data-x=no]').onclick = close2;
+                  m2.querySelector('[data-x=yes]').onclick = async () => { close2(); await run(rest); };
+                },
+              });
+            };
+          },
+        });
+      };
+      // 有未确认镜头:确认处置与成本/状态同屏(原确认闸独立一屏,现并入前置检查)
+      if (unconfirmed.length) {
+        U.openModal({
+          title: '出片前置检查 · 镜头确认',
+          body: `
+          <div style="margin-bottom:10px;line-height:1.8">共 <b style="color:var(--yellow)">${unconfirmed.length}</b> 个镜头待确认。批量出片前请逐镜过目剧情与提示词(先确认再放量,避免批量返工)。</div>
+          <div style="max-height:32vh;overflow-y:auto">
+            ${unconfirmed.map(s => `
+            <div class="row" style="gap:10px;align-items:center;padding:7px 10px;border:1px solid var(--border2);border-radius:10px;margin-bottom:6px">
+              <span class="tag cyan" style="flex:none">镜头 ${s.order + 1}</span>
+              <span class="small grow" style="line-height:1.5">${U.esc((s.plot || '(未填写剧情)').slice(0, 60))}</span>
+              <span class="tag" style="flex:none">待确认</span>
+            </div>`).join('')}
+          </div>${statusHTML}`,
+          footer: `<button class="btn" data-x="cancel">取消</button>${confirmed.length ? `<button class="btn" data-x="only">仅生成已确认镜头(${confirmed.length})</button>` : ''}<button class="btn" data-x="all">全部确认并继续</button><button class="btn primary" data-x="go">去逐镜确认</button>`,
+          onMount(m, close) {
+            m.querySelector('[data-x=cancel]').onclick = () => { close(); };
+            const only = m.querySelector('[data-x=only]');
+            if (only) only.onclick = () => { close(); openCostScreen(confirmed); };
+            m.querySelector('[data-x=all]').onclick = () => {
+              unconfirmed.forEach(s => s.confirm = true);
+              Store.save();
+              close();
+              openCostScreen(pend);
+            };
+            m.querySelector('[data-x=go]').onclick = () => {
+              close();
+              jumpToShot(p, ep, main, unconfirmed[0]);
+              U.toast('请逐镜过目并点「✓ 确认本镜」,确认后再发起批量生成', 'info', 3500);
+            };
+          },
+        });
+        return;
+      }
+      openCostScreen(pend);
       return;
     } else if (op === 'audio') {
       const pend = ep.shots.filter(s => !s.audio);

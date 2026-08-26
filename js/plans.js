@@ -161,6 +161,13 @@
   function paintBody() {
     const { p, bodyEl, main } = openState;
     const pl = of(p);
+    if (pl) {
+      // 二十轮:陈旧 running 复位——步骤置 running 后页面中途关闭,持久化的 running 会永久锁死 runAll
+      // ("计划正在执行中"无复位入口);打开计划面板即把 running 收回 pending 可重试
+      let stale = false;
+      pl.steps.forEach(s => { if (s.status === 'running') { s.status = 'pending'; s.note = '上次执行被中断,可重新执行'; stale = true; } });
+      if (stale) Store.save();
+    }
     if (!pl) {
       bodyEl.innerHTML = `
       <div class="hint" style="margin-bottom:10px">制作计划跨会话持久保存:步骤映射统一领域命令(执行含确认闸/计费),完成状态自动推进;两种建立方式——</div>

@@ -446,14 +446,16 @@ const agentOpsTests = [
     assert(note.includes('⚠ 1 项未生效'), '尾注应含警示');
     assert(sb.__toasts.some(t => t.includes('未生效')), '未生效应 toast 警示');
   } },
-  { name: 'compactShots:超长分镜表截断到 6000 字上限并标注总数', fn() {
+  { name: 'compactShots:超长分镜表按整镜截断(不切半镜)并标注省略区间', fn() {
     const AO = loadAgentOps().AgentOps;
     const ep = { shots: [], sbConfig: {} };
     for (let i = 0; i < 60; i++) ep.shots.push(makeShot(i, { plot: '剧情'.repeat(20) })); // 每条~140字,60条超上限
     ep.shots[0].cameraSpec = { view: '正面', angle: '平视', shotSize: '中景', aperture: 'ƒ/4' };
     const json = AO.compactShots(ep, 100); // maxShots 放开,保证 60 条全部参与再触发长度截断
-    assert(json.includes('后续镜头截断,共60镜'), '应含截断标注');
-    assert(json.length <= 6100, '截断后不应超过上限+标注');
+    assert(json.includes('因长度省略,共 60 镜'), '应含整镜截断标注');
+    const cut = json.indexOf('\n…');
+    const arr = JSON.parse(cut > 0 ? json.slice(0, cut) : json); // 截断点之前必须是合法 JSON(不再对 JSON 串硬切切半镜)
+    assert(arr.length > 0 && arr.length < 60, '应按整镜保留部分镜头,其余省略');
     assert(json.includes('机位'), 'cameraSpec 应经 CAMERA.describe 注入机位字段');
   } },
   { name: 'compactChat:离线不压缩只取最近12条;在线后台蒸馏写入纪要', fn: async () => {
@@ -1091,10 +1093,10 @@ function loadCommands() {
   loadFile(sb, 'commands.js');
   return sb;
 }
-/* 命令测试夹具:有剧本+2 已确认 done 镜+未合成的健康分集(over 可覆盖) */
+/* 命令测试夹具:有剧本+2 已确认 done 镜+未合成的健康分集(over 可覆盖);主体库非空(不触发空主体引导) */
 function cmdCtx(sb, over) {
   const ep = makeEp(Object.assign({ content: '测试剧本正文', composed: false, shots: [makeShot(0, { confirm: true }), makeShot(1, { confirm: true })] }, over || {}));
-  const p = { id: 'p1', episodes: [ep] };
+  const p = { id: 'p1', episodes: [ep], subjects: [{ id: 'sub1', name: '主角', kind: 'character', image: 'x.png' }] };
   sb.__proj = p;
   return { p, ep };
 }
@@ -1280,6 +1282,23 @@ const commandsTests = [
     assertEq(gotQuiet, true, 'headless 应传 quiet(多方案自动择优/本地兜底不弹发布确认)');
     await sb.Commands.execute('episode.generateStoryboard', { pid: 'p1', epid: 'ep1', ui: true });
     assertEq(gotQuiet, false, 'ui 模式应保留对比窗/发布确认等决策弹窗');
+  } },
+  { name: 'generateStoryboard:ui 模式空主体库引导(取消 blocked no-subjects;仍要拆镜放行;headless 不拦截)', fn: async () => {
+    const sb = loadCommands();
+    cmdCtx(sb, { shots: [] });
+    sb.__proj.subjects = []; // 空主体库触发引导
+    // 模拟点「取消」→ blocked no-subjects
+    sb.U.openModal = opts => { const btns = {}; opts.onMount({ querySelector: sel => (btns[sel] = btns[sel] || { onclick: null }) }, () => {}); btns['[data-x=cancel]'].onclick(); };
+    const r = await sb.Commands.execute('episode.generateStoryboard', { pid: 'p1', epid: 'ep1', ui: true });
+    assertEq(r.ok, false, '取消应 blocked');
+    assertEq(r.error.code, 'no-subjects', '应回报 no-subjects');
+    // 模拟点「仍要拆镜」→ 放行真实执行
+    sb.U.openModal = opts => { const btns = {}; opts.onMount({ querySelector: sel => (btns[sel] = btns[sel] || { onclick: null }) }, () => {}); btns['[data-x=cont]'].onclick(); };
+    const r2 = await sb.Commands.execute('episode.generateStoryboard', { pid: 'p1', epid: 'ep1', ui: true });
+    assertEq(r2.ok, true, '仍要拆镜应放行执行');
+    // headless 空主体库不拦截(自动化场景)
+    const r3 = await sb.Commands.execute('episode.generateStoryboard', { pid: 'p1', epid: 'ep1' });
+    assertEq(r3.ok, true, 'headless 不应被空主体引导拦截');
   } },
   { name: 'shot.generateVideo:ui 模式无确认闸(与单镜按钮语义一致)', fn: async () => {
     const sb = loadCommands();

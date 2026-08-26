@@ -81,22 +81,28 @@ const PORT = +(process.env.PORT || CONFIG.port);
 /* ---------- 目录 ---------- */
 for (const d of [DATA_DIR, STATES_DIR, USAGE_DIR, UPLOADS_DIR, GEN_CACHE_DIR]) fs.mkdirSync(d, { recursive: true });
 
-/* ---------- 持久化:原子写 + .bak 恢复 ---------- */
+/* ---------- 持久化:原子写 + .bak/.bak2 两代备份恢复 ---------- */
 function writeJSON(file, obj) {
   const tmp = file + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(obj));
+  // 双代备份(二十轮):备份位滚动 .bak→.bak2,第一次损坏用掉 .bak 后仍有一代旧数据可退
+  try { if (fs.existsSync(file + '.bak')) fs.renameSync(file + '.bak', file + '.bak2'); } catch (_) {}
   try { if (fs.existsSync(file)) fs.copyFileSync(file, file + '.bak'); } catch (_) {}
   fs.renameSync(tmp, file);
 }
 function readJSON(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
   catch (_) {
-    try {
-      const bak = JSON.parse(fs.readFileSync(file + '.bak', 'utf8'));
-      try { writeJSON(file, bak); } catch (_) {}
-      console.warn('[store] ' + path.basename(file) + ' 损坏,已从 .bak 恢复');
-      return bak;
-    } catch (_) { return fallback; }
+    for (const bk of [file + '.bak', file + '.bak2']) {
+      try {
+        const bak = JSON.parse(fs.readFileSync(bk, 'utf8'));
+        // rename 直取(二十轮):不经 writeJSON——写备份会先把当前坏文件复制进备份位,刚救回的 .bak 立刻被坏数据覆盖(自毒化)
+        try { fs.renameSync(bk, file); } catch (_) {}
+        console.warn('[store] ' + path.basename(file) + ' 损坏,已从 ' + path.basename(bk) + ' 恢复');
+        return bak;
+      } catch (_) {}
+    }
+    return fallback;
   }
 }
 const uid = p => (p || 'id') + '_' + Date.now().toString(36) + crypto.randomBytes(4).toString('hex');
@@ -718,13 +724,23 @@ function walletAppend(uid2, type, amount, reason, idem) {
   if (idem) {
     const hit = w.entries.find(e => e.idem === idem);
     if (hit) return { dup: true, entry: hit, wallet: w };
+    // 二十轮:滚动截断淘汰条目的幂等键仍在索引内拒重放(截断不再掏空双扣/双退防护)
+    if ((w.archivedIdems || []).includes(idem)) return { dup: true, entry: null, wallet: w };
   }
   const seq = (w.entries.length ? w.entries[w.entries.length - 1].seq : 0) + 1;
   const balance = Math.max(0, (w.balance || 0) + amount);
   const entry = { seq, ts: Date.now(), type, amount, balanceAfter: balance, reason: String(reason || '').slice(0, 80), idem: idem || null };
   w.entries.push(entry);
   w.balance = balance;
-  if (w.entries.length > 3000) w.entries = w.entries.slice(-3000); // 账本滚动上限(保留最近 3000 条)
+  if (w.entries.length > 3000) { // 账本滚动上限(保留最近 3000 条)
+    const evicted = w.entries.slice(0, w.entries.length - 3000);
+    w.entries = w.entries.slice(-3000);
+    /* 二十轮:淘汰条目整机归档到 wallets/<uid>.archive.jsonl(退款/对账依据不随截断销毁,
+     * 与 audit.jsonl 双轨互证)+ 幂等键索引留钱包内(上限 2 万条滚动);跨窗口的退款判定
+     * 对归档条目失败关闭(宁可少退不可多退),人工对账以归档+审计为准 */
+    try { fs.appendFileSync(walletFile(uid2) + '.archive.jsonl', evicted.map(e => JSON.stringify(e)).join('\n') + '\n'); } catch (_) {}
+    w.archivedIdems = (w.archivedIdems || []).concat(evicted.map(e => e.idem).filter(Boolean)).slice(-20000);
+  }
   writeJSON(walletFile(uid2), w);
   auditAppend('wallet', { uid: uid2, seq: entry.seq, type, amount, balanceAfter: balance, reason: entry.reason, idem: entry.idem });
   return { dup: false, entry, wallet: w };
@@ -972,8 +988,13 @@ function proxyCharge(res, userId, action, reason, operationId, endpoint, reqBody
   const eff = mine.filter(c => !refunded.has(c.idem + '_rf'));
   if (eff.length) return { cost: -eff[eff.length - 1].amount, serverCharged: false, refundIdem: eff[eff.length - 1].idem + '_rf', opId: finalOpId, action }; // 已扣未退(wallet 层兜底,如 op 登记丢失的六轮旧账单)
   if (wallet.balance < cost) { fail(res, 402, '积分不足,请充值后再生成', 402); return null; }
-  const chargeIdem = prefix + (mine.length > 0 ? '~' + (mine.length + 1) : ''); // 退款后重试 → 新条目
-  const r = walletAppend(userId, 'charge', -cost, reason, chargeIdem);
+  let chargeIdem = prefix + (mine.length > 0 ? '~' + (mine.length + 1) : ''); // 退款后重试 → 新条目
+  let r = walletAppend(userId, 'charge', -cost, reason, chargeIdem);
+  // 二十轮:幂等键撞上归档索引(旧 operation 跨截断窗口重放)时换新后缀实扣——dup 静默放行会变免费执行
+  for (let n = mine.length + 2; r.dup && n < mine.length + 100; n++) {
+    chargeIdem = prefix + '~' + n;
+    r = walletAppend(userId, 'charge', -cost, reason, chargeIdem);
+  }
   syncWalletProjection(userId, r.wallet, r.entry, {});
   if (opId) {
     /* 十一轮:新记录保存本次扣费的完整 chargeIdem(含 ~n 重试后缀)——退款按 idem 一对一精确归属,
@@ -1159,15 +1180,23 @@ function findActiveJob(db, userId, job, inputHash) {
   return db.list.find(j => j.userId === userId && j.shotId === job.shotId && j.inputHash === inputHash
     && j.status === 'running' && now - (j.createdAt || 0) < JOB_FINAL_MS) || null;
 }
-function jobRegister(db, userId, upstreamId, job, inputHash, billing) {
+function jobRegister(db, userId, upstreamId, job, inputHash, billing, status) {
   db.list.unshift({
     id: uid('job'), upstreamId, userId,
     projectId: job && job.projectId || null, episodeId: job && job.episodeId || null, shotId: job && job.shotId || null,
-    inputHash, status: 'running', createdAt: Date.now(), updatedAt: Date.now(), videoUrl: '',
+    inputHash, status: status || 'running', createdAt: Date.now(), updatedAt: Date.now(), videoUrl: '',
     billingOperationId: (billing && billing.opId) || null, billingAction: (billing && billing.action) || null,
     billingCost: (billing && billing.cost) || 0, refunded: false,
   });
   saveJobs(db);
+  return db.list[0];
+}
+/* 二十轮:删除登记行(创建占位在上游失败/退回时撤销,不占用幂等位) */
+function jobRemove(id) {
+  const db = jobsDB();
+  const n = db.list.length;
+  db.list = db.list.filter(j => j.id !== id);
+  if (db.list.length !== n) saveJobs(db);
 }
 /* 超时清扫(十一轮三档):30 分钟未终态 → 标 stale(不退款,轮询时先查一次上游再定——
  * 任务在第 30 分钟附近刚成功时不再被直接退款+拒交付);60 分钟仍未终态 → needs_reconcile
@@ -1180,13 +1209,15 @@ function sweepJobs() {
   let changed = false;
   db.list.forEach(j => {
     const age = Date.now() - (j.createdAt || 0);
-    if (j.status === 'running' && age > JOB_FINAL_MS) {
+    if (j.status === 'creating' && age > 5 * 60 * 1000) {
+      j.__drop = true; changed = true; // 二十轮:创建占位超 5 分钟未转 running = 进程崩溃残留,清除让出幂等位(扣费由 executing 看门狗兜底退款)
+    } else if (j.status === 'running' && age > JOB_FINAL_MS) {
       j.status = 'needs_reconcile'; j.updatedAt = Date.now(); changed = true; // 60 分钟:转待对账,由对账查上游后再定退款
     } else if (j.status === 'running' && age > JOB_STALE_MS && !j.stale) {
       j.stale = true; j.updatedAt = Date.now(); changed = true; // 30 分钟:标待对账,不退款
     }
   });
-  if (changed) saveJobs(db);
+  if (changed) { db.list = db.list.filter(j => !j.__drop); saveJobs(db); }
 }
 /* 任务退款闭环(十一轮 P1-4):检查 refundOperation 实退金额>0 才落 refunded 标记——
  * 此前不看返回值直接写 true,退款被判 blocked(登记缺失/已交付)时会假标"已退"掩盖账实不符 */
@@ -1472,7 +1503,10 @@ function serveFile(res, abs, req) {
           headers['Content-Range'] = `bytes ${start}-${end}/${st.size}`;
           headers['Content-Length'] = end - start + 1;
           res.writeHead(206, Object.assign(headers, SEC_HEADERS));
-          return fs.createReadStream(abs, { start, end }).pipe(res);
+          // 流错误兜底(二十轮):磁盘读失败不再让异常冒泡崩进程
+          return fs.createReadStream(abs, { start, end })
+            .on('error', () => { try { res.destroy(); } catch (_) {} })
+            .pipe(res);
         }
         res.writeHead(416, Object.assign({ 'Content-Range': `bytes */${st.size}` }, SEC_HEADERS));
         return res.end();
@@ -1480,7 +1514,9 @@ function serveFile(res, abs, req) {
     }
   } catch (_) {}
   res.writeHead(200, Object.assign(headers, SEC_HEADERS));
-  fs.createReadStream(abs).pipe(res);
+  fs.createReadStream(abs)
+    .on('error', () => { try { res.destroy(); } catch (_) {} }) // 流错误兜底(二十轮)
+    .pipe(res);
 }
 
 /* ---------- 上传配额 ---------- */
@@ -2254,6 +2290,11 @@ const server = http.createServer(async (req, res) => {
         const jdb = jobsDB();
         const active = findActiveJob(jdb, user.id, b.job, inputHash);
         if (active) return ok(res, { id: active.upstreamId, duration, droppedFrames, reused: true });
+        // 二十轮:创建中占位检查——同镜同输入已有创建占位(尚未拿到 upstreamId)直接 409,
+        // 封死"幂等检查 → 上游创建(最长 120s)→ 登记"窗口内快速双击/双端各建一个上游任务的双开双扣
+        if (b.job && b.job.shotId && jdb.list.some(j => j.userId === user.id && j.shotId === b.job.shotId && j.inputHash === inputHash && j.status === 'creating')) {
+          return fail(res, 409, '该镜头相同输入的视频任务正在创建中,请稍后重试(将复用原任务,不重复扣费)', 409);
+        }
         // 服务端按次原子扣费(九轮:动作推导核心在 billing.js——请求时长>10s 一律 video.beat(长视频按
         // 2 镜计价,封死"长视频提 video.gen 低价"套利);≤10s 允许 gen/beat(节拍板短段落平价属产品定价);
         // operation 状态机绑定请求指纹——同 opId 换提示词/素材重放被拒;复用不扣;交付在轮询 succeeded 时标记)
@@ -2265,9 +2306,14 @@ const server = http.createServer(async (req, res) => {
         /* 十一轮 P0-2/P0-4:executing 标记 + 并发锁(同 opId 并发不再复用已有扣费后双开上游任务) */
         const vidLock = 'vid:' + user.id + ':' + charge.opId + ':' + vAction;
         if (!execLock(vidLock)) return fail(res, 409, '该操作正在执行中,请勿并发重复提交', 409);
+        let placeholder = null; // 外层可见:未捕获异常路径也要撤销占位
         try {
         opMarkExecuting(user.id, charge.opId, vAction);
+        // 二十轮:上游调用前先同步登记 creating 占位行(带 shotId+inputHash 唯一约束)——
+        // 占位在先,并发请求在上一个请求等待上游期间即被上方 409 拦下;失败路径撤销占位(退费后重试不受阻)
+        placeholder = (b.job && b.job.shotId) ? jobRegister(jobsDB(), user.id, '', b.job, inputHash, charge, 'creating') : null;
         const failRefund = (code, msg, status) => {
+          if (placeholder) jobRemove(placeholder.id);
           proxyRefund(user.id, charge, msg); // 服务未交付:服务端本次实扣原路退回
           return fail(res, code, msg, status);
         };
@@ -2298,11 +2344,21 @@ const server = http.createServer(async (req, res) => {
         if (!r.ok) return failRefund(r.status === 401 ? 502 : r.status, volcFailMsg(r, text, '视频任务创建'), r.status);
         const data = parseUpstreamJSON(text, '视频任务创建');
         if (!data.id) return failRefund(502, '视频任务创建失败:未返回任务 id', 502);
-        jobRegister(jobsDB(), user.id, data.id, b.job, inputHash, charge); // 登记到服务端任务中心(断点续查/审计;含计费操作,晚失败可自动退费)。R14:重读最新快照——上方两次上游 await 期间他请求对 jobs.json 的写入(轮询回写/对账退款落标)不能被旧快照整体回滚
+        // 二十轮:占位行转正(写入真实 upstreamId/running);占位被意外清除时兜底重新登记。
+        // R14 同原则:重读最新快照——上方两次上游 await 期间他请求对 jobs.json 的写入不能被旧快照整体回滚
+        if (placeholder) {
+          const pdb = jobsDB();
+          const row = pdb.list.find(j => j.id === placeholder.id);
+          if (row) { row.upstreamId = data.id; row.status = 'running'; row.updatedAt = Date.now(); saveJobs(pdb); }
+          else jobRegister(pdb, user.id, data.id, b.job, inputHash, charge);
+        } else {
+          jobRegister(jobsDB(), user.id, data.id, b.job, inputHash, charge); // 登记到服务端任务中心(断点续查/审计;含计费操作,晚失败可自动退费)
+        }
         return ok(res, { id: data.id, duration, droppedFrames, relayedVideo }); // duration=档位吸附后的实际上游时长;droppedFrames=混用兜底已去首尾帧;relayedVideo=参考视频经公网中转
         } finally { execUnlock(vidLock); } // 十一轮并发锁统一释放
       } catch (e) {
         // 八轮:未捕获异常统一退费(创建返回非 JSON 体等此前会裸抛 500 不退款)
+        if (placeholder) jobRemove(placeholder.id); // 二十轮:异常路径撤销创建占位(让出幂等位)
         if (charge) proxyRefund(user.id, charge, e && e.message);
         if (e && e.httpStatus) return fail(res, e.httpStatus, e.message, e.httpStatus);
         return fail(res, 502, '视频任务创建异常:' + ((e && e.message) || '未知错误'), 502);
@@ -3076,6 +3132,11 @@ server.listen(PORT, CONFIG.host || '127.0.0.1', () => {
   console.log(`  LLM 上游: ${CONFIG.baseUrl}(超时 ${CONFIG.llmTimeoutMs}ms,注册${CONFIG.registerOpen ? '开放' : '关闭'})`);
   console.log(`  生图/视频: ${CONFIG.volcBaseUrl}(${CONFIG.volcApiKey ? '已配置 volcApiKey' : '未配置 volcApiKey,/api/volc/* 返回 503'})`);
 });
+
+/* ---------- 进程级异常兜底(二十轮) ---------- */
+// 未捕获异常/Promise 拒绝只记录不退出:一次流错误/回调抛错不再拖垮全进程(在途付费操作变 executing 残留)
+process.on('uncaughtException', e => { console.error('[server] uncaughtException:', e); });
+process.on('unhandledRejection', e => { console.error('[server] unhandledRejection:', e); });
 
 /* ---------- 优雅退出 ---------- */
 function shutdown(sig) {

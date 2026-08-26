@@ -418,6 +418,7 @@
       const ops = Array.isArray(out.ops) ? out.ops.filter(o => o && o.op) : [];
       if (ops.length) {
         const g = AO.splitOps(ops);
+        if (g.unknown.length) msg.text += `\n(⊘ 不支持的操作已忽略:${g.unknown.map(o => o.op).join('、')})`; // 二十轮:未知 op 显式回报
         const actDescs = g.acts.map(AO.actDesc); // 注册表分级标注:exec(run)前加 ⚠ 并注明扣费规则
         // 克隆试算预览(不动真数据,仅数据类 ops)
         const cloneCtx = { p: p && JSON.parse(JSON.stringify(p)), ep: null };
@@ -562,7 +563,7 @@
 ★ 动作类 ops(会真正驱动工作台执行,慎用但可用):
 {"op":"goto","target":"制片|剧本|导演|主体|分集|成片库|剧壳|切片|一键跑批"}(跳转到对应板块/工作区)
 {"op":"run","action":"AI策划|剧本译制"}(调起对应完整工作流)${ep ? `
-{"op":"run","action":"智能分镜|AI拆解|生成视频|批量生成音频|合成音视频|合成成片|整集审片"}(驱动当前分集工作台)
+{"op":"run","action":"${AO.actProtocol()}"}(驱动当前分集工作台)
 {"op":"select","shot":镜头号}` : ''}
 纯咨询/建议类问题 ops 返回 []。${p ? `项目风格:${p.style}。` : ''}修改类指令必须给 ops,不要只在 reply 里说"已修改"。
 ★ 关键决策点选项卡:当对话处于创作方向/风格/方案等关键决策点、适合让用户拍板时,额外返回可选键 "choices":{"title":"选择主题(如:复仇方向选择)","options":[{"t":"方向一:标题","d":"一句话描述"}]}(2-4 个);返回 choices 的本轮 ops 返回 [],等用户提交选择后再据此继续。`;

@@ -143,11 +143,13 @@
       const arr = Array.isArray(items) ? items : [];
       const sum = { ok: 0, fail: 0, cancelled: 0, results: [] };
       const cancelledErr = () => { const e = new Error('已取消'); e.cancelled = true; return e; };
+      let noFunds = false; // 二十轮:余额不足闩锁——首个不足弹一次充值窗,后续条目不再各自弹窗(N 镜不足≠N 个叠加 modal)
       for (let i = 0; i < arr.length; i++) {
         const item = arr[i];
         const o = Object.assign({}, base, optsOf ? optsOf(item, i) : null);
         const tk = this.start(o);
-        if ((o.cost || 0) > 0 && !U.charge(o.cost, o.actionName || o.type)) {
+        if ((o.cost || 0) > 0 && (noFunds || !U.charge(o.cost, o.actionName || o.type))) {
+          noFunds = true;
           this.fail(tk, '积分不足');
           sum.fail++; sum.results.push(null);
           if (onEach) onEach(item, false, new Error('积分不足'), tk, i);
@@ -197,9 +199,12 @@
     if (Array.isArray(t.opIds) && t.opIds.length) return t.opIds;
     return [{ opId: t.opId || t.id, shotId: t.shotId, label: '' }];
   }
+  /* 二十轮:图像类任务也可一键应用回镜头——生图刷新即失联的落差补齐(此前仅音频/合成可应用,
+   * 生图结果只能手动下载再上传);首帧海选按切分失败同口径原图回填首帧 */
+  const IMG_APPLY = { '文生图(首帧)': 'firstFrame', '文生图(尾帧)': 'lastFrame', '文生图(首帧海选)': 'firstFrame' };
   function canApply(t, f) {
     if (!f.rec.payload || !f.rec.payload.url) return false;
-    if (t.type !== '生成音频' && t.type !== '合成音视频') return false;
+    if (t.type !== '生成音频' && t.type !== '合成音视频' && !IMG_APPLY[t.type]) return false;
     return !!(f.shotId || t.shotId) && !!t.episodeId && !!t.projectId;
   }
   function applyRecovered(t, f) {
@@ -215,6 +220,11 @@
       s.history.unshift({ type: '音频', model: '任务中心领取', time: Store.now() });
     } else if (t.type === '合成音视频') {
       s.merged = true; s.mergedUrl = url;
+    } else if (IMG_APPLY[t.type]) {
+      s[IMG_APPLY[t.type]] = url;
+      if (IMG_APPLY[t.type] === 'firstFrame') s.__inheritPrevEp = false; // 与 genShotFrame 同口径:手动首帧不再随上集尾帧联动
+      s.history = s.history || [];
+      s.history.unshift({ type: '图片', model: '任务中心领取', time: Store.now() });
     } else return false;
     t.reason = (t.reason || '').replace(/\(结果已领取并应用\)/g, '') + '(结果已领取并应用)';
     Store.save();
@@ -235,7 +245,7 @@
     if (!found.length) return U.toast('服务端没有该任务的可领取结果(未交付或已过 7 天保留期)', 'info', 3000);
     U.openModal({
       title: `领取结果(${found.length} 条)`,
-      body: `<p class="small muted" style="margin-bottom:10px;line-height:1.8">该任务前端判定失败/超时,但服务端已完成交付(积分已按交付计费)。结果可直接打开/下载;配音与合成类结果可一键应用回对应分镜。</p>` +
+      body: `<p class="small muted" style="margin-bottom:10px;line-height:1.8">该任务前端判定失败/超时,但服务端已完成交付(积分已按交付计费)。结果可直接打开/下载;配音/合成/首帧/尾帧类结果可一键应用回对应分镜。</p>` +
         found.map((f, i) => `
         <div class="card" style="padding:10px 12px;margin-bottom:8px">
           <div class="row wrap" style="justify-content:space-between;gap:8px">

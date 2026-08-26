@@ -396,7 +396,7 @@
       try {
         for (let i = 0; i < n; i++) {
           const histLen = (s.history || []).length;
-          await createShotVideo(p, ep, s, main, true); // skipReviewGuard:守卫已在外层做过;内部仍逐版扣费/失败退费
+          await createShotVideo(p, ep, s, main, true, true); // skipReviewGuard+keepInflight:守卫与在飞标记均由外层持有——内层 finally 不提前释放(此前第 1 版结束即删标记,2..N 版期间防重闸失效)
           if (s.video && s.video.status === 'done' && (s.history || []).length > histLen) ok++;
           else break; // 失败/积分不足即停
         }
@@ -409,6 +409,14 @@
 
   /* ---- 主体参考(打标)/canonical 生成请求/时长预估/轴线规则:实现已下沉 domain.js(双端单一来源,
    * CLI 经 require 复用同一构造点,CLI 生成请求与指纹和主应用逐字节一致);此处仅委托保持局部签名不变 ---- */
+  /* 二十轮:轮询等待透传——onProgress 把"已等待 Xs"写到分镜卡蒙层(不动取消按钮,整卡不重渲) */
+  function waitProgress(main, s) {
+    const t0 = Date.now();
+    return () => {
+      const el = main && main.querySelector(`[data-wait="${s.id}"]`);
+      if (el) el.textContent = ' · 已等待 ' + Math.round((Date.now() - t0) / 1000) + 's';
+    };
+  }
   function shotRefImages(p, s) {
     return Domain.shotRefImages(p, s);
   }
@@ -476,7 +484,7 @@
     return false;
   }
 
-  async function createShotVideo(p, ep, s, main, skipReviewGuard) {
+  async function createShotVideo(p, ep, s, main, skipReviewGuard, keepInflight) {
     if (s.final) return U.toast('该分镜已定为终稿,请先「解锁终稿」', 'error');
     if (!skipReviewGuard) {
       // 合规承诺:首次生成前须同意「上传与创作合规承诺」
@@ -552,6 +560,7 @@
             model: Media.realModel(req.model),
             job: { projectId: p.id, episodeId: ep.id, shotId: s.id }, // 服务端任务中心:同镜同输入幂等复用
             onCreated: id => { if (s.video && s.video.status === 'generating') { s.video.upstreamId = id; Store.save(); } }, // 落 upstreamId,刷新后可断点续查
+            onProgress: waitProgress(main, s), // 二十轮:等待时长透传到分镜卡蒙层
             billingAction: vBill.action,
             operationId: tk.id,
           }));
@@ -589,7 +598,7 @@
       s.lastFrame = framePH(s, 'last'); // 尾帧写入,供下一镜继承
       finishVideoDone(p, ep, s, main, tk, target, strategy, vrefCnt);
     } finally {
-      __genInflight.delete(s.id);
+      if (!keepInflight) __genInflight.delete(s.id); // keepInflight(连抽外层持有):内层不提前释放在飞标记
     }
   }
 
@@ -692,10 +701,12 @@
         try {
           // canonical 请求构造(promptOverride=镜头组前缀注入后的实际发送口径);计费逐镜独立(任务 id)
           const req = buildVideoRequest(p, ep, s, { promptOverride: effPrompt || s.plot });
+          const t0 = Date.now(); // 二十轮:等待时长透传 dock 行(数分钟等待不再只有 spinner)
           const r = await Media.genVideo(Object.assign({}, req, {
             model: Media.realModel(req.model),
             job: { projectId: p.id, episodeId: ep.id, shotId: s.id }, // 服务端任务中心:同镜同输入幂等复用
             onCreated: id => { if (s.video && s.video.status === 'generating') { s.video.upstreamId = id; Store.save(); } },
+            onProgress: () => upd(i, `🎬 镜头${s.order + 1} 生成中…已等待 ${Math.round((Date.now() - t0) / 1000)}s`),
             billingAction: vBill.action,
             operationId: tks[i].id,
           }));
@@ -768,10 +779,15 @@
   function openBatchRetryModal(p, ep, main, total, failed) {
     const okCnt = total - failed.length;
     const errOf = err => (window.Media ? Media.friendlyError(err).msg : String(err)).slice(0, 80); // 一句话错误摘要
+    // 二十轮:积分不足镜未扣费无费可退,汇总文案按实区分(此前统一写"已自动退费"误导)
+    const noFundsCnt = failed.filter(f => f.err === '积分不足').length;
+    const failHint = noFundsCnt === failed.length ? '积分不足未扣费,充值后可重试'
+      : noFundsCnt ? '生成失败镜已退费,积分不足镜未扣费,可单独或全部重试'
+      : '失败镜已自动退费,可单独或全部重试';
     U.openModal({
       title: '批量生成结果',
       body: `
-      <div style="margin-bottom:12px"><b style="color:var(--green)">${okCnt}/${total} 成功</b><span class="muted">,</span> <b style="color:var(--red)">${failed.length} 项失败</b><span class="hint" style="display:inline;margin:0 0 0 8px">失败镜已自动退费,可单独或全部重试</span></div>
+      <div style="margin-bottom:12px"><b style="color:var(--green)">${okCnt}/${total} 成功</b><span class="muted">,</span> <b style="color:var(--red)">${failed.length} 项失败</b><span class="hint" style="display:inline;margin:0 0 0 8px">${failHint}</span></div>
       ${failed.map((f, i) => `
       <div class="row" style="gap:10px;align-items:center;padding:8px 10px;border:1px solid var(--border2);border-radius:10px;margin-bottom:8px" data-frow="${i}">
         <span class="tag cyan" style="flex:none">镜头 ${f.s.order + 1}</span>
@@ -812,7 +828,7 @@
     });
   }
 
-  window.SBGen = { shotVersions, openVersions, framePH, genShotFrame, genShotFramePick, genShotValidate, syncFrames, shotRefImages, axisNoteOf, estShotDuration, shotVideoBilling, createShotVideo, finishVideoDone, syncVoiceShot, batchGenVideos, openBatchRetryModal, drawShotTimes };
+  window.SBGen = { shotVersions, openVersions, framePH, genShotFrame, genShotFramePick, genShotValidate, syncFrames, shotRefImages, axisNoteOf, estShotDuration, shotVideoBilling, createShotVideo, finishVideoDone, syncVoiceShot, batchGenVideos, openBatchRetryModal, drawShotTimes, isInflight: id => __genInflight.has(id) };
   /* 拆分前 window.SB 的成员继续透出(sb-io.js/produce.js/timeline.js/beatboard.js 等 SB.xxx 调用点不变) */
   Object.assign(window.SB, { syncFrames, framePH, batchGenVideos, shotVersions, estShotDuration, buildVideoRequest });
 })();

@@ -63,7 +63,7 @@
           ${useVideoThumb
             ? `<video src="${svurl}" preload="metadata" muted style="width:100%;height:100%;object-fit:cover;pointer-events:none"></video>`
             : f ? `<img src="${U.thumb(f)}">` : '<div class="ws-thumb-empty">无画面</div>'}
-          ${vstat === 'generating' ? `<div class="ws-gen"><span class="spinner"></span>生成中${s.video.upstreamId ? `<span class="ws-cancel" data-cancel="${s.id}" title="取消生成:积分退回,上游结果不再交付">✕ 取消</span>` : ''}</div>` : shotStatusHTML(p, s)}
+          ${vstat === 'generating' ? `<div class="ws-gen"><span class="spinner"></span>生成中<span data-wait="${s.id}"></span>${s.video.upstreamId ? `<span class="ws-cancel" data-cancel="${s.id}" title="取消生成:积分退回,上游结果不再交付">✕ 取消</span>` : ''}</div>` : shotStatusHTML(p, s)}
         </div>
         <div class="ws-thumb-name">${(() => { const g = s.groupId && (ep.groups || []).find(x => x.id === s.groupId); return g ? `<span style="color:hsl(${U.hashColor(g.id) % 360},70%,55%)" title="镜头组:${U.esc(g.name)}">●</span> ` : ''; })()}${i + 1}. ${U.esc((s.name || s.plot || '镜头' + (i + 1)).slice(0, 10))}</div>
       </div>`;

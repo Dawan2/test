@@ -305,6 +305,7 @@
       <span class="grow"></span>
       <button class="btn ghost sm ${(Store.state.settings || {}).agentAuto ? 'primary' : ''}" data-a="auto" title="自动执行:开启后导演助手直接操作工作台(改分镜/生成/合成/切视图),不再逐条确认;可随时撤销">⚡ 自动${(Store.state.settings || {}).agentAuto ? '·开' : '·关'}</button>
       <button class="btn ghost sm ${AC.prearrOn ? 'primary' : ''}" data-a="prearr" title="预排模式:开启后,分镜/批量生成类意图先落成参数表单预填,你确认「按此方案执行」后才真正发起">🎛 预排${AC.prearrOn ? '·开' : '·关'}</button>
+      <button class="btn ghost sm ${(Store.state.settings || {}).agentSelfFix ? 'primary' : ''}" data-a="selffix" title="自修复(默认关):执行回执含失败时,自动追加一轮「核验/修复」调用让模型归因并尝试数据类修复(不再扣费,复用本条消息额度)">🩹 自修复${(Store.state.settings || {}).agentSelfFix ? '·开' : '·关'}</button>
       <button class="btn ghost sm" data-a="mem" title="持久化记忆:记住你的修改意图与偏好,跨会话召回">🧠 ${(Store.state.agentMemory || []).length}</button>
       <button class="btn ghost sm" data-a="undo" ${ep.agentUndo ? '' : 'disabled'} title="撤销上次修改">↩ 撤销</button>
       <button class="btn ghost sm" data-a="close" title="收起">✕</button>
@@ -422,6 +423,11 @@
         if (userMsg) memRemember(`「${p.name}/${ep.title}」${userMsg.text.slice(0, 60)} → 已应用:${(applied.length ? applied : m2.pending.changes).slice(0, 3).join(';').slice(0, 80)}`, '分镜');
         Tasks.done(tk);
         m2.text += `\n(已应用 ${applied.length + actDone.length} 项修改)${vf ? ' ' + AO.verifyNote(vf) : ''}`;
+        // 二十轮:自修复轮(开关默认关)——动作回执含失败时回喂模型一轮归因修复(复用本任务 opId 不另扣费)
+        if ((Store.state.settings || {}).agentSelfFix && /[✕⊘]/.test(actDone.join(''))) {
+          const fixNote3 = await AO.selfFixRound(p, ep, main, actDone, tk.id);
+          if (fixNote3) m2.text += fixNote3;
+        }
         m2.pending = null;
         ep.agentChat = ep.agentChat.slice(-50);
         Store.save();
@@ -497,7 +503,7 @@ ops 支持:
 {"op":"beatupdate","scene":场次号,"beat":节拍号,"fields":{"情绪/剧情/分镜文字":"新值"}}(改分镜脚本层某节拍;场次/节拍号从 1 开始)
 {"op":"sceneupdate","scene":场次号,"fields":{"标题/剧情":"新值"}}(改分镜脚本层某场次标题或场次剧情)
 ★ 动作类 ops(会真正驱动工作台执行,慎用但可用):
-{"op":"run","action":"智能分镜|AI分镜师|AI拆解|拆解文字分镜|生成视频|批量生成音频|合成音视频|合成成片|整集审片"}(点击工作台对应真实按钮,按其规则扣费)
+{"op":"run","action":"${AO.actProtocol()}"}(驱动工作台对应真实功能,按其规则扣费)
 {"op":"goto","target":"分镜脚本|分镜视频|剪辑|节拍板|镜头组"}(切换工作区视图)
 {"op":"select","shot":镜头号}(选中某镜头到右栏编辑)
 纯咨询/建议类问题 ops 返回 []。运镜限:固定镜头/推镜头/拉镜头/摇镜头/移镜头/跟镜头/环绕镜头/俯拍/仰拍/特写;视角:正面/侧面/背面;角度:仰拍/平视/俯拍/高角度;景别:特写/近景/中景/全景;光圈:ƒ/1.4~ƒ/11。项目风格:${styleOf(p)}。
@@ -528,7 +534,8 @@ ops 支持:
       if (chA) msg.choices = chA;
       const ops = Array.isArray(out.ops) ? out.ops.filter(o => o && o.op) : [];
       if (ops.length) {
-        const { data: dataOps, acts: actOps } = AO.splitOps(ops);
+        const { data: dataOps, acts: actOps, unknown: unkOps } = AO.splitOps(ops);
+        if (unkOps.length) msg.text += `\n(⊘ 不支持的操作已忽略:${unkOps.map(o => o.op).join('、')})`; // 二十轮:未知 op 显式回报,不再静默 0 项
         const actDescs = actOps.map(AO.actDesc); // 注册表分级标注:exec(run)前加 ⚠ 并注明扣费规则
         // 克隆试算修改预览(仅数据类 ops 参与试算;含分镜脚本层,beatupdate/sceneupdate 可预览)
         const clone = { shots: JSON.parse(JSON.stringify(ep.shots)), sbConfig: ep.sbConfig, uiSel: ep.uiSel, scriptBoard: JSON.parse(JSON.stringify(ep.scriptBoard || { scenes: [] })) };
@@ -550,7 +557,12 @@ ops 支持:
               try { // R17:脏 ops 异常兜底——回滚+退费+标败,自动执行不再吞积分留悬挂任务
                 if (loData.length) AO.applyOps(ep, loData, true);
                 vf = loData.length ? AO.verifyOps(ep, loData) : null; // 执行闭环验证:落数后回读校验
-                await AO.runEpisodeActions(p, ep, safeActs, main);
+                const receipts = await AO.runEpisodeActions(p, ep, safeActs, main);
+                // 二十轮:回执回喂自修复轮(开关 settings.agentSelfFix,默认关)——失败回执回喂模型归因并数据类修复
+                if ((Store.state.settings || {}).agentSelfFix) {
+                  const fixNote = await AO.selfFixRound(p, ep, main, receipts, agOpId);
+                  if (fixNote) msg.text += fixNote;
+                }
               } catch (e) {
                 ep.shots = ep.agentUndo.shots; ep.composed = ep.agentUndo.composed; ep.scriptBoard = ep.agentUndo.board;
                 U.refund(1, '导演助手自动执行异常退费');
@@ -577,8 +589,16 @@ ops 支持:
               if (runOps.length) {
                 // 分级审批:exec 类动作按各功能规则另行扣费,自动模式下也需用户确认
                 U.confirm(`虎鲸导演助手请求执行以下动作(将按各功能规则扣费):${runOps.map(o => '▶ ' + o.action).join(';')}`, async () => {
-                  await AO.runEpisodeActions(p, ep, runOps, main);
+                  const receipts2 = await AO.runEpisodeActions(p, ep, runOps, main);
                   U.toast('已执行:' + runOps.map(o => o.action).join('、'), 'success', 2500);
+                  // 二十轮:自修复轮(开关默认关)——失败回执回喂模型一轮,修复结论作为新消息留存
+                  if ((Store.state.settings || {}).agentSelfFix) {
+                    const fixNote2 = await AO.selfFixRound(p, ep, main, receipts2, agOpId);
+                    if (fixNote2) {
+                      ep.agentChat.push({ role: 'assistant', text: fixNote2.replace(/^\n/, ''), time: Store.now() });
+                      ep.agentChat = ep.agentChat.slice(-50); Store.save();
+                    }
+                  }
                   Views.episode(main, p.id, ep.id);
                 }, '▶ 确认执行');
                 msg.text += `\n(⚠ ${runOps.length} 个执行类动作待确认)`;
@@ -617,6 +637,13 @@ ops 支持:
     col.querySelector('[data-a=prearr]').onclick = () => {
       AC.setPrearr(!AC.prearrOn);
       U.toast(AC.prearrOn ? '🎛 预排模式已开启:生成类意图先出参数方案,确认后才执行' : '🎛 预排模式已关闭:恢复正常对话与执行', 'info', 2500);
+      render(col, p, ep, main);
+    };
+    col.querySelector('[data-a=selffix]').onclick = () => { // 二十轮:回执回喂自修复轮开关(默认关,控制成本)
+      Store.state.settings = Store.state.settings || {};
+      Store.state.settings.agentSelfFix = !Store.state.settings.agentSelfFix;
+      Store.save();
+      U.toast(Store.state.settings.agentSelfFix ? '🩹 自修复已开启:执行失败将自动追加一轮核验/修复(复用本条消息额度,不另扣费)' : '自修复已关闭', 'info', 2500);
       render(col, p, ep, main);
     };
     col.querySelector('[data-a=undo]').onclick = () => {

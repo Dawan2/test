@@ -50,15 +50,37 @@
    * headless 传 quiet:多方案自动择优发布、本地兜底不弹「下一步批量生成」确认(ui 模式原样保留对比窗/确认弹窗) */
   reg('episode.generateStoryboard', { label: '智能分镜' }, ({ p, ep, args }) => metered(REG['episode.generateStoryboard'], () => new Promise(resolve => {
     if (!(ep.content || '').trim()) return resolve(blocked('no-script', '本分集暂无剧本内容,请先补充剧本'));
-    const c = ensureSBCfg(p, ep);
-    const planN = Math.max(1, Math.min(3, +c.sbPlans || 1));
-    const total = (window.COST ? COST.smartSB : 0) * planN + (c.sbMode === 'tweet' ? c.shotCount * (window.COST ? COST.tweetShot : 0) : 0);
-    if (window.Store && Store.credits && Store.credits() < total) return resolve(blocked('no-credits', '积分不足:智能分镜需 ' + total + ' 积分'));
-    window.SB.runSmartSB(p, ep, sinkOf(args), {
-      quiet: !args.ui,
-      done: () => { const r = ok({ shots: (ep.shots || []).length, plans: (ep.sbPlans || []).length }); r.next = nextOf(p, ep); resolve(r); },
-      error: e => resolve(fail('smartSB', (e && e.message) || e)),
-    });
+    const start = () => {
+      const c = ensureSBCfg(p, ep);
+      const planN = Math.max(1, Math.min(3, +c.sbPlans || 1));
+      const total = (window.COST ? COST.smartSB : 0) * planN + (c.sbMode === 'tweet' ? c.shotCount * (window.COST ? COST.tweetShot : 0) : 0);
+      if (window.Store && Store.credits && Store.credits() < total) return resolve(blocked('no-credits', '积分不足:智能分镜需 ' + total + ' 积分'));
+      window.SB.runSmartSB(p, ep, sinkOf(args), {
+        quiet: !args.ui,
+        done: () => { const r = ok({ shots: (ep.shots || []).length, plans: (ep.sbPlans || []).length }); r.next = nextOf(p, ep); resolve(r); },
+        error: e => resolve(fail('smartSB', (e && e.message) || e)),
+      });
+    };
+    /* 二十轮:空主体库引导(ui 模式)——主体库为空时拆出的分镜 characters=[] 无参考可注,
+     * 主体缺失类提醒永不触发,用户到成片才发现每镜换脸;拆镜前主动引导先提取主体(可仍继续)。
+     * headless(CLI/跑批)不拦截:自动化场景由调用方自行保证主体就绪 */
+    if (args.ui && !(p.subjects || []).length && window.U) {
+      return U.openModal({
+        title: '主体库为空',
+        body: `<p style="line-height:1.9">当前项目尚未提取任何主体(角色/场景/道具)。<br>没有主体参考,生成视频时无法锁定角色形象,<b style="color:var(--red)">极易出现每镜换脸</b>,且主体缺失类提醒不会触发。<br>建议先「上传剧本 → 解析剧本(精细模式)」提取主体并生成参考图。</p>`,
+        footer: `<button class="btn" data-x="cancel">取消</button><button class="btn" data-x="go">去提取主体</button><button class="btn primary" data-x="cont">仍要拆镜</button>`,
+        onMount(m, close) {
+          m.querySelector('[data-x=cancel]').onclick = () => { close(); resolve(blocked('no-subjects', '已取消:建议先提取主体再拆镜')); };
+          m.querySelector('[data-x=go]').onclick = () => {
+            close();
+            resolve(blocked('no-subjects', '已转去提取主体,完成后请重新拆镜'));
+            if (window.EpisodeUtil && EpisodeUtil.openUploadScript) EpisodeUtil.openUploadScript(p, sinkOf(args) || document.getElementById('main'));
+          };
+          m.querySelector('[data-x=cont]').onclick = () => { close(); start(); };
+        },
+      });
+    }
+    start();
   })));
 
   /* 批量生成视频(exec):headless 确认闸口径=未确认镜跳过(与 CLI gen-episode 一致);confirmAll 显式授权全量;

@@ -13,6 +13,8 @@
   const splitOps = ops => ({
     data: (ops || []).filter(o => o && DATA_OPS.includes(o.op)),
     acts: (ops || []).filter(o => o && ACT_OPS.includes(o.op)),
+    // 二十轮:未注册的 op 名不再静默吞掉(此前模型输出陌生 op → "(已应用 0 项)"用户不知所以)
+    unknown: (ops || []).filter(o => o && o.op && !DATA_OPS.includes(o.op) && !ACT_OPS.includes(o.op)),
   });
 
   /* ---- 工具注册表 + 分级审批(Codex Harness 理念):每个 op 注册风险级,决定预览标注与自动执行审批闸 ----
@@ -42,10 +44,14 @@
    * 回执摘要进聊天记录;视图类 goto/select 维持本地即时动作。 */
   const ACT_CMD = {
     '智能分镜': 'episode.generateStoryboard', '生成分镜': 'episode.generateStoryboard',
+    'AI分镜师': 'episode.generateStoryboard', 'AI拆解': 'episode.generateStoryboard', '拆解文字分镜': 'episode.generateStoryboard',
     '生成视频': 'episode.generateVideos', '批量生成视频': 'episode.generateVideos',
     '合成成片': 'episode.compose', '整集审片': 'episode.smartReview',
     '一键成片': 'episode.produce', '本集理解': 'episode.understanding',
   };
+  /* 动作协议文本(二十轮):由注册表自动生成注入 system prompt——协议宣称与可执行集合恒一致,
+   * 模型照协议输出不再必得"⊘ 暂不支持"(此前提示词宣称 9 动作、注册表只 8 个且互有出入,白扣对话轮) */
+  const actProtocol = () => Object.keys(ACT_CMD).join('|');
   /* 结构化回执 → 一句话摘要(与 run 结果 ok/error/cost 对齐,Agent 据此如实汇报,不凭"已发起"声称成功) */
   function cmdDigest(cmd, r) {
     if (!r) return '无回执';
@@ -85,6 +91,42 @@
       }
     }
     return done;
+  }
+  /* ---- 回执回喂自修复轮(二十轮;settings.agentSelfFix 开关,默认关——控制成本) ----
+   * run 类命令的执行回执不再只拼进聊天文案:含失败(✕)/不支持(⊘)项时,回执作为新上下文追加一轮
+   * 「核验/修复」调用——模型归因并仅可输出数据类修复 ops(禁止 run/goto/select,防执行循环);
+   * 修复直接自动执行(沿用本条消息的 undo 快照,verifyOps 回读校验,与自动执行同纪律);
+   * 计费复用本条消息的 operationId(step:'fix' 辅助步骤槽位,九轮状态机:辅助步不交付 operation,不另扣费)。
+   * 返回追加进聊天文案的摘要;无修复动作/异常/离线均返回 ''(静默降级,不影响主流程)。 */
+  async function selfFixRound(p, ep, main, receipts, opId) {
+    const failed = (receipts || []).filter(x => /[✕⊘]/.test(x));
+    if (!failed.length || !ep || !window.API || !API.isReady()) return '';
+    let out = null;
+    try {
+      const call = (window.Understanding && Understanding.chatJSONRobust) ? Understanding.chatJSONRobust.bind(Understanding) : API.chatJSON;
+      out = await call({
+        model: (Store.state.settings || {}).defLLM || API.getConfig().model,
+        system: `你是「虎鲸导演助手」的执行核验器。刚才按用户指令驱动工作台执行了动作,回执如下(✕=失败,⊘=不支持)。
+请归因:能靠修改数据修复的(如提示词违规→改写提示词),输出修复 ops(仅数据类 update/insert/move/batch/beatupdate/sceneupdate,禁止 run/goto/select);
+修不了的(积分不足/上游故障/镜头未确认/缺首帧等需人工决策的),不要输出 ops,只在 reply 里给用户一句建议。
+返回 JSON {"reply":"一句话结论","ops":[操作或空数组]}`,
+        user: `执行回执:\n${receipts.join('\n')}\n当前分镜表:\n${compactShots(ep)}${stateBlock(p, ep)}`,
+        temperature: 0.3, max_tokens: 2000,
+        billingAction: 'llm.agent', operationId: opId, step: 'fix',
+      });
+    } catch (_) { return ''; }
+    if (!out) return '';
+    const fixes = splitOps(Array.isArray(out.ops) ? out.ops.filter(o => o && o.op) : []).data;
+    if (!fixes.length) return '\n(🩹 自修复:' + String(out.reply || '需人工处理,见上').slice(0, 80) + ')';
+    // 沿用本条消息已有 undo 快照(不覆盖——一次「↩ 撤销」回滚含自修复在内的全部改动)
+    ep.agentUndo = ep.agentUndo || { shots: JSON.parse(JSON.stringify(ep.shots)), composed: ep.composed, board: JSON.parse(JSON.stringify(ep.scriptBoard || null)), time: Store.now() };
+    let changes = [], vf = null;
+    try {
+      changes = applyOps(ep, fixes, true);
+      vf = verifyOps(ep, fixes);
+      Store.save();
+    } catch (_) { return '\n(🩹 自修复:修复方案应用失败,未做改动)'; }
+    return `\n(🩹 自修复:已自动修复 ${fixes.length} 项——${changes.slice(0, 2).join(';').slice(0, 60)}${vf ? ' ' + verifyNote(vf) : ''},可点「↩ 撤销」回滚)`;
   }
   // 项目级/全局动作
   const PROJ_TAB_OF = { '制片': '制片', '剧本': '剧本', '导演': '导演', '主体': '主体', '分集': '分集', '成片库': '成片库', '剧壳': '剧壳', '切片': '切片' };
@@ -348,7 +390,10 @@
       d.reviewStale = !!(window.Review && Review.episodeReviewStale && Review.episodeReviewStale(ep));
       d.lowShots = (lr.perShot || []).filter(x => x.score < 7).map(x => {
         const i = (ep.shots || []).findIndex(s => s.id === x.shotId);
-        return { n: i >= 0 ? i + 1 : (x.order || 0) + 1, score: x.score };
+        // 二十轮:低分镜带审片问题原文(按 reportId 精确取回报告;被挤出最近 5 条时为空数组降级)
+        const rep = i >= 0 ? ((ep.shots[i].reviews || []).find(r => r.id === x.reportId)) : null;
+        return { n: i >= 0 ? i + 1 : (x.order || 0) + 1, score: x.score,
+          issues: rep ? (rep.issues || []).slice(0, 2).map(it => String(it.analysis || it.type || '').slice(0, 40)) : [] };
       }).slice(0, 5);
     }
     d.composed = !!(Store.epComposedReady && Store.epComposedReady(ep));
@@ -404,7 +449,7 @@
       if (d.uncfm) out.push({ t: `确认 ${d.uncfm} 镜提示词`, d: '生成前先过一遍确认闸', goto: '分镜视频' });
       if (d.failed) out.push({ t: `处理 ${d.failed} 个失败镜`, d: '失败已退费,可改提示词重试', goto: '分镜视频' });
       if (d.stale) out.push({ t: `${d.stale} 镜已过期`, d: '输入已变更,需重新生成', goto: '分镜视频' });
-      if (d.lowShots.length) out.push({ t: `修订 ${d.lowShots.length} 个低分镜`, d: '按审片问题清单优化提示词(发助手)', text: `镜头${d.lowShots.map(x => x.n).join('、')} 审片低于 7 分,请按整集审片的问题清单优化这些镜头的提示词,保持风格一致性` });
+      if (d.lowShots.length) out.push({ t: `修订 ${d.lowShots.length} 个低分镜`, d: '按审片问题清单优化提示词(发助手)', text: `镜头${d.lowShots.map(x => x.n).join('、')} 审片低于 7 分。具体问题:${d.lowShots.map(x => `镜头${x.n}(${x.score}分):${x.issues.join(';') || '详见审片报告'}`).join(' / ')}。请按这些问题优化这些镜头的提示词,保持风格一致性` });
       if (d.noVideo && d.done && !d.generating && !d.failed && d.noVideo + d.done === d.total) out.push({ t: `生成剩余 ${d.noVideo} 镜`, d: '批量生成,按规则扣费', run: '生成视频' });
       if (d.done === d.total && !d.stale) {
         if (d.reviewAvg === null || d.reviewAvg === undefined || d.reviewStale) out.push({ t: '整集审片', d: '四维评审把关', run: '整集审片' });
@@ -611,7 +656,16 @@
           txt = (p.subjects || []).map(s => `· ${s.name}(${ { character: '角色', scene: '场景', prop: '道具' }[s.kind] || s.kind }) ${s.image ? '参考图✓' : '缺图⚠'}${(s.forms || []).length ? `,${s.forms.length} 形态` : ''}:${String(s.prompt || '').slice(0, 60)}`).join('\n') || '(暂无主体)';
         } else if (t === 'review' && ep) {
           const lr = ep.lastReview;
-          txt = !lr ? '(本集未审片)' : `均分 ${lr.avg}${window.Review && Review.episodeReviewStale && Review.episodeReviewStale(ep) ? '(旧版:剧本/图谱已变化)' : ''};逐镜:${(lr.perShot || []).map(x => (x.order + 1) + '镜' + x.score + '分').join('、')};共性问题:${String(lr.common || '无').slice(0, 120)};剪辑建议:${String(lr.cut || '无').slice(0, 120)}`;
+          // 二十轮:逐镜带审片问题原文(分析+建议),低分修订不再凭分数瞎改提示词;共性/剪辑建议放长
+          const perRows = lr ? (lr.perShot || []).map(x => {
+            const s = (ep.shots || []).find(y => y.id === x.shotId);
+            const rep = s && (s.reviews || []).find(r => r.id === x.reportId);
+            const iss = rep && (rep.issues || []).length
+              ? ':' + rep.issues.slice(0, 3).map(it => `[${it.severity || ''}${it.type ? '·' + it.type : ''}]${String(it.analysis || '').slice(0, 60)}→${String(it.suggestion || '').slice(0, 60)}`).join(';')
+              : '';
+            return (x.order + 1) + '镜' + x.score + '分' + iss;
+          }).join('、') : '';
+          txt = !lr ? '(本集未审片)' : `均分 ${lr.avg}${window.Review && Review.episodeReviewStale && Review.episodeReviewStale(ep) ? '(旧版:剧本/图谱已变化)' : ''};逐镜:${perRows};共性问题:${String(lr.common || '无').slice(0, 300)};剪辑建议:${String(lr.cut || '无').slice(0, 200)}`;
         } else if (t === 'understanding' && ep) {
           const u = ep.understanding;
           txt = !u ? '(本集未生成本集理解)' : JSON.stringify(u).slice(0, 1500) + (window.Domain && Domain.understandingStale && Domain.understandingStale(ep) ? '(旧版:剧本已变化)' : '');
@@ -737,7 +791,15 @@ action 二选一:
       提示词: (s.prompt || '').slice(0, 60), 旁白: (s.narration || '').slice(0, 30), 台词: (s.dialogue || '').slice(0, 30), 时长: (window.SB && SB.estShotDuration ? SB.estShotDuration(s) : (s.duration || 5)),
     }));
     let json = JSON.stringify(shots);
-    if (json.length > 6000) json = json.slice(0, 6000) + '…(后续镜头截断,共' + ep.shots.length + '镜)';
+    // 二十轮:按整镜截断——此前对整个 JSON 串硬切 6000 字符,可能把最后一镜切成半截喂给模型
+    if (json.length > 6000) {
+      const kept = [];
+      for (const s of shots) {
+        if (JSON.stringify(kept.concat(s)).length > 5900) break;
+        kept.push(s);
+      }
+      json = JSON.stringify(kept) + `\n…(镜头 ${off + kept.length + 1}~${ep.shots.length} 因长度省略,共 ${ep.shots.length} 镜,可按需查询指定区间)`;
+    }
     return json;
   }
 
@@ -1175,6 +1237,6 @@ action 二选一:
     });
   }
 
-  window.AgentOps = { splitOps, opRisk, actDesc, changeLineHTML, runEpisodeActions, runGlobalActions, prearrSend, prearrCardHTML, bindPrearr, bindChoices, parseChoices, choiceCardHTML, execPrearr, compactChat, chatLines, compactShots, focusOf, focusBlock, applyOps, verifyOps, verifyNote, OP_TOOLS, FIELD_MAP, setPendingBase, getPendingBase, fingerprint, detectConflicts, resolveOps, openConflictPanel, stateDigest, stateBlock, dynamicChips, openingLine, pushEvent, eventCardHTML, bindEvents, queryProtocol, answerQueries };
+  window.AgentOps = { splitOps, opRisk, actDesc, changeLineHTML, runEpisodeActions, runGlobalActions, selfFixRound, prearrSend, prearrCardHTML, bindPrearr, bindChoices, parseChoices, choiceCardHTML, execPrearr, compactChat, chatLines, compactShots, focusOf, focusBlock, applyOps, verifyOps, verifyNote, OP_TOOLS, FIELD_MAP, setPendingBase, getPendingBase, fingerprint, detectConflicts, resolveOps, openConflictPanel, stateDigest, stateBlock, dynamicChips, openingLine, pushEvent, eventCardHTML, bindEvents, queryProtocol, answerQueries, ACT_CMD, actProtocol };
   window.__AGENT_TEST = { applyOps, compactShots, FIELD_MAP, focusOf, focusBlock, OP_TOOLS, verifyOps, compactChat, fingerprint, detectConflicts, resolveOps, stateDigest, stateBlock, dynamicChips, openingLine, pushEvent, eventCardHTML, bindEvents, queryProtocol, answerQueries, subscribeBus };
 })();
