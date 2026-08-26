@@ -18,8 +18,8 @@
   ];
   window.LOCALES = LOCALES;
   window.localeOf = p => LOCALES.find(x => x.id === (p.locale || 'zh')) || LOCALES[0];
-  /* 台词语言指令片段(注入分镜/策划 prompt;zh 返回空串) */
-  window.langOf = p => ({ zh: '', en: ',台词与旁白使用口语化美式英语', sea: ',台词与旁白使用简单地道的英语口语(东南亚受众)', jp: ',台词与旁白使用日语' }[(p && p.locale) || 'zh'] || '');
+  /* 台词语言指令片段(注入分镜/策划 prompt;zh 返回空串):二十一轮下沉 wf-core.js(双端共享),此处回挂保持 window.langOf 出口 */
+  window.langOf = WfCore.langOf;
   /* 人物脸型 prompt 片段(出海剧选非亚洲;faceStyle 未设置时按目标市场 locale 推导) */
   window.faceOf = p => p.faceStyle === '非亚洲' ? ',欧美面孔' : p.faceStyle === '混合' ? '' : p.faceStyle ? ',亚洲面孔' : ({ en: ',欧美面孔', sea: ',东南亚面孔', jp: ',东亚面孔' }[p.locale] || ',亚洲面孔');
   window.MODELS = {

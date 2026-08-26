@@ -2,34 +2,20 @@
  * Step1 本集理解(导演设定+剧本→六维理解) → Step2 分镜生成(注入理解约束)
  */
 (function () {
-  const DIMS = ['剧情脉络', '情绪曲线', '节奏规划', '视觉基调', '关键场面', '悬念与期待'];
+  const DIMS = WfCore.UND_DIMS; // 二十一轮:六维单一来源下沉 wf-core.js(双端共享),键名出口不变
 
   /* 带重试+修复的 JSON 调用(R1 收敛:转发到 API.chatJSONRobust,4 个调用点不动) */
   const chatJSONRobust = opt => API.chatJSONRobust(opt);
 
   /* 章节事件图谱:取本集结构化事件,供分镜/拆解精准调用剧情骨架。
    * 十二轮:图谱与正文版本断链修复——sourceRev 失配(或旧数据无 sourceRev 且正文改过)时不再注入,
-   * 防"新正文+旧图谱"同时喂给 AI 拆解/智能分镜;旧图谱仍可在剧本页查看编辑,重新生成后恢复注入 */
-  window.eventsOfEpisode = function (p, ep) {
-    const g = ((p && p.eventGraph) || []).find(x => x.epId === (ep && ep.id));
-    if (!g || !g.events || !g.events.length) return '';
-    const stale = g.sourceRev === undefined ? (ep.contentRev || 0) > 0 : g.sourceRev !== (ep.contentRev || 0);
-    if (stale) return '';
-    return g.events.map((e, i) => `E${i + 1} [${e.who || '?'}@${e.where || '?'}] ${e.what || ''}${e.result ? ' → ' + e.result : ''}`).join('\n');
-  };
+   * 防"新正文+旧图谱"同时喂给 AI 拆解/智能分镜;旧图谱仍可在剧本页查看编辑,重新生成后恢复注入。
+   * 二十一轮:实现下沉 wf-core.js(双端共享),此处委托保持 window.eventsOfEpisode 出口不变 */
+  window.eventsOfEpisode = function (p, ep) { return WfCore.eventsOfEpisode(p, ep); };
 
-  /* 构思定调注入(项目「构思」页保存后生效):导演阐述/美术/光影/节奏/表演压缩注入生成提示词 */
-  window.conceptInject = function (p) {
-    const c = (p && p.concept) || {};
-    if (c.inject === false) return '';
-    const parts = [];
-    if (c.statement) parts.push('导演阐述:' + c.statement.slice(0, 60));
-    if (c.artStyle) parts.push('美术风格:' + c.artStyle.slice(0, 40));
-    if (c.lighting) parts.push('光影基调:' + c.lighting.slice(0, 30));
-    if (c.editPace) parts.push('剪辑节奏:' + c.editPace.slice(0, 30));
-    if (c.performance) parts.push('表演气质:' + c.performance.slice(0, 30));
-    return parts.length ? '。构思定调:' + parts.join(';') : '';
-  };
+  /* 构思定调注入(项目「构思」页保存后生效):导演阐述/美术/光影/节奏/表演压缩注入生成提示词;
+   * 二十一轮:实现下沉 wf-core.js,此处委托保持 window.conceptInject 出口不变 */
+  window.conceptInject = function (p) { return WfCore.conceptInject(p); };
 
   /* 生成本集理解(LLM 优先,失败回退模板);opId/bAction/step 可选:计费操作键/动作/步骤槽位
    * (重生成入口不传 step=main 步即交付;智能分镜聚合流程传 llm.smartSB 同 opId + step:'und'
@@ -43,41 +29,23 @@
         model: (Store.state.settings || {}).defLLM || API.getConfig().model,
         system: Prompts.get('und.system'),
         billingAction: bAction || 'llm.understanding', operationId: opId, step,
-        user: `基于导演风格与本集剧本,生成本集导演理解,返回 JSON:
-{"剧情脉络":"1-3句","情绪曲线":"1-3句","节奏规划":"1-3句","视觉基调":"1-3句","关键场面":"1-3句","悬念与期待":"2-4条,本集应埋的悬念点与观众期待感设计(如信息延迟揭露、结尾钩子、反转伏笔),用分号分隔"}
-${dsText ? '已确认的全局导演设定:\n' + dsText : '(未设置全局导演风格,按项目风格理解)'}
-项目风格:${styleOf(p)}
-${window.eventsOfEpisode && eventsOfEpisode(p, ep) ? '本集事件图谱(剧情骨架,理解需覆盖以下事件的因果链):\n' + eventsOfEpisode(p, ep) + '\n' : ''}本集剧本(前 6000 字):
-${(ep.content || '').slice(0, 6000)}`,
+        // 二十一轮:user 模板拼装下沉 wf-core.js(双端单一来源,逐字节一致)
+        user: WfCore.buildUndUser({ dsText, styleText: styleOf(p), eventsText: eventsOfEpisode(p, ep), content: (ep.content || '').slice(0, 6000) }),
         temperature: 0.5, max_tokens: 1500,
       });
       if (!out || !out.剧情脉络) throw new Error('返回结构不完整');
-      const u = {};
-      DIMS.forEach(d => u[d] = String(out[d] || ''));
-      u.time = Store.now();
-      return u;
+      return WfCore.undNormalize(out, Store.now); // 六维归一 + time 戳(单一来源 wf-core.js)
     } catch (e) {
       U.toast('本集理解生成失败:' + e.message + ',已按风格生成默认理解', 'error', 3200);
-      const u = {
-        剧情脉络: `围绕「${ep.title}」主线矛盾展开,开场建立冲突,中段升级,结尾留钩子。`,
-        情绪曲线: '由平静铺垫到冲突爆发,情绪逐镜抬升,高潮后短暂回落留白。',
-        节奏规划: '前 1/3 建置节奏稍缓,中段加快剪辑密度,高潮一镜到底,收尾放缓。',
-        视觉基调: `${styleOf(p)}风格,光影随情绪明暗变化,主体突出、背景虚化。`,
-        关键场面: '核心对峙场面与情绪反转点,需给到特写与长时间停留。',
-        悬念与期待: '关键信息延迟揭露,中段埋一处反转伏笔;结尾留核心悬念钩子,强化观众追更期待。',
-        time: Store.now(),
-        fallback: true, // 标记默认模板(重生成处据此退费置失败,不算假成功)
-      };
-      return u;
+      // 回退默认模板(单一来源 wf-core.js;fallback:true 标记——重生成处据此退费置失败,不算假成功)
+      return WfCore.undFallback(p, ep, Store.now, styleOf(p));
     }
   }
   function DIMS_DIR(ds) {
-    const dims = window.DIR_DIMS || ['光影', '色调', '情感氛围', '服化道审美', '表演气质']; // R15 引用 gsettings 收敛来源
-    return dims.filter(d => ds[d]).map(d => `${d}:${ds[d]}`).join('\n');
+    return WfCore.dimsText(ds); // 二十一轮:导演设定五维文本下沉 wf-core.js(不再依赖 window.DIR_DIMS 兜底数组)
   }
   function toText(u) {
-    if (!u) return '';
-    return DIMS.filter(d => u[d]).map(d => `【${d}】${u[d]}`).join('\n');
+    return WfCore.undToText(u); // 二十一轮:六维文本化下沉 wf-core.js
   }
 
   /* ================= 两阶段进度侧边栏(复用 U.bgDock steps 模式,与剧本解析一致的 dir-dock 停靠样式,不阻塞操作) ================= */

@@ -21,49 +21,20 @@
   }
 
   /* ================= 评审调用 ================= */
+  /* 二十一轮:单镜评审提示词拼装下沉 wf-core.js(双端单一来源,逐字节一致);
+   * 环境差异经 ctx 注入(知识库口径/评审模板/导演设定/风格串均同原内联表达式) */
   function buildReviewPrompt(p, ep, s, hasImage) {
-    const spec = s.cameraSpec ? CAMERA.describe(s.cameraSpec) + (s.cameraSpec.aperture ? ' · ' + s.cameraSpec.aperture : '') : '未指定';
-    return `你是专业 AI 视频审片组,从技术层/匹配层/导演层三个维度评审一个短剧分镜视频,只返回 JSON:
-{"score":总分(0-10,一位小数),
-"dimensions":{
- "technical":{"score":分数,"comment":"画质质感/纹理还原度/物理结构合理性/穿模 评语","suggestion":"改进建议"},
- "matching":{"score":分数,"comment":"与 Prompt 一致性评语(场景氛围/人物出场时间线/核心动作是否兑现)","suggestion":"建议"},
- "directing":{"score":分数,"comment":"运镜构图电影感/氛围/景别是否符合 Prompt 要求","suggestion":"建议"}},
-"issues":[{"timeRange":"${shotTimeRange(ep, s)}","type":"问题类型","severity":"严重或轻微","analysis":"分析(格式:第X秒处+具体缺陷描述)","suggestion":"建议(须含可直接加入 Prompt 的英文修正词,如 'Empty background initially')"}]}
-评分标准:≥8.5 优秀,7~8.5 良好,<7 需返工。issues 按严重度最多 4 条,无问题返回空数组。severity:严重=穿帮/主体崩坏/凭空出现物体等必须返工的生成缺陷;轻微=质感类可接受瑕疵。
-拆解规则检查:若单镜台词超过 40 字未拆镜、单镜同时承载环境交代+人物动作+情绪变化+大量对白(信息过载)、或相邻镜头景别毫无递进变化,必须在 issues 中指出(类型:运镜/景别偏差)并建议按"全景→中景→近景→特写"路径拆镜。
-评审口径(专业知识库条目,评分与案例判断以此为准):
-${(window.KB && KB.reviewBlock) ? KB.reviewBlock() : ''}
-分镜信息:
-- 剧情内容:${s.plot}
-- 运镜:${s.camera} · 机位:${spec}
-- 出场:人物[${(s.characters || []).join('、') || '无'}] 场景[${s.scene || '无'}] 物品[${(s.props || []).join('、') || '无'}]
-- 旁白:${s.narration || '无'} · 台词:${s.dialogue || '无'} · 时长约 ${(window.SB && SB.estShotDuration ? SB.estShotDuration(s) : (s.duration || 5))} 秒
-- 画面提示词 Prompt:${s.prompt}
-- 项目风格:${styleOf(p)}${p.globalSetting ? ' · 全局设定:' + p.globalSetting : ''}${window.directorInject ? directorInject(p.style) : ''}
-${(window.getSettings && getSettings().tplReview) ? '- 评审模板要求:' + getSettings().tplReview.replace(/\{shot\}/g, (s.plot || '').slice(0, 30)).replace(/\{style\}/g, p.style) : ''}
-${hasImage ? '附图是该分镜当前生成画面,请结合实际画面与 Prompt 的匹配度评审。' : '本次无画面参考,基于分镜脚本与提示词的可执行性评审。'}`;
+    return WfCore.buildReviewPrompt(p, ep, s, hasImage, {
+      kbReviewText: (window.KB && KB.reviewBlock) ? KB.reviewBlock() : '',
+      tplReviewText: (window.getSettings && getSettings().tplReview) || '',
+      directorNote: window.directorInject ? directorInject(p.style) : '',
+      styleText: styleOf(p),
+    });
   }
 
+  /* 报告规整(二十一轮:下沉 wf-core.js;uid/now 经 ctx 注入) */
   function normalizeReport(raw, p, ep, s, model, mode) {
-    const clamp = v => Math.max(0, Math.min(10, Math.round((+v || 0) * 10) / 10));
-    const dim = k => {
-      const d = (raw.dimensions && raw.dimensions[k]) || {};
-      return { score: clamp(d.score), comment: String(d.comment || '暂无评语'), suggestion: String(d.suggestion || '暂无建议') };
-    };
-    const issues = (Array.isArray(raw.issues) ? raw.issues : []).slice(0, 4).map(it => ({
-      timeRange: String(it.timeRange || shotTimeRange(ep, s)),
-      type: String(it.type || '其他'),
-      severity: it.severity === '严重' ? '严重' : '轻微',
-      analysis: String(it.analysis || ''),
-      suggestion: String(it.suggestion || ''),
-    }));
-    return {
-      id: Store.uid('rv'), shotId: s.id, time: Store.now(), model, mode,
-      score: clamp(raw.score),
-      dimensions: { technical: dim('technical'), matching: dim('matching'), directing: dim('directing') },
-      issues, optimized: false,
-    };
+    return WfCore.normalizeReport(raw, p, ep, s, model, mode, { uid: Store.uid, now: Store.now });
   }
 
   async function llmReviewShot(p, ep, s, opId) {
@@ -431,10 +402,7 @@ ${hasImage ? '附图是该分镜当前生成画面,请结合实际画面与 Prom
     return (r.videoUrl || '') !== ((s.video && s.video.url) || ''); // URL 变化=审的是后处理前的旧视频
   }
   function reviewSnapshotHashOf(ep) {
-    const sig = ((ep && ep.shots) || []).map(s => [s.id, (s.video && s.video.inputHash) || '', (s.video && s.video.url) || ''].join('|')).join('‖');
-    let h = 5381;
-    for (let i = 0; i < sig.length; i++) h = ((h << 5) + h + sig.charCodeAt(i)) >>> 0;
-    return 'r:' + h.toString(36);
+    return WfCore.reviewSnapshotHashOf(ep); // 二十一轮:快照哈希下沉 wf-core.js(服务端写 lastReview 与浏览器同函数字面)
   }
   function episodeReviewStale(ep) {
     const lr = ep && ep.lastReview;
@@ -444,11 +412,7 @@ ${hasImage ? '附图是该分镜当前生成画面,请结合实际画面与 Prom
   }
 
   async function reviewEpisodeCut(p, ep, reports, opId, onLLMFail) {
-    const brief = reports.map(x => ({
-      镜号: x.shot.order + 1, 景别: (x.shot.cameraSpec || {}).shotSize || '中景', 运镜: x.shot.camera,
-      时长: (window.SB && SB.estShotDuration ? SB.estShotDuration(x.shot) : (x.shot.duration || 5)), 剧情: (x.shot.plot || '').slice(0, 30), 单镜得分: x.report.score,
-      问题: x.report.issues.map(i => i.type),
-    }));
+    const brief = WfCore.buildCutBrief(ep, reports); // 二十一轮:brief 构造下沉 wf-core.js(时长经 Domain.estShotDuration 双端同口径)
     const fallback = () => {
       const avg = reports.reduce((a, x) => a + x.report.score, 0) / Math.max(1, reports.length);
       const sizes = new Set(reports.map(x => (x.shot.cameraSpec || {}).shotSize));
@@ -466,16 +430,11 @@ ${hasImage ? '附图是该分镜当前生成画面,请结合实际画面与 Prom
       if (!cutTried) throw new Error('LLM 未配置');
       const out = await API.chatJSON({
         system: Prompts.get('review.finalSystem'),
-        messages: [{ role: 'user', content: `按四维标准评审以下整集分镜(好例子:上镜抬手下镜手摸到脸=衔接好;吵架给特写=景别对;坏例子:镜头乱抖=不自然;人物瞬间换位置=衔接崩坏;激烈打架十秒不切=节奏错)。返回 JSON:
-{"natural":{"score":0-10,"comment":"评语"},"continuity":{"score":...,"comment":...},"framing":{"score":...,"comment":...},"pacing":{"score":...,"comment":...},"overall":"整集剪辑总评(1-2句)"}
-分镜清单:
-${JSON.stringify(brief)}` }],
+        messages: [{ role: 'user', content: WfCore.buildCutUser(brief) }], // 二十一轮:user 模板下沉 wf-core.js
         temperature: 0.3, max_tokens: 1500,
         billingAction: 'llm.review', operationId: opId,
       });
-      const clamp = v => Math.max(0, Math.min(10, Math.round((+v || 7) * 10) / 10));
-      const dim = k => ({ score: clamp(out[k] && out[k].score), comment: String((out[k] || {}).comment || '暂无评语') });
-      return { natural: dim('natural'), continuity: dim('continuity'), framing: dim('framing'), pacing: dim('pacing'), overall: String(out.overall || '') };
+      return WfCore.normalizeCut(out); // 二十一轮:四维规整下沉 wf-core.js(本地启发式 fallback 保留在下方)
     } catch (e) {
       // 八轮:在线失败回退本地四维评估——服务端该步已按次退费,回调让本地预扣同步核减;离线跳过不退
       if (cutTried && onLLMFail) try { onLLMFail(); } catch (_) {}
@@ -547,14 +506,13 @@ ${JSON.stringify(brief)}` }],
     const sumTried = API.isReady(); // 离线直接走本地汇总(不退费,与单镜口径一致);在线才走真实调用
     try {
       if (!sumTried) throw new Error('LLM 未配置');
-      const brief = reports.map(x => ({ 镜号: x.shot.order + 1, 得分: x.report.score, 问题: x.report.issues.map(i => i.type) }));
       const out = await API.chatJSON({
         system: '你是短剧审片总监。',
-        messages: [{ role: 'user', content: `根据以下整集各镜审片结果,汇总整集级共性问题(如主体一致性/色调统一性/时间线连贯性),返回 {"summary":"整集总评(2-3句)","issues":[{"type":"共性问题","detail":"涉及镜号与说明","suggestion":"整集级修复建议"}]},最多 3 条:\n${JSON.stringify(brief)}` }],
+        messages: [{ role: 'user', content: WfCore.buildSumUser(reports) }], // 二十一轮:共性汇总 user 模板下沉 wf-core.js
         temperature: 0.4, max_tokens: 1200,
         billingAction: 'llm.review', operationId: tk.id + '_sum',
       });
-      common = { summary: String(out.summary || ''), issues: (Array.isArray(out.issues) ? out.issues : []).slice(0, 3) };
+      common = WfCore.normalizeSum(out); // 二十一轮:汇总规整下沉 wf-core.js
       stepStates.sum = 'done';
     } catch (e) {
       const types = {};

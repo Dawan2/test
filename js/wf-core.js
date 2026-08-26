@@ -1,0 +1,275 @@
+/* ============ wf-core.js 服务端工作流纯核(双端 UMD,二十一轮) ============
+ * 智能分镜/本集理解/智能审片三条 LLM 编排的提示词拼装与结果规整,自 sb-llm.js/understanding.js/review.js
+ * 下沉为单一来源:浏览器各模块改为委托调用,server.js 经 require 复用(/api/wf/* 工作流端点),
+ * 保证 CLI 走服务端工作流与主应用走浏览器引擎时提示词/规整逻辑逐字节一致。
+ * 环境差异(Store.uid/now、promptOverrides、directorInject/projType、PH 占位)一律经 ctx 显式注入,本模块不碰 window。 */
+(function (root, factory) {
+  const isNode = typeof module === 'object' && module.exports;
+  const Domain = isNode ? require('./domain.js') : root.Domain;
+  const KB = isNode ? require('./knowledge.js') : root.KB;
+  const Prompts = isNode ? require('./prompts.js') : root.Prompts;
+  const W = factory(Domain, KB, Prompts);
+  if (isNode) module.exports = W; else root.WfCore = W;
+})(typeof self !== 'undefined' ? self : globalThis, function (Domain, KB, Prompts) {
+  'use strict';
+  const W = {};
+
+  /* ================= 常量(自 storyboard.js/review.js/understanding.js 下沉,原处改为委托) ================= */
+  W.UND_DIMS = ['剧情脉络', '情绪曲线', '节奏规划', '视觉基调', '关键场面', '悬念与期待'];
+  W.DIR_DIMS = ['光影', '色调', '情感氛围', '服化道审美', '表演气质']; // 与 gsettings.js DIR_DIMS 同源(其为 UI 全局来源)
+  W.DIR_STYLES = ['漫剧', '动漫', '写实'];
+  W.CAMERAS = ['固定镜头', '推镜头', '拉镜头', '摇镜头', '移镜头', '跟镜头', '环绕镜头', '俯拍', '仰拍', '特写'];
+  W.VIEWS = ['正面', '侧面', '背面'];
+  W.ANGLES = ['仰拍', '平视', '俯拍', '高角度'];
+  W.SIZES = ['大全景', '全景', '中景', '近景', '特写', '超级特写'];
+  W.VISION_MODELS = ['qwen2.5-vl-72b-instruct', 'doubao-1.5-vision-pro', 'qwen-vl-max-2025-01-25'];
+  W.SPLIT_RULES = `分镜拆解规则(必须遵守):
+1. 叙事细化,而非形式拆分——判断标准:该情节若用真人影视拍摄需要多个镜头才能完成表达,则 AI 漫剧同样必须拆分。禁止一个分镜同时承载环境交代、人物动作、情绪变化与大量对白;禁止用静态画面强行承载时间流逝与情绪转折。
+2. 景别按"从空间到情绪"逐层推进释放信息:环境全景(交代时间/地点/氛围)→中景(人物与环境关系、基础动作)→近景(表情、肢体细节、情绪走向)→特写(关键情绪节点或剧情转折)→超级特写(信息锚点:眼神、道具、细微反应)。不要求每次用全五层,但情绪转折越强,镜头层级越要靠后;避免连续多镜同景别。
+3. 信息密度控制:单镜台词超过 40 字必须拆镜;一个分镜只承担一个核心信息点(只交代环境/只表达情绪变化/只推进一次关键对话)。
+4. 逐镜自检:这一镜头只让观众记住一件事了吗?答案模糊就继续拆。
+5. 景别衔接口诀(必须遵守):
+   - 相邻景别不硬切:前后两镜景别避免相同或相邻(如 全景→全景、全景→中景 属无信息跳切,剪辑上显生硬);
+   - 景别切换隔一别:优先跨一级切换景别(如 大全景→中景、全景→近景、中景→特写),靠景别落差释放信息;
+   - 两极镜头不衔接:大全景/远景与特写/超级特写不得直接对切,须用全景或中景做过渡镜。`;
+  W.PROMPT5 = `提示词五段式标准结构(prompt 必须按此顺序组织,段间用句号衔接):
+1. 风格氛围:影视风格、色调、画质、年代感、情绪基调。
+2. 场景环境:时间、地点、天气、光线、背景元素、空间氛围。
+3. 镜头运动:景别、运镜方式、运动速度、视角、焦距效果。
+4. 分镜内容:剧本中人物动作、表情以及台词。
+5. 负面提示词:置于末尾,以"负面提示词:"开头,如禁止出现 BGM、字幕、水印等。
+资产标记规范:角色用 @角色名,场景用 $场景名,道具用 #道具名。`;
+
+  /* ================= 通用环境无关小件 ================= */
+  /* 语言要求(自 projects.js 下沉;p.locale 驱动) */
+  W.langOf = p => ({ zh: '', en: ',台词与旁白使用口语化美式英语', sea: ',台词与旁白使用简单地道的英语口语(东南亚受众)', jp: ',台词与旁白使用日语' }[(p && p.locale) || 'zh'] || '');
+  /* 构思定调注入(自 understanding.js 下沉;p.concept 驱动,inject===false 关闭) */
+  W.conceptInject = function (p) {
+    const c = (p && p.concept) || {};
+    if (c.inject === false) return '';
+    const parts = [];
+    if (c.statement) parts.push('导演阐述:' + c.statement.slice(0, 60));
+    if (c.artStyle) parts.push('美术风格:' + c.artStyle.slice(0, 40));
+    if (c.lighting) parts.push('光影基调:' + c.lighting.slice(0, 30));
+    if (c.editPace) parts.push('剪辑节奏:' + c.editPace.slice(0, 30));
+    if (c.performance) parts.push('表演气质:' + c.performance.slice(0, 30));
+    return parts.length ? '。构思定调:' + parts.join(';') : '';
+  };
+  /* 导演设定注入(自 gsettings.js directorInject 下沉;ds=settings.directorSetting,系统三类风格且开关开时拼接) */
+  W.directorNote = function (ds) {
+    if (!ds || ds.inject === false) return '';
+    if (!W.DIR_STYLES.includes(ds.style)) return ''; // 自定义风格不自动注入
+    const parts = W.DIR_DIMS.filter(d => ds[d]).map(d => d + ':' + String(ds[d]).slice(0, 40));
+    return parts.length ? '。导演设定:' + parts.join(';') : '';
+  };
+  /* 导演设定五维文本(understanding.js DIMS_DIR 下沉) */
+  W.dimsText = ds => W.DIR_DIMS.filter(d => ds && ds[d]).map(d => `${d}:${ds[d]}`).join('\n');
+  /* 章节事件图谱(自 understanding.js 下沉):sourceRev 失配(或旧数据无 sourceRev 且正文改过)不注入,防"新正文+旧图谱" */
+  W.eventsOfEpisode = function (p, ep) {
+    const g = ((p && p.eventGraph) || []).find(x => x.epId === (ep && ep.id));
+    if (!g || !g.events || !g.events.length) return '';
+    const stale = g.sourceRev === undefined ? (ep.contentRev || 0) > 0 : g.sourceRev !== (ep.contentRev || 0);
+    if (stale) return '';
+    return g.events.map((e, i) => `E${i + 1} [${e.who || '?'}@${e.where || '?'}] ${e.what || ''}${e.result ? ' → ' + e.result : ''}`).join('\n');
+  };
+  /* 分镜在全集中的时间码区间(自 review.js 下沉;时长经 Domain.estShotDuration 双端同口径) */
+  const fmtT = s => String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+  W.shotTimeRange = function (ep, s) {
+    const dur = x => (Domain && Domain.estShotDuration ? Domain.estShotDuration(x) : (x.duration || 5));
+    let start = 0;
+    for (const x of ep.shots) { if (x.id === s.id) break; start += dur(x); }
+    return fmtT(start) + ' - ' + fmtT(start + dur(s));
+  };
+
+  /* ================= 本集理解(自 understanding.js 下沉) ================= */
+  W.undToText = function (u) {
+    if (!u) return '';
+    return W.UND_DIMS.filter(d => u[d]).map(d => `【${d}】${u[d]}`).join('\n');
+  };
+  /* ctx: {dsText, styleText, eventsText, content(已截 6000)} */
+  W.buildUndUser = function (ctx) {
+    return `基于导演风格与本集剧本,生成本集导演理解,返回 JSON:
+{"剧情脉络":"1-3句","情绪曲线":"1-3句","节奏规划":"1-3句","视觉基调":"1-3句","关键场面":"1-3句","悬念与期待":"2-4条,本集应埋的悬念点与观众期待感设计(如信息延迟揭露、结尾钩子、反转伏笔),用分号分隔"}
+${ctx.dsText ? '已确认的全局导演设定:\n' + ctx.dsText : '(未设置全局导演风格,按项目风格理解)'}
+项目风格:${ctx.styleText}
+${ctx.eventsText ? '本集事件图谱(剧情骨架,理解需覆盖以下事件的因果链):\n' + ctx.eventsText + '\n' : ''}本集剧本(前 6000 字):
+${ctx.content}`;
+  };
+  W.undValid = out => !!(out && out.剧情脉络);
+  W.undNormalize = function (out, now) {
+    const u = {};
+    W.UND_DIMS.forEach(d => u[d] = String(out[d] || ''));
+    u.time = now();
+    return u;
+  };
+  /* 失败回退模板(浏览器离线/失败回退用;服务端工作流不使用——失败如实退费) */
+  W.undFallback = function (p, ep, now, styleText) {
+    return {
+      剧情脉络: `围绕「${ep.title}」主线矛盾展开,开场建立冲突,中段升级,结尾留钩子。`,
+      情绪曲线: '由平静铺垫到冲突爆发,情绪逐镜抬升,高潮后短暂回落留白。',
+      节奏规划: '前 1/3 建置节奏稍缓,中段加快剪辑密度,高潮一镜到底,收尾放缓。',
+      视觉基调: `${styleText}风格,光影随情绪明暗变化,主体突出、背景虚化。`,
+      关键场面: '核心对峙场面与情绪反转点,需给到特写与长时间停留。',
+      悬念与期待: '关键信息延迟揭露,中段埋一处反转伏笔;结尾留核心悬念钩子,强化观众追更期待。',
+      time: now(),
+      fallback: true,
+    };
+  };
+
+  /* ================= 智能分镜(自 sb-llm.js 下沉) ================= */
+  /* 新建分镜空白结构(自 storyboard.js blankShot 下沉;uid 注入) */
+  W.blankShot = function (order, cfg, uid) {
+    return {
+      id: uid('sh'), order, characters: [], scene: '', props: [],
+      camera: cfg.batchCamera, plot: '', narration: '', dialogue: '', voice: cfg.narratorVoice,
+      prompt: '', promptHistory: [], image: null, videoModel: cfg.batchVideoModel,
+      video: { status: 'none' }, audio: false, history: [], transition: null,
+      axisRule: '', intent: '',
+      genStrategy: cfg.batchStrategy || 'ref', inheritTail: false, firstFrame: null, lastFrame: null, name: '',
+    };
+  };
+  /* 智能分镜系统人设(知识库条目同源;ov=用户提示词覆盖表) */
+  W.sbSystem = ov => Prompts.get('sb.system', ov) + KB.DR_SHOT + KB.DR_AXIS;
+  /* 拆镜 user 模板(自 genShotsLLM 下沉;o={count,mode,optimize,adv,feedback},ctx={styleText,projType,directorNote,conceptNote,langText,genres,understandingText,eventsText,content(截 12000),subjects}) */
+  W.buildSBUser = function (p, ep, o, ctx) {
+    const withForms = sj => sj.name + ((sj.forms || []).length ? `(形态:${sj.forms.map(f => f.name).join('/')})` : '');
+    const subs = (ctx.subjects !== undefined ? ctx.subjects : (p.subjects || []));
+    const charNames = subs.filter(s => s.kind === 'character').map(withForms).join('、') || '无';
+    const sceneNames = subs.filter(s => s.kind === 'scene').map(withForms).join('、') || '无';
+    const propNames = subs.filter(s => s.kind === 'prop').map(withForms).join('、') || '无';
+    return `将以下剧集剧本拆分为约 ${o.count} 个专业分镜(拆解规则优先,可略超),返回 JSON 数组,每个元素:
+{"plot":"剧情内容(一句话)","camera":"运镜(从 固定镜头/推镜头/拉镜头/摇镜头/移镜头/跟镜头/环绕镜头/俯拍/仰拍/特写 中选)","view":"视角(正面/侧面/背面)","angle":"拍摄角度(仰拍/平视/俯拍/高角度)","shotSize":"景别(大全景/全景/中景/近景/特写/超级特写)","characters":["出场人物名"],"scene":"场景名","props":["道具名"],"narration":"旁白(没有则空字符串)","dialogue":"台词(没有则空字符串)","prompt":"文生视频中文画面提示词","duration":时长秒数,"strategy":"生成策略(ref/frames/fusion)"}
+要求:
+- 项目风格:${ctx.styleText}${p.globalSetting ? ',全局美学设定:' + p.globalSetting : ''};项目类型:${ctx.projType === 'narration' ? '解说模式(重旁白叙述)' : '剧情模式(重台词表演)'}${ctx.directorNote || ''}${ctx.conceptNote || ''}
+${ctx.langText ? '- 语言要求:' + ctx.langText.slice(1) : ''}
+${(ctx.genres || []).length ? '- 题材看点:' + ctx.genres.join('/') : ''}
+${ctx.understandingText ? '- 本集导演理解(必须遵循):\n' + ctx.understandingText : ''}
+- 分镜模式:${o.mode === 'tweet' ? '推文模式(画面信息密度高、海报感强)' : '创作模式'}
+${o.adv ? `- 视觉风格:${o.adv.visual};全片总时长约 ${o.adv.totalSec} 秒;单镜最长 ${o.adv.maxShotSec} 秒;分镜密度:${o.adv.density}` : ''}
+- 剧本缺少旁白/台词时请补写,须贴合剧情与人物性格
+- strategy 按画面动态选型:静态对白/动作幅度小→ref(分镜图参考);大动作/打斗/需衔接上一镜→frames(首尾帧链);多主体同框且一致性要求高→fusion(多图融合)
+- ${W.SPLIT_RULES}
+- ${W.PROMPT5}
+- ${o.optimize ? 'prompt 要电影级详尽:构图/光影/氛围/风格限定词' : 'prompt 简洁准确,一句话'}
+- characters/scene/props 优先使用已登记主体:人物[${charNames}]、场景[${sceneNames}]、物品[${propNames}];主体带「(形态:…)」时,剧情涉及该特定形态须输出「名-形态」全称(如 安仲凯-少年期)
+${o.feedback ? '★ 上一轮评审意见(必须逐条修订后再输出):\n' + o.feedback + '\n' : ''}
+${ctx.eventsText ? '★ 本集事件图谱(剧情骨架,分镜需依序覆盖以下事件,不得遗漏转折点):\n' + ctx.eventsText + '\n' : ''}
+剧本:
+${ctx.content}`;
+  };
+  /* 逐字段白名单规整(自 normalizeLLMShot 下沉;ctx={uid,now,directorNote,phImage(可空:服务端推文模式不留占位图)}) */
+  W.normalizeLLMShot = function (raw, i, p, ep, modelName, tweet, ctx) {
+    raw = raw || {};
+    const s = W.blankShot(i, ep.sbConfig, ctx.uid);
+    s.plot = String(raw.plot || '').slice(0, 150) || ('镜头 ' + (i + 1));
+    const cam = String(raw.camera || '');
+    s.camera = W.CAMERAS.includes(cam) ? cam : (W.CAMERAS.find(c => cam.includes(c.replace('镜头', ''))) || ep.sbConfig.batchCamera);
+    s.characters = Array.isArray(raw.characters) ? raw.characters.map(String).slice(0, 3) : [];
+    s.scene = String(raw.scene || '');
+    s.props = Array.isArray(raw.props) ? raw.props.map(String).slice(0, 2) : [];
+    s.narration = String(raw.narration || '');
+    s.dialogue = String(raw.dialogue || '');
+    s.voice = s.dialogue && s.characters[0] ? '角色音·' + s.characters[0] : ep.sbConfig.narratorVoice;
+    s.prompt = (String(raw.prompt || '') || `${Domain.styleOf(p)}风格,${s.camera},${s.plot.slice(0, 40)}${ctx.directorNote || ''}`) + Domain.negOf(p);
+    s.cameraSpec = {
+      view: W.VIEWS.includes(raw.view) ? raw.view : '正面',
+      angle: W.ANGLES.includes(raw.angle) ? raw.angle : '平视',
+      shotSize: W.SIZES.includes(raw.shotSize) ? raw.shotSize : '中景',
+      aperture: 'ƒ/4',
+    };
+    s.duration = Math.max(2, Math.min(15, +raw.duration || 5));
+    // 拆镜策略建议:仅作建议存 strategyHint(不直接覆盖 genStrategy,用户在右栏/批量入口一键采纳)
+    s.strategyHint = ['ref', 'frames', 'fusion'].includes(raw.strategy) ? raw.strategy : null;
+    s.history = [{ type: '分镜', model: modelName, time: ctx.now() }];
+    if (tweet && ctx.phImage) s.image = ctx.phImage(s);
+    return s;
+  };
+  /* 五角色评审(自 llmReview 下沉):brief 构造 + 结果钳制;user 文本经 Prompts.fill('sb.reviewUser') */
+  W.sbReviewBrief = shots => shots.map((s, i) => ({ 镜号: i + 1, 剧情: s.plot, 运镜: s.camera, 景别: (s.cameraSpec && s.cameraSpec.shotSize) || '中景', 出场: s.characters, 旁白: s.narration, 台词: s.dialogue, 提示词: (s.prompt || '').slice(0, 80) }));
+  W.sbReviewUser = (shots, styleText, ov) => Prompts.fill('sb.reviewUser', { style: styleText, brief: JSON.stringify(W.sbReviewBrief(shots)) }, ov);
+  W.sbReviewNormalize = function (out) {
+    out = out || {};
+    out.score = Math.max(60, Math.min(99, parseInt(out.score, 10) || 75));
+    if (!Array.isArray(out.comments) || !out.comments.length) out.comments = [{ role: '审片', text: '整体评估完成' }];
+    return out;
+  };
+
+  /* ================= 智能审片(自 review.js 下沉) ================= */
+  /* 单镜评审提示词(自 buildReviewPrompt 下沉;ctx={kbReviewText,tplReviewText,directorNote,styleText,globalSetting}) */
+  W.buildReviewPrompt = function (p, ep, s, hasImage, ctx) {
+    const spec = s.cameraSpec ? Domain.cameraDescribe(s.cameraSpec) + (s.cameraSpec.aperture ? ' · ' + s.cameraSpec.aperture : '') : '未指定';
+    const dur = (Domain && Domain.estShotDuration ? Domain.estShotDuration(s) : (s.duration || 5));
+    return `你是专业 AI 视频审片组,从技术层/匹配层/导演层三个维度评审一个短剧分镜视频,只返回 JSON:
+{"score":总分(0-10,一位小数),
+"dimensions":{
+ "technical":{"score":分数,"comment":"画质质感/纹理还原度/物理结构合理性/穿模 评语","suggestion":"改进建议"},
+ "matching":{"score":分数,"comment":"与 Prompt 一致性评语(场景氛围/人物出场时间线/核心动作是否兑现)","suggestion":"建议"},
+ "directing":{"score":分数,"comment":"运镜构图电影感/氛围/景别是否符合 Prompt 要求","suggestion":"建议"}},
+"issues":[{"timeRange":"${W.shotTimeRange(ep, s)}","type":"问题类型","severity":"严重或轻微","analysis":"分析(格式:第X秒处+具体缺陷描述)","suggestion":"建议(须含可直接加入 Prompt 的英文修正词,如 'Empty background initially')"}]}
+评分标准:≥8.5 优秀,7~8.5 良好,<7 需返工。issues 按严重度最多 4 条,无问题返回空数组。severity:严重=穿帮/主体崩坏/凭空出现物体等必须返工的生成缺陷;轻微=质感类可接受瑕疵。
+拆解规则检查:若单镜台词超过 40 字未拆镜、单镜同时承载环境交代+人物动作+情绪变化+大量对白(信息过载)、或相邻镜头景别毫无递进变化,必须在 issues 中指出(类型:运镜/景别偏差)并建议按"全景→中景→近景→特写"路径拆镜。
+评审口径(专业知识库条目,评分与案例判断以此为准):
+${ctx.kbReviewText || ''}
+分镜信息:
+- 剧情内容:${s.plot}
+- 运镜:${s.camera} · 机位:${spec}
+- 出场:人物[${(s.characters || []).join('、') || '无'}] 场景[${s.scene || '无'}] 物品[${(s.props || []).join('、') || '无'}]
+- 旁白:${s.narration || '无'} · 台词:${s.dialogue || '无'} · 时长约 ${dur} 秒
+- 画面提示词 Prompt:${s.prompt}
+- 项目风格:${ctx.styleText}${p.globalSetting ? ' · 全局设定:' + p.globalSetting : ''}${ctx.directorNote || ''}
+${ctx.tplReviewText ? '- 评审模板要求:' + ctx.tplReviewText.replace(/\{shot\}/g, (s.plot || '').slice(0, 30)).replace(/\{style\}/g, p.style) : ''}
+${hasImage ? '附图是该分镜当前生成画面,请结合实际画面与 Prompt 的匹配度评审。' : '本次无画面参考,基于分镜脚本与提示词的可执行性评审。'}`;
+  };
+  /* 报告规整(自 normalizeReport 下沉;ctx={uid,now}) */
+  W.normalizeReport = function (raw, p, ep, s, model, mode, ctx) {
+    const clamp = v => Math.max(0, Math.min(10, Math.round((+v || 0) * 10) / 10));
+    const dim = k => {
+      const d = (raw.dimensions && raw.dimensions[k]) || {};
+      return { score: clamp(d.score), comment: String(d.comment || '暂无评语'), suggestion: String(d.suggestion || '暂无建议') };
+    };
+    const issues = (Array.isArray(raw.issues) ? raw.issues : []).slice(0, 4).map(it => ({
+      timeRange: String(it.timeRange || W.shotTimeRange(ep, s)),
+      type: String(it.type || '其他'),
+      severity: it.severity === '严重' ? '严重' : '轻微',
+      analysis: String(it.analysis || ''),
+      suggestion: String(it.suggestion || ''),
+    }));
+    return {
+      id: ctx.uid('rv'), shotId: s.id, time: ctx.now(), model, mode,
+      score: clamp(raw.score),
+      dimensions: { technical: dim('technical'), matching: dim('matching'), directing: dim('directing') },
+      issues, optimized: false,
+    };
+  };
+  /* 整集报告快照哈希(自 reviewSnapshotHashOf 下沉):镜头 ID 集顺序 + 每镜视频版本/地址——
+   * 新增/删除/调序/重生成/后处理任一变化 → 整集报告判旧;服务端写 lastReview 与浏览器同函数字面 */
+  W.reviewSnapshotHashOf = function (ep) {
+    const sig = ((ep && ep.shots) || []).map(s => [s.id, (s.video && s.video.inputHash) || '', (s.video && s.video.url) || ''].join('|')).join('‖');
+    let h = 5381;
+    for (let i = 0; i < sig.length; i++) h = ((h << 5) + h + sig.charCodeAt(i)) >>> 0;
+    return 'r:' + h.toString(36);
+  };
+  /* 共性汇总(自 openEpisodeReview 汇总段下沉) */
+  W.buildSumUser = reports => {
+    const brief = reports.map(x => ({ 镜号: x.shot.order + 1, 得分: x.report.score, 问题: x.report.issues.map(i => i.type) }));
+    return `根据以下整集各镜审片结果,汇总整集级共性问题(如主体一致性/色调统一性/时间线连贯性),返回 {"summary":"整集总评(2-3句)","issues":[{"type":"共性问题","detail":"涉及镜号与说明","suggestion":"整集级修复建议"}]},最多 3 条:\n${JSON.stringify(brief)}`;
+  };
+  W.normalizeSum = out => ({ summary: String((out && out.summary) || ''), issues: (Array.isArray(out && out.issues) ? out.issues : []).slice(0, 3) });
+  /* 四维成片评审(自 reviewEpisodeCut 下沉):brief/提示词/规整;本地启发式 fallback 留在浏览器 */
+  W.buildCutBrief = (ep, reports) => reports.map(x => ({
+    镜号: x.shot.order + 1, 景别: (x.shot.cameraSpec || {}).shotSize || '中景', 运镜: x.shot.camera,
+    时长: (Domain && Domain.estShotDuration ? Domain.estShotDuration(x.shot) : (x.shot.duration || 5)), 剧情: (x.shot.plot || '').slice(0, 30), 单镜得分: x.report.score,
+    问题: x.report.issues.map(i => i.type),
+  }));
+  W.buildCutUser = brief => `按四维标准评审以下整集分镜(好例子:上镜抬手下镜手摸到脸=衔接好;吵架给特写=景别对;坏例子:镜头乱抖=不自然;人物瞬间换位置=衔接崩坏;激烈打架十秒不切=节奏错)。返回 JSON:
+{"natural":{"score":0-10,"comment":"评语"},"continuity":{"score":...,"comment":...},"framing":{"score":...,"comment":...},"pacing":{"score":...,"comment":...},"overall":"整集剪辑总评(1-2句)"}
+分镜清单:
+${JSON.stringify(brief)}`;
+  W.normalizeCut = function (out) {
+    const clamp = v => Math.max(0, Math.min(10, Math.round((+v || 7) * 10) / 10));
+    const dim = k => ({ score: clamp(out[k] && out[k].score), comment: String((out[k] || {}).comment || '暂无评语') });
+    return { natural: dim('natural'), continuity: dim('continuity'), framing: dim('framing'), pacing: dim('pacing'), overall: String(out.overall || '') };
+  };
+
+  return W;
+});

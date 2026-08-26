@@ -4,7 +4,11 @@
  * 用途:① 注入虎鲸助手系统提示词(KB.block)② 板块/全局记忆沉淀(agent.js memAll 种子)
  * ③ 专家雇佣人设的方法论底座(gsettings.js 新专家)④ 后续审片/拆镜提示词可引用 KB 条目。
  */
-(function () {
+(function (root, factory) {
+  const KB = factory();
+  if (typeof module === 'object' && module.exports) module.exports = KB; // 双端:server.js wf 端点 require 复用同一知识库文本
+  else root.KB = KB;
+})(typeof self !== 'undefined' ? self : globalThis, function () {
   const KB = {};
 
   /* ================= 编剧专业 ================= */
@@ -82,5 +86,5 @@
 [抽卡]动作写慢写连续、运镜写稳写简单(一次一个);提示词必含"五官稳定不变形/人体结构正常/动作不僵硬"类稳定词,画质风格词最后补;不写剧烈大动态/复杂多人/模糊词。`;
   };
 
-  window.KB = KB;
-})();
+  return KB;
+});

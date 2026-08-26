@@ -139,7 +139,7 @@ async function main() {
   r = cli('exec', 'episode.compose', '--pid', pid, '--epid', ep2); // 有分镜无素材 → 合成前置拦截
   report('exec compose 无素材 → blocked intercepted', r.code === 2 && r.out.error && r.out.error.code === 'intercepted', 'exit=' + r.code);
   r = cli('exec', 'episode.generateStoryboard', '--pid', pid, '--epid', epid);
-  report('exec 浏览器引擎命令 → unsupported-in-cli exit 5', r.code === 5 && r.out.error && r.out.error.code === 'unsupported-in-cli', 'exit=' + r.code);
+  report('exec generateStoryboard(服务端工作流)→ ok+分镜写回', r.code === 0 && r.out && r.out.ok && r.out.result && r.out.result.shots >= 1, 'exit=' + r.code + ' ' + JSON.stringify(r.out && r.out.result || r.out));
   r = cli('exec', 'episode.bogus', '--pid', pid, '--epid', epid);
   report('exec 未知命令 → exit 2', r.code === 2 && /未注册命令|可用/.test(String(r.out && r.out.error || r.err)), 'exit=' + r.code);
 

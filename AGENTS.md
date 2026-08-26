@@ -1,5 +1,7 @@
 # AGENTS.md — 虎鲸漫剧开发约定
 
+> AI 助手要以**用户身份驱动产品**（不是改代码）时，读 `docs/AI助手接入指南.md`(cli.js 命令速查 + 工作流范式 + mcp.js 接入）。
+
 ## 产品方向(2026-08 起)
 
 - 允许在用户提出时**对照竞品做参考分析**;分析结论经用户筛选后再决定是否落地,不自动跟进堆功能。
@@ -11,6 +13,7 @@
 - 前端纯 HTML+CSS+原生 JS,**无构建、无 npm、无 CDN**;第三方库本地化到 `js/vendor/`。
 - 后端零依赖 Node.js(仅 http/fs/path/crypto),`node server.js` 启动,默认 8000 端口。
 - 新功能先看 README 架构与现有模块复用点;UI 组件沿用现有 `U.openModal`/`Tasks.run`/`U.toast`/`model-opt` 等模式。
+- 双端单一来源:跨浏览器/CLI/服务端共享的逻辑一律做 UMD 双端模块(`js/domain.js` 领域推导、`js/wf-core.js` 工作流提示词/规整、`js/prompts.js`/`js/knowledge.js` 注册表),禁止两端各抄一份;环境差异(Store/设置/覆盖表)经参数显式注入,模块内不碰 window。
 
 ## 改动纪律
 

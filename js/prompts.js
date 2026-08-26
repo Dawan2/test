@@ -2,7 +2,11 @@
  * 主线核心提示词集中登记:def 为系统默认;用户在「偏好学习 → 全局默认值 → 核心提示词 skill」
  * 在线改写,覆盖存 Store.state.settings.promptOverrides(清空即恢复默认)。
  * 用法:Prompts.get(key) 取生效文本;Prompts.fill(key, {var}) 取文本并替换 {变量}。 */
-(function () {
+(function (root, factory) {
+  const P = factory();
+  if (typeof module === 'object' && module.exports) module.exports = P; // 双端:server.js wf 端点 require(覆盖表由调用方显式传入)
+  else root.Prompts = P;
+})(typeof self !== 'undefined' ? self : globalThis, function () {
   const REG = [
     {
       key: 'sb.system', name: '智能分镜 · 系统人设', vars: [],
@@ -36,20 +40,21 @@
   ];
   const byKey = {};
   REG.forEach(r => byKey[r.key] = r);
-  const overrides = () => ((window.Store && Store.state && Store.state.settings) || {}).promptOverrides || {};
-  window.Prompts = {
-    list() { return REG.map(r => ({ key: r.key, name: r.name, vars: r.vars, def: r.def, value: this.get(r.key), overridden: !!String(overrides()[r.key] || '').trim() })); },
-    get(key) {
-      const ov = overrides()[key];
-      if (ov && String(ov).trim()) return ov;
+  // 浏览器默认从 Store.settings.promptOverrides 读覆盖;Node(server.js)无 window,覆盖表须由调用方经第二参数显式传入
+  const overrides = () => ((typeof window !== 'undefined' && window.Store && Store.state && Store.state.settings) || {}).promptOverrides || {};
+  const Prompts = {
+    list(ov) { return REG.map(r => ({ key: r.key, name: r.name, vars: r.vars, def: r.def, value: this.get(r.key, ov), overridden: !!String((ov || overrides())[r.key] || '').trim() })); },
+    get(key, ov) {
+      const o = (ov || overrides())[key];
+      if (o && String(o).trim()) return o;
       return byKey[key] ? byKey[key].def : '';
     },
-    fill(key, vars) {
-      let t = this.get(key);
+    fill(key, vars, ov) {
+      let t = this.get(key, ov);
       Object.keys(vars || {}).forEach(k => { t = t.split('{' + k + '}').join(String(vars[k])); });
       return t;
     },
-    /* 覆盖写存:与默认相同或空文本则清除覆盖(恢复系统默认) */
+    /* 覆盖写存:与默认相同或空文本则清除覆盖(恢复系统默认);仅浏览器端可用 */
     setAll(map) {
       Store.state.settings = Store.state.settings || {};
       const po = Store.state.settings.promptOverrides = Object.assign({}, Store.state.settings.promptOverrides);
@@ -61,4 +66,5 @@
       Store.save();
     },
   };
-})();
+  return Prompts;
+});

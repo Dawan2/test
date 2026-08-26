@@ -20,6 +20,9 @@ Windows 也可直接双击 `启动.bat`(自动起服务并打开浏览器)。
    │  js/domain.js  领域单一来源(双端 UMD:浏览器 window.Domain / CLI require)——
    │                 指纹(shotInputHash/composedInputHash)、就绪/判旧、canonical 生成请求、
    │                 工作流状态(workflow/episodeState)字面单源,store/pipeline/produce/cli 全委托
+   │  js/wf-core.js  工作流纯核(双端 UMD,二十一轮)——智能分镜/本集理解/智能审片的
+   │                 提示词拼装与结果规整单一来源:浏览器 sb-llm/understanding/review 委托,
+   │                 server.js /api/wf/* 端点 require;Prompts/KB 同步 UMD 化(覆盖表显式传入)
    │  js/commands.js 统一领域命令注册表(Commands.execute)——就绪检查/智能分镜/批量生成/
    │                 智能审片/合成/一键成片,UI 按钮(ui 模式,决策弹窗保留)、导演助手动作、
    │                 跑批引擎、CLI exec(后三者 headless)同一命令层;Commands.digest 统一消化回执
@@ -88,6 +91,9 @@ server.js(零依赖 Node,仅 http/fs/path/crypto)
 | GET | /api/llm/models | 转发模型列表(服务端缓存 10 分钟) |
 | POST | /api/llm/chat | 转发 chat/completions;429/502/503/网络错误自动重试 2 次(退避 1s/3s);单用户并发≤4、每秒≤2 次;成功后按 usage 逐用户计量;**jsonMode(九轮)**:jsonMode:true 时服务端用同源宽松解析验证业务 JSON,失败自行修复(≤2 次,同一扣费内),最终失败未交付退费+502,parsed 随响应回传;**step(十轮)**:聚合流程步骤槽位(und/gen1/rev1/route/cmp 等,缺省 main)——同 step 同内容且未成功幂等重放、已成功且有缓存(≤8KB)直接返回缓存(不调上游)、无缓存拒绝重放、main 步成功即交付、交付后拒绝新步骤;mock 测试路径在动作校验之后(e2e 覆盖计费兼容矩阵) |
 | GET | /api/llm/usage | {today:{calls,tokens},total:{...},byModel top10,byDay 近 14 天逐日聚合} |
+| POST | /api/wf/understanding | **本集理解(二十一轮服务端工作流)**:{pid,epid,operationId?} → {rev,understanding};LLM 编排服务端执行(提示词/规整与浏览器 js/wf-core.js 同源),计费 llm.understanding 服务端定死;写回 ep.understanding(sourceRev 判旧),失败退费+如实报错(不本地冒充) |
+| POST | /api/wf/smart-storyboard | **智能分镜(二十一轮服务端工作流)**:{pid,epid,operationId?,shotCount?,sbPlans?} → {rev,shots,plans,adopted?};理解复用/生成(step 'und')→ 拆镜(genN)→ 评审修订(revN,<90 分重拆 ≤2 轮)/多方案并行自动择优(headless 同语义),聚合 operation 一笔扣 llm.smartSB(stepBudget 8);写回 ep.shots/status/shotsSourceRev/shotsGraphRev/shotHistory 留档 ≤8 版/sbPlans;LLM 全败退费+502(不回退本地冒充) |
+| POST | /api/wf/smart-review | **整集智能审片(二十一轮服务端工作流)**:{pid,epid,operationId?} → {rev,avg,reviewed,failed,lowShots,common,cut};可审镜=已出片非终稿(同 autoSmartReview 口径);逐镜独立 operation(llm.review×N):画面直读 uploads 转 base64 走视觉模型链(与前端同序),报告带 videoInputHash 版本绑定;+共性汇总(\_sum)+四维评审(\_cut)各一笔,单步失败不拖垮整单(如实 null+回执错误);写回 s.reviews(截 5)与 ep.lastReview(snapshotHash/sourceRev/graphRev 同构判旧) |
 | POST | /api/volc/image | 火山引擎生图代理:{prompt,size?,model?,image?(参考图 dataURL/url 透传,数组=多图融合≤6 张)} → {url,remoteUrl};成功后抓存本地 uploads/gen/,url 为本地路径(默认模型 doubao-seedream-5-0-pro-260628,超时 180s);计费动作按结构推导(多图≥2 一律 image.fusion;未捕获异常统一退款) |
 | POST | /api/volc/video | 火山引擎视频任务:{prompt,ratio?,duration?(按 volcVideoDurations 档位吸附),model?,image?(首帧 i2v),refImages?[{name,url}]≤8(主体参考打标,role=reference_image,始终随包发送;若上游不允许与首尾帧混用,自动去首尾帧重试一次并回执 droppedFrames),refVideo?(参考视频,≤20MB,公网中转;中转发生时回执 relayedVideo 并由前端 toast 告知,config relayUploadEnabled:false 可禁用),job?{projectId,episodeId,shotId}} → {id,duration,droppedFrames?,relayedVideo?,reused?};**任务中心持久化登记(data/jobs.json),同镜同 inputHash 的进行中任务直接复用 id(reused,防重复扣费)**;计费动作按时长推导(>10s 一律 video.beat,封死长视频低价标签) |
 | POST | /api/ffmpeg/frames | 关键帧提取:{video,count?≤24} → {frames:[url],duration}(按时间轴均匀抽帧,需服务端 FFmpeg);**times?[秒]≤24 定点抽帧**(拉片按场景段中点精确取帧,非法时间点 400) |
@@ -124,7 +130,7 @@ server.js(零依赖 Node,仅 http/fs/path/crypto)
 
 ## CLI(AI 助手/自动化入口,cli.js)
 
-`cli.js` 是面向 **AI 助手(Codex / Claude Code / Kimi Code / Trae 等)与人工** 的标准化命令行入口,把 剧本→主体→分镜→生成→审片→成片 主线全链路封装为机器可调用的命令。零依赖(Node 18+ 内置 fetch),服务端全部计费/退款/任务状态机原样生效——CLI 只是 API 的编排层,不在本地绕过任何服务端纪律。
+`cli.js` 是面向 **AI 助手(Codex / Claude Code / Kimi Code / Trae 等)与人工** 的标准化命令行入口,把 剧本→主体→分镜→生成→审片→成片 主线全链路封装为机器可调用的命令。零依赖(Node 18+ 内置 fetch),服务端全部计费/退款/任务状态机原样生效——CLI 只是 API 的编排层,不在本地绕过任何服务端纪律。AI 助手接入详见 `docs/AI助手接入指南.md`(命令速查 + 典型工作流范式 + 排错速查);支持 MCP 的客户端可直接挂 `mcp.js`(stdio MCP server,29 个 `hujing_*` 工具包装 cli.js,配置示例见文件头注释)。
 
 **约定**(Agent 可安全机读):
 
@@ -152,7 +158,7 @@ node cli.js export <pid> <epid> --out ./out        # 下载 mp4 + srt
 
 **命令总览**(`node cli.js help` 查看完整用法):账户 `login/logout/whoami/credits/jobs/job/job-cancel/usage` · 结构 `projects/project-show/project-create/episode-add/episode-script/episode-show` · 主体 `subjects/subject-add/subject-image/subject-copy` · 分镜 `shots/shots-import/shot-set/shot-confirm` · 生成 `gen-image/gen-shot-image/gen-video/gen-shot-video/gen-episode/wait` · 审片 `review-frames/review-note` · 成片 `compose/export` · 状态 `workflow` · **统一领域命令 `exec`** · 工具 `upload/download/llm/tts/ff/state-get/state-put`(后两个是任意复杂操作的逃生舱)。`usage [pid]` 按项目聚合扣费净额(扣费-退费,含动作族细分);`subject-copy <源pid> <id|名> <目标pid>` 跨项目复制主体(图片/提示词/形态随副本走,重新发 id 互不牵连,目标同名同类覆盖);`workflow <pid> [epid]` 输出统一工作流状态(与主应用流程条/下一步同一口径:steps/status/blockers/action),Agent 据此决定下一步。
 
-**`exec <command>`(统一领域命令,与前端 `Commands.execute` 同名同结构)**:`hujing exec episode.preflight --pid X --epid Y`、`episode.generateVideos`(支持 `--confirm-all` 授权全量)、`shot.generateVideo`(`--sid` 支持镜头 id 或序号)、`episode.smartReview`、`episode.compose`、`episode.produce`(一键成片编排)。stdout 恒为 `{ ok, status, result?, error?, cost?, next? }`:`cost` 是钱包余额前后差值(含子调用扣费与退费回补),`next` 执行后按 Domain 重推下一步;exit 映射 `ok→0 | blocked→2(no-credits→6 / not-found→4) | failed→5`,blocked 前置拦截(缺剧本/未确认镜/无素材)零调用零计费。依赖浏览器创作引擎的命令(智能分镜/本集理解/智能审片 LLM 编排)如实返回 `unsupported-in-cli`(exit 5),可用 `llm/shots-import/review-note` 等原子命令组合替代。
+**`exec <command>`(统一领域命令,与前端 `Commands.execute` 同名同结构)**:`hujing exec episode.preflight --pid X --epid Y`、`episode.generateVideos`(支持 `--confirm-all` 授权全量)、`shot.generateVideo`(`--sid` 支持镜头 id 或序号)、`episode.smartReview`、`episode.compose`、`episode.produce`(一键成片编排)。stdout 恒为 `{ ok, status, result?, error?, cost?, next? }`:`cost` 是钱包余额前后差值(含子调用扣费与退费回补),`next` 执行后按 Domain 重推下一步;exit 映射 `ok→0 | blocked→2(no-credits→6 / not-found→4) | failed→5`,blocked 前置拦截(缺剧本/未确认镜/无素材)零调用零计费。**二十一轮:LLM 创作类命令(智能分镜/本集理解/智能审片)已下沉服务端工作流端点 `/api/wf/*`(见 API 表)——CLI/外部 Agent 全链路可跑,计费动作服务端定死,提示词/规整与浏览器 js/wf-core.js 同源。**
 
 **与主应用同一数据协议**:CLI 生成/合成写回走 `js/domain.js`(Node require 与浏览器 window.Domain 同一份代码)——`gen-shot-video` 写回 `assetVer/inputHash/upstreamId` 与主应用逐字节一致,`compose` 写回 `composedUrl/composedInputHash/composedSourceRev/composedGraphRev`,主应用按同一指纹口径识别、判旧、归档;`shot-set` 拦截受管字段直写(id/video/audio/history/reviews/promptHistory);`--nowait` 创建任务即写回 `generating/upstreamId`,本地对账可扫描;`withProject` 遇 409 冲突只重放数据补丁、收费回调绝不重执行(深 diff/回放,防重复扣费)。
 
@@ -289,6 +295,9 @@ node cli.js export <pid> <epid> --out ./out        # 下载 mp4 + srt
 
 ## 工程治理(2026-08 大审查后十三轮收敛)
 
+- **LLM 编排服务端化(二十一轮,远期项落地)**:智能分镜/本集理解/智能审片三条浏览器 LLM 编排下沉为服务端工作流端点 `POST /api/wf/understanding|smart-storyboard|smart-review`——CLI/MCP/外部 Agent 全链路可跑(此前三命令 CLI 只能 unsupported-in-cli);**计费动作服务端定死**(wfLLM 内核不读客户端 billingAction,复用 proxyCharge/步骤槽位/并发锁/JSON 修复同一条链路,llm.* 族标签套利在工作流端点消失);提示词与结果规整抽为 `js/wf-core.js` 双端单源(浏览器 sb-llm/understanding/review 改为委托,40 项逐字节校验一致;prompts.js/knowledge.js 同步 UMD 化,覆盖表显式传入防多用户串扰);失败一律退费+如实报错(服务端恒在线语义,不回退本地模板冒充);写回 state 与 /api/state PUT 同路径(快照+rev+1);审片画面服务端直读 uploads 转 base64 走视觉模型链,lastReview 与浏览器 openEpisodeReview 同构(snapshotHash 同源判旧)。如实记录:服务端无法解析浏览器专家雇佣注册表(experts.js),解说剧(projType narration)项目的工作流提示词少一行模式标注。
+- **CLI/MCP 接入层(二十一轮)**:CLI 三命令接 `/api/wf/*`(meter 计费差值/结构化回执/next 重推),`episode.produce` 审片步从如实 skipped 升级为真实评审+低分质量闸门(riskyCompose 放行,与前端同语义);新增 `mcp.js`——零依赖 stdio MCP server,29 个 `hujing_*` 工具包装 cli.js(initialize/tools/list/tools/call/ping,exit code 映射 isError),支持 MCP 的助手零配置接入;新增 `docs/AI助手接入指南.md`(三种接入方式/三个工作流范式/计费安全约定/排错速查)。
+- **rateLimitDone 配对修复(二十一轮)**:wf 端点初版漏配对释放限流并发计数(4 次后永久 429 泄漏),已修并纳入集成测试;wf 端点集成测试(MOCK_LLM 编排验证:理解/分镜/审片三端点写回 + 错误路径 400/404)进 tests/integration.js,CLI 冒烟更新为新行为断言。
 - **进程级异常兜底(二十轮 P0)**:`uncaughtException`/`unhandledRejection` 双兜底只记录不退出(此前一次流错误全进程崩溃,在途付费操作变 executing 残留);媒体/静态响应流挂 error 处理(磁盘读失败不再冒泡崩进程,连接销毁兜底)。
 - **.bak 自毒化修复 + 双代备份(二十轮 P0)**:readJSON 从备份恢复改 `rename` 直取(此前经 writeJSON 恢复——写备份先把当前坏文件复制进备份位,刚救回的 .bak 立刻被坏数据覆盖,第二次损坏无路可退);备份位滚动 .bak→.bak2 保留两代。
 - **钱包截断归档 + 幂等键索引(二十轮 P0)**:账本 3000 条滚动截断时,淘汰条目整机归档 `wallets/<uid>.archive.jsonl`(退款/对账依据不随截断销毁,与 audit.jsonl 双轨互证),幂等键留 `archivedIdems` 索引(2 万条滚动)——截断不再掏空双扣/双退防护;扣费幂等键撞归档索引时换新后缀实扣(dup 静默放行会变免费执行);跨窗口退款判定对归档条目失败关闭(宁可少退不可多退),人工对账以归档+审计为准。
@@ -532,4 +541,4 @@ uploads/gen/                  火山引擎生成结果本地缓存(内容寻址�
 
 `node tests/e2e.js` — 全功能冒烟(63 项断言):无头 Chrome + CDP 驱动真实页面,覆盖登录/项目/主体/分集/分镜脚本/分镜视频/剪辑台/节拍板/镜头组/资产库/百宝箱/偏好学习/看板/个人中心/团队/回收站与离线模式;自带临时服务与测试数据清理;**LLM 链路走 MOCK_LLM=1 罐头返回**(server.js /api/llm/chat 测试模式,mock 在计费动作校验之后返回——e2e 同时覆盖动作兼容);智能分镜全链路不花上游费用也可回归;真实生成链路验收用 `node tests/live-gen.js`(⚠ 真实调用上游计费,节拍板+镜头组全链)。需要回归时手动运行。
 
-`node tests/cli.smoke.js` — CLI 真实服务端冒烟(第四阶段扩至 53 项断言,零依赖):spawn 临时 server(MOCK_LLM=1)+ 子进程直跑 `cli.js`,覆盖 login/whoami/credits → 项目/分集/剧本 → 主体(含 subject-copy 跨项目复制/同名覆盖)→ 分镜导入/补丁/确认闸 → llm(mock) → usage 成本归集 → jobs/state 往返 → exec 统一领域命令(未注册命令报错含可用清单/preflight blocked 无 error 字段不抛异常/浏览器引擎命令 unsupported-in-cli exit 5)→ state-get 落盘 → workflow 项目级与分集级(不存在项目 exit 4)→ **第四阶段 交付检查(release-check:缺 pid exit 2 用法/不存在 pid exit 4 /基线项目 JSON 结构齐全 7 核心门+overall fail≥2 项+release 无 force exit 5 发布门未通过/release --force 打版本 exit 0 返回 RLS_digest+ver+forced=true + release-check 回填 releases[] 1 条/不存在 pid exit 4)** → 错误路径语义 exit code(3/4/2)→ logout;`HUJING_CONFIG_DIR` 隔离配置目录,测试账号 `__cli__` 用完即清;不触发生图/生视频真实计费调用。
+`node tests/cli.smoke.js` — CLI 真实服务端冒烟(第四阶段扩至 53 项断言,零依赖):spawn 临时 server(MOCK_LLM=1)+ 子进程直跑 `cli.js`,覆盖 login/whoami/credits → 项目/分集/剧本 → 主体(含 subject-copy 跨项目复制/同名覆盖)→ 分镜导入/补丁/确认闸 → llm(mock) → usage 成本归集 → jobs/state 往返 → exec 统一领域命令(未注册命令报错含可用清单/preflight blocked 无 error 字段不抛异常/generateStoryboard 服务端工作流 ok 写回分镜)→ state-get 落盘 → workflow 项目级与分集级(不存在项目 exit 4)→ **第四阶段 交付检查(release-check:缺 pid exit 2 用法/不存在 pid exit 4 /基线项目 JSON 结构齐全 7 核心门+overall fail≥2 项+release 无 force exit 5 发布门未通过/release --force 打版本 exit 0 返回 RLS_digest+ver+forced=true + release-check 回填 releases[] 1 条/不存在 pid exit 4)** → 错误路径语义 exit code(3/4/2)→ logout;`HUJING_CONFIG_DIR` 隔离配置目录,测试账号 `__cli__` 用完即清;不触发生图/生视频真实计费调用。

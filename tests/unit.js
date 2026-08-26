@@ -271,7 +271,10 @@ function loadUnderstanding() {
   sb.__apiReady = true; // 默认走 LLM 路径(失败注入经 __chatJSONResult=null 触发回退模板)
   sb.API.chatJSONRobust = async () => { sb.__called.push('chatJSONRobust'); return sb.__chatJSONResult; };
   sb.styleOf = p => p.style || '漫剧'; // projects.js 全局(projects.js 不在本套件加载)
+  loadFile(sb, 'domain.js'); // wf-core 依赖 Domain(estShotDuration/cameraDescribe/styleOf/negOf)
   loadFile(sb, 'prompts.js'); // 核心提示词注册表(understanding 经 Prompts.get 取系统人设)
+  loadFile(sb, 'knowledge.js'); // wf-core 依赖 KB(浏览器 UMD 挂 window.KB)
+  loadFile(sb, 'wf-core.js');   // 二十一轮:understanding 六维/模板/回退单一来源(加载期强依赖 WfCore)
   loadFile(sb, 'understanding.js'); // 覆盖 installCommon 的 Understanding stub 为真实实现
   return sb;
 }

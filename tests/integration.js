@@ -123,6 +123,7 @@ async function main() {
       MV_UPLOADS_DIR: path.join(TMP, 'uploads'),
       MV_CONFIG: path.join(TMP, 'config.json'),
       VOLC_API_KEY: 'fake-key-for-integration-test',
+      MOCK_LLM: '1', // wf 工作流端点测试:LLM 调用走 mock(不扣费/不调上游),验证编排与 state 写回
     }),
     stdio: 'ignore',
   });
@@ -371,6 +372,60 @@ async function main() {
   report('sweep 发现已交付结果 → operation 转 succeeded(不再退款) + refundOperation 不为 succeeded 重复退费(HTTP 200 + refunded=0 或因终态 blocked)', finalStatus === 'succeeded' && rfRecover.status === 200, 'op 状态=' + JSON.stringify(recoverOps.map(o => o.status)) + ' 退款端点 HTTP ' + rfRecover.status + ' refunded=' + JSON.stringify(rfRecover.data && rfRecover.data.refunded));
   report('sweep 已交付不退款(余额保持 craftOp 扣费后,合法已交付不退回)', wallet.balance === balBeforeRecover - 2, // craftOp 扣了 2 不退回(视为合法已交付)
     '实际 ' + wallet.balance + '(期前 ' + balBeforeRecover + ' craftOp 占用 2,合法已交付不退款)');
+
+  /* ============ 测试 19-21(二十一轮):服务端工作流端点 /api/wf/*(MOCK_LLM 编排验证) ============ */
+  const wfPid = 'it_p_wf';
+  const wfProject = {
+    id: wfPid, name: '工作流项目', style: '漫剧',
+    episodes: [{ id: 'ep_w1', title: '第1集', content: '女主在宴会上被当众羞辱,转身立誓复仇。', contentRev: 0, shots: [] }],
+  };
+  {
+    const sW = await req('GET', '/api/state', null, token);
+    const putW = await req('PUT', '/api/state', { rev: +(sW.data && sW.data.rev || 0), changes: { projects: { [wfPid]: wfProject } } }, token);
+    report('wf 项目种子 PUT 成功', putW.status === 200, 'HTTP ' + putW.status);
+
+    // 19. 本集理解:编排 + state 写回(sourceRev/六维)(wf 端点限流 2 次/秒,调用间隔 600ms)
+    await sleep(1100);
+    const und = await req('POST', '/api/wf/understanding', { pid: wfPid, epid: 'ep_w1', operationId: 'it.wf.und1' }, token);
+    report('wf/understanding 200 返回理解', und.status === 200 && und.data && und.data.understanding && !!und.data.understanding.剧情脉络, 'HTTP ' + und.status + ' ' + JSON.stringify(und.data || und.msg || und).slice(0, 150));
+    const sU = await req('GET', '/api/state', null, token);
+    const epU = (sU.data.state.projects.find(x => x.id === wfPid) || {}).episodes[0];
+    report('理解已写回 state(sourceRev 对应当前剧本版本)', epU.understanding && epU.understanding.sourceRev === 0 && !!epU.understanding.time, JSON.stringify(epU.understanding || {}).slice(0, 100));
+    await sleep(1100);
+    const und404 = await req('POST', '/api/wf/understanding', { pid: wfPid, epid: 'ghost' }, token);
+    report('wf/understanding 分集不存在 404', und404.status === 404, 'HTTP ' + und404.status);
+
+    // 20. 智能分镜:理解复用 + 拆镜写回(版本戳/留档语义)
+    await sleep(1100);
+    const sb = await req('POST', '/api/wf/smart-storyboard', { pid: wfPid, epid: 'ep_w1', operationId: 'it.wf.sb1' }, token);
+    report('wf/smart-storyboard 200 返回镜数', sb.status === 200 && sb.data && sb.data.shots >= 2, 'HTTP ' + sb.status + ' ' + JSON.stringify(sb.data));
+    const sB = await req('GET', '/api/state', null, token);
+    const epB = (sB.data.state.projects.find(x => x.id === wfPid) || {}).episodes[0];
+    report('分镜写回:status/shotsSourceRev/字段规整', epB.status === 'storyboarded' && epB.shotsSourceRev === 0 && (epB.shots || []).length >= 2 && !!epB.shots[0].cameraSpec && !!epB.shots[0].prompt, JSON.stringify({ status: epB.status, n: (epB.shots || []).length, first: epB.shots && epB.shots[0] && { camera: epB.shots[0].camera, size: epB.shots[0].cameraSpec && epB.shots[0].cameraSpec.shotSize } }));
+    await sleep(1100);
+    const sbNoContent = await req('POST', '/api/wf/smart-storyboard', { pid: demoPid, epid: 'ep_c1' }, token);
+    report('wf/smart-storyboard 无剧本 400', sbNoContent.status === 400, 'HTTP ' + sbNoContent.status);
+
+    // 21. 智能审片:先给镜头落视频(done+inputHash),再审——逐镜报告+lastReview 同构写回
+    const sR = await req('GET', '/api/state', null, token);
+    const projR = sR.data.state.projects.find(x => x.id === wfPid);
+    (projR.episodes[0].shots || []).forEach(s => { s.video = { status: 'done', url: '/uploads/gen/fake_' + s.id + '.mp4', inputHash: 'h_' + s.id, frame: null }; s.confirm = true; });
+    const putR = await req('PUT', '/api/state', { rev: +(sR.data && sR.data.rev || 0), changes: { projects: { [wfPid]: projR } } }, token);
+    report('镜头落视频 PUT 成功', putR.status === 200, 'HTTP ' + putR.status);
+    await sleep(1100);
+    const rv = await req('POST', '/api/wf/smart-review', { pid: wfPid, epid: 'ep_w1', operationId: 'it.wf.rv1' }, token);
+    report('wf/smart-review 200 返回均分', rv.status === 200 && rv.data && typeof rv.data.avg === 'number' && rv.data.reviewed >= 2 && (rv.data.failed || []).length === 0, 'HTTP ' + rv.status + ' ' + JSON.stringify(rv.data || rv.raw || rv).slice(0, 200));
+    report('审片回执含共性汇总与四维评审', rv.data && rv.data.common && rv.data.common.summary && rv.data.cut && rv.data.cut.natural, JSON.stringify({ common: rv.data && rv.data.common, cut: rv.data && rv.data.cut }).slice(0, 120));
+    const sV = await req('GET', '/api/state', null, token);
+    const epV = (sV.data.state.projects.find(x => x.id === wfPid) || {}).episodes[0];
+    const lr = epV.lastReview || {};
+    report('lastReview 同构写回(perShot/snapshotHash/sourceRev)', Array.isArray(lr.perShot) && lr.perShot.length >= 2 && typeof lr.snapshotHash === 'string' && lr.snapshotHash.startsWith('r:') && lr.sourceRev === 0 && lr.perShot.every(x => x.reportId && x.videoInputHash), JSON.stringify(lr).slice(0, 150));
+    report('逐镜报告带版本绑定(videoInputHash)', (epV.shots[0].reviews || []).length > 0 && epV.shots[0].reviews[0].videoInputHash === 'h_' + epV.shots[0].id, JSON.stringify((epV.shots[0].reviews || [])[0] || {}).slice(0, 100));
+    // 无可审镜 → 400
+    await sleep(1100);
+    const rvNone = await req('POST', '/api/wf/smart-review', { pid: demoPid, epid: 'ep_c1' }, token);
+    report('wf/smart-review 无已出片镜 400', rvNone.status === 400, 'HTTP ' + rvNone.status);
+  }
 
   console.log(`\n===== ${PASS}/${PASS + FAIL} PASS, ${FAIL} FAIL =====`);
 }

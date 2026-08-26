@@ -9,30 +9,16 @@
   window.Views = window.Views || {};
 
   const VOICES = Voice.NARRATOR_PRESETS; // R4:voice.js 为唯一来源(加载顺序 voice.js 在前)
-  const CAMERAS = ['固定镜头', '推镜头', '拉镜头', '摇镜头', '移镜头', '跟镜头', '环绕镜头', '俯拍', '仰拍', '特写'];
+  const CAMERAS = WfCore.CAMERAS; // 二十一轮:单一来源下沉 wf-core.js(双端共享),此处委托保持 window.CAMERAS 出口不变
   const SB_MODELS = ['AI分镜师·旗舰', 'AI分镜师·标准', 'StoryMind-Pro', 'ShotGPT-5'];
   const TRANSITIONS = ['淡入淡出', '叠化', '匹配剪辑', '甩镜', '黑场', '闪白', '闪黑', '推拉转场', '旋转转场'];
-  /* 分镜拆解硬规则(拆解方法论,注入拆镜类 prompt) */
-  /* 分镜拆解硬规则(叙事细化/五层景别推进/信息密度控制,注入拆镜类 prompt) */
-  const SPLIT_RULES = `分镜拆解规则(必须遵守):
-1. 叙事细化,而非形式拆分——判断标准:该情节若用真人影视拍摄需要多个镜头才能完成表达,则 AI 漫剧同样必须拆分。禁止一个分镜同时承载环境交代、人物动作、情绪变化与大量对白;禁止用静态画面强行承载时间流逝与情绪转折。
-2. 景别按"从空间到情绪"逐层推进释放信息:环境全景(交代时间/地点/氛围)→中景(人物与环境关系、基础动作)→近景(表情、肢体细节、情绪走向)→特写(关键情绪节点或剧情转折)→超级特写(信息锚点:眼神、道具、细微反应)。不要求每次用全五层,但情绪转折越强,镜头层级越要靠后;避免连续多镜同景别。
-3. 信息密度控制:单镜台词超过 40 字必须拆镜;一个分镜只承担一个核心信息点(只交代环境/只表达情绪变化/只推进一次关键对话)。
-4. 逐镜自检:这一镜头只让观众记住一件事了吗?答案模糊就继续拆。
-5. 景别衔接口诀(必须遵守):
-   - 相邻景别不硬切:前后两镜景别避免相同或相邻(如 全景→全景、全景→中景 属无信息跳切,剪辑上显生硬);
-   - 景别切换隔一别:优先跨一级切换景别(如 大全景→中景、全景→近景、中景→特写),靠景别落差释放信息;
-   - 两极镜头不衔接:大全景/远景与特写/超级特写不得直接对切,须用全景或中景做过渡镜。`;
+  /* 分镜拆解硬规则(叙事细化/五层景别推进/信息密度控制,注入拆镜类 prompt):
+   * 单一来源已下沉 wf-core.js(双端共享),此处委托保持 window.SB.SPLIT_RULES 出口不变 */
+  const SPLIT_RULES = WfCore.SPLIT_RULES;
 
   /* 分镜视频提示词五段式标准结构(哆咪方法论,注入拆镜/润色类 prompt):
-   * 风格氛围 + 场景环境 + 镜头运动 + 分镜内容 + 负面提示词 */
-  const PROMPT5 = `提示词五段式标准结构(prompt 必须按此顺序组织,段间用句号衔接):
-1. 风格氛围:影视风格、色调、画质、年代感、情绪基调。
-2. 场景环境:时间、地点、天气、光线、背景元素、空间氛围。
-3. 镜头运动:景别、运镜方式、运动速度、视角、焦距效果。
-4. 分镜内容:剧本中人物动作、表情以及台词。
-5. 负面提示词:置于末尾,以"负面提示词:"开头,如禁止出现 BGM、字幕、水印等。
-资产标记规范:角色用 @角色名,场景用 $场景名,道具用 #道具名。`;
+   * 风格氛围 + 场景环境 + 镜头运动 + 分镜内容 + 负面提示词;单一来源 wf-core.js */
+  const PROMPT5 = WfCore.PROMPT5;
   /* 五段式段落定义(编辑面板结构化编辑器与 LLM 注入共用) */
   const PROMPT5_SECS = [
     { k: 'style', t: '1.风格氛围', h: '影视风格、色调、画质、年代感、情绪基调' },
@@ -465,14 +451,7 @@
 
 
   function blankShot(order, cfg) {
-    return {
-      id: Store.uid('sh'), order, characters: [], scene: '', props: [],
-      camera: cfg.batchCamera, plot: '', narration: '', dialogue: '', voice: cfg.narratorVoice,
-      prompt: '', promptHistory: [], image: null, videoModel: cfg.batchVideoModel,
-      video: { status: 'none' }, audio: false, history: [], transition: null,
-      axisRule: '', intent: '',
-      genStrategy: cfg.batchStrategy || 'ref', inheritTail: false, firstFrame: null, lastFrame: null, name: '',
-    };
+    return WfCore.blankShot(order, cfg, Store.uid); // 二十一轮:结构单一来源 wf-core.js(uid 经参数注入)
   }
 
   /* 新建/转换分镜默认提示词单一出口(字段全可选):

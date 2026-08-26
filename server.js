@@ -830,6 +830,12 @@ function serverCredits(state, userId) {
  * 客户端只提交 billingAction + operationId(任务 id),不提交金额——价格不可篡改;
  * 动作推导/校验/宽松解析在 billing.js 单一定义,tests/unit.js 对其做客户端兼容矩阵测试 */
 const BILLING = require('./billing');
+/* 二十一轮:服务端工作流端点(/api/wf/*)的双端单源——领域推导(domain)与三条 LLM 编排
+ * 提示词/规整(wf-core)与浏览器/CLI 逐字节一致;Prompts/KB 为提示词注册表与知识库文本 */
+const Domain = require('./js/domain.js');
+const WfCore = require('./js/wf-core.js');
+const Prompts = require('./js/prompts.js');
+const KB = require('./js/knowledge.js');
 const BILLING_ACTIONS = Object.assign({}, BILLING.DEFAULT_ACTIONS, CONFIG.billingActions || {});
 /* 前端 COST 键 → 服务端动作(同步投影用;config 覆盖价格后前端自动跟随) */
 const COST_PROJECTION = {
@@ -1530,6 +1536,117 @@ function userUploadBytes(userId) {
     }
   } catch (_) {}
   return total;
+}
+
+/* ---------- 服务端工作流内部 LLM 调用(二十一轮) ----------
+ * /api/wf/* 端点的编排内核:复用 /api/llm/chat 同一条计费/状态机/并发锁/重试/JSON 修复链路,
+ * 但计费动作由服务端按工作流定死(不接受客户端 billingAction——llm.* 族标签套利在工作流端点消失);
+ * opt.step 走步骤槽位(同 operationId 聚合一笔扣费,stepBudget 8);失败一律先退费再抛错,
+ * 调用方如实回报(服务端工作流不回退本地模板冒充交付——离线兜底是浏览器语义,服务端恒在线语义)。 */
+function wfMockOut(kind) {
+  if (kind === 'und') return { 剧情脉络: 'mock 脉络:冲突开场中段升级结尾留钩', 情绪曲线: 'mock 曲线:铺垫到爆发', 节奏规划: 'mock 节奏:前缓后快', 视觉基调: 'mock 基调:主体突出', 关键场面: 'mock 场面:对峙与反转', 悬念与期待: 'mock 悬念:结尾钩子' };
+  if (kind === 'shots') return [
+    { plot: '钩子开场:女主被当众羞辱', camera: '固定镜头', view: '正面', angle: '平视', shotSize: '中景', characters: [], scene: '', props: [], narration: '', dialogue: '你们会后悔的。', prompt: '漫剧风格,宴会厅,女主被嘲讽,冷色调', duration: 5, strategy: 'ref' },
+    { plot: '女主转身离开暗下决心', camera: '推镜头', view: '背面', angle: '平视', shotSize: '全景', characters: [], scene: '', props: [], narration: '', dialogue: '', prompt: '漫剧风格,女主转身离开,背影坚定', duration: 5, strategy: 'ref' },
+  ];
+  if (kind === 'sbReview') return { score: 92, comments: [{ role: '审片', text: 'mock 达标' }] };
+  if (kind === 'shotReview') return { score: 8.2, dimensions: { technical: { score: 8, comment: 'mock 技术评语', suggestion: 'mock 建议' }, matching: { score: 8, comment: 'mock 匹配评语', suggestion: 'mock 建议' }, directing: { score: 8, comment: 'mock 导演评语', suggestion: 'mock 建议' } }, issues: [] };
+  if (kind === 'sum') return { summary: 'mock 整集总评', issues: [] };
+  if (kind === 'cut') return { natural: { score: 8, comment: 'mock' }, continuity: { score: 8, comment: 'mock' }, framing: { score: 8, comment: 'mock' }, pacing: { score: 8, comment: 'mock' }, overall: 'mock 整集剪辑总评' };
+  return { reply: 'mock' };
+}
+async function wfLLM(userId, opt) {
+  // opt: {action, reason, opId, step, wfName, model, system, user|messages, temperature, max_tokens, projectId, mockKind}
+  // 测试 mock(与 /api/llm/chat 同约定):不调上游也不扣费
+  if (process.env.MOCK_LLM === '1' || CONFIG.mockLlm) return { parsed: wfMockOut(opt.mockKind), model: 'mock-llm', mock: true };
+  // proxyCharge 需要 res 写失败响应——内部调用用收集型 shim,转为抛出
+  const shim = { __st: 0, __msg: '', writeHead(c) { this.__st = c; }, end(b) { try { this.__msg = (JSON.parse(b) || {}).message || ''; } catch (_) {} } };
+  const charge = proxyCharge(shim, userId, opt.action, opt.reason || ('工作流(' + opt.action + ')'), opt.opId, 'wf/' + (opt.wfName || 'llm'), { step: opt.step, _projectId: opt.projectId }, { stepBudget: opt.stepBudget || 8 });
+  if (!charge) { const e = new Error(shim.__msg || '计费校验未通过'); e.httpStatus = shim.__st || 402; throw e; }
+  if (charge.cachedResp != null) { // 已成功步骤的同内容重放:直接恢复缓存(不重复调上游/扣费)
+    const parsed = lenientParseJSON(charge.cachedResp);
+    if (parsed === null) { const e = new Error('该步骤缓存结果解析失败,请使用新的任务'); e.httpStatus = 409; throw e; }
+    return { parsed, cached: true, charge };
+  }
+  const step = sanitizeOpId(opt.step) || 'main';
+  const lockKey = 'wf:' + userId + ':' + charge.opId + ':' + opt.action + ':' + step;
+  if (!execLock(lockKey)) { const e = new Error('该操作正在执行中,请勿并发重复提交'); e.httpStatus = 409; throw e; }
+  try {
+    opMarkExecuting(userId, charge.opId, opt.action);
+    const messages = opt.messages || [{ role: 'user', content: opt.user }];
+    // llmModel 配置后强制覆盖(与 /api/llm/chat 同规则:Agent/Coding Plan 路由模型优先,链式互备)
+    const models = CONFIG.llmModel ? [CONFIG.llmModel].concat(CONFIG.llmModelFallbacks || []) : [opt.model || 'qwen-turbo'];
+    let r = null, model = models[0];
+    for (const m of models) {
+      model = m;
+      try {
+        r = await llmUpstreamRetry('/chat/completions', {
+          method: 'POST',
+          body: JSON.stringify({ model: m, messages, temperature: typeof opt.temperature === 'number' ? opt.temperature : 0.7, max_tokens: Math.min(+(opt.max_tokens || 4000), 16000), stream: false }),
+        }, CONFIG.llmTimeoutMs || 120000);
+      } catch (e) {
+        throw new Error(e.name === 'AbortError' ? 'LLM 请求超时(含重试)' : '无法连接 LLM 上游服务,请检查网络(已自动重试 2 次)');
+      }
+      if (r.ok) break;
+    }
+    const text = await r.text();
+    if (!r.ok) {
+      trackErr('llm');
+      let detail = '';
+      try { const j = JSON.parse(text); detail = (j.error && (j.error.message || j.error.code)) || ''; } catch (_) {}
+      throw new Error((r.status === 401 ? 'LLM Key 无效(上游 401),请检查服务端 config.json' : 'LLM 请求失败(' + r.status + ')') + (detail ? ':' + String(detail).slice(0, 120) : ''));
+    }
+    const data = parseUpstreamJSON(text, 'LLM');
+    recordUsage(userId, model, data.usage);
+    let content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+    if (!content) throw new Error('LLM 上游返回空内容');
+    // jsonMode 交付校验 + 服务端内部修复(≤2 次,同一扣费内;与 /api/llm/chat 同语义)
+    let parsed = lenientParseJSON(content);
+    for (let att = 0; parsed === null && att < 2; att++) {
+      try {
+        const rr = await llmUpstreamRetry('/chat/completions', {
+          method: 'POST',
+          body: JSON.stringify({ model, messages: [{ role: 'user', content: '以下内容格式损坏,请修复为合法 JSON,只返回修复结果,不要输出任何解释:\n' + String(content).slice(0, 6000) }], temperature: 0, max_tokens: Math.min(+(opt.max_tokens || 4000), 16000), stream: false }),
+        }, CONFIG.llmTimeoutMs || 120000);
+        if (!rr.ok) break;
+        const d2 = parseUpstreamJSON(await rr.text(), 'LLM 修复');
+        const c2 = d2.choices && d2.choices[0] && d2.choices[0].message && d2.choices[0].message.content;
+        if (!c2) break;
+        content = c2;
+        parsed = lenientParseJSON(content);
+      } catch (_) { break; }
+    }
+    if (parsed === null) throw new Error('LLM 内容解析失败');
+    if (!opStepDelivered(userId, charge.opId, opt.action, step, step === 'main', content)) { const e = new Error('该操作已退款,结果不再交付'); e.httpStatus = 409; throw e; }
+    return { parsed, content, charge, model };
+  } catch (e) {
+    proxyRefund(userId, charge, e.message); // 未交付退费(部分交付保护/幂等由账本判定)
+    throw e;
+  } finally { execUnlock(lockKey); }
+}
+/* wf 端点共用:读 state 定位项目/分集;写回与 /api/state PUT 同路径(快照 + rev+1) */
+function wfLoadCtx(userId, pid, epid) {
+  const cur = readJSON(stateFile(userId), { rev: 0, state: null });
+  const tree = cur.state;
+  const p = tree && (tree.projects || []).find(x => x.id === pid);
+  const ep = p && (p.episodes || []).find(e => e.id === epid);
+  return { cur, tree, p, ep };
+}
+function wfSave(userId, cur, tree) {
+  snapshotState(userId, cur);
+  const next = (cur.rev || 0) + 1;
+  writeJSON(stateFile(userId), { rev: next, state: tree });
+  return next;
+}
+/* 分镜参数兜底(服务端无 storyboard.js UI 默认值;ep.sbConfig 已存在时以其为准) */
+function wfSbConfig(tree, ep) {
+  const st = (tree && tree.settings) || {};
+  const c = Object.assign({
+    sbModel: st.defLLM || '', shotCount: 8, sbMode: 'create', sbPlans: 1, sbAutoFix: true, autoOptimize: true,
+    batchCamera: '固定镜头', narratorVoice: st.defVoice || '旁白·沉稳男声', batchVideoModel: st.defVideoModel || '', batchStrategy: 'ref',
+  }, ep.sbConfig || {});
+  ep.sbConfig = c;
+  return c;
 }
 
 /* ---------- API 路由 ---------- */
@@ -3110,6 +3227,241 @@ const server = http.createServer(async (req, res) => {
         });
       });
       return ok(res, { list });
+    }
+
+    /* ---------- 服务端工作流端点(二十一轮) ----------
+     * 智能分镜/本集理解/智能审片的 LLM 编排下沉服务端——CLI/MCP/外部 Agent 不再依赖浏览器引擎;
+     * 计费动作服务端定死(不接受客户端标签),提示词/规整与浏览器同源(js/wf-core.js);
+     * 失败退费+如实报错(不本地冒充);写回 state 与 /api/state PUT 同路径。 */
+    if (pathname === '/api/wf/understanding' && req.method === 'POST') {
+      if (!CONFIG.apiKey && !(process.env.MOCK_LLM === '1' || CONFIG.mockLlm)) return fail(res, 503, '服务端未配置 LLM key,请创建 config.json 并填入 apiKey', 503);
+      if (!rateLimitOk(user.id)) return fail(res, 429, '请求过于频繁,请稍候', 429);
+      try {
+        const b = await readJSONBody(req, 1024 * 1024);
+        const { cur, tree, p, ep } = wfLoadCtx(user.id, String(b.pid || ''), String(b.epid || ''));
+        if (!p) return fail(res, 404, '项目不存在', 404);
+        if (!ep) return fail(res, 404, '分集不存在', 404);
+        if (!(ep.content || '').trim()) return fail(res, 400, '本分集暂无剧本内容,请先补充剧本', 400);
+        const st = (tree && tree.settings) || {};
+        const r = await wfLLM(user.id, {
+          action: 'llm.understanding', reason: '本集理解(' + ep.title + ')', opId: sanitizeOpId(b.operationId) || uid('wfund'), step: 'main', wfName: 'understanding',
+          model: st.defLLM || 'qwen-turbo', system: Prompts.get('und.system', st.promptOverrides),
+          user: WfCore.buildUndUser({ dsText: WfCore.dimsText(st.directorSetting), styleText: Domain.styleOf(p), eventsText: WfCore.eventsOfEpisode(p, ep), content: (ep.content || '').slice(0, 6000) }),
+          temperature: 0.5, max_tokens: 1500, projectId: p.id, mockKind: 'und',
+        });
+        if (!WfCore.undValid(r.parsed)) { if (r.charge) proxyRefund(user.id, r.charge, '理解结构不完整'); return fail(res, 502, '本集理解返回结构不完整(已退费)', 502); }
+        ep.understanding = WfCore.undNormalize(r.parsed, nowStr);
+        ep.understanding.sourceRev = ep.contentRev || 0; // 记录理解对应的剧本版本(剧本修改后判旧)
+        const rev = wfSave(user.id, cur, tree);
+        return ok(res, { rev, understanding: ep.understanding });
+      } catch (e) {
+        return fail(res, e.httpStatus || 502, e.message || '本集理解生成失败', e.httpStatus || 502);
+      } finally { rateLimitDone(user.id); } // 限流计数配对释放(泄漏 4 次后永久 429)
+    }
+
+    if (pathname === '/api/wf/smart-storyboard' && req.method === 'POST') {
+      if (!CONFIG.apiKey && !(process.env.MOCK_LLM === '1' || CONFIG.mockLlm)) return fail(res, 503, '服务端未配置 LLM key,请创建 config.json 并填入 apiKey', 503);
+      if (!rateLimitOk(user.id)) return fail(res, 429, '请求过于频繁,请稍候', 429);
+      try {
+        const b = await readJSONBody(req, 1024 * 1024);
+        const { cur, tree, p, ep } = wfLoadCtx(user.id, String(b.pid || ''), String(b.epid || ''));
+        if (!p) return fail(res, 404, '项目不存在', 404);
+        if (!ep) return fail(res, 404, '分集不存在', 404);
+        if (!(ep.content || '').trim()) return fail(res, 400, '本分集暂无剧本内容,请先补充剧本', 400);
+        const st = (tree && tree.settings) || {};
+        const ov = st.promptOverrides;
+        const c = wfSbConfig(tree, ep);
+        const planN = Math.max(1, Math.min(3, +b.sbPlans || +c.sbPlans || 1));
+        const count = Math.max(2, Math.min(40, +b.shotCount || +c.shotCount || 8));
+        const opId = sanitizeOpId(b.operationId) || uid('wfsb');
+        const ctxBase = {
+          styleText: Domain.styleOf(p),
+          // 服务端无法解析浏览器专家雇佣注册表(experts.js)——解说剧(projType narration)项目的工作流提示词少一行模式标注,如实记录
+          projType: 'drama',
+          directorNote: WfCore.directorNote(st.directorSetting), conceptNote: WfCore.conceptInject(p),
+          langText: WfCore.langOf(p), genres: p.genres, eventsText: WfCore.eventsOfEpisode(p, ep),
+          content: (ep.content || '').slice(0, 12000),
+        };
+        // Step1 本集理解:存在且未过期复用(0 调用);否则同 opId step 'und' 聚合并写回
+        if (!(ep.understanding && !Domain.understandingStale(ep))) {
+          const ru = await wfLLM(user.id, {
+            action: 'llm.smartSB', reason: '智能分镜(' + ep.title + ')', opId, step: 'und', wfName: 'smart-storyboard',
+            model: c.sbModel || st.defLLM || 'qwen-turbo', system: Prompts.get('und.system', ov),
+            user: WfCore.buildUndUser({ dsText: WfCore.dimsText(st.directorSetting), styleText: ctxBase.styleText, eventsText: ctxBase.eventsText, content: (ep.content || '').slice(0, 6000) }),
+            temperature: 0.5, max_tokens: 1500, projectId: p.id, mockKind: 'und',
+          });
+          if (!WfCore.undValid(ru.parsed)) { if (ru.charge) proxyRefund(user.id, ru.charge, '理解结构不完整'); return fail(res, 502, '本集理解返回结构不完整(已退费)', 502); }
+          ep.understanding = WfCore.undNormalize(ru.parsed, nowStr);
+          ep.understanding.sourceRev = ep.contentRev || 0;
+        }
+        ctxBase.understandingText = WfCore.undToText(ep.understanding);
+        const genShots = async (feedback, stepTag) => {
+          const r = await wfLLM(user.id, {
+            action: 'llm.smartSB', reason: '智能分镜(' + ep.title + ')', opId, step: stepTag, wfName: 'smart-storyboard',
+            model: c.sbModel || st.defLLM || 'qwen-turbo', system: WfCore.sbSystem(ov),
+            user: WfCore.buildSBUser(p, ep, { count, mode: c.sbMode, optimize: c.autoOptimize, feedback }, ctxBase),
+            temperature: 0.6, max_tokens: 6000, projectId: p.id, mockKind: 'shots',
+          });
+          if (!Array.isArray(r.parsed) || !r.parsed.length) { if (r.charge) proxyRefund(user.id, r.charge, '未返回有效分镜数组'); throw Object.assign(new Error('LLM 未返回有效分镜数组(已退费)'), { httpStatus: 502 }); }
+          const trimmed = r.parsed.length > count + 3 ? r.parsed.slice(0, count + 3) : r.parsed; // 拆解规则优先,最多容忍 count+3
+          return trimmed.map((raw, i) => WfCore.normalizeLLMShot(raw, i, p, ep, c.sbModel || 'LLM', c.sbMode === 'tweet', { uid, now: nowStr, directorNote: ctxBase.directorNote, phImage: null })); // 服务端推文模式不留占位图(真实出图走 gen-shot-image)
+        };
+        const reviewShots = async (shots, stepTag) => {
+          const r = await wfLLM(user.id, {
+            action: 'llm.smartSB', reason: '分镜评审(' + ep.title + ')', opId, step: stepTag, wfName: 'smart-storyboard',
+            model: c.sbModel || st.defLLM || 'qwen-turbo', system: Prompts.get('sb.reviewSystem', ov),
+            user: WfCore.sbReviewUser(shots, ctxBase.styleText, ov),
+            temperature: 0.4, max_tokens: 1800, projectId: p.id, mockKind: 'sbReview',
+          });
+          return WfCore.sbReviewNormalize(r.parsed);
+        };
+        let shots, plans = [];
+        if (planN > 1) {
+          // 多方案:逐套 gen+评审打分(headless 自动择优——浏览器 quiet 同语义,对比留痕 ep.sbPlans 可回看官换)
+          for (const lb of ['A', 'B', 'C'].slice(0, planN)) {
+            const sh = await genShots(null, 'gen' + lb);
+            let score = null, comments = [];
+            try { const rv = await reviewShots(sh, 'rev' + lb); score = rv.score; comments = rv.comments; } catch (e) { /* 评审失败不影响采用(该步已退费) */ }
+            plans.push({ label: lb, shots: sh, score, comments });
+          }
+          const best = plans.slice().sort((x, y) => (y.score || 0) - (x.score || 0))[0];
+          plans.forEach(x => x.adopted = x === best);
+          shots = best.shots;
+        } else {
+          shots = await genShots(null, 'gen1');
+          // 生成后自动评审修订(与浏览器 sbAutoFix 同口径):<90 分按评审意见重拆,最多 2 轮
+          if (c.sbAutoFix !== false && b.sbAutoFix !== false) {
+            for (let round = 1; round <= 2; round++) {
+              let rv;
+              try { rv = await reviewShots(shots, 'rev' + round); } catch (e) { break; } // 评审中断按当前版本发布
+              if (rv.score >= 90 || round >= 2) break;
+              shots = await genShots('综合评分 ' + rv.score + ' 分,评审意见:\n' + rv.comments.map(x => x.role + ':' + x.text).join('\n'), 'gen' + (round + 1));
+            }
+          }
+        }
+        // 发布(与 publishLLMShots 同语义:整表覆盖前留档 ≤8 版 → 覆盖 → 剧本/图谱版本戳)
+        if (ep.shots && ep.shots.length) {
+          ep.shotHistory = ep.shotHistory || [];
+          ep.shotHistory.unshift({
+            id: uid('sv'), time: nowStr(), label: '覆盖前:' + ((ep.shots[0].history && ep.shots[0].history[0] && ep.shots[0].history[0].model) || '旧分镜'),
+            shots: JSON.parse(JSON.stringify(ep.shots)), sourceRev: ep.shotsSourceRev, graphRev: ep.shotsGraphRev,
+          });
+          if (ep.shotHistory.length > 8) ep.shotHistory.length = 8;
+        }
+        ep.shots = shots;
+        ep.status = 'storyboarded';
+        ep.composed = false;
+        ep.shotsSourceRev = ep.contentRev || 0;
+        ep.shotsGraphRev = ep.graphRev || 0;
+        ep.sbPlans = plans.length
+          ? plans.map(pl => ({ id: uid('pl'), label: pl.label, score: pl.score, comments: pl.comments, shots: pl.shots, model: c.sbModel, contentRev: ep.contentRev || 0, time: nowStr(), adopted: !!pl.adopted }))
+          : [];
+        const rev = wfSave(user.id, cur, tree);
+        return ok(res, { rev, shots: shots.length, plans: plans.length, adopted: plans.length ? (plans.find(x => x.adopted) || {}).label : undefined });
+      } catch (e) {
+        return fail(res, e.httpStatus || 502, e.message || '智能分镜生成失败', e.httpStatus || 502);
+      } finally { rateLimitDone(user.id); }
+    }
+
+    if (pathname === '/api/wf/smart-review' && req.method === 'POST') {
+      if (!CONFIG.apiKey && !(process.env.MOCK_LLM === '1' || CONFIG.mockLlm)) return fail(res, 503, '服务端未配置 LLM key,请创建 config.json 并填入 apiKey', 503);
+      if (!rateLimitOk(user.id)) return fail(res, 429, '请求过于频繁,请稍候', 429);
+      try {
+        const b = await readJSONBody(req, 1024 * 1024);
+        const { cur, tree, p, ep } = wfLoadCtx(user.id, String(b.pid || ''), String(b.epid || ''));
+        if (!p) return fail(res, 404, '项目不存在', 404);
+        if (!ep) return fail(res, 404, '分集不存在', 404);
+        const st = (tree && tree.settings) || {};
+        const ov = st.promptOverrides;
+        // 可审镜=已出片且非终稿非在飞(与 autoSmartReview 目标口径一致)
+        const targets = (ep.shots || []).filter(s => !s.final && Domain.shotVideoReady(s, true) && !(s.video && s.video.status === 'generating'));
+        if (!targets.length) return fail(res, 400, '没有可审片的已出片镜头(需先生成视频)', 400);
+        const opBase = sanitizeOpId(b.operationId) || uid('wfrv');
+        const reviewCtx = { kbReviewText: KB.reviewBlock(), tplReviewText: st.tplReview || '', directorNote: WfCore.directorNote(st.directorSetting), styleText: Domain.styleOf(p) };
+        const reports = [], failed = [];
+        for (const s of targets) {
+          const opId = opBase + '_s' + (s.order + 1); // 每镜独立 operation(与前端逐镜计费口径一致)
+          // 画面:当前视频首帧优先(与被审对象同源);/uploads/ 路径服务端直读转 base64(与前端 fetch+FileReader 同义)
+          let dataUrl = null;
+          const img = (s.video && s.video.frame) || s.image;
+          if (img && String(img).startsWith('data:')) dataUrl = img;
+          else if (img && String(img).startsWith('/uploads/')) {
+            const ap = localUploadPath(String(img), user.id);
+            if (ap) {
+              try {
+                const ext = path.extname(ap).slice(1).toLowerCase();
+                const mime = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' }[ext] || 'image/png';
+                dataUrl = `data:${mime};base64,` + fs.readFileSync(ap).toString('base64');
+              } catch (_) { /* 读图失败回退纯文本评审 */ }
+            }
+          }
+          let report = null, lastErr = null;
+          if (dataUrl) {
+            for (const model of WfCore.VISION_MODELS) { // 视觉模型链逐个尝试(与前端同序;失败步已退费,换模型重扣)
+              try {
+                const r = await wfLLM(user.id, {
+                  action: 'llm.review', reason: '审片:镜头' + (s.order + 1), opId, step: 'main', wfName: 'smart-review',
+                  model, system: Prompts.get('review.system', ov),
+                  messages: [{ role: 'user', content: [{ type: 'text', text: WfCore.buildReviewPrompt(p, ep, s, true, reviewCtx) }, { type: 'image_url', image_url: { url: dataUrl } }] }],
+                  temperature: 0.3, max_tokens: 2500, projectId: p.id, mockKind: 'shotReview',
+                });
+                report = WfCore.normalizeReport(r.parsed, p, ep, s, model, 'vision', { uid, now: nowStr });
+                break;
+              } catch (e) { lastErr = e; }
+            }
+          } else {
+            try {
+              const r = await wfLLM(user.id, {
+                action: 'llm.review', reason: '审片:镜头' + (s.order + 1), opId, step: 'main', wfName: 'smart-review',
+                model: st.defLLM || 'qwen-turbo', system: Prompts.get('review.system', ov),
+                user: WfCore.buildReviewPrompt(p, ep, s, false, reviewCtx),
+                temperature: 0.3, max_tokens: 2500, projectId: p.id, mockKind: 'shotReview',
+              });
+              report = WfCore.normalizeReport(r.parsed, p, ep, s, r.model || 'text', 'text', { uid, now: nowStr });
+            } catch (e) { lastErr = e; }
+          }
+          if (!report) { failed.push({ shotId: s.id, order: s.order + 1, error: String((lastErr && lastErr.message) || '评审失败').slice(0, 80) }); continue; }
+          // 版本绑定:记录审片时的视频输入指纹/地址(镜头重生成后旧报告判"旧版")
+          report.videoInputHash = (s.video && s.video.inputHash) || '';
+          report.videoUrl = (s.video && s.video.url) || '';
+          report.reviewedAt = Date.now();
+          s.reviews = s.reviews || [];
+          s.reviews.unshift(report);
+          s.reviews = s.reviews.slice(0, 5);
+          s.history = s.history || [];
+          s.history.unshift({ type: '审片 ' + report.score + ' 分', model: report.model, time: report.time });
+          reports.push({ shot: s, report });
+        }
+        if (!reports.length) return fail(res, 502, '全部镜头评审失败(已逐步退费):' + ((failed[0] || {}).error || '未知原因'), 502);
+        // 共性汇总 + 四维成片评审(单步失败不拖垮整单:该步已退费,如实标 null 并回执错误)
+        let common = null, cut = null, sumErr, cutErr;
+        try {
+          const r = await wfLLM(user.id, { action: 'llm.review', reason: '整集共性汇总(' + ep.title + ')', opId: opBase + '_sum', step: 'main', wfName: 'smart-review', model: st.defLLM || 'qwen-turbo', system: '你是短剧审片总监。', user: WfCore.buildSumUser(reports), temperature: 0.4, max_tokens: 1200, projectId: p.id, mockKind: 'sum' });
+          common = WfCore.normalizeSum(r.parsed);
+        } catch (e) { sumErr = e.message; }
+        try {
+          const r = await wfLLM(user.id, { action: 'llm.review', reason: '四维成片评审(' + ep.title + ')', opId: opBase + '_cut', step: 'main', wfName: 'smart-review', model: st.defLLM || 'qwen-turbo', system: Prompts.get('review.finalSystem', ov), user: WfCore.buildCutUser(WfCore.buildCutBrief(ep, reports)), temperature: 0.3, max_tokens: 1500, projectId: p.id, mockKind: 'cut' });
+          cut = WfCore.normalizeCut(r.parsed);
+        } catch (e) { cutErr = e.message; }
+        const avg = Math.round(reports.reduce((a, x) => a + x.report.score, 0) / reports.length * 10) / 10;
+        // lastReview 与浏览器 openEpisodeReview 同构(快照哈希/sourceRev/graphRev 同口径判旧)
+        ep.lastReview = {
+          time: nowStr(), avg,
+          snapshotHash: WfCore.reviewSnapshotHashOf(ep),
+          sourceRev: ep.contentRev || 0,
+          graphRev: ep.graphRev || 0,
+          perShot: reports.map(x => ({ shotId: x.shot.id, order: x.shot.order, score: x.report.score, reportId: x.report.id, videoInputHash: x.report.videoInputHash || '' })),
+          common, cut,
+        };
+        const rev = wfSave(user.id, cur, tree);
+        return ok(res, {
+          rev, avg, reviewed: reports.length, failed,
+          lowShots: reports.filter(x => x.report.score < 7).map(x => ({ order: x.shot.order + 1, score: x.report.score })),
+          common, cut, sumErr: sumErr || undefined, cutErr: cutErr || undefined,
+        });
+      } catch (e) {
+        return fail(res, e.httpStatus || 502, e.message || '智能审片失败', e.httpStatus || 502);
+      } finally { rateLimitDone(user.id); }
     }
 
     return fail(res, 404, '接口不存在');

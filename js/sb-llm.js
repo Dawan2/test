@@ -3,37 +3,26 @@
  * runSmartSB(智能分镜入口,两阶段:本集理解→分镜生成) + publishShots(本地兜底拆分)。
  * 加载顺序:storyboard.js 之后;共享辅助经 window.SB 解构,批量操作运行时经 SB.runBatchOp(sb-batch.js)。 */
 (function () {
-  const { blankShot, CAMERAS, snapshotShot, buildShotPrompt, renderShots, onEpPage, VOICES, SPLIT_RULES, PROMPT5 } = window.SB;
+  const { blankShot, CAMERAS, snapshotShot, buildShotPrompt, renderShots, onEpPage, VOICES } = window.SB; // SPLIT_RULES/PROMPT5 已随拆镜模板下沉 wf-core.js
 
   /* ================= LLM 分镜生成(失败时调用方回退本地 publishShots) ================= */
   async function genShotsLLM(p, ep, { model, count, mode, optimize, adv, feedback, opId, step }) {
-    // 主体清单带上已有形态:引导模型在 characters/props 里输出「名-形态」全称
-    const withForms = sj => sj.name + ((sj.forms || []).length ? `(形态:${sj.forms.map(f => f.name).join('/')})` : '');
-    const charNames = p.subjects.filter(s => s.kind === 'character').map(withForms).join('、') || '无';
-    const sceneNames = p.subjects.filter(s => s.kind === 'scene').map(withForms).join('、') || '无';
-    const propNames = p.subjects.filter(s => s.kind === 'prop').map(withForms).join('、') || '无';
-    const user = `将以下剧集剧本拆分为约 ${count} 个专业分镜(拆解规则优先,可略超),返回 JSON 数组,每个元素:
-{"plot":"剧情内容(一句话)","camera":"运镜(从 固定镜头/推镜头/拉镜头/摇镜头/移镜头/跟镜头/环绕镜头/俯拍/仰拍/特写 中选)","view":"视角(正面/侧面/背面)","angle":"拍摄角度(仰拍/平视/俯拍/高角度)","shotSize":"景别(大全景/全景/中景/近景/特写/超级特写)","characters":["出场人物名"],"scene":"场景名","props":["道具名"],"narration":"旁白(没有则空字符串)","dialogue":"台词(没有则空字符串)","prompt":"文生视频中文画面提示词","duration":时长秒数,"strategy":"生成策略(ref/frames/fusion)"}
-要求:
-- 项目风格:${styleOf(p)}${p.globalSetting ? ',全局美学设定:' + p.globalSetting : ''};项目类型:${window.projType && projType() === 'narration' ? '解说模式(重旁白叙述)' : '剧情模式(重台词表演)'}${window.directorInject ? directorInject(p.style) : ''}${window.conceptInject ? conceptInject(p) : ''}
-${langOf(p) ? '- 语言要求:' + langOf(p).slice(1) : ''}
-${(p.genres || []).length ? '- 题材看点:' + p.genres.join('/') : ''}
-${ep.understanding && window.Understanding ? '- 本集导演理解(必须遵循):\n' + Understanding.toText(ep.understanding) : ''}
-- 分镜模式:${mode === 'tweet' ? '推文模式(画面信息密度高、海报感强)' : '创作模式'}
-${adv ? `- 视觉风格:${adv.visual};全片总时长约 ${adv.totalSec} 秒;单镜最长 ${adv.maxShotSec} 秒;分镜密度:${adv.density}` : ''}
-- 剧本缺少旁白/台词时请补写,须贴合剧情与人物性格
-- strategy 按画面动态选型:静态对白/动作幅度小→ref(分镜图参考);大动作/打斗/需衔接上一镜→frames(首尾帧链);多主体同框且一致性要求高→fusion(多图融合)
-- ${SPLIT_RULES}
-- ${PROMPT5}
-- ${optimize ? 'prompt 要电影级详尽:构图/光影/氛围/风格限定词' : 'prompt 简洁准确,一句话'}
-- characters/scene/props 优先使用已登记主体:人物[${charNames}]、场景[${sceneNames}]、物品[${propNames}];主体带「(形态:…)」时,剧情涉及该特定形态须输出「名-形态」全称(如 安仲凯-少年期)
-${feedback ? '★ 上一轮评审意见(必须逐条修订后再输出):\n' + feedback + '\n' : ''}
-${window.eventsOfEpisode && eventsOfEpisode(p, ep) ? '★ 本集事件图谱(剧情骨架,分镜需依序覆盖以下事件,不得遗漏转折点):\n' + eventsOfEpisode(p, ep) + '\n' : ''}
-剧本:
-${(ep.content || '').slice(0, 12000)}`;
+    // 二十一轮:拆镜 user 模板与系统人设拼装下沉 wf-core.js(双端单一来源,逐字节一致);
+    // 主体清单带已有形态(引导模型输出「名-形态」全称)由 buildSBUser 内部统一处理
+    const user = WfCore.buildSBUser(p, ep, { count, mode, optimize, adv, feedback }, {
+      styleText: styleOf(p),
+      projType: window.projType ? projType() : 'drama',
+      directorNote: window.directorInject ? directorInject(p.style) : '',
+      conceptNote: window.conceptInject ? conceptInject(p) : '',
+      langText: (window.langOf ? langOf(p) : WfCore.langOf(p)),
+      genres: p.genres,
+      understandingText: ep.understanding && window.Understanding ? Understanding.toText(ep.understanding) : '',
+      eventsText: window.eventsOfEpisode ? eventsOfEpisode(p, ep) : '',
+      content: (ep.content || '').slice(0, 12000),
+    });
     const out = await API.chatJSON({
       model,
-      system: Prompts.get('sb.system') + (window.KB ? KB.DR_SHOT + KB.DR_AXIS : ''),
+      system: WfCore.sbSystem(),
       messages: [{ role: 'user', content: user }],
       temperature: 0.6, max_tokens: 6000,
       billingAction: 'llm.smartSB', operationId: opId, step, // 聚合计费:同 operation 按步骤登记(九轮:每轮拆解为独立步骤槽位)
@@ -54,34 +43,15 @@ ${(ep.content || '').slice(0, 12000)}`;
     return shots;
   }
 
+  /* 二十一轮:逐字段白名单规整下沉 wf-core.js(双端单一来源);
+   * 环境差异经 ctx 注入:uid/now 取自 Store,导演设定同原内联表达式,
+   * 推文占位图经 phImage 回调注入(浏览器推文模式 s.image=PH.shot(剧情,镜序),服务端不留占位) */
   function normalizeLLMShot(raw, i, p, ep, modelName, tweet) {
-    raw = raw || {};
-    const s = blankShot(i, ep.sbConfig);
-    s.plot = String(raw.plot || '').slice(0, 150) || ('镜头 ' + (i + 1));
-    const cam = String(raw.camera || '');
-    s.camera = CAMERAS.includes(cam) ? cam : (CAMERAS.find(c => cam.includes(c.replace('镜头', ''))) || ep.sbConfig.batchCamera);
-    s.characters = Array.isArray(raw.characters) ? raw.characters.map(String).slice(0, 3) : [];
-    s.scene = String(raw.scene || '');
-    s.props = Array.isArray(raw.props) ? raw.props.map(String).slice(0, 2) : [];
-    s.narration = String(raw.narration || '');
-    s.dialogue = String(raw.dialogue || '');
-    s.voice = s.dialogue && s.characters[0] ? '角色音·' + s.characters[0] : ep.sbConfig.narratorVoice;
-    s.prompt = (String(raw.prompt || '') || `${styleOf(p)}风格,${s.camera},${s.plot.slice(0, 40)}${window.directorInject ? directorInject(p.style) : ''}`) + negOf(p);
-    // 机位专业字段(视角/角度/景别)
-    const VIEWS = ['正面', '侧面', '背面'], ANGLES = ['仰拍', '平视', '俯拍', '高角度'], SIZES = ['大全景', '全景', '中景', '近景', '特写', '超级特写'];
-    s.cameraSpec = {
-      view: VIEWS.includes(raw.view) ? raw.view : '正面',
-      angle: ANGLES.includes(raw.angle) ? raw.angle : '平视',
-      shotSize: SIZES.includes(raw.shotSize) ? raw.shotSize : '中景',
-      aperture: 'ƒ/4',
-    };
-    s.duration = Math.max(2, Math.min(15, +raw.duration || 5));
-    /* 拆镜策略建议:LLM 按画面动态为每镜标注建议生成策略(静态对白→ref/大动作→frames/多主体→fusion),
-     * 仅作建议存 strategyHint(不直接覆盖 genStrategy,用户在右栏/批量入口一键采纳) */
-    s.strategyHint = ['ref', 'frames', 'fusion'].includes(raw.strategy) ? raw.strategy : null;
-    s.history = [{ type: '分镜', model: modelName, time: Store.now() }];
-    if (tweet) s.image = PH.shot(s.plot, s.order);
-    return s;
+    return WfCore.normalizeLLMShot(raw, i, p, ep, modelName, tweet, {
+      uid: Store.uid, now: Store.now,
+      directorNote: window.directorInject ? directorInject(p.style) : '',
+      phImage: tweet ? (s => PH.shot(s.plot, s.order)) : null,
+    });
   }
 
   function publishLLMShots(p, ep, main, shots, modelName, tweet, opId) {
@@ -122,20 +92,16 @@ ${(ep.content || '').slice(0, 12000)}`;
     }
   }
 
-  /* 多角色评审打分 */
+  /* 多角色评审打分(二十一轮:brief/user 拼装与结果钳制下沉 wf-core.js) */
   async function llmReview(shots, p, model, opId, step) {
-    const brief = shots.map((s, i) => ({ 镜号: i + 1, 剧情: s.plot, 运镜: s.camera, 景别: (s.cameraSpec && s.cameraSpec.shotSize) || '中景', 出场: s.characters, 旁白: s.narration, 台词: s.dialogue, 提示词: (s.prompt || '').slice(0, 80) }));
-    const user = Prompts.fill('sb.reviewUser', { style: styleOf(p), brief: JSON.stringify(brief) });
     const out = await API.chatJSON({
       model,
       system: Prompts.get('sb.reviewSystem'),
-      messages: [{ role: 'user', content: user }],
+      messages: [{ role: 'user', content: WfCore.sbReviewUser(shots, styleOf(p)) }],
       temperature: 0.4, max_tokens: 1800,
       billingAction: 'llm.smartSB', operationId: opId, step, // 评审轮次并入聚合计费(九轮:独立步骤槽位)
     });
-    out.score = Math.max(60, Math.min(99, parseInt(out.score, 10) || 75));
-    if (!Array.isArray(out.comments) || !out.comments.length) out.comments = [{ role: '审片', text: '整体评估完成' }];
-    return out;
+    return WfCore.sbReviewNormalize(out);
   }
 
   /* ================= 多方案对比(同集并行 N 套候选拆镜,评审打分择优落定) ================= */

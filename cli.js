@@ -903,7 +903,7 @@ CMD.export = async (a, f) => {
 /* ================= 统一领域命令 exec(第二阶段) =================
  * 与前端 js/commands.js 同一命令名/参数(pid/epid/sid)/结果结构 { ok, status, result?, error?, cost?, next? }:
  * 生成链路复用 CLI 原语(genShotVideo/genImage/composeCore),就绪/下一步经 Domain 同口径推导;
- * LLM 创作类命令(智能分镜/本集理解/智能审片)依赖浏览器引擎,CLI 侧如实返回 unsupported-in-cli 不冒充。
+ * LLM 创作类(智能分镜/本集理解/智能审片)经服务端工作流端点 /api/wf/*(二十一轮下沉,计费动作服务端定死)。
  * exit 映射:ok→0 | blocked→2(no-credits→6 / not-found→4) | failed→5;stdout 恒为上述结构化结果。 */
 const EXEC = {};
 const execOk = (result, extra) => Object.assign({ ok: true, status: 'done', result: result || {} }, extra);
@@ -1029,17 +1029,34 @@ EXEC['episode.produce'] = { needs: ['p', 'ep'], meter: true, run: async (args, f
   if (st.status === 'blocked' || st.shotsStale) return execBlocked('preflight', '就绪检查未通过:' + (st.blockers.map(b => b.label).join('/') || '分镜已过期'), { steps, blockers: st.blockers });
   if (!(ep.shots || []).length) return execBlocked('no-shots', '未分镜', { steps });
   await call('generateVideos', 'episode.generateVideos'); // 2. 批量生成(失败镜不阻塞,合成前统一拦截)
-  steps.push({ step: 'smartReview', ok: true, status: 'skipped', result: { note: 'CLI 环境无智能审片引擎,请在 UI/导演助手执行 episode.smartReview' }, error: null }); // 3. 审片如实跳过
+  // 3. 智能审片(二十一轮:服务端工作流真实评审;低分镜=质量闸门,默认阻断合成,--args riskyCompose 放行)
+  if (args.smartReview !== false) {
+    const rv = await call('smartReview', 'episode.smartReview');
+    if (rv.result && (rv.result.lowShots || []).length && !args.riskyCompose) {
+      return { ok: false, status: 'needs_human', error: { code: 'manual-gate', message: '低分 ' + rv.result.lowShots.length + ' 镜(' + rv.result.lowShots.map(x => x.order + '镜' + x.score + '分').join('、') + '),质量闸门已阻断合成(riskyCompose 可放行)' }, result: { steps } };
+    }
+  }
   const c = await call('compose', 'episode.compose'); // 4. 合成成片
   if (!c.ok) return { ok: false, status: c.status, error: c.error, result: { steps } };
   return execOk({ steps, url: (c.result && c.result.url) || '' });
 } };
 
-/* LLM 创作类(浏览器引擎依赖):如实不支持,不静默冒充 */
-['episode.generateStoryboard', 'episode.understanding', 'episode.smartReview'].forEach(n => {
-  EXEC[n] = { needs: ['p', 'ep'], meter: false, next: false, run: async () => execFail('unsupported-in-cli',
-    n + ' 依赖浏览器创作引擎(LLM 编排/多模态评审),请在 UI 或导演助手执行;CLI 可用 llm/shots-import/review-note 等原子命令组合') };
-});
+/* LLM 创作类(二十一轮:LLM 编排已下沉服务端工作流端点 /api/wf/*——计费动作服务端定死,
+ * 提示词/规整与浏览器 js/wf-core.js 同源;端点直接写回 state,CLI 只调用+结构化回执) */
+EXEC['episode.understanding'] = { needs: ['p', 'ep'], meter: true, run: async (args, f) => {
+  const d = await POST('/api/wf/understanding', { pid: args.pid, epid: args.epid, operationId: crypto.randomUUID() }, f, { timeoutMs: 240000 });
+  return execOk({ understanding: d.understanding });
+} };
+EXEC['episode.generateStoryboard'] = { needs: ['p', 'ep'], meter: true, run: async (args, f) => {
+  const d = await POST('/api/wf/smart-storyboard', { pid: args.pid, epid: args.epid, operationId: crypto.randomUUID(), shotCount: args.shotCount, sbPlans: args.sbPlans }, f, { timeoutMs: 600000 });
+  return execOk({ shots: d.shots, plans: d.plans, adopted: d.adopted });
+} };
+EXEC['episode.smartReview'] = { needs: ['p', 'ep'], meter: true, run: async (args, f) => {
+  const d = await POST('/api/wf/smart-review', { pid: args.pid, epid: args.epid, operationId: crypto.randomUUID() }, f, { timeoutMs: 600000 });
+  const r = { ok: !(d.failed || []).length, status: (d.failed || []).length ? 'failed' : 'done', result: { avg: d.avg, reviewed: d.reviewed, failed: d.failed || [], lowShots: d.lowShots || [], common: d.common || null, cut: d.cut || null } };
+  if ((d.failed || []).length) r.error = { code: 'partial', message: d.failed.length + ' 镜评审失败(已退费),可重试' };
+  return r;
+} };
 
 CMD.exec = async (a, f) => {
   const name = a[0];
@@ -1188,9 +1205,11 @@ const HELP = `虎鲸漫剧 CLI —— 面向 AI 助手与人工的全链路命�
   exec shot.generateVideo --pid X --epid Y --sid Z 单镜生成(sid 支持镜头 id 或序号)
   exec episode.compose --pid X --epid Y            合成成片(失败镜前置 blocked)
   exec episode.produce --pid X --epid Y [--confirm-all]   一键成片编排(就绪→生成→审片→合成;
-                                                   审片步 CLI 无浏览器引擎,如实标 skipped)
-  exec episode.generateStoryboard|episode.understanding|episode.smartReview
-                                                   依赖浏览器引擎,如实返回 unsupported-in-cli
+                                                   低分镜质量闸门阻断合成,--args '{"riskyCompose":true}' 放行)
+  exec episode.generateStoryboard --pid X --epid Y [--args '{"shotCount":8,"sbPlans":2}]
+                                                   智能分镜(服务端工作流:理解→拆镜→评审修订)
+  exec episode.understanding --pid X --epid Y            本集理解(服务端工作流)
+  exec episode.smartReview --pid X --epid Y              整集智能审片(服务端工作流:逐镜+共性+四维)
   (exit 映射:ok→0 | blocked→2/6/4 | failed→5;--args '{"pid":".."}' 可整体传参)
 
 工具
