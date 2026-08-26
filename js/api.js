@@ -71,9 +71,14 @@
       if (operationId) payload.operationId = String(operationId);
       if (jsonMode) payload.jsonMode = true;
       if (step) payload.step = String(step);
+      if (window.__billPid) payload._projectId = window.__billPid; // 成本归集标签(服务端 operation 台账按项目聚合)
       // 代理模式:走同源后端,Key 不出现在前端
       const token = window.Store && Store.getToken();
       if (!token) throw new Error('未登录后端(代理模式需要登录),或在「API 设置」切换为自定义直连');
+      /* R15 断点闭环:单次请求抽为闭包——客户端 120s 超时但服务端已交付(结果缓存于步骤槽位)时,
+       * 同 opId+step 同体重放一次:已交付命中 replay-cached 直接取回、未交付 replay-exec 重执行,
+       * 均不重复扣费;修复"超时即放弃→结果搁浅、重做新 opId 重复扣费"的缺口(仅代理模式,直连无步骤语义) */
+      const once = async () => {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 120000);
       let res;
@@ -111,6 +116,16 @@
       // 空响应偶发于推理型模型(推理耗尽 max_tokens 或上游抖动),带出 finish_reason 便于定位
       if (!content) throw new Error('API 返回内容为空' + (ch0 && ch0.finish_reason ? '(finish_reason=' + ch0.finish_reason + ',可能被截断或过滤)' : ''));
       return content;
+      };
+      try {
+        return await once();
+      } catch (e) {
+        if (operationId && /^请求超时/.test(String((e && e.message) || ''))) {
+          if (window.U && U.toast) U.toast('请求超时,正在按原任务尝试恢复结果…', 'info');
+          return await once(); // 同体重放:服务端步骤幂等,已交付直接取回不重复扣费
+        }
+        throw e;
+      }
     },
 
     async _chatDirect(cfg, payload) {

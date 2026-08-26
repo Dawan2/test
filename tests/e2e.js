@@ -208,7 +208,7 @@ async function main() {
   report('失败镜头:错误卡+建议+修改提示词入口', await evalJs(`!!document.querySelector('[data-x=retrygen]') && !!document.querySelector('[data-x=editprompt]')`));
   await evalJs(`document.querySelectorAll('.ws-thumb[data-shot]')[0].click()`); await sleep(700);
   report('剧情概要联动轨格数=3', await evalJs(`document.querySelectorAll('.ws-refcell').length`) === 3);
-  report('缩略图徽标:确认/失败/审片低分标', await evalJs(`document.querySelectorAll('[data-cfm]').length`) === 3);
+  report('缩略图状态条(归一):已出片/失败/待确认', await evalJs(`const ts=[...document.querySelectorAll('.ws-thumb[data-shot]')]; ts.length===3 && ts[0].textContent.includes('✓ 已出片') && ts[1].textContent.includes('✗ 失败') && ts[2].textContent.includes('待确认') && !!ts[2].querySelector('[data-cfm]') && document.querySelectorAll('[data-cfm]').length===1`));
   await evalJs(`const ta=document.querySelector('[data-r=prompt]'); ta.value=ta.value+'，追加更多动作描写内容用于测试预估联动'; ta.dispatchEvent(new Event('input'))`); await sleep(300);
   report('提示词输入→字数/预估秒数联动', await evalJs(`+((document.querySelector('[data-x=durest]')||{}).textContent||'0')`) > 3);
   await evalJs(`[...document.querySelectorAll('[data-drawn]')].find(o=>o.dataset.drawn==='2').click()`); await sleep(900);

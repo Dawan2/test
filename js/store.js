@@ -26,6 +26,9 @@
   /* 主体防崩坏一致性前缀(单一来源:镜头组 shotgroups.js 与节拍板 beatboard.js 共用) */
   window.CONSIST_PREFIX = '面部五官清晰稳定不变形,同一角色全程外貌一致。人体结构正常比例自然,动作连续不跳帧。视频全程同一时刻只有一个角色本体,不出现重复人物、分身或双胞胎效果。';
 
+  /* 在线判定:指纹/就绪函数的环境参数(domain.js 不读 window,经参数显式传入) */
+  const _online = () => !!(window.Media && Media.isReady());
+
   const Store = {
     state: null,
     rev: 0,               // 与服务端同步的版本号
@@ -49,6 +52,7 @@
     save() {
       // 本地落盘防抖 250ms:286 处调用点含逐键输入,同步 stringify+setItem 会卡输入并放大 IO;
       // 页面隐藏/卸载时 flushNow 兜底,云端同步(scheduleSync)不受影响
+      this._dirty = true; // R18:未落盘修改标记(跨标签页采纳判定:脏时不被他页覆盖)
       clearTimeout(this._saveTimer);
       this._saveTimer = setTimeout(() => this.flushNow(), 250);
       this.scheduleSync();
@@ -73,8 +77,23 @@
     /* 立即落盘(防抖冲刷/关键节点调用) */
     flushNow() {
       clearTimeout(this._saveTimer);
+      // 连续性:save 前为每个改动项目盖 __ver/__lastSaved(200ms 窗口内幂等),并广播跨 Tab
+      if (window.Continuity && typeof Continuity.bumpVer === 'function' && Array.isArray(this.state.projects)) {
+        const changed = [];
+        if (!this._pushBase) {
+          this.state.projects.forEach(p => { Continuity.bumpVer(p); changed.push(p); });
+        } else {
+          this.state.projects.forEach(p => {
+            if (this._pushBase.projects[p.id] !== JSON.stringify(p)) {
+              Continuity.bumpVer(p);
+              changed.push(p);
+            }
+          });
+        }
+        changed.forEach(p => { try { Continuity.broadcastSave(p, null); } catch (_) {} });
+      }
       this.touchProjects();
-      if (this.persistLocal()) return;
+      if (this.persistLocal()) { this._dirty = false; return; }
       // 本地存储写满(占位图 dataURL 体积大)时不阻断业务流程:仅提示一次,云端同步照常
       if (!this._quotaWarned && window.U) {
         this._quotaWarned = true;
@@ -85,6 +104,34 @@
     },
     uid(p) { return (p || 'id') + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); },
     now() { return new Date().toLocaleString('zh-CN', { hour12: false }); },
+
+    /* R18 IDB 引用清扫(标记-清扫):收集活引用键(内存全量值的内容寻址键 + 本地落盘快照/冲突备份中的
+     * 'idb:' 标记),IDB 中其余键为孤儿 blob(已删项目/镜头/回收站过期残留),后台回收;
+     * 24h 节流,全程静默失败(GC 是优化不是主流程)。调用方:启动水合完成后(app.js boot) */
+    async gcIdb() {
+      if (!window.IDB || !IDB.ok || !IDB.gc) return;
+      try {
+        const last = +(localStorage.getItem('mv_hujing_idb_gc_at') || 0);
+        if (Date.now() - last < 24 * 3600 * 1000) return;
+        localStorage.setItem('mv_hujing_idb_gc_at', String(Date.now()));
+        const keep = new Set();
+        const collect = (node) => {
+          if (!node || typeof node !== 'object') return;
+          if (Array.isArray(node)) { node.forEach(collect); return; }
+          for (const k in node) {
+            const v = node[k];
+            if (typeof v === 'string') {
+              if (IDB.isBig(v)) keep.add(IDB.keyOf(v));
+              else if (v.startsWith(IDB.MARK)) keep.add(v.slice(IDB.MARK.length));
+            } else if (v && typeof v === 'object') collect(v);
+          }
+        };
+        collect(this.state);
+        try { collect(JSON.parse(localStorage.getItem(KEY) || 'null')); } catch (_) {}
+        try { (JSON.parse(localStorage.getItem('mv_hujing_conflict_bak') || '[]')).forEach(b => collect(b)); } catch (_) {}
+        await IDB.gc(keep);
+      } catch (_) { /* GC 失败静默,下轮再试 */ }
+    },
 
     /* ---- 后端 token 与同步(离线时自动静默) ---- */
     getToken() { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch (_) { return ''; } },
@@ -108,6 +155,13 @@
       const projects = {};
       (this.state.projects || []).forEach(p => { projects[p.id] = JSON.stringify(p); });
       return { meta: JSON.stringify(meta), projects };
+    },
+    /* R17:带超时的 fetch(默认 30s)——服务端挂起/半开连接时 syncPush 的 _pushing 不再永久卡死,
+     * 超时走 catch 提示并由 finally 复位,下一轮 scheduleSync 自动重试 */
+    _fetchTimeout(url, opts, ms) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), ms || 30000);
+      return fetch(url, Object.assign({}, opts, { signal: ctrl.signal })).finally(() => clearTimeout(timer));
     },
     async syncPush() {
       const token = this.getToken();
@@ -135,7 +189,7 @@
           if (!changes.meta && !Object.keys(changes.projects).length && !changes.deletedProjects.length) return; // 无变化
           bodyObj = { rev: this.rev, changes };
         }
-        const res = await fetch('/api/state', {
+        const res = await this._fetchTimeout('/api/state', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
           body: JSON.stringify(bodyObj),
@@ -228,7 +282,7 @@
       if (!token) return false;
       let j = null;
       try {
-        const res = await fetch('/api/state', { headers: { Authorization: 'Bearer ' + token } });
+        const res = await this._fetchTimeout('/api/state', { headers: { Authorization: 'Bearer ' + token } }, 20000);
         if (res.status === 401) {
           // 八轮:401 统一走 U.authExpired(此前被当普通网络错误吞掉)
           if (window.U && U.authExpired) U.authExpired();
@@ -248,9 +302,14 @@
        * 逐项合并(两端各收藏/各传素材互不覆盖);其余键保持"云端为底,本地相对基线改过/新增的键覆盖"
        * (计费键天然来自云端,服务端权威;settings/team 等整体键沿用覆盖语义) */
       const META_MERGE_KEYS = ['favorites', 'materials', 'assetReviews', 'portraitCerts', 'fileFavs'];
+      /* R17 合并后对账:users/creditLogs/orders/session 为服务端权威键(钱包账本为准),
+       * 本地消费/退费造成的视图漂移不得借"相对基线改过"覆盖刚拉回的云端值——
+       * 否则合并树本地余额与服务端钱包漂移,要等下次全量拉取才自愈 */
+      const BILLING_SERVER_KEYS = ['users', 'creditLogs', 'orders', 'session'];
       const out = Object.assign({}, cloud);
       for (const k in local) {
         if (k === 'projects') continue;
+        if (BILLING_SERVER_KEYS.includes(k) && cloud[k] !== undefined) continue; // 保留云端(服务端权威),本地漂移以钱包对账收敛;云端缺键才落本地兜底
         if (META_MERGE_KEYS.includes(k)) {
           if (Array.isArray(local[k]) && Array.isArray(cloud[k])) {
             out[k] = this._merge3(Array.isArray(baseMeta[k]) ? baseMeta[k] : [], local[k], cloud[k]);
@@ -345,7 +404,7 @@
       if (!token) return 'error';
       this._pulling = true;
       try {
-        const res = await fetch('/api/state', { headers: { 'Authorization': 'Bearer ' + token } });
+        const res = await this._fetchTimeout('/api/state', { headers: { 'Authorization': 'Bearer ' + token } }, 20000);
         if (res.status === 401) {
           // 八轮:401 统一走 U.authExpired(此前被当普通网络错误吞掉,假登录态反复重试)
           if (window.U && U.authExpired) U.authExpired();
@@ -418,6 +477,8 @@
         id: this.uid('log'), userId, type, amount,
         balance: u ? u.credits : 0, reason, time: this.now(),
       });
+      // R17:本地流水截断(对齐服务端投影 500 条上限)——高频创作下 creditLogs 不再无限膨胀撑爆 413
+      if (this.state.creditLogs.length > 500) this.state.creditLogs.length = 500;
     },
     // 扣积分，不足或非法数值返回 false(M8 修复:防御 NaN/非正积分)
     spend(n, reason) {
@@ -482,32 +543,9 @@
     },
     getProject(id) { return this.state.projects.find(p => p.id === id) || null; },
     /* 按名称查找项目主体,支持多形态全称"角色名-形态名";命中返回 {s, form},否则 null。
-     * 十三轮:曾用名兜底——主体改名后 formerNames 记录旧名,镜头/镜头组里未级联到的旧名引用
-     * (跨端合并竞态/快照恢复/级联前旧数据)仍能解析到主体,参考图/形态/音色/imgVer 不失联 */
+     * 实现已下沉 domain.js(双端单一来源,含曾用名/别名兜底),此处仅委托保持签名不变 */
     findSubject(p, name) {
-      const subs = (p && p.subjects) || [];
-      const s = subs.find(x => x.name === name);
-      if (s) return { s, form: null };
-      for (const x of subs) {
-        const f = (x.forms || []).find(f => (x.name + '-' + f.name) === name);
-        if (f) return { s: x, form: f };
-      }
-      /* 曾用名兜底:旧名或"旧名-形态名"仍指向当前主体(形态按名匹配) */
-      for (const x of subs) {
-        if (!(x.formerNames || []).includes(name)) continue;
-        return { s: x, form: null };
-      }
-      for (const x of subs) {
-        if (!(x.formerNames || []).length) continue;
-        const hit = name.startsWith(x.name + '-') ? name.slice(x.name.length + 1) : null;
-        // "旧名-形态名":旧名段匹配任一曾用名,形态名按当前形态表解析
-        const oldHead = (x.formerNames || []).find(fn2 => name.startsWith(fn2 + '-'));
-        const formName = hit || (oldHead ? name.slice(oldHead.length + 1) : null);
-        if (!formName) continue;
-        const f = (x.forms || []).find(fm => fm.name === formName);
-        if (f) return { s: x, form: f };
-      }
-      return null;
+      return Domain.findSubject(p, name);
     },
     /* 主体改名领域命令(十三轮):旧名入 formerNames(兜底解析),级联更新镜头与镜头组的名称引用。
      * 此前 Agent 直接改 s.name,镜头 characters/scene/props 与镜头组 assets 键仍持旧名 →
@@ -563,86 +601,26 @@
       s.imgVer = Date.now();
       this.save();
     },
-    /* 该镜引用主体(含形态,按主体计)的 imgVer 最大值;无引用或未打点则为 0 */
+    /* 该镜引用主体(含形态,按主体计)的 imgVer 最大值;无引用或未打点则为 0(实现下沉 domain.js) */
     shotAssetVer(p, s) {
-      let v = 0;
-      const seen = new Set();
-      const push = name => {
-        const r = name && this.findSubject(p, name);
-        if (r && !seen.has(r.s.id)) { seen.add(r.s.id); v = Math.max(v, r.s.imgVer || 0); }
-      };
-      (s.characters || []).forEach(push);
-      push(s.scene);
-      (s.props || []).forEach(push);
-      return v;
+      return Domain.shotAssetVer(p, s);
     },
-    /* 视频已生成,但生成后 引用素材更新过 或 提示词/台词等输入变化 → 建议重生成(不自动重做/不重扣费) */
+    /* 视频已生成,但生成后 引用素材更新过 或 提示词/台词等输入变化 → 建议重生成(不自动重做/不重扣费;实现下沉 domain.js) */
     shotVideoStale(p, s) {
-      if (!s.video || s.video.status !== 'done') return false;
-      if (this.shotAssetVer(p, s) > (s.video.assetVer || 0)) return true;
-      return !!(s.video.inputHash && s.video.inputHash !== this.shotInputHash(p, s));
+      return Domain.shotVideoStale(p, s, _online());
     },
-    /* 生成输入全量签名(2026-08 六轮 v3):优先序列化 canonical 生成请求 SB.buildVideoRequest
-     * (与真实发送完全同一构造点:主体定义/轴线/运镜/机位/美术后缀/负面约束/画幅/模型/策略/首尾帧/参考/音色),
-     * 哈希与生成逻辑不再两处维护字段清单;SB 未就绪(极早期调用)回退内联推导 */
+    /* 生成输入全量签名(2026-08 六轮 v3):实现下沉 domain.js——canonical 生成请求 Domain.buildVideoRequest
+     * 与真实发送完全同一构造点,哈希与生成逻辑不再两处维护字段清单;CLI 经 require 复用同一实现 */
     buildGenerationSignature(p, s) {
-      const ep = ((p && p.episodes) || []).find(e => (e.shots || []).some(x => x.id === s.id));
-      if (window.SB && SB.buildVideoRequest) {
-        try {
-          const q = SB.buildVideoRequest(p, ep, s);
-          return JSON.stringify([q.prompt, q.ratio, q.duration, q.model, q.image || '', q.lastFrame || '',
-            (q.refImages || []).map(r => r.name + ':' + r.url).join(';'), q.refAudio || '', this.shotAssetVer(p, s)]);
-        } catch (_) { /* 回退内联推导 */ }
-      }
-      const realRef = v => { const t = String(v || ''); return (t.startsWith('/') || t.startsWith('http')) ? t : ''; }; // data:/idb: 占位不送模,不参与签名(与实际请求口径一致)
-      // 主体参考(与 sb-gen.shotRefImages 同源):主体 id+形态+参考图路径,改名/换图/换形态都会使签名变化
-      const names = [].concat(s.characters || [], s.scene ? [s.scene] : [], s.props || []);
-      const refParts = names.map(name => {
-        const r = name && this.findSubject(p, name);
-        if (!r) return '';
-        const img = realRef((r.form && r.form.image) || r.s.imgRef || r.s.image);
-        return r.s.id + (r.form ? '|' + r.form.id : '') + ':' + img;
-      }).filter(Boolean);
-      let refAudio = '';
-      for (const c of (s.characters || [])) {
-        const r = c && this.findSubject(p, c);
-        const au = r && r.s.refAudio && realRef(r.s.refAudio.url);
-        if (au) { refAudio = au; break; }
-      }
-      const sb = (ep && ep.sbConfig) || {};
-      const art = ep
-        ? (String(ep.styleSuffix == null ? '' : ep.styleSuffix).trim()
-          || [window.styleOf ? styleOf(p) : (p.style || ''), p.globalSetting || ''].filter(Boolean).join(','))
-        : '';
-      return [
-        s.prompt || s.plot || '',
-        s.dialogue || '',
-        s.narration || '',
-        s.axisRule || '',
-        art,
-        sb.ratio || '16:9',
-        s.videoModel || sb.batchVideoModel || '',
-        s.genStrategy || 'ref',
-        realRef(s.firstFrame),
-        s.genStrategy === 'frames' ? realRef(s.lastFrame) : '',
-        refParts.join(';'),
-        refAudio,
-        this.shotAssetVer(p, s),
-      ].join('‖');
+      return Domain.buildGenerationSignature(p, s);
     },
     /* 镜头生成输入指纹(v3):buildGenerationSignature 的散列;存于 s.video.inputHash,输入变化即判过期 */
     shotInputHash(p, s) {
-      const sig = this.buildGenerationSignature(p, s);
-      let h = 5381;
-      for (let i = 0; i < sig.length; i++) h = ((h << 5) + h + sig.charCodeAt(i)) >>> 0;
-      return 'v3:' + h.toString(36);
+      return Domain.shotInputHash(p, s);
     },
     /* v1 指纹(旧算法,仅用于存量迁移比对:v1 相等说明输入未变,原位升级 v3,避免全量误报"素材已更新") */
     _shotInputHashV1(p, s) {
-      const sig = [s.prompt || '', s.dialogue || '', s.narration || '', this.shotAssetVer(p, s)].join('‖');
-      let h = 5381;
-      for (let i = 0; i < sig.length; i++) h = ((h << 5) + h + sig.charCodeAt(i)) >>> 0;
-      return h.toString(36);
+      return Domain.shotInputHashV1(p, s);
     },
     /* 存量 inputHash 迁移:与 v1 吻合(输入未变)则升级为 v3;不吻合则保留旧值(stale 提示本就正确) */
     migrateInputHash() {
@@ -664,105 +642,44 @@
       this.save();
       return true;
     },
-    /* 本集理解是否对应当前剧本(十一轮:无 sourceRev 的旧数据,contentRev>0 说明迁移后正文改过,
-     * 理解早于该次修改 → 判旧;contentRev=0 视为当前,避免一次性全量判旧) */
+    /* 本集理解是否对应当前剧本(十一轮判旧规则;实现下沉 domain.js) */
     understandingStale(ep) {
-      if (!ep || !ep.understanding) return false;
-      if (ep.understanding.sourceRev === undefined) return (ep.contentRev || 0) > 0;
-      return ep.understanding.sourceRev !== (ep.contentRev || 0);
+      return Domain.understandingStale(ep);
     },
-    /* 分镜表是否拆自当前剧本(shotsSourceRev 在拆镜发布时记录;无记录的旧数据视为当前;
-     * 十二轮补图谱维度:shotsGraphRev 在拆镜发布时记录,事件图谱编辑/重生成后失配判旧) */
+    /* 分镜表是否拆自当前剧本与事件图谱(shotsSourceRev/shotsGraphRev 判旧;实现下沉 domain.js) */
     shotsStale(ep) {
-      if (!ep || !ep.shots || !ep.shots.length) return false;
-      if (ep.shotsSourceRev !== undefined && ep.shotsSourceRev !== (ep.contentRev || 0)) return true;
-      if (ep.shotsGraphRev !== undefined && ep.shotsGraphRev !== (ep.graphRev || 0)) return true;
-      return false;
+      return Domain.shotsStale(ep);
     },
-    /* 整集审片/成片是否基于当前剧本与分镜(报告与成片的快照都含 contentRev 维度;
-     * 十二轮补图谱维度 graphRev——图谱是拆解/分镜的剧情骨架,图谱修订后旧报告/成片同样判旧) */
+    /* 整集审片是否基于当前剧本与图谱(sourceRev/graphRev 判旧;实现下沉 domain.js) */
     reviewStaleByScript(ep) {
-      if (!ep || !ep.lastReview) return false;
-      if (ep.lastReview.sourceRev !== undefined && ep.lastReview.sourceRev !== (ep.contentRev || 0)) return true;
-      if (ep.lastReview.graphRev !== undefined && ep.lastReview.graphRev !== (ep.graphRev || 0)) return true;
-      return false;
+      return Domain.reviewStaleByScript(ep);
     },
+    /* 成片是否基于当前剧本与图谱(composedSourceRev/composedGraphRev 判旧;实现下沉 domain.js) */
     composedStaleByScript(ep) {
-      if (!ep) return false;
-      if (ep.composedSourceRev !== undefined && ep.composedSourceRev !== (ep.contentRev || 0)) return true;
-      if (ep.composedGraphRev !== undefined && ep.composedGraphRev !== (ep.graphRev || 0)) return true;
-      return false;
+      return Domain.composedStaleByScript(ep);
     },
-    /* 视频就绪(真实):done 且非"离线模拟冒充"——simulated 产物仅离线(后端不可达)时才算就绪,
-       在线时只作预览,不计入"生成完成/审片/成片" */
+    /* 视频就绪(真实):done 且非"离线模拟冒充"(实现下沉 domain.js,online 经 _online 传入) */
     shotVideoReady(s) {
-      if (!s.video || s.video.status !== 'done') return false;
-      if (s.video.simulated && window.Media && Media.isReady()) return false;
-      return true;
+      return Domain.shotVideoReady(s, _online());
     },
-    /* 成片就绪(真实,八轮强化):composed 且非离线模拟合成 且 合成输入未变化 且 有指纹记录。
-     * composedInputHash 在合成成功时记录(canonical 合成快照:时间线顺序/裁剪/剔除 + 各镜素材版本/
-     * 转场/配音/字幕/画幅/来源轨);之后任何 调序/删插镜头/转场修改/时间线裁剪/版本应用/超分·擦除换
-     * URL/配音变更/字幕开关 → hash 失配,成片自动失效(旧成片文件保留可看,但不再计为"已合成")。
-     * 无指纹的旧成片一律判未就绪(八轮:旧数据未绑定合成输入,无法证明仍有效,重新合成一次即建立) */
+    /* 成片就绪(真实,八轮强化 + 剧本/图谱维度并入):
+     * composed 且非离线模拟 且 合成输入指纹未变 且 剧本/图谱仍为合成时版本——
+     * 技术上存在成片文件 ≠ 业务上仍是最新成片(原 composedStaleByScript 维度已并入 domain.js 实现);
+     * 无指纹的旧成片一律判未就绪,无 rev 记录的旧数据保持原语义(迁移兼容) */
     epComposedReady(ep) {
-      if (!ep || !ep.composed) return false;
-      // 离线模拟合成:离线时有效,在线时作废(要求真实重合成;不参与指纹判定)
-      if (ep.composedSimulated) return !(window.Media && Media.isReady());
-      if (!ep.composedInputHash) return false; // 真实合成但无指纹(旧数据):无法证明输入未变,判未就绪
-      if (ep.composedInputHash !== this.composedInputHash(ep)) return false;
-      return true;
+      return Domain.epComposedReady(ep, _online());
     },
-    /* canonical 合成快照(八轮):时间线编辑器的顺序/裁剪/剔除规则的唯一权威实现——
-     * sb-io.doCompose(真实合成 items)与 composedInputHash(就绪判定)共用同一份序列,
-     * 消除"合成用 shotsOverride、指纹却按 ep.shots 原序算"的口径分裂(时间线调序/裁剪/剔除
-     * 此前不会使成片失效)。规则与 Timeline.openCompose 完全一致:tlOrder 定序(缺省回填原始序)、
-     * tlTrims[id].off 剔除、start/end 落 _tlStart/_tlEnd */
+    /* canonical 合成快照(实现下沉 domain.js):sb-io.doCompose 与 composedInputHash 共用同一份序列 */
     composeSeqOf(ep) {
-      const shots = (ep && ep.shots) || [];
-      const usable = shots.filter(s => (this.shotVideoReady(s) && s.video.url) || s.image);
-      const trims = (ep && ep.tlTrims) || {};
-      const order = (Array.isArray(ep && ep.tlOrder) ? ep.tlOrder : []).filter(id => usable.some(s => s.id === id));
-      usable.forEach(s => { if (!order.includes(s.id)) order.push(s.id); });
-      return order
-        .map(id => usable.find(s => s.id === id))
-        .filter(s => s && !(trims[s.id] && trims[s.id].off))
-        .map(s => {
-          const tr = trims[s.id] || {};
-          const c = Object.assign({}, s);
-          if (typeof tr.start === 'number' && tr.start > 0) c._tlStart = tr.start;
-          if (typeof tr.end === 'number') c._tlEnd = tr.end;
-          return c;
-        });
+      return Domain.composeSeqOf(ep, _online());
     },
-    /* 成片合成输入指纹:与 sb-io.doCompose/beatboard.composeBeats 的合成 items 完全同源 */
+    /* 成片合成输入指纹(实现下沉 domain.js):与合成 items 完全同源;CLI 经 require 算出同一值 */
     composedInputHash(ep) {
-      if (!ep) return '';
-      let sig;
-      if (ep.composedVia === 'beats') {
-        sig = (ep.beats || []).map(b => [b.id, (b.video && b.video.url) || '', (b.video && b.video.inputHash) || ''].join('|')).join('‖');
-      } else {
-        sig = this.composeSeqOf(ep).map(s => [
-          s.id,
-          (this.shotVideoReady(s) && s.video.url) || s.image || '',   // 素材版本:视频 URL(超分/擦除替换会变)或分镜图
-          (s.video && s.video.inputHash) || '',                        // 生成输入指纹(重新生成/版本应用会变)
-          typeof s._tlStart === 'number' ? s._tlStart : '',            // 时间线裁剪:入点
-          typeof s._tlEnd === 'number' ? s._tlEnd : '',                // 时间线裁剪:出点
-          s.transition || '',                                          // 转场
-          s.audioUrl || '',                                            // 配音
-        ].join('|')).join('‖');
-      }
-      const full = [sig, (ep.sbConfig && ep.sbConfig.subtitle) ? 1 : 0, (ep.sbConfig && ep.sbConfig.ratio) || '16:9', ep.composedVia || ''].join('¶');
-      let h = 5381;
-      for (let i = 0; i < full.length; i++) h = ((h << 5) + h + full.charCodeAt(i)) >>> 0;
-      return 'c:' + h.toString(36);
+      return Domain.composedInputHash(ep, _online());
     },
-    /* 节拍板出片就绪(真实):与 shotVideoReady 同语义的节拍段版本——simulated 占位仅离线时算就绪,
-       在线时不算(批量生成/合成会要求真实重做);无 video 对象的旧数据按未生成处理 */
+    /* 节拍板出片就绪(真实):与 shotVideoReady 同语义的节拍段版本(实现下沉 domain.js) */
     beatVideoReady(b) {
-      if (!b || !b.video || b.video.status !== 'done') return false;
-      if (b.video.simulated && window.Media && Media.isReady()) return false;
-      return true;
+      return Domain.beatVideoReady(b, _online());
     },
     /* 全项目符合"素材已更新"条件的已生成视频镜头数 */
     staleVideoCount(p) {
@@ -911,4 +828,24 @@
   /* 页面隐藏/卸载时冲刷防抖中的本地落盘,防最后 250ms 内的改动丢失 */
   window.addEventListener('pagehide', () => Store.flushNow());
   window.addEventListener('beforeunload', () => Store.flushNow());
+  /* R18 跨标签页:他页改写本地 state(storage 事件不回报本页写入,天然区分内外)——
+   * 本页干净(无未落盘修改且无在飞任务)则采纳他页版本并重渲,双标签页实时一致;
+   * 本页脏/有在飞任务(异步链持有旧树引用,换树会孤儿化其写回)则不采纳,提示一次由用户抉择;
+   * 云端账号另有 rev 乐观锁+三方合并兜底,此层主要兜离线双开互相覆盖 */
+  window.addEventListener('storage', (e) => {
+    if (!Store.state || e.key !== KEY) return;
+    const busy = Store._dirty || (window.Tasks && Tasks.running && Tasks.running() > 0);
+    if (busy) {
+      const now = Date.now();
+      if (!Store._xtabWarnedAt || now - Store._xtabWarnedAt > 60000) {
+        Store._xtabWarnedAt = now;
+        if (window.U) U.toast('检测到另一标签页修改了数据,本页有进行中的更改/任务,建议完成后刷新页面同步', 'info', 5000);
+      }
+      return;
+    }
+    Store.load(); // 重新解析(含 trashPurge/sweepStale 等加载期规整)
+    const reroute = () => { if (window.__reroute) window.__reroute(); };
+    if (window.IDB && IDB.hydrate) IDB.hydrate(Store.state).then(reroute).catch(reroute);
+    else reroute();
+  });
 })();

@@ -122,6 +122,8 @@
       } catch (err) {
         // err.__opId:资源层(media.js)失败时附带的计费操作键 → 镜像退费关联同一 operation(服务端按原账单退);
         // err.__noRefund(九轮):任务仍在后台生成等场景,失败语义下不退本地镜像(服务端终态兜底)
+        // R15:opId 落任务——任务中心「领取结果」按此找回服务端已交付但前端未收到的结果
+        if (err && err.__opId) tk.opId = err.__opId;
         if (cost > 0 && !(err && err.__noRefund)) U.refund(cost, actionName || type, err && err.__opId);
         if (err && err.__pending) this.background(tk, '上游仍在生成,稍后重试可免费续查结果');
         else this.fail(tk, (err && err.message) || '未知原因');
@@ -157,6 +159,7 @@
           sum.ok++; sum.results.push(out === undefined ? null : out);
           if (onEach) onEach(item, true, out, tk, i);
         } catch (err) {
+          if (err && err.__opId) tk.opId = err.__opId; // R15:结果认领键(同 run)
           if ((o.cost || 0) > 0 && !(err && err.__noRefund)) U.refund(o.cost, (err && err.refundReason) || o.actionName || o.type, err && err.__opId);
           this.fail(tk, (err && err.message) || '未知原因');
           sum.fail++; sum.results.push(null);
@@ -184,6 +187,74 @@
     },
   };
   window.Tasks = Tasks;
+
+  /* ================= 结果领取(R15) =================
+   * 失败任务的断点闭环:同步生成端点(TTS/FFmpeg)客户端超时/断线时,服务端可能已交付(结果保留 7 天)。
+   * 任务中心「⇩ 领取」按 opId(单键 t.opId||t.id;批量内层键 t.opIds)查询服务端结果日志,
+   * 命中可打开/下载;镜头归属明确的类型(生成音频/合成音视频)可一键应用回分镜。
+   * 账目无需手工处理:服务端已交付的 operation 拒绝退款(403),refundMirror 已按服务端余额回写本地。 */
+  function claimableIds(t) {
+    if (Array.isArray(t.opIds) && t.opIds.length) return t.opIds;
+    return [{ opId: t.opId || t.id, shotId: t.shotId, label: '' }];
+  }
+  function canApply(t, f) {
+    if (!f.rec.payload || !f.rec.payload.url) return false;
+    if (t.type !== '生成音频' && t.type !== '合成音视频') return false;
+    return !!(f.shotId || t.shotId) && !!t.episodeId && !!t.projectId;
+  }
+  function applyRecovered(t, f) {
+    const shotId = f.shotId || t.shotId;
+    const p = Store.state.projects.find(x => x.id === t.projectId);
+    const ep = p && (p.episodes || []).find(e => e.id === t.episodeId);
+    const s = ep && (ep.shots || []).find(x => x.id === shotId);
+    if (!s) { U.toast('找不到对应分镜(可能已删除),请改用下载手动处理', 'error', 3000); return false; }
+    const url = f.rec.payload.url;
+    if (t.type === '生成音频') {
+      s.audio = true; s.audioUrl = url;
+      s.history = s.history || [];
+      s.history.unshift({ type: '音频', model: '任务中心领取', time: Store.now() });
+    } else if (t.type === '合成音视频') {
+      s.merged = true; s.mergedUrl = url;
+    } else return false;
+    t.reason = (t.reason || '').replace(/\(结果已领取并应用\)/g, '') + '(结果已领取并应用)';
+    Store.save();
+    U.toast('已应用到镜头' + (s.order + 1), 'success');
+    return true;
+  }
+  async function claimResult(t) {
+    if (!t) return;
+    if (!window.Media || !Media.isReady()) return U.toast('未登录后端,无法领取服务端结果', 'error', 2500);
+    const ids = claimableIds(t);
+    U.toast('正在向服务端查询可领取结果…', 'info', 1200);
+    const found = [];
+    for (const it of ids) {
+      if (!it.opId) continue;
+      const rec = await Media.recoverResult(it.opId);
+      if (rec) found.push({ rec, shotId: it.shotId || null, label: it.label || '' });
+    }
+    if (!found.length) return U.toast('服务端没有该任务的可领取结果(未交付或已过 7 天保留期)', 'info', 3000);
+    U.openModal({
+      title: `领取结果(${found.length} 条)`,
+      body: `<p class="small muted" style="margin-bottom:10px;line-height:1.8">该任务前端判定失败/超时,但服务端已完成交付(积分已按交付计费)。结果可直接打开/下载;配音与合成类结果可一键应用回对应分镜。</p>` +
+        found.map((f, i) => `
+        <div class="card" style="padding:10px 12px;margin-bottom:8px">
+          <div class="row wrap" style="justify-content:space-between;gap:8px">
+            <div class="small"><b>${U.esc(f.label || f.rec.action || '结果')}</b> <span class="muted">${U.esc(f.rec.endpoint || '')} · ${new Date(f.rec.savedAt).toLocaleString('zh-CN', { hour12: false })}</span></div>
+            <div class="row" style="gap:6px">
+              <a class="btn sm" href="${U.esc(f.rec.payload.url || '#')}" target="_blank" rel="noopener">打开</a>
+              <a class="btn sm" href="${U.esc(f.rec.payload.url || '#')}" download>下载</a>
+              ${canApply(t, f) ? `<button class="btn sm primary" data-apply="${i}">应用到镜头</button>` : ''}
+            </div>
+          </div>
+        </div>`).join(''),
+      onMount(m) {
+        m.querySelectorAll('[data-apply]').forEach(btn => btn.onclick = () => {
+          const f = found[+btn.dataset.apply];
+          if (applyRecovered(t, f)) { btn.disabled = true; btn.textContent = '✓ 已应用'; }
+        });
+      },
+    });
+  }
 
   /* ================= 任务监控页 ================= */
   const fmtDur = ms => {
@@ -282,6 +353,7 @@
               <td><div class="row" style="gap:2px">
                 <button class="btn ghost sm" title="查看" data-view="${t.id}">👁</button>
                 ${t.status === 'failed' || t.status === 'background' ? `<button class="btn ghost sm" title="重试:失败≠白做,先看状态再重试(后台任务重试=免费续查)" data-retry="${t.id}">↻</button>` : ''}
+                ${t.status === 'failed' ? `<button class="btn ghost sm" title="领取结果:前端超时/断线但服务端可能已交付,点此按计费键找回结果" data-claim="${t.id}">⇩</button>` : ''}
                 ${t.download ? `<button class="btn ghost sm" title="下载" data-dl="${t.id}">⬇</button>` : ''}
               </div></td>
             </tr>`).join('')}
@@ -305,6 +377,8 @@
       const pv = main.querySelector('[data-x=prev]'); if (pv) pv.onclick = () => { page--; render(); };
       const nx = main.querySelector('[data-x=next]'); if (nx) nx.onclick = () => { page++; render(); };
       main.querySelectorAll('[data-view]').forEach(b => b.onclick = () => jumpTo(list().find(t => t.id === b.dataset.view)));
+      // 失败任务领取服务端已交付结果(R15)
+      main.querySelectorAll('[data-claim]').forEach(b => b.onclick = () => claimResult(list().find(t => t.id === b.dataset.claim)));
       // 失败任务重试:分镜级任务直接重跑,其余跳转对应页面
       main.querySelectorAll('[data-retry]').forEach(b => b.onclick = () => {
         const t = list().find(x => x.id === b.dataset.retry);

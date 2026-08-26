@@ -1,0 +1,153 @@
+/* ============ issues.js 问题中心(协同层,第三阶段) ============
+ * 项目级待处理问题单一聚合:失败镜/过期镜/未分镜/缺剧本/低分审片/待确认/成片过期/主体缺图,
+ * 逐项由 Domain.episodeState(blockers/counts)推导——与流程条/下一步/跑批/CLI 同一口径,不自造第二套状态。
+ * 每项问题带可操作处置:命令类(episode.generateVideos shotIds 子集重生成/智能分镜/重新合成)经统一命令层
+ * ui 模式执行;导航类跳对应页面。入口:项目页「问题」按钮(角标=未解决数,Bus 事件驱动实时刷新)。 */
+(function () {
+
+  const online = () => !!(window.Media && Media.isReady && Media.isReady());
+
+  /* ================= 问题清单推导(纯数据,可 vm 沙箱测试) =================
+   * 条目:{ kind, sev(high|mid|low), count, label, detail, epid?, epTitle?, cmd?, shotIds?, goto? }
+   * cmd 条目经 Commands.execute(cmd,{pid,epid,shotIds,ui:true}) 处置;goto 条目直接跳转。 */
+  function collect(p) {
+    const out = [];
+    if (!p) return out;
+    const on = online();
+    /* 项目级:主体缺权威参考图(生成防废片警示的前置阻塞) */
+    const noImg = (p.subjects || []).filter(s => !s.image);
+    if (noImg.length) out.push({
+      kind: 'subject-no-image', sev: 'mid', count: noImg.length,
+      label: `${noImg.length} 个主体缺权威参考图`,
+      detail: '缺参考图的主体参与生成会触发防废片警示:' + noImg.slice(0, 6).map(s => s.name).join('、') + (noImg.length > 6 ? ` 等 ${noImg.length} 个` : ''),
+      goto: '#/project/' + p.id + '/roles',
+    });
+    (p.episodes || []).forEach((ep, i) => {
+      const st = window.Domain ? Domain.episodeState(p, ep, on) : { counts: {}, blockers: [] };
+      const c = st.counts || {};
+      const base = { epid: ep.id, epTitle: ep.title || ('第' + (i + 1) + '集') };
+      if (!(ep.content || '').trim()) {
+        out.push(Object.assign(base, { kind: 'no-script', sev: 'high', count: 1, label: `「${ep.title}」缺剧本正文`, detail: '无剧本无法拆镜与生成本集理解', goto: `#/project/${p.id}/episode/${ep.id}` }));
+        return;
+      }
+      if (!c.total) { out.push(Object.assign(base, { kind: 'no-shots', sev: 'mid', count: 1, label: `「${ep.title}」未生成分镜`, detail: '已有剧本未拆镜,可直接智能分镜', cmd: 'episode.generateStoryboard' })); return; }
+      if (st.shotsStale) { out.push(Object.assign(base, { kind: 'shots-stale', sev: 'mid', count: 1, label: `「${ep.title}」分镜表基于旧剧本/图谱`, detail: '剧本或事件图谱修订后未重新拆镜', goto: `#/project/${p.id}/episode/${ep.id}` })); return; }
+      if (c.failed) {
+        const fs = (ep.shots || []).filter(s => s.video && s.video.status === 'failed');
+        out.push(Object.assign(base, {
+          kind: 'failed-shots', sev: 'high', count: c.failed, label: `「${ep.title}」${c.failed} 镜生成失败`,
+          detail: fs.map(s => `镜头${s.order + 1}:${String(s.video.error || '未知错误').slice(0, 36)}`).slice(0, 4).join(';') + (fs.length > 4 ? '…' : '') + '(失败已退费,可重试)',
+          cmd: 'episode.generateVideos', shotIds: fs.map(s => s.id),
+        }));
+      }
+      if (c.stale) {
+        const ss = (ep.shots || []).filter(s => Domain.shotVideoStale(p, s, on));
+        out.push(Object.assign(base, { kind: 'stale-shots', sev: 'mid', count: c.stale, label: `「${ep.title}」${c.stale} 镜素材已更新(过期)`, detail: `镜头 ${ss.map(s => s.order + 1).slice(0, 8).join('、')}${ss.length > 8 ? '…' : ''} 生成后输入有变化,建议重生成`, goto: `#/project/${p.id}/episode/${ep.id}` }));
+      }
+      if (c.unconfirmed && !c.generating) out.push(Object.assign(base, { kind: 'unconfirmed', sev: 'low', count: c.unconfirmed, label: `「${ep.title}」${c.unconfirmed} 镜待确认`, detail: '未确认镜头不参与批量生成,先过确认闸', goto: `#/project/${p.id}/episode/${ep.id}` }));
+      if (st.reviewAvg !== null && st.reviewAvg !== undefined && st.reviewAvg < 7) {
+        const lows = ((ep.lastReview || {}).perShot || []).filter(x => x.score < 7);
+        out.push(Object.assign(base, { kind: 'low-review', sev: 'mid', count: lows.length || 1, label: `「${ep.title}」审片均分 ${st.reviewAvg} 低于达标线`, detail: lows.length ? `低分镜:${lows.map(x => (x.order + 1) + '镜' + x.score + '分').slice(0, 6).join('、')}` : '整体质量待修订(可让助手按问题清单优化提示词)', goto: `#/project/${p.id}/episode/${ep.id}` }));
+      }
+      if (ep.composed && !st.composedReady) out.push(Object.assign(base, { kind: 'composed-stale', sev: 'mid', count: 1, label: `「${ep.title}」成片已过期`, detail: '合成输入或剧本已变化,需重新合成', cmd: 'episode.compose' }));
+    });
+    const SEV = { high: 0, mid: 1, low: 2 };
+    const sevOf = x => (SEV[x] === undefined ? 9 : SEV[x]);
+    return out.sort((a, b) => sevOf(a.sev) - sevOf(b.sev));
+  }
+
+  /* 未解决问题数(项目页角标) */
+  function count(p) { return collect(p).length; }
+
+  /* ================= 处置动作 ================= */
+  async function fixIssue(p, it, main, onDone) {
+    if (it.cmd) {
+      if (!window.Commands) { U.toast('命令层未加载,请稍后重试', 'error'); return; }
+      const r = await Commands.execute(it.cmd, { pid: p.id, epid: it.epid, shotIds: it.shotIds, main: main || document.getElementById('main'), ui: true });
+      Commands.digest(r);
+      if (onDone) onDone(r);
+      return r;
+    }
+    if (it.goto) { location.hash = it.goto; if (onDone) onDone(null); return null; }
+  }
+
+  /* ================= 问题中心弹窗 ================= */
+  let openState = null; // {p, bodyEl, close, main} 弹窗开着时 Bus 事件驱动重算
+
+  const SEV_TAG = { high: ['red', '高'], mid: ['yellow', '中'], low: ['', '低'] };
+  const FIX_LABEL = { 'episode.generateVideos': '▶ 重生成', 'episode.generateStoryboard': '▶ 智能分镜', 'episode.compose': '▶ 重新合成' };
+
+  function issueRow(p, it, idx) {
+    const [cls, name] = SEV_TAG[it.sev] || ['', ''];
+    return `
+    <div class="card" style="padding:10px 12px;margin-bottom:8px">
+      <div class="row" style="gap:6px;align-items:flex-start">
+        ${cls ? `<span class="tag ${cls}" style="flex:none;font-size:10px">${name}</span>` : ''}
+        <div class="grow">
+          <div class="small" style="font-weight:600">${U.esc(it.label)}</div>
+          <div class="small muted" style="margin-top:2px;line-height:1.5">${U.esc(it.detail)}</div>
+        </div>
+        ${it.cmd ? `<button class="btn sm primary" data-ifx="${idx}" style="flex:none">${FIX_LABEL[it.cmd] || '▶ 处理'}</button>`
+        : it.goto ? `<button class="btn sm" data-igoto="${idx}" style="flex:none">→ 去处理</button>` : ''}
+      </div>
+    </div>`;
+  }
+
+  function paintBody() {
+    const { p, bodyEl, main } = openState;
+    const list = collect(p);
+    const hi = list.filter(x => x.sev === 'high').length, mid = list.filter(x => x.sev === 'mid').length, low = list.length - hi - mid;
+    bodyEl.innerHTML = list.length ? `
+      <div class="hint" style="margin-bottom:10px">全项目待处理问题聚合(失败/过期/未分镜/低分/待确认/缺图,与流程条同一套状态推导):
+        <span class="tag red" style="font-size:10px">高 ${hi}</span> <span class="tag yellow" style="font-size:10px">中 ${mid}</span> <span class="tag" style="font-size:10px">低 ${low}</span>
+        ——命令类问题一键处置(经统一命令层,含确认闸/预审),导航类跳转对应页面。</div>
+      ${list.map((it, idx) => issueRow(p, it, idx)).join('')}` : '<div class="empty"><p class="small muted">🎉 项目无待处理问题,主线畅通。</p></div>';
+    bodyEl.querySelectorAll('[data-ifx]').forEach(b => b.onclick = async () => {
+      const it = collect(p)[+b.dataset.ifx];
+      if (!it) return;
+      b.disabled = true;
+      await fixIssue(p, it, main, () => paintBody());
+      paintBody();
+    });
+    bodyEl.querySelectorAll('[data-igoto]').forEach(b => b.onclick = () => {
+      const it = collect(p)[+b.dataset.igoto];
+      if (it && it.goto) { openState.close(); location.hash = it.goto; }
+    });
+  }
+
+  function openModal(p, main) {
+    if (openState && openState.close) openState.close();
+    U.openModal({
+      title: `🩺 问题中心 · ${U.esc(p.name)}`,
+      wide: true,
+      body: '<div data-issues-body></div>',
+      onMount(m, close) {
+        openState = { p, bodyEl: m.querySelector('[data-issues-body]'), close, main };
+        paintBody();
+      },
+    });
+  }
+
+  /* Bus 通配订阅:管线事件(生成/审片/合成落定)驱动弹窗与项目页角标实时重算 */
+  function bindBus() {
+    if (!window.Bus || bindBus._done) return;
+    bindBus._done = true;
+    Bus.on('*', () => {
+      if (openState && openState.bodyEl && openState.bodyEl.isConnected) paintBody();
+      const btn = document.querySelector('[data-x=pissues][data-pid]');
+      if (btn) {
+        const p = Store.getProject(btn.dataset.pid);
+        if (p) btn.innerHTML = badgeHTML(p);
+      }
+    });
+  }
+  if (typeof document !== 'undefined') bindBus();
+
+  /* 项目页入口按钮内联 HTML(角标实时重算用同一实现) */
+  function badgeHTML(p) {
+    const n = count(p);
+    return `🩺 问题${n ? ` <b style="color:var(--red)">${n}</b>` : ''}`;
+  }
+
+  window.Issues = { collect, count, fixIssue, openModal, badgeHTML };
+})();

@@ -315,5 +315,177 @@
     });
   }
 
-  Object.assign(window.EpisodeUtil, { genSubjectImage, doSplit, openSubjectConfirm, openUploadScript });
+  /* ---------- 拉片建集:参考视频 → 场景切段 → 逐段画面理解 → 可编辑分镜表 ----------
+   * 链路:ff.highlight(detect_only 只探测不渲染) → ff.frames(times 段中点定点抽帧)
+   *   → 逐段 VLM 理解(llm.understanding,同 opId 分 step,≤8 段对齐服务端 stepBudget)
+   *   → 本地确定性组装 shots(不再加 LLM 汇总层:VLM 段级 JSON 已够,避免二次幻觉与加价)。
+   * VLM 不可用时降级:跳过理解,按纯时间结构建集(描述留空待填),已交付步骤扣费不退、失败步骤服务端自动退费。 */
+  const RIP_MAX = 8; // 服务端 llm/chat stepBudget=8:同 opId 同动作最多 8 步
+  function openRip(p, main) {
+    if (!Media.isReady()) return U.toast('拉片需要登录后端(FFmpeg 场景探测 + LLM 理解都走服务端),请先登录', 'error');
+    let file = null, busy = false, rows = null; // rows: 预览编辑态的分镜行
+    U.openModal({
+      title: '拉片建集(参考视频 → 分镜表)',
+      wide: true,
+      body: `
+      <label class="field"><span>新分集标题</span><input class="input" data-f="title" value="拉片 第${p.episodes.length + 1}集"></label>
+      <div class="row" style="gap:10px;align-items:center">
+        <button class="btn sm" data-x="pick">⬆ 选择参考视频</button>
+        <span class="small muted" data-vname>未选择(场景探测按镜头切换切段,建议 ≤10 分钟的成片/剧集)</span>
+      </div>
+      <div data-preview style="margin-top:8px"></div>
+      <label class="field" style="margin-top:8px"><span>分析段数(段数越多理解越细;每段 2 积分)</span>
+        <div class="model-row">
+          <div class="model-opt sel" data-n="4">4 段</div>
+          <div class="model-opt" data-n="6">6 段</div>
+          <div class="model-opt" data-n="8">8 段(最细)</div>
+        </div>
+      </label>
+      <div class="small muted" data-prog style="margin-top:8px"></div>
+      <div data-result style="margin-top:8px"></div>`,
+      footer: `<button class="btn" data-x="cancel">取消</button>
+        <button class="btn primary" data-x="run" disabled>开始拉片(-${COST.highlight + COST.tool}积分起)</button>
+        <button class="btn primary" data-x="create" style="display:none">创建分集</button>`,
+      onMount(m, close) {
+        let maxN = 4;
+        const prog = m.querySelector('[data-prog]');
+        const setProg = t => { prog.textContent = t; };
+        m.querySelector('[data-x=cancel]').onclick = () => { if (!busy) close(); };
+        m.querySelectorAll('[data-n]').forEach(o => o.onclick = () => {
+          if (busy) return;
+          maxN = +o.dataset.n;
+          m.querySelectorAll('[data-n]').forEach(x => x.classList.toggle('sel', x === o));
+          m.querySelector('[data-x=run]').textContent = `开始拉片(-${COST.highlight + COST.tool + maxN * 2}积分)`;
+        });
+        m.querySelector('[data-x=pick]').onclick = async () => {
+          const inp = document.createElement('input');
+          inp.type = 'file'; inp.accept = 'video/*';
+          inp.onchange = async () => {
+            const f = inp.files && inp.files[0];
+            if (!f) return;
+            setProg('上传中…');
+            const up = await U.readAndUpload(f);
+            if (!up || !up.url) { setProg(''); return U.toast('上传失败(拉片必须传到服务端,离线 base64 不可用)', 'error'); }
+            file = { name: f.name, url: up.url };
+            m.querySelector('[data-vname]').textContent = f.name + '(' + (f.size / 1048576).toFixed(1) + 'MB)';
+            m.querySelector('[data-preview]').innerHTML = `<video src="${U.esc(up.url)}" controls style="max-width:100%;max-height:180px;border-radius:8px"></video>`;
+            m.querySelector('[data-x=run]').disabled = false;
+            setProg('');
+          };
+          inp.click();
+        };
+        /* 关键帧 url → dataURL(VLM 只收 base64;上游取不到本站 localhost 路径) */
+        const toDataURL = async url => {
+          const b = await (await fetch(url)).blob();
+          return new Promise((res2, rej) => { const r = new FileReader(); r.onload = () => res2(r.result); r.onerror = rej; r.readAsDataURL(b); });
+        };
+        m.querySelector('[data-x=run]').onclick = async () => {
+          if (!file || busy) return;
+          busy = true;
+          const runBtn = m.querySelector('[data-x=run]');
+          runBtn.disabled = true;
+          Tasks.run({ type: '拉片建集', model: '场景探测+画面理解', target: file.name, cost: COST.highlight + COST.tool + maxN * 2, actionName: '拉片建集(' + file.name + ')', projectId: p.id }, async (tk) => {
+            // 1) 场景探测(不渲染)
+            setProg('1/3 场景探测切段中…');
+            const det = await Media.ffHighlight(file.url, { detect_only: true, min_duration: 2, max_duration: 60, max_number: maxN }, 'ff.highlight', tk.id);
+            const segs = (det.segments || []).slice(0, RIP_MAX);
+            if (!segs.length) throw new Error('未探测到有效场景段');
+            // 2) 段中点定点抽帧
+            setProg(`2/3 抽取 ${segs.length} 段关键帧…`);
+            const fr = await Media.ffFrames(file.url, { times: segs.map(s => s.start + s.dur / 2) }, 'ff.frames', tk.id);
+            const frames = fr.frames || [];
+            // 3) 逐段画面理解(VLM 失败降级:该段留空,全部失败则纯时间结构)
+            rows = segs.map((s, i) => ({ start: s.start, dur: s.dur, frame: frames[i] || '', plot: '', camera: '', scene: '', characters: [], dialogue: '', mood: '' }));
+            let vlmOk = 0;
+            for (let i = 0; i < rows.length; i++) {
+              setProg(`3/3 画面理解 ${i + 1}/${rows.length}…`);
+              try {
+                const dataUrl = await toDataURL(rows[i].frame);
+                const out = await API.chatJSON({
+                  system: '你是短剧拉片分析师。根据用户给的单镜头关键帧与时段,输出该镜头的结构化描述。',
+                  messages: [{ role: 'user', content: [
+                    { type: 'text', text: `这是参考视频第 ${i + 1} 个场景段(${rows[i].start.toFixed(1)}s 起,约 ${rows[i].dur.toFixed(1)}s)的关键帧。输出 JSON:{"shot_desc":"画面内容≤40字","camera":"推测机位/运镜(如 固定镜头/推镜头/手持跟拍)","scene":"场景名","characters":["画面人物外观特征,无则空数组"],"dialogue_text":"画面可见台词/字幕,无则空串","mood":"情绪基调≤8字"}` },
+                    { type: 'image_url', image_url: { url: dataUrl } },
+                  ] }],
+                  max_tokens: 600, billingAction: 'llm.understanding', operationId: tk.id, step: 'vlm' + i,
+                });
+                rows[i].plot = String(out.shot_desc || '');
+                rows[i].camera = String(out.camera || '');
+                rows[i].scene = String(out.scene || '');
+                rows[i].characters = Array.isArray(out.characters) ? out.characters.map(String).filter(Boolean).slice(0, 4) : [];
+                rows[i].dialogue = String(out.dialogue_text || '');
+                rows[i].mood = String(out.mood || '');
+                vlmOk++;
+              } catch (e) {
+                if (i === 0) U.toast('画面理解不可用(当前模型可能不支持图片输入):' + e.message + ',后续按纯时间结构建集', 'error', 4500);
+                break; // 首段即失败:模型不具备视觉能力,不再逐段浪费调用(失败步骤服务端已自动退费)
+              }
+            }
+            return { vlmOk };
+          }).then(r => {
+            /* 余额以服务端权威回写:Tasks.run 按预估(7+2N)本地预扣,服务端按实际交付步骤计费
+             * (VLM 部分失败仅扣成功步,失败步自动退费)——多步聚合链的本地镜像漂移在此对齐 */
+            if (U.syncCreditsFromServer) U.syncCreditsFromServer();
+            if (!r) { busy = false; runBtn.disabled = false; setProg(''); return; } // 任务失败(已 toast)
+            setProg('');
+            renderRows();
+            runBtn.style.display = 'none';
+            m.querySelector('[data-x=create]').style.display = '';
+          });
+        };
+        /* 拉片结果预览:行内可编辑(创建前最后校对) */
+        const renderRows = () => {
+          m.querySelector('[data-result]').innerHTML = `
+          <div class="small" style="margin-bottom:6px;color:var(--green)">探测到 ${rows.length} 个场景段,逐段校对后创建分集(画面描述/台词可直接改):</div>
+          <div style="max-height:320px;overflow:auto;display:flex;flex-direction:column;gap:8px">
+            ${rows.map((r, i) => `
+            <div class="card" style="display:grid;grid-template-columns:96px 1fr;gap:8px;padding:8px">
+              <div>${r.frame ? `<img src="${U.esc(r.frame)}" style="width:96px;border-radius:6px;display:block">` : ''}
+                <div class="small muted" style="margin-top:4px">#${i + 1} · ${r.dur.toFixed(1)}s</div></div>
+              <div style="display:flex;flex-direction:column;gap:4px">
+                <input class="input small" data-r="plot" data-i="${i}" placeholder="画面/剧情描述" value="${U.esc(r.plot)}">
+                <div class="row" style="gap:6px">
+                  <input class="input small" data-r="camera" data-i="${i}" placeholder="机位/运镜" value="${U.esc(r.camera)}" style="flex:1">
+                  <input class="input small" data-r="scene" data-i="${i}" placeholder="场景" value="${U.esc(r.scene)}" style="flex:1">
+                </div>
+                <input class="input small" data-r="dialogue" data-i="${i}" placeholder="可见台词/字幕(无则留空)" value="${U.esc(r.dialogue)}">
+              </div>
+            </div>`).join('')}
+          </div>`;
+          m.querySelectorAll('[data-r]').forEach(inp => inp.oninput = () => { rows[+inp.dataset.i][inp.dataset.r] = inp.value; });
+        };
+        m.querySelector('[data-x=create]').onclick = () => {
+          if (!rows || !rows.length) return;
+          const title = m.querySelector('[data-f=title]').value.trim() || ('拉片 第' + (p.episodes.length + 1) + '集');
+          const cfg = (window.SB && SB.defaultSBConfig) ? SB.defaultSBConfig() : { batchCamera: '固定镜头', narratorVoice: '', batchVideoModel: '', batchStrategy: 'ref' };
+          const shots = rows.map((r, i) => {
+            const s = SB.blankShot(i, cfg);
+            s.plot = r.plot;
+            s.camera = r.camera || cfg.batchCamera;
+            s.scene = r.scene;
+            s.characters = r.characters;
+            s.dialogue = r.dialogue;
+            s.duration = Math.max(2, Math.round(r.dur));
+            s.prompt = [r.mood, r.scene, r.plot].filter(Boolean).join(','); // 文生图底稿:情绪+场景+画面(风格后缀由生成管线统一追加)
+            s.image = r.frame || null; // 关键帧作分镜底图(重新生成会覆盖,历史可溯)
+            s.history = [{ type: '拉片建集', model: '场景探测' + (r.plot ? '+画面理解' : ''), time: Store.now() }];
+            return s;
+          });
+          // content 落拉片文字记录:本集理解/智能分镜等主线工具可直接接续使用
+          const content = shots.map((s, i) => `镜头${i + 1}(${s.duration}s)${s.scene ? ' ' + s.scene : ''}:${s.plot || '(待补画面描述)'}${s.dialogue ? ' 台词:' + s.dialogue : ''}`).join('\n');
+          p.episodes.push({ id: Store.uid('ep'), title, content, order: p.episodes.length, shots, status: 'draft' });
+          Store.save();
+          close();
+          U.toast(`分集「${title}」已创建:${shots.length} 个镜头(关键帧已作分镜底图)`, 'success', 4000);
+          // 事件续谈卡:拉片完成的下一步引导(消息留存在新集助手对话流,进入分集即可见)
+          // 拉片产出是时间轴文字记录,「本集理解」能显著提升后续提示词优化/视频生成质量,推荐先行
+          const newEp = p.episodes[p.episodes.length - 1];
+          if (window.Bus) Bus.emit('episode.ripped', { p, ep: newEp, main, count: shots.length, brief: `拉片建集完成:${shots.length} 镜` }); // 事件总线:Agent 对话流事件续谈卡(推荐先跑本集理解)
+          Views.projectDetail(main, p.id);
+        };
+      },
+    });
+  }
+
+  Object.assign(window.EpisodeUtil, { genSubjectImage, doSplit, openSubjectConfirm, openUploadScript, openRip });
 })();

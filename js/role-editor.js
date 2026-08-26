@@ -5,6 +5,57 @@
 (function () {
   const { currentViewMode, viewImg, VIEW_MODES, formWord, touchImage, setVoice, recommendVoice, bindRefAudio, openForms, toggleFinalize, genMainImage, replaceMainImage, genModeImage } = window.RoleOps;
 
+  /* ---------- 主体按指令改:一句自然语言 → LLM 改写设定提示词 → 复用 genMainImage 链路重新生图 ----------
+   * 与分镜「按指令改」同模式:改写走轻量 LLM(llm.optimize),生图走 Tasks 全计费链路(失败退费/touchImage 打点不变)。 */
+  function openSubjectComment(p, s, done) {
+    if (!API.isReady()) return U.toast('按指令改需要配置 LLM(改写提示词),请先登录后端或在「API 设置」配置直连', 'error');
+    const kindWord = { character: '角色', scene: '场景', prop: '道具' }[s.kind] || s.kind;
+    U.openModal({
+      title: '按指令改 · ' + s.name,
+      body: `
+      <div class="hint" style="margin-bottom:10px">说一句要改成什么样(如「换成红色长发」「背景改成雨夜街道」「加上战损伤痕」),AI 结合当前设定提示词改写;确认后立即按新提示词重新生图。</div>
+      <label class="field"><span>修改指令</span><textarea class="input" data-f="inst" rows="2" placeholder="换成红色长发…"></textarea></label>
+      <div data-newp style="display:none;margin-top:8px">
+        <label class="field"><span>改写后的设定提示词(可再编辑)</span><textarea class="input" data-f="newprompt" rows="5"></textarea></label>
+      </div>`,
+      footer: `<button class="btn" data-x="cancel">取消</button>
+        <button class="btn" data-x="rewrite">改写提示词(-${COST.optimize}积分)</button>
+        <button class="btn primary" data-x="apply" disabled>应用并重新生图(-${COST.image}积分)</button>`,
+      onMount(m, close) {
+        m.querySelector('[data-x=cancel]').onclick = close;
+        m.querySelector('[data-x=rewrite]').onclick = async () => {
+          const inst = m.querySelector('[data-f=inst]').value.trim();
+          if (!inst) return U.toast('请先填写修改指令', 'error');
+          const btn = m.querySelector('[data-x=rewrite]');
+          btn.disabled = true;
+          try {
+            U.toast('AI 改写提示词中…', 'info');
+            const out = await API.chatJSON({
+              system: `你是短剧${kindWord}设定师。按用户指令改写文生图设定提示词:保留与指令无关的外形/风格要素,只落实指令要求的变更;输出中文提示词,不超过120字。`,
+              messages: [{ role: 'user', content: `主体:${s.name}(${kindWord})\n项目风格:${p.style || ''}\n当前设定提示词:${s.prompt || '(空,请据名称与指令撰写)'}\n\n修改指令:${inst}\n\n返回 {"prompt":"改写后的完整设定提示词"}` }],
+              temperature: 0.7, max_tokens: 500, billingAction: 'llm.optimize',
+            });
+            if (!out || !out.prompt) throw new Error('LLM 返回为空');
+            m.querySelector('[data-f=newprompt]').value = String(out.prompt);
+            m.querySelector('[data-newp]').style.display = '';
+            m.querySelector('[data-x=apply]').disabled = false;
+            U.toast('提示词已改写,确认后可立即重新生图', 'success');
+          } catch (e) {
+            U.toast('改写失败:' + e.message, 'error', 3500);
+          } finally { btn.disabled = false; }
+        };
+        m.querySelector('[data-x=apply]').onclick = () => {
+          const np = m.querySelector('[data-f=newprompt]').value.trim();
+          if (!np) return U.toast('提示词为空', 'error');
+          s.prompt = np;
+          Store.save();
+          close();
+          genMainImage(p, s, done); // 同一链路:任务登记/扣费/失败退费/touchImage 打点全复用
+        };
+      },
+    });
+  }
+
   /* ================= 主体编辑页:聚合精修/配音/设定/资产/定稿模块的大弹窗 =================
    * openSubjectEdit(p, sid, {onDone}):onDone 在任何修改后调用(浏览页传 render 刷新卡片) */
   function openSubjectEdit(p, sid, opts) {
@@ -47,6 +98,8 @@
           <b>🖼 图像</b>
           <div class="row wrap" style="gap:6px;margin:8px 0">
             <button class="btn sm primary" data-x="genimg" title="AI 生成主体图(-${COST.image}积分,直接写入权威参考图)">✨ AI 生图</button>
+            <button class="btn sm" data-x="commentimg" title="说一句要改成什么样,AI 改写设定提示词并重新生图(-${COST.optimize}+${COST.image}积分)">💬 按指令改</button>
+            <button class="btn sm" data-x="chatref" title="加入对话:把本主体挂进导演助手(全局)引用,对话里精准@它">📎 加入对话</button>
             <button class="btn sm" data-x="upimg" title="上传图片替换权威参考图">⬆ 换图</button>
             <button class="btn sm" data-x="board" title="跳转画板精修(局部重绘/超清/人物超写实)">🎨 画板精修</button>
           </div>
@@ -79,7 +132,7 @@
       <b>🗂 资产</b>
       <div class="row wrap" style="gap:6px;margin:8px 0">
         <button class="btn sm" data-x="forms" title="同一主体挂多个${formWord(s.kind)}(角色:少年期/战损妆;道具:破损态/发光态),按「名称-${formWord(s.kind)}名」在分镜中引用">🧩 ${formWord(s.kind)}${(s.forms || []).length ? '(' + s.forms.length + ')' : ''}</button>
-        ${s.kind === 'scene' ? '<button class="btn sm" data-x="multi">🎥 多视角/多机位</button>' : ''}
+        <button class="btn sm" data-x="multi" title="一次生图产出宫格变体(1 次调用顶 ${s.kind === 'scene' ? '多机位' : '多角度'}N 张,同批风格一致),切分后可入资产库或直接存为${formWord(s.kind)}">🎥 ${s.kind === 'scene' ? '多视角/多机位' : '多角度宫格'}</button>
         <button class="btn sm" data-x="saveasset">🗂 存入资产库</button>
       </div>
       <div class="divider"></div>
@@ -109,6 +162,11 @@
       };
       /* ---- 图像区 ---- */
       body.querySelector('[data-x=genimg]').onclick = () => genMainImage(p, s, done);
+      body.querySelector('[data-x=commentimg]').onclick = () => openSubjectComment(p, s, done);
+      body.querySelector('[data-x=chatref]').onclick = () => { // 📎 加入对话:主体挂进全局导演助手引用(subject ops 仅全局抽屉可执行)
+        AgentRefs.add({ kind: 'subject', pid: p.id, id: s.id, label: '@' + s.name });
+        if (window.AgentG && AgentG.isOpen && !AgentG.isOpen()) Agent.toggleGlobal();
+      };
       body.querySelector('[data-x=upimg]').onclick = () => replaceMainImage(p, s, done);
       body.querySelector('[data-x=board]').onclick = () => {
         const url = viewImg(s, vm) || s.image;
@@ -148,9 +206,11 @@
     }
   }
 
-  /* ---------- 场景画板:多视角(3D 球体)/ 多机位视角(宫格生图组) ---------- */
+  /* ---------- 场景画板:多视角(3D 球体)/ 多机位视角(宫格生图组);全 kind 开放(角色/道具多角度→存形态) ---------- */
   function openMultiView(p, sid, rerender) {
     const s = p.subjects.find(x => x.id === sid);
+    const kindWord = s.kind === 'character' ? '角色' : s.kind === 'prop' ? '道具' : '场景';
+    const viewPhrase = s.kind === 'scene' ? '同一场景不同机位' : `同一${kindWord}不同角度`;
     let tab = 'view'; // view=多视角 | grid=多机位
     // 多视角状态
     let az = 0, el = 0, dist = 1.0, viewMode = 'custom', presetSel = new Set(), viewResults = [];
@@ -159,7 +219,7 @@
     const camState = { body: CAMERA.BODIES[0], lens: CAMERA.LENSES[0], focal: 35, aperture: 'ƒ/4' };
 
     const close = U.openModal({
-      title: '🎥 场景画板 · ' + s.name,
+      title: `🎥 ${s.kind === 'scene' ? '场景画板' : kindWord + '画板'} · ` + s.name,
       xl: true,
       body: '<div data-body></div>',
       onMount(m) { render(m); },
@@ -170,7 +230,7 @@
       body.innerHTML = `
       <div class="tabs">
         <div class="tab ${tab === 'view' ? 'active' : ''}" data-t="view">🌐 多视角(3 积分/视角)</div>
-        <div class="tab ${tab === 'grid' ? 'active' : ''}" data-t="grid">🎥 多机位视角(宫格生图)</div>
+        <div class="tab ${tab === 'grid' ? 'active' : ''}" data-t="grid">🎥 ${s.kind === 'scene' ? '多机位视角' : '多角度'}(宫格生图)</div>
       </div>
       ${tab === 'view' ? viewTabHTML() : gridTabHTML()}`;
       body.querySelectorAll('[data-t]').forEach(t => t.onclick = () => { tab = t.dataset.t; render(m); });
@@ -297,14 +357,14 @@
             if (useReal) {
               try {
                 const r = await Media.genImage({
-                  prompt: `${s.name}${s.description ? ',' + s.description : ''},${j.label}视角,同一场景不同机位,电影美术设定图`,
+                  prompt: `${s.name}${s.description ? ',' + s.description : ''},${j.label}视角,${viewPhrase},电影美术设定图`,
                   size: '1024x1024', image: refImg,
                   billingAction: 'image.multiView', operationId: tk.id + '_mv' + jIdx, // 多视角逐张计费(索引做后缀防中文标签被规整后撞键;与预扣 jobs.length×COST.multiView 对齐)
                 });
                 viewResults.push({ label: j.label, img: r.url });
               } catch (e) {
                 failCnt++;
-                U.refund(COST.multiView, `多视角失败:${s.name} ${j.label}`);
+                U.refund(COST.multiView, `多视角失败:${s.name} ${j.label}`, (e && e.__opId) || (tk.id + '_mv' + jIdx)); // 十七轮:镜像关联原 operation
                 U.toast(`「${j.label}」生成失败,已退费:` + e.message, 'error', 3500);
               }
             } else {
@@ -357,26 +417,8 @@
       </div>`;
     }
 
-    /* 真实宫格图客户端切分:把整张宫格图按 cols×cols 均分裁成单元格 dataURL */
-    function cropGridCells(imgUrl, cols) {
-      return new Promise(resolve => {
-        const im = new Image();
-        im.crossOrigin = 'anonymous';
-        im.onload = () => {
-          const cw = Math.floor(im.width / cols), ch = Math.floor(im.height / cols);
-          const out = [];
-          for (let r = 0; r < cols; r++) for (let c = 0; c < cols; c++) {
-            const cv = document.createElement('canvas');
-            cv.width = cw; cv.height = ch;
-            cv.getContext('2d').drawImage(im, c * cw, r * ch, cw, ch, 0, 0, cw, ch);
-            out.push(cv.toDataURL('image/png'));
-          }
-          resolve(out);
-        };
-        im.onerror = () => resolve([]);
-        im.src = imgUrl;
-      });
-    }
+    /* 真实宫格图客户端切分:共用 U.cropGridCells(均分裁格 → dataURL) */
+    function cropGridCells(imgUrl, n) { return U.cropGridCells(imgUrl, n); }
 
     function bindGrid(body, m) {
       const camPanel = CAMERA.configPanel(camState);
@@ -404,7 +446,7 @@
             const camSpec = camOn ? CAMERA.buildSpec(camState) : '';
             try {
               const r = await Media.genImage({
-                prompt: `${s.name}${s.description ? ',' + s.description : ''}${promptTxt ? ',' + promptTxt : ''},${cols}x${cols} 多机位宫格图,严格 ${cols} 行 ${cols} 列网格均分,每格同一主体的不同机位视角(正面/侧面/背面/俯拍/仰拍/特写等),电影美术设定图,网格线清晰${camSpec ? ',' + camSpec : ''}`,
+                prompt: `${s.name}${s.description ? ',' + s.description : ''}${promptTxt ? ',' + promptTxt : ''},${cols}x${cols} ${s.kind === 'scene' ? '多机位' : '多角度'}宫格图,严格 ${cols} 行 ${cols} 列网格均分,每格${viewPhrase}的变体(正面/侧面/背面/俯拍/仰拍/特写等),电影美术设定图,网格线清晰${camSpec ? ',' + camSpec : ''}`,
                 size: sizeMap[ratio] || '1024x1024', image: refImg,
                 billingAction: ch.id === 'ch1' ? 'image.multiCam1' : 'image.multiCam2', operationId: tk.id, // 渠道一 2K 高精 21 / 渠道二标清 11(服务端白名单)
               });
@@ -424,7 +466,7 @@
               Tasks.done(tk, { filename: `${s.name}_多机位${cols * cols}宫格.png`, dataURL: gridImg });
               U.toast(`${cols * cols} 宫格生图完成${camSpec ? '(' + camSpec + ')' : ''}`, 'success', 3000);
             } catch (e) {
-              U.refund(ch.cost, `多机位宫格失败:${s.name}`);
+              U.refund(ch.cost, `多机位宫格失败:${s.name}`, (e && e.__opId) || tk.id); // 十七轮:镜像关联原 operation
               Tasks.fail(tk, e.message);
               U.toast('宫格生图失败,积分已自动返还:' + e.message, 'error', 4000);
             }
@@ -434,8 +476,8 @@
           // 离线模式:占位宫格
           await U.progressIn(box, 1600 + cols * 200, ch.label + ' 宫格生图中(离线模拟)');
           const salt = Date.now() % 997;
-          gridImg = PH.grid(s.name + (promptTxt ? '·' + promptTxt.slice(0, 8) : ''), 'scene', cols, salt + (camOn ? CAMERA.buildSpec(camState) : ''));
-          cells = PH.gridCells(s.name, 'scene', cols, salt);
+          gridImg = PH.grid(s.name + (promptTxt ? '·' + promptTxt.slice(0, 8) : ''), s.kind || 'scene', cols, salt + (camOn ? CAMERA.buildSpec(camState) : ''));
+          cells = PH.gridCells(s.name, s.kind || 'scene', cols, salt);
           Store.save();
           Tasks.done(tk, { filename: `${s.name}_多机位${cols * cols}宫格.png`, dataURL: gridImg });
           U.toast(`${cols * cols} 宫格生图完成(离线模拟)${camOn ? '(' + CAMERA.buildSpec(camState) + ')' : ''}`, 'success', 3000);
@@ -468,6 +510,7 @@
           <span class="small muted" data-selcnt>已选 0 格</span>
           <div class="row">
             <button class="btn sm" data-x="dl">⬇ 下载选中</button>
+            <button class="btn sm" data-x="toforms" title="选中格直接存为该主体的${formWord(s.kind)},分镜按「${s.name}-形态名」引用">🧩 存为${formWord(s.kind)}</button>
             <button class="btn sm primary" data-x="toasset">🗂 拆分入资产库</button>
           </div>
         </div>`,
@@ -492,6 +535,21 @@
             }));
             Store.save();
             U.toast(`拆分成功,${sel.size} 张已入资产库`, 'success');
+          };
+          /* 宫格分配闭环:选中格 → 该主体形态图(与资产库同口径存 dataURL;命名自动,后续可在形态管理改名) */
+          m2.querySelector('[data-x=toforms]').onclick = async () => {
+            if (!sel.size) return U.toast('请先选择要拆分的宫格', 'error');
+            s.forms = s.forms || [];
+            let upCnt = 0;
+            for (const i of [...sel]) {
+              let img = cells[i];
+              const up = await U.uploadData(`${s.name}_宫格-${i + 1}.png`, img); // 在线传服务端换 /uploads/ 短路径,离线回退 dataURL
+              if (up) { img = up; upCnt++; }
+              s.forms.push({ id: Store.uid('fm'), name: `格${i + 1}`, image: img, time: Store.now() });
+            }
+            Store.save();
+            U.toast(`${sel.size} 格已存为${formWord(s.kind)}${upCnt ? '(已传服务端)' : ''},可在「🧩 ${formWord(s.kind)}」中管理改名`, 'success', 3500);
+            rerender && rerender();
           };
         },
       });

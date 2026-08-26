@@ -92,7 +92,7 @@ ${hasImage ? '附图是该分镜当前生成画面,请结合实际画面与 Prom
       const model = API.getConfig().model || 'qwen-turbo';
       const raw = await API.chatJSON({
         model, messages: [{ role: 'user', content: text }], temperature: 0.3, max_tokens: 2500,
-        system: '你是资深影视审片专家组(技术/匹配/导演三席)。',
+        system: Prompts.get('review.system'),
         billingAction: 'llm.review', operationId: opId, // 服务端白名单计费(整集免单镜时同 operation 幂等)
       });
       return normalizeReport(raw, p, ep, s, model, 'text');
@@ -106,7 +106,7 @@ ${hasImage ? '附图是该分镜当前生成画面,请结合实际画面与 Prom
           model,
           messages: [{ role: 'user', content: [{ type: 'text', text }, { type: 'image_url', image_url: { url: img } }] }],
           temperature: 0.3, max_tokens: 2500,
-          system: '你是资深影视审片专家组(技术/匹配/导演三席)。',
+          system: Prompts.get('review.system'),
           billingAction: 'llm.review', operationId: opId,
         });
         return normalizeReport(raw, p, ep, s, model, 'vision');
@@ -196,6 +196,12 @@ ${hasImage ? '附图是该分镜当前生成画面,请结合实际画面与 Prom
    * 版本绑定(2026-08 六轮):报告记录审片时的 videoInputHash/videoUrl,镜头重新生成后旧报告标"旧版"不再冒充最近审片 */
   async function reviewShot(p, ep, s, opt) {
     opt = opt || {};
+    /* 十六轮:视频生成中的分镜直接拦截(扣费前)——画面未定型,审出来的报告绑定空 inputHash,
+     * 视频落片瞬间即判旧版,等于花钱买过时报告;整集审片路径已在 openEpisodeReview 预过滤,不会走到这 */
+    if (!opt.free && s.video && s.video.status === 'generating') {
+      U.toast(`镜头${s.order + 1} 视频仍在生成中,请生成完成后再审片`, 'error', 3000);
+      return null;
+    }
     const tk = Tasks.start({ type: '一键审片', model: API.isReady() ? '审片LLM' : '本地模拟评审', target: `${ep.title}·镜头${s.order + 1}`, cost: opt.free ? 0 : COST.review, projectId: p.id, episodeId: ep.id, shotId: s.id });
     if (!opt.free) {
       if (!U.charge(COST.review, `一键审片:镜头${s.order + 1}`, tk.id)) { Tasks.fail(tk, '积分不足'); return null; }
@@ -459,7 +465,7 @@ ${hasImage ? '附图是该分镜当前生成画面,请结合实际画面与 Prom
     try {
       if (!cutTried) throw new Error('LLM 未配置');
       const out = await API.chatJSON({
-        system: '你是资深短剧剪辑审片总监,以四维标准评审成片:镜头语言自然度/衔接流畅度/景别合理性/剪辑节奏适配。',
+        system: Prompts.get('review.finalSystem'),
         messages: [{ role: 'user', content: `按四维标准评审以下整集分镜(好例子:上镜抬手下镜手摸到脸=衔接好;吵架给特写=景别对;坏例子:镜头乱抖=不自然;人物瞬间换位置=衔接崩坏;激烈打架十秒不切=节奏错)。返回 JSON:
 {"natural":{"score":0-10,"comment":"评语"},"continuity":{"score":...,"comment":...},"framing":{"score":...,"comment":...},"pacing":{"score":...,"comment":...},"overall":"整集剪辑总评(1-2句)"}
 分镜清单:
@@ -479,8 +485,13 @@ ${JSON.stringify(brief)}` }],
 
   /* ================= 整集审片 ================= */
   async function openEpisodeReview(p, ep, main) {
-    const shots = ep.shots || [];
-    if (!shots.length) return U.toast('暂无分镜可审片', 'error');
+    /* 十六轮:生成中的分镜预过滤——画面未定型,审出来落片即旧版;费用按可审镜数计,如实提示跳过数 */
+    const all = ep.shots || [];
+    const shots = all.filter(s => !(s.video && s.video.status === 'generating'));
+    const skipped = all.length - shots.length;
+    if (!all.length) return U.toast('暂无分镜可审片', 'error');
+    if (!shots.length) return U.toast(`${skipped} 个分镜视频均在生成中,请生成完成后再整集审片`, 'error', 3200);
+    if (skipped) U.toast(`已跳过 ${skipped} 个仍在生成中的分镜(费用按可审的 ${shots.length} 镜计)`, 'info', 3000);
     // 并发守卫:整集审片全局只允许一个在飞(任务句柄为闭包局部,防串号;__epReviewEpId 供删除/覆盖拦截)
     if (window.__epReviewEpId) return U.toast('已有整集审片进行中,请等待完成或先取消后再发起', 'error');
     const cost = (shots.length + 2) * COST.review; // N 镜逐镜评审 + 1 次共性汇总 + 1 次四维成片评审(服务端按次白名单计费,总额一致)
@@ -502,7 +513,7 @@ ${JSON.stringify(brief)}` }],
     dock.m.querySelector('.pipe-body').insertAdjacentHTML('afterbegin', '<div class="progress" style="margin-bottom:8px"><i style="width:0%"></i></div>');
     const bar = dock.m.querySelector('.progress > i');
     const say = h => { if (!cancelled) dock.say(h); };
-    if (window.Agent && Agent.notify) Agent.notify(p, ep, main, `🎬 整集审片开始(${shots.length} 镜):进度在右侧面板,期间可正常操作页面。`);
+    if (window.Bus) Bus.emit('review.episodeStart', { p, ep, main, total: shots.length, brief: `整集审片开始(${shots.length} 镜)` }); // 事件总线:Agent 对话流订阅转译
     function finishEarly() {
       // 取消时按未交付步骤退费(九轮:N 个单镜 + 仍 pending 的共性汇总/四维评审;
       // 已交付的步骤不退、已退款的步骤不重复计)。统一走 Tasks.partialRefund:退费同时核减
@@ -583,7 +594,7 @@ ${JSON.stringify(brief)}` }],
     if (tk.status === 'running') Tasks.done(tk);
     if (window.__epReviewEpId === ep.id) window.__epReviewEpId = null;
     dock.finish(`<b style="color:var(--green)">━━ 整集审片完成:均分 ${avg} ━━</b>`);
-    if (window.Agent && Agent.notify) Agent.notify(p, ep, main, `🎬 整集审片完成:均分 ${avg}。报告已生成,需要的话我可以按问题清单逐镜优化提示词。`);
+    if (window.Bus) Bus.emit('review.episodeDone', { p, ep, main, avg, brief: `整集审片完成:均分 ${avg}` }); // 事件总线:Agent 对话流事件续谈卡(低分镜清单随消息留存,对话可见)
     if (main) renderShotsRef(main, p, ep);
     openEpisodeReport(p, ep, main, reports);
   }

@@ -32,7 +32,7 @@ function report(name, cond, detail) {
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 /* ---------- HTTP 薄封装 ---------- */
-function req(method, p, body, token) {
+function req(method, p, body, token, headers) {
   return new Promise((resolve, reject) => {
     const data = body ? JSON.stringify(body) : null;
     const r = http.request(BASE + p, {
@@ -41,6 +41,7 @@ function req(method, p, body, token) {
         { 'Content-Type': 'application/json' },
         data ? { 'Content-Length': Buffer.byteLength(data) } : {},
         token ? { Authorization: 'Bearer ' + token } : {},
+        headers || {},
       ),
     }, res => {
       let buf = '';
@@ -48,7 +49,7 @@ function req(method, p, body, token) {
       res.on('end', () => {
         let j = null;
         try { j = JSON.parse(buf); } catch (_) {}
-        resolve({ status: res.statusCode, code: j && j.code, msg: j && j.msg || j && j.error, data: j && j.data, raw: buf });
+        resolve({ status: res.statusCode, code: j && j.code, msg: j && j.msg || j && j.error, data: j && j.data, raw: buf, headers: res.headers });
       });
     });
     r.on('error', reject);
@@ -97,6 +98,18 @@ function craftResult(userId, opId, action, payload) {
   const fp = path.join(TMP, 'data', 'results.json');
   const db = fs.existsSync(fp) ? JSON.parse(fs.readFileSync(fp, 'utf8')) : { list: [] };
   db.list.push({ userId, opId, action, endpoint: 'volc/image', payload, savedAt: Date.now(), claimed: false });
+  fs.writeFileSync(fp, JSON.stringify(db));
+}
+
+/* 直接落一条任务中心记录(模拟"已终态的任务"轮询短路) */
+function craftJob(userId, upstreamId, status, extra) {
+  const fp = path.join(TMP, 'data', 'jobs.json');
+  const db = fs.existsSync(fp) ? JSON.parse(fs.readFileSync(fp, 'utf8')) : { list: [] };
+  db.list.unshift(Object.assign({
+    id: 'job_' + upstreamId, upstreamId, userId, projectId: null, episodeId: null, shotId: 's_craft',
+    inputHash: 'h_craft', status, createdAt: Date.now(), updatedAt: Date.now(), videoUrl: '', remoteUrl: '',
+    billingOperationId: null, billingAction: null, billingCost: 0, refunded: false,
+  }, extra || {}));
   fs.writeFileSync(fp, JSON.stringify(db));
 }
 
@@ -185,6 +198,179 @@ async function main() {
   report('重复领取幂等(同一结果)', g2.status === 200 && g2.data && g2.data.found === true && g2.data.payload.url === '/uploads/gen/fake_rec.jpeg', JSON.stringify(g2.data));
   const g3 = await req('GET', '/api/operations/it.none/result', null, token);
   report('无记录 found:false(失败关闭)', g3.status === 200 && g3.data && g3.data.found === false, JSON.stringify(g3.data));
+
+  /* ============ 测试 7(R14 P0):/uploads 路径穿越——借 gen/ 共享前缀读他人私有文件 ============
+   * 修复前:/api/thumb?src=/uploads/gen/../<他人uid>/x.png 的 ACL 在未规范化串上判定(gen/ 前缀放行),
+   * path.join 折叠后落到他人目录 → 缩略图回传外泄。修复后:normUploadsPath 段级拒 .. → 403。 */
+  const reg2 = await req('POST', '/api/auth/register', { username: 'it_victim', password: 'it-pass-456' });
+  const token2 = reg2.data && reg2.data.token;
+  const uid2 = reg2.data && reg2.data.user && reg2.data.user.id;
+  report('第二用户注册成功', !!token2 && !!uid2, reg2.msg);
+  const PNG1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const up2 = await req('POST', '/api/upload', { name: 'secret.png', dataBase64: PNG1 }, token2);
+  report('他人私有文件上传成功', up2.status === 200 && up2.data && up2.data.url, up2.msg);
+  const victimPath = String(up2.data && up2.data.url || ''); // /uploads/<uid2>/<hash>.png
+  const travPath = victimPath.replace('/uploads/' + uid2 + '/', '/uploads/gen/../' + uid2 + '/');
+  const tTrav = await req('GET', '/api/thumb?src=' + encodeURIComponent(travPath), null, token);
+  report('穿越缩略图被 403 拦截', tTrav.status === 403, 'HTTP ' + tTrav.status);
+  const up1 = await req('POST', '/api/upload', { name: 'own.png', dataBase64: PNG1 }, token);
+  const tOwn = await req('GET', '/api/thumb?src=' + encodeURIComponent(up1.data && up1.data.url || ''), null, token);
+  report('本人文件缩略图不受影响(200/302)', tOwn.status === 200 || tOwn.status === 302, 'HTTP ' + tOwn.status);
+
+  /* ============ 测试 8(R14 P1):跨动作退费隔离——同一 opId 用于两个动作,退一个不误退另一个 ============ */
+  craftOp(uid, 'it.xact', 'image.gen', 'charged', `px_${uid}_it.xact@image.gen`, 0);
+  craftOp(uid, 'it.xact', 'video.gen', 'charged', `px_${uid}_it.xact@video.gen`, 0);
+  const rfX1 = await req('POST', '/api/billing/refund', { operationId: 'it.xact', billingAction: 'video.gen' }, token);
+  wallet = (await req('GET', '/api/wallet', null, token)).data;
+  const xactOps = OPS().list.filter(o => o.opId === 'it.xact');
+  report('按动作退费:只退 video.gen 的 2 积分', rfX1.status === 200 && rfX1.data.refunded === 2, JSON.stringify(rfX1.data));
+  report('image.gen 记录保持 charged(未误退)', xactOps.some(o => o.action === 'image.gen' && o.status === 'charged'), JSON.stringify(xactOps.map(o => o.action + ':' + o.status)));
+  report('video.gen 记录转 refunded', xactOps.some(o => o.action === 'video.gen' && o.status === 'refunded'), JSON.stringify(xactOps.map(o => o.action + ':' + o.status)));
+  report('余额只回一笔(基线 -8)', wallet.balance === BASE_BAL - 8, '实际 ' + wallet.balance);
+  const rfX2 = await req('POST', '/api/billing/refund', { operationId: 'it.xact', billingAction: 'image.gen' }, token);
+  wallet = (await req('GET', '/api/wallet', null, token)).data;
+  report('另一动作可独立退费(基线 -6)', rfX2.status === 200 && rfX2.data.refunded === 2 && wallet.balance === BASE_BAL - 6, JSON.stringify(rfX2.data) + ' 余额 ' + wallet.balance);
+
+  /* ============ 测试 9(R14 P2):终态 job 轮询短路——succeeded/failed 回本地登记态,不再打上游 ============
+   * (假 key 下真实上游必 401/502;拿到本地终态即证明未打上游) */
+  craftJob(uid, 'up_term1', 'succeeded', { videoUrl: '/uploads/gen/fake_term.mp4', remoteUrl: 'https://fake/v.mp4' });
+  craftJob(uid, 'up_term2', 'failed', { error: '上游生成失败' });
+  const pTerm1 = await req('GET', '/api/volc/video/up_term1', null, token);
+  report('succeeded 任务回本地登记态(含 videoUrl)', pTerm1.status === 200 && pTerm1.data && pTerm1.data.status === 'succeeded' && pTerm1.data.videoUrl === '/uploads/gen/fake_term.mp4', 'HTTP ' + pTerm1.status + ' ' + JSON.stringify(pTerm1.data));
+  const pTerm2 = await req('GET', '/api/volc/video/up_term2', null, token);
+  report('failed 任务回本地登记态', pTerm2.status === 200 && pTerm2.data && pTerm2.data.status === 'failed', 'HTTP ' + pTerm2.status + ' ' + JSON.stringify(pTerm2.data));
+
+  /* ============ 测试 10(R14 P2):管理员调整 5 秒窗口幂等——双击/重试同参数只入账一次 ============ */
+  wallet = (await req('GET', '/api/wallet', null, token)).data;
+  const balBeforeAdmin = wallet.balance;
+  const adm1 = await req('POST', '/api/admin/credits', { username: 'it_admin', delta: 7, reason: 'idem-test' }, token);
+  const adm2 = await req('POST', '/api/admin/credits', { username: 'it_admin', delta: 7, reason: 'idem-test' }, token);
+  wallet = (await req('GET', '/api/wallet', null, token)).data;
+  report('管理员调整两次请求均 200', adm1.status === 200 && adm2.status === 200, adm1.msg + ' / ' + adm2.msg);
+  report('同窗口重复调整只入账一次(+7)', wallet.balance === balBeforeAdmin + 7, '实际 ' + wallet.balance + '(期前 ' + balBeforeAdmin + ')');
+
+  /* ============ 测试 11(R14 P2):登出吊销 cookie 侧会话 ============ */
+  const login2 = await req('POST', '/api/auth/login', { username: 'it_victim', password: 'it-pass-456' });
+  const cookie2 = 'mv_token=' + (login2.data && login2.data.token);
+  const lo = await req('POST', '/api/auth/logout', {}, null, { Cookie: cookie2 });
+  report('cookie 会话登出 200', lo.status === 200, 'HTTP ' + lo.status);
+  const meAfter = await req('GET', '/api/auth/me', null, null, { Cookie: cookie2 });
+  report('登出后 cookie 会话已吊销(401)', meAfter.status === 401, 'HTTP ' + meAfter.status);
+
+  /* ============ 测试 12(R19):邀请码端到端——创建/加入/重复加入/错码/刷新后旧码失效 ============ */
+  const tc = await req('POST', '/api/team/create', { name: '集成测试剧组' }, token);
+  const invCode = tc.data && tc.data.team && tc.data.team.inviteCode;
+  const teamId = tc.data && tc.data.team && tc.data.team.id;
+  report('创建项目组带回邀请码', tc.status === 200 && /^MV-/.test(String(invCode || '')), JSON.stringify(tc.data && tc.data.team && { inviteCode: invCode }));
+  const jBad = await req('POST', '/api/team/join', { code: 'MV-XXXXXX' }, token2);
+  report('错误邀请码 404', jBad.status === 404, 'HTTP ' + jBad.status + ' ' + jBad.msg);
+  const jOk = await req('POST', '/api/team/join', { code: invCode }, token2);
+  report('凭邀请码加入成功', jOk.status === 200 && jOk.data.team.members.some(m => m.userId === uid2 && m.role === 'member'), 'HTTP ' + jOk.status + ' ' + jOk.msg);
+  const jDup = await req('POST', '/api/team/join', { code: invCode }, token2);
+  report('重复加入 400(已是成员)', jDup.status === 400, 'HTTP ' + jDup.status + ' ' + jDup.msg);
+  const jSmall = await req('POST', '/api/team/join', { code: String(invCode || '').toLowerCase() }, token2);
+  report('邀请码大小写不敏感(小写也识别为成员)', jSmall.status === 400, 'HTTP ' + jSmall.status + ' ' + jSmall.msg);
+  const rf3i = await req('POST', '/api/team/invite/refresh', { teamId }, token);
+  const newCode = rf3i.data && rf3i.data.inviteCode;
+  report('负责人刷新邀请码(新码不同)', rf3i.status === 200 && newCode && newCode !== invCode, JSON.stringify(rf3i.data));
+  const jOld = await req('POST', '/api/team/join', { code: invCode }, token2);
+  report('旧邀请码刷新后即失效(404)', jOld.status === 404, 'HTTP ' + jOld.status + ' ' + jOld.msg);
+  const rfDeny = await req('POST', '/api/team/invite/refresh', { teamId }, token2);
+  report('非负责人刷新邀请码 403', rfDeny.status === 403, 'HTTP ' + rfDeny.status + ' ' + rfDeny.msg);
+
+  /* ============ 测试 13(R19):上传原子写——tmp_ 残留不计配额、不入文件列表 ============ */
+  const dir2 = path.join(TMP, 'uploads', uid2);
+  fs.writeFileSync(path.join(dir2, 'tmp_craftresidue'), Buffer.alloc(1024 * 1024)); // 1MB 假残留
+  const old = new Date(Date.now() - 2 * 3600 * 1000); // mtime 拨到 2 小时前:持锁顺带清理只动超 1 小时的残留
+  fs.utimesSync(path.join(dir2, 'tmp_craftresidue'), old, old);
+  const list2 = await req('GET', '/api/uploads', null, token2);
+  const names2 = (list2.data && list2.data.files || []).map(f => f.name);
+  report('文件列表不含 tmp_ 残留', !names2.some(n => n.startsWith('tmp_')), names2.join(','));
+  report('配额统计不含 tmp_ 残留(<1MB)', (list2.data && list2.data.usedBytes) < 1024 * 1024, '实际 ' + (list2.data && list2.data.usedBytes));
+  const upClean = await req('POST', '/api/upload', { name: 'clean.png', dataBase64: PNG1 }, token2);
+  report('超 1 小时 tmp_ 残留被上传顺带清理', upClean.status === 200 && !fs.existsSync(path.join(dir2, 'tmp_craftresidue')), 'HTTP ' + upClean.status);
+
+  /* ============ 测试 14(R19):audit.jsonl 只追加审计——资金变动逐行落盘可对账 ============ */
+  const auditFile = path.join(TMP, 'data', 'audit.jsonl');
+  const auditLines = fs.existsSync(auditFile) ? fs.readFileSync(auditFile, 'utf8').trim().split('\n').map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean) : [];
+  report('审计日志存在且含钱包条目', auditLines.length > 0 && auditLines.some(l => l.kind === 'wallet' && l.uid === uid), '行数 ' + auditLines.length);
+  report('审计含管理员充值记录(idem 可对账)', auditLines.some(l => l.kind === 'wallet' && String(l.idem || '').startsWith('admin_') && l.amount === 100), JSON.stringify(auditLines.filter(l => l.kind === 'wallet').slice(-3)));
+
+  /* ============ 测试 15(R19):视频任务取消——在途任务转 cancelled + 内部退款;幂等/越权/终态语义 ============
+   * 在途视频 operation 恒为 executing(交付发生在轮询 succeeded),客户端退款端点一律 409;
+   * 取消走服务端内部退款(refundDecision:executing refundable),晚到上游成功由交付守卫拦下。 */
+  wallet = (await req('GET', '/api/wallet', null, token)).data;
+  const balBeforeCancel = wallet.balance;
+  craftOp(uid, 'it.cancel1', 'video.gen', 'executing', `px_${uid}_it.cancel1@video.gen`, 0);
+  craftJob(uid, 'up_cancel1', 'running', { billingOperationId: 'it.cancel1', billingAction: 'video.gen' });
+  const cc1 = await req('POST', '/api/volc/video/up_cancel1/cancel', {}, token);
+  report('取消在途任务 200(cancelled+refunded)', cc1.status === 200 && cc1.data && cc1.data.cancelled === true && cc1.data.refunded === true, 'HTTP ' + cc1.status + ' ' + JSON.stringify(cc1.data));
+  wallet = (await req('GET', '/api/wallet', null, token)).data;
+  report('取消后余额退回(+2)', wallet.balance === balBeforeCancel, '实际 ' + wallet.balance + '(期前 ' + balBeforeCancel + ',扣 2 后退回 2)');
+  const pCancel = await req('GET', '/api/volc/video/up_cancel1', null, token);
+  report('取消后轮询短路回 cancelled(不查上游)', pCancel.status === 200 && pCancel.data && pCancel.data.status === 'cancelled', 'HTTP ' + pCancel.status + ' ' + JSON.stringify(pCancel.data));
+  const cc2 = await req('POST', '/api/volc/video/up_cancel1/cancel', {}, token);
+  wallet = (await req('GET', '/api/wallet', null, token)).data;
+  report('重复取消幂等(already,不再退)', cc2.status === 200 && cc2.data && cc2.data.already === true && wallet.balance === balBeforeCancel, JSON.stringify(cc2.data) + ' 余额 ' + wallet.balance);
+  const ccOther = await req('POST', '/api/volc/video/up_cancel1/cancel', {}, token2);
+  report('他人任务取消 403', ccOther.status === 403, 'HTTP ' + ccOther.status);
+  const ccNone = await req('POST', '/api/volc/video/up_notexist/cancel', {}, token);
+  report('不存在任务取消 404', ccNone.status === 404, 'HTTP ' + ccNone.status);
+  const ccTerm = await req('POST', '/api/volc/video/up_term1/cancel', {}, token);
+  report('已终态(succeeded)任务取消 409', ccTerm.status === 409, 'HTTP ' + ccTerm.status + ' ' + ccTerm.msg);
+
+  /* ============ 测试 16(P4 A2):跨设备协作版本对比 /compare —— ver 对齐/不对齐、字段结构 ============ */
+  // 先写一个项目基线:通过 state PUT 增量推一个项目(含 __ver 和 episodes.__ver,模拟前端 save)
+  let s0 = await req('GET', '/api/state', null, token);
+  const rev0 = +(s0.data && s0.data.rev || 0);
+  const demoPid = 'it_p_compare';
+  const demoProject = {
+    id: demoPid, name: '协作对比项目', __ver: 1, __lastSaved: Date.now(),
+    episodes: [{ id: 'ep_c1', title: 'E1', __ver: 1 }, { id: 'ep_c2', title: 'E2', __ver: 1 }],
+  };
+  const put1 = await req('PUT', '/api/state', { rev: rev0, changes: { projects: { [demoPid]: demoProject } } }, token);
+  report('协作基线项目 PUT state 成功', put1.status === 200 && +(put1.data && put1.data.rev) === rev0 + 1, 'HTTP ' + put1.status + ' rev=' + JSON.stringify(put1.data));
+  // 服务端 ver=1,客户端 ver=1 → match=true
+  const cmp1 = await req('GET', '/api/projects/' + demoPid + '/compare?ver=1', null, token);
+  report('compare ver 对齐 → match=true 字段齐全', cmp1.status === 200 && cmp1.data && cmp1.data.match === true && cmp1.data.serverVer === 1 && Array.isArray(cmp1.data.epidUpdates) && cmp1.data.epidUpdates.length === 2 && cmp1.data.digest === null, JSON.stringify(cmp1.data));
+  // 客户端拿过时 ver=0 询问 → match=false,serverVer=1
+  const cmp2 = await req('GET', '/api/projects/' + demoPid + '/compare?ver=0', null, token);
+  report('compare ver 落后 → match=false', cmp2.status === 200 && cmp2.data && cmp2.data.match === false && +cmp2.data.serverVer >= 1, JSON.stringify(cmp2.data));
+  // 项目 bump 到 __ver=3(更新一集)再询问 ver=1 → match=false serverVer=3 epidUpdates 对齐
+  const s1 = await req('GET', '/api/state', null, token);
+  demoProject.__ver = 3;
+  demoProject.__lastSaved = Date.now();
+  demoProject.episodes[0].__ver = 5;
+  const put2 = await req('PUT', '/api/state', { rev: +s1.data.rev, changes: { projects: { [demoPid]: demoProject } } }, token);
+  report('项目 bump 后 state PUT 成功', put2.status === 200, 'HTTP ' + put2.status);
+  const cmp3 = await req('GET', '/api/projects/' + demoPid + '/compare?ver=1', null, token);
+  report('compare 服务端更新后 match=false + epidUpdates 带回分集 ver', cmp3.status === 200 && cmp3.data && cmp3.data.match === false && cmp3.data.serverVer === 3 && (cmp3.data.epidUpdates[0] && cmp3.data.epidUpdates[0].ver === 5), JSON.stringify(cmp3.data));
+  const cmp4 = await req('GET', '/api/projects/not_exist_pid/compare?ver=0', null, token);
+  report('compare 不存在项目 → 404', cmp4.status === 404, 'HTTP ' + cmp4.status);
+
+  /* ============ 测试 17(P4 A2):跨设备协作增量更新 /updates —— since 过滤 + 空未来查询 ============ */
+  const nowTs = Date.now();
+  const upd1 = await req('GET', '/api/projects/updates?since=0&limit=50', null, token);
+  report('updates since=0 返回包含协作项目(结构合法)', upd1.status === 200 && upd1.data && Array.isArray(upd1.data.updates) && upd1.data.updates.some(p => p.id === demoPid && +p.ver >= 3 && p.updatedAt && p.name === '协作对比项目') && typeof upd1.data.serverTime === 'number', JSON.stringify(upd1.data && { n: upd1.data.updates.length, first: upd1.data.updates[0] && upd1.data.updates[0].id, serverTime: upd1.data.serverTime }));
+  const upd2 = await req('GET', '/api/projects/updates?since=' + (nowTs + 1e9), null, token); // 未来时间戳 → 空数组
+  report('updates 未来 since → 空列表', upd2.status === 200 && upd2.data && Array.isArray(upd2.data.updates) && upd2.data.updates.length === 0, JSON.stringify(upd2.data));
+  const upd3 = await req('GET', '/api/projects/updates?since=0&limit=1', null, token);
+  report('updates limit 生效(只返回 1 条)', upd3.status === 200 && upd3.data && Array.isArray(upd3.data.updates) && upd3.data.updates.length <= 1, '实际长度=' + (upd3.data && upd3.data.updates && upd3.data.updates.length));
+
+  /* ============ 测试 18(P4 A1):sweepStaleOps claimRetries —— results.json 有交付结果直接转 succeeded 不退款 ============ */
+  wallet = (await req('GET', '/api/wallet', null, token)).data;
+  const balBeforeRecover = wallet.balance;
+  // 模拟:老于 40min 的 executing op + results.json 有 payload(url=已交付)
+  craftOp(uid, 'it.stale_rec1', 'image.gen', 'executing', `px_${uid}_it.stale_rec1@image.gen`, 40 * 60 * 1000);
+  craftResult(uid, 'it.stale_rec1', 'image.gen', { url: '/uploads/gen/stale_recovered.jpeg', done: true });
+  // 触发 sweepStaleOps:借 POST /api/billing/refund 端点内部 sweepStaleOps 调用(该端点会顺带入 sweepStaleOps 主流程)
+  const rfRecover = await req('POST', '/api/billing/refund', { operationId: 'it.stale_rec1' }, token);
+  const recoverOps = OPS().list.filter(o => o.opId === 'it.stale_rec1');
+  wallet = (await req('GET', '/api/wallet', null, token)).data;
+  const finalStatus = recoverOps.length ? recoverOps[0].status : null;
+  report('sweep 发现已交付结果 → operation 转 succeeded(不再退款) + refundOperation 不为 succeeded 重复退费(HTTP 200 + refunded=0 或因终态 blocked)', finalStatus === 'succeeded' && rfRecover.status === 200, 'op 状态=' + JSON.stringify(recoverOps.map(o => o.status)) + ' 退款端点 HTTP ' + rfRecover.status + ' refunded=' + JSON.stringify(rfRecover.data && rfRecover.data.refunded));
+  report('sweep 已交付不退款(余额保持 craftOp 扣费后,合法已交付不退回)', wallet.balance === balBeforeRecover - 2, // craftOp 扣了 2 不退回(视为合法已交付)
+    '实际 ' + wallet.balance + '(期前 ' + balBeforeRecover + ' craftOp 占用 2,合法已交付不退款)');
 
   console.log(`\n===== ${PASS}/${PASS + FAIL} PASS, ${FAIL} FAIL =====`);
 }

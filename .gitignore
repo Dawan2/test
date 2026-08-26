@@ -21,3 +21,5 @@ tests/.chrome-live/
 # 系统文件
 Thumbs.db
 .DS_Store
+.repo_memory/
+.memorax-code/

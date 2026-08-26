@@ -41,13 +41,13 @@
       if (!API.isReady()) throw new Error('LLM 未配置');
       const out = await chatJSONRobust({
         model: (Store.state.settings || {}).defLLM || API.getConfig().model,
-        system: '你是资深短剧导演。',
+        system: Prompts.get('und.system'),
         billingAction: bAction || 'llm.understanding', operationId: opId, step,
         user: `基于导演风格与本集剧本,生成本集导演理解,返回 JSON:
 {"剧情脉络":"1-3句","情绪曲线":"1-3句","节奏规划":"1-3句","视觉基调":"1-3句","关键场面":"1-3句","悬念与期待":"2-4条,本集应埋的悬念点与观众期待感设计(如信息延迟揭露、结尾钩子、反转伏笔),用分号分隔"}
 ${dsText ? '已确认的全局导演设定:\n' + dsText : '(未设置全局导演风格,按项目风格理解)'}
 项目风格:${styleOf(p)}
-本集剧本(前 6000 字):
+${window.eventsOfEpisode && eventsOfEpisode(p, ep) ? '本集事件图谱(剧情骨架,理解需覆盖以下事件的因果链):\n' + eventsOfEpisode(p, ep) + '\n' : ''}本集剧本(前 6000 字):
 ${(ep.content || '').slice(0, 6000)}`,
         temperature: 0.5, max_tokens: 1500,
       });
@@ -163,6 +163,27 @@ ${(ep.content || '').slice(0, 6000)}`,
     return st;
   }
 
+  /* 独立生成/重生成入口(编辑器「重新生成」按钮与拉片完成事件卡共用):
+   * 计费五件套(Tasks.start→charge→generate→失败退费→done);失败回退模板视为未交付,退费且不覆盖原有理解 */
+  async function regen(p, ep) {
+    const tk = Tasks.start({ type: '本集理解', model: (Store.state.settings || {}).defLLM || (API.isReady() ? API.getConfig().model : '本地模板'), target: ep.title, cost: 2, projectId: p.id, episodeId: ep.id });
+    if (!U.charge(2, '重新生成本集理解(' + ep.title + ')', tk.id)) { Tasks.fail(tk, '积分不足'); return false; }
+    U.toast('本集理解生成中…', 'info', 2200);
+    const nu = await generate(p, ep, tk.id);
+    if (nu.fallback) { // 生成失败(回退默认模板):退费置失败,不覆盖原有理解
+      U.refund(2, '重新生成本集理解失败退费(' + ep.title + ')', tk.id);
+      Tasks.fail(tk, '生成失败,已退费');
+      U.toast('本集理解生成失败,已退费' + (ep.understanding ? ',原有理解保留' : ''), 'error', 3200);
+      return false;
+    }
+    Tasks.done(tk);
+    nu.sourceRev = ep.contentRev || 0; // 生成成功刷 sourceRev(对应器当前剧本版本,不判旧)
+    ep.understanding = nu;
+    Store.save();
+    U.toast('本集理解已生成,将注入智能分镜/提示词优化/视频生成', 'success', 3000);
+    return true;
+  }
+
   /* ================= 「📖 本集理解」查看/编辑/重生成 ================= */
   function openEditor(p, ep, main, ViewsEpisode) {
     if (!ep.understanding) ep.understanding = null;
@@ -186,25 +207,13 @@ ${(ep.content || '').slice(0, 6000)}`,
       onMount(m, close) {
         const collect = () => DIMS.forEach(d => u[d] = m.querySelector(`[data-ud="${d}"]`).value.trim());
         m.querySelector('[data-x=regen]').onclick = async () => {
-          const tk = Tasks.start({ type: '本集理解', model: '重生成', target: ep.title, cost: 2, projectId: p.id, episodeId: ep.id });
-          if (!U.charge(2, '重新生成本集理解(' + ep.title + ')', tk.id)) { Tasks.fail(tk, '积分不足'); return; }
           const btn = m.querySelector('[data-x=regen]');
           btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> 生成中…';
-          const nu = await generate(p, ep, tk.id);
+          const ok = await regen(p, ep); // 独立入口:计费五件套+失败退费不覆盖原有理解(与拉片完成事件卡共用)
           btn.disabled = false; btn.textContent = '↻ 重新生成(-2积分)';
-          if (nu.fallback) { // 生成失败(回退默认模板):退费置失败,不覆盖原有理解
-            U.refund(2, '重新生成本集理解失败退费(' + ep.title + ')', tk.id);
-            Tasks.fail(tk, '生成失败,已退费');
-            U.toast('本集理解重新生成失败,已退费,原有理解保留', 'error', 3200);
-            return;
-          }
-          Tasks.done(tk);
-          DIMS.forEach(d => { u[d] = nu[d]; m.querySelector(`[data-ud="${d}"]`).value = nu[d]; });
-          u.time = nu.time;
-          u.sourceRev = ep.contentRev || 0; // 十一轮:重生成成功刷 sourceRev(否则迁移旧数据被判旧后永不过期)
-          ep.understanding = u;
-          Store.save();
-          U.toast('本集理解已重新生成', 'success');
+          if (!ok) return;
+          DIMS.forEach(d => { u[d] = ep.understanding[d]; m.querySelector(`[data-ud="${d}"]`).value = ep.understanding[d]; }); // 草稿与文本域同步为新理解(再点保存即此版)
+          u.time = ep.understanding.time;
         };
         m.querySelector('[data-x=cancel]').onclick = close;
         m.querySelector('[data-x=ok]').onclick = () => {
@@ -219,5 +228,5 @@ ${(ep.content || '').slice(0, 6000)}`,
     });
   }
 
-  window.Understanding = { generate, run, openEditor, toText, DIMS, chatJSONRobust };
+  window.Understanding = { generate, regen, run, openEditor, toText, DIMS, chatJSONRobust };
 })();

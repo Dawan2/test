@@ -79,6 +79,8 @@
         ${prodMode === '一键跑批' ? `<span class="tag cyan" style="flex:none;align-self:center" title="一键跑批项目:Agent 全自动量产">🏭 一键跑批</span><button class="btn sm ghost" data-x="goproduce" style="flex:none" title="Agent 全自动跑批中心">跑批中心 ›</button>` : ''}
         <span class="grow"></span>
         <button class="btn sm primary" data-x="dd-sb" title="一键智能拆镜(含本集理解前置;可在参数配置开启「生成后自动评审修订」)">🧠 智能分镜</button>
+        ${(ep.sbPlans || []).length > 1 ? `<button class="btn sm" data-x="sb-plans" title="上次智能分镜的 ${ep.sbPlans.length} 套候选拆镜方案,可重新对比并切换采用">🆚 方案对比(${ep.sbPlans.length})</button>` : ''}
+        ${(ep.shotHistory || []).length ? `<button class="btn sm" data-x="sb-his" title="分镜表版本历史:整表覆盖前自动留档(近 ${ep.shotHistory.length} 版),可预览与回滚">🕘 历史(${ep.shotHistory.length})</button>` : ''}
         <button class="btn sm" data-x="quickedit" title="抽屉批量修改剧情/运镜">✏ 快速编辑</button>
         <button class="btn sm" data-x="genv" title="批量生成视频(每镜 5 积分)">🎬 生成视频</button>
         <button class="btn sm" data-x="epreview" title="全镜 AI 审片(每镜 5 积分)">🎬 整集审片</button>
@@ -236,7 +238,7 @@
         const nx = Pipeline.nextForEp(p, ep);
         if (nx.key === 'shots') { const t = main.querySelector('[data-x=dd-sb]'); if (t) t.click(); }
         else if (nx.key === 'gen') SB.runBatchOp(p, ep, main, 'video');
-        else if (nx.key === 'film') window.SB.composeVideo(p, ep, main);
+        else if (nx.key === 'film') Commands.execute('episode.compose', { pid: p.id, epid: ep.id, main, ui: true }).then(r => Commands.digest(r)); // 统一命令层(ui 模式)
         else if (nx.key === 'export') window.SB.openPlayer(p, ep, false); // 顶栏导出已并入预览:预览长视频内导出
       };
       const psb = main.querySelector('[data-x=prevstep]');
@@ -245,7 +247,7 @@
         if (pv.key === 'subjects') location.hash = '#/project/' + p.id; // 回项目页(主体/剧本)
         else if (pv.key === 'shots') { const t = main.querySelector('[data-x=dd-sb]'); if (t) t.click(); }
         else if (pv.key === 'gen') SB.runBatchOp(p, ep, main, 'video');
-        else if (pv.key === 'film') window.SB.composeVideo(p, ep, main);
+        else if (pv.key === 'film') Commands.execute('episode.compose', { pid: p.id, epid: ep.id, main, ui: true }).then(r => Commands.digest(r)); // 统一命令层(ui 模式)
       };
     }
     main.querySelector('[data-x=sb-config]').onclick = () => openSBConfig(p, ep, main);
@@ -268,18 +270,22 @@
     // 左栏底部 LLM 模型下拉已移除:拆镜模型统一取全局默认(偏好学习·全局默认值 defLLM),不在此单选
     // 分镜脚本创作层(无分镜默认,或显式切到「分镜脚本」)
     if (showBoard) SB.bindScriptBoard(main.querySelector('.ws-center'), p, ep, main, false);
-    // 智能分镜(单按钮直接执行;评审修订循环已整合,原 AI分镜师入口移除)
-    main.querySelector('[data-x=dd-sb]').onclick = () => SB.runSmartSB(p, ep, main);
+    // 智能分镜(单按钮直接执行;评审修订循环已整合,原 AI分镜师入口移除;统一命令层 ui 模式:多方案对比窗保留)
+    main.querySelector('[data-x=dd-sb]').onclick = () => Commands.execute('episode.generateStoryboard', { pid: p.id, epid: ep.id, main, ui: true }).then(r => Commands.digest(r));
+    const plansBtn = main.querySelector('[data-x=sb-plans]');
+    if (plansBtn) plansBtn.onclick = () => SB.openPlanCompare(p, ep, main);
+    const hisBtn = main.querySelector('[data-x=sb-his]');
+    if (hisBtn) hisBtn.onclick = () => SB.openShotHistory(p, ep, main);
     // 顶栏一级横排按钮(无下拉):各自直达原下拉项处理逻辑
     main.querySelector('[data-x=genv]').onclick = () => SB.runBatchOp(p, ep, main, 'video');
     main.querySelector('[data-x=epreview]').onclick = () => Review.openEpisodeReview(p, ep, main);
     main.querySelector('[data-x=compose]').onclick = () => {
-      // 在线(FFmpeg 就绪)先经时间线编辑器微调出入点/顺序/取舍;离线或素材不足时走原快速合成
+      // 在线(FFmpeg 就绪)先经时间线编辑器微调出入点/顺序/取舍;离线或素材不足时走快速合成(统一命令层 ui 模式)
       if (window.Media && Media.isReady() && window.Timeline) {
         const usable = ep.shots.filter(s => (s.video && Store.shotVideoReady(s) && s.video.url) || s.image);
         if (usable.length) return Timeline.openCompose(p, ep, main);
       }
-      window.SB.composeVideo(p, ep, main);
+      Commands.execute('episode.compose', { pid: p.id, epid: ep.id, main, ui: true }).then(r => Commands.digest(r));
     };
     // 显示方式▾:时间轴(默认)/数列式,偏好记忆在 settings.centerLayout
     bindDropdown(main, '[data-x=dd-layout]', '[data-ddm=layout]', item => {
@@ -335,7 +341,7 @@
         Store.save();
         Views.episode(main, pid, eid);
       } else if ((e.key === 'g' || e.key === 'G') && sel) {
-        SBGen.createShotVideo(p, ep, sel, main); // 等同点「生成视频」
+        Commands.execute('shot.generateVideo', { pid: p.id, epid: ep.id, sid: sel.id, main, ui: true }).then(r => Commands.digest(r)); // 等同点「生成视频」(统一命令层 ui 模式)
       }
     };
     document.addEventListener('keydown', window.__epKeyH);
@@ -499,11 +505,8 @@
     return last && last.lastFrame ? last.lastFrame : null;
   }
 
-  const STRATEGIES = [
-    { id: 'fusion', name: '多图融合', desc: '关联素材直接空间融合渲染', step: '素材融合渲染中' },
-    { id: 'frames', name: '首尾帧', desc: '控制起始与结束画面,插值生成', step: '首帧→尾帧→插值' },
-    { id: 'ref', name: '分镜参考', desc: '先生成分镜图确认构图再转视频', step: '参考图构图渲染中' },
-  ];
+  /* 生成策略表:单一来源下沉 domain.js(双端共享),此处回挂保持 window.SB/STRATEGIES 出口不变 */
+  const STRATEGIES = Domain.STRATEGIES;
 
   /* LLM 拆镜族(genShotsLLM/normalizeLLMShot/publishLLMShots/推文出图/llmReview)与
    * 智能分镜 runSmartSB、本地兜底 publishShots 已拆至 sb-llm.js(window.SB);
@@ -593,6 +596,12 @@
       <div class="check-line" data-sw="${k}"><span class="switch ${c[k] ? 'on' : ''}"></span><div><div class="small">${t}</div><div class="hint" style="margin:0">${h}</div></div></div>`).join('')}
       <div class="divider" style="margin:12px 0"></div>
       <label class="field"><span>分镜数量(根据文本长度浮动)</span><input class="input" type="number" data-f="shotCount" min="2" max="40" value="${c.shotCount}"></label>
+      <label class="field"><span>分镜方案数(多方案对比择优)</span>
+        <div class="model-row">
+          ${[1, 2, 3].map(n => `<div class="model-opt ${(c.sbPlans || 1) === n ? 'sel' : ''}" data-pn="${n}">${n} 套</div>`).join('')}
+        </div>
+        <div class="hint">大于 1 套时:同一剧本并行拆 N 套候选分镜,五角色 AI 评审各打一次分,生成后弹出对比择优落定;每套 ${COST.smartSB} 积分(评审打分不另收,自动评审修订在多方案下不生效)</div>
+      </label>
       <label class="field"><span>或:目标成片总时长(分钟,自动换算分镜数)</span>
         <input class="input" type="number" data-f="targetMin" min="1" max="15" step="0.5" placeholder="如 1.5,与单镜时长联动换算">
         <div class="hint" data-tgt-hint>填写后按 总时长 ÷ 单镜时长(${c.shotDur || 5}s) 自动计算分镜数</div>
@@ -636,6 +645,10 @@
     dock.querySelectorAll('[data-mr]').forEach(o => o.onclick = () => {
       c.maxRetry = +o.dataset.mr;
       dock.querySelectorAll('[data-mr]').forEach(x => x.classList.toggle('sel', x === o));
+    });
+    dock.querySelectorAll('[data-pn]').forEach(o => o.onclick = () => {
+      c.sbPlans = +o.dataset.pn;
+      dock.querySelectorAll('[data-pn]').forEach(x => x.classList.toggle('sel', x === o));
     });
     dock.querySelector('[data-x=vcfg]').onclick = () => {
       Voice.settingModal({

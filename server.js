@@ -228,10 +228,19 @@ function setSessionCookie(res, token) {
 function clearSessionCookie(res) {
   res.setHeader('Set-Cookie', 'mv_token=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
 }
+/* /uploads/ URL 路径规范化(R14):先做段级校验再谈 ACL——拒绝 .. / . 段与反斜杠,
+ * 防"/uploads/gen/../<他人uid>/x" 借 gen/ 共享前缀通过 startsWith 判定、path.join 折叠后越权读他人文件;
+ * 通过则返回 posix 规范化路径(供前缀/归属/共享集合一致比对),非法一律 null */
+function normUploadsPath(p) {
+  p = String(p || '');
+  if (!p.startsWith('/uploads/') || p.includes('\\')) return null;
+  if (p.split('/').some(s => s === '..' || s === '.')) return null;
+  return path.posix.normalize(p);
+}
 /* 媒体访问 ACL:本人目录 / 队友共享资产引用文件 / 服务端产物(gen/thumbs,内容寻址) */
 function mediaAllowed(userId, p) {
-  p = String(p || '');
-  if (!p.startsWith('/uploads/')) return false;
+  p = normUploadsPath(p);
+  if (!p) return false;
   const rest = p.slice('/uploads/'.length);
   if (rest.startsWith('gen/') || rest.startsWith('thumbs/')) return true;
   if (rest.startsWith(userId + '/')) return true;
@@ -482,10 +491,7 @@ function inlineRefImage(img, userId) {
   if (!img.startsWith('/uploads/')) return img;
   let fp;
   if (userId) fp = localUploadPath(img, userId);
-  else {
-    fp = path.join(ROOT, img.replace(/\//g, path.sep));
-    if (!fp.startsWith(UPLOADS_DIR + path.sep) || !fs.existsSync(fp)) fp = null; // 免鉴权路由兼容旧行为
-  }
+  else fp = localUploadPath(img, null); // 免鉴权路由兼容旧行为(无 ACL,仅路径解析;R14 起同享 normUploadsPath 与 UPLOADS_DIR 拼接)
   if (!fp) return null;
   const ext = path.extname(fp).slice(1).toLowerCase();
   const mime = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' }[ext] || 'image/png';
@@ -521,8 +527,10 @@ function ffprobeOut(args) {
     try { cp = spawn(FFPROBE_BIN, args, { windowsHide: true }); } catch (e) { return reject(new Error('无法启动 ffprobe:' + e.message)); }
     let s = '';
     cp.stdout.on('data', d => s += d);
-    cp.on('error', e => reject(new Error('无法启动 ffprobe:' + e.message)));
-    cp.on('close', c => c === 0 ? resolve(s) : reject(new Error('ffprobe 解析失败')));
+    // R14:与 runFF 同口径加超时——ffprobe 挂起(损坏文件/句柄异常)会让请求永挂、执行锁与 executing 双悬挂
+    const timer = setTimeout(() => { try { cp.kill(); } catch (_) {} reject(new Error('ffprobe 解析超时(60s)')); }, 60000);
+    cp.on('error', e => { clearTimeout(timer); reject(new Error('无法启动 ffprobe:' + e.message)); });
+    cp.on('close', c => { clearTimeout(timer); c === 0 ? resolve(s) : reject(new Error('ffprobe 解析失败')); });
   });
 }
 async function ffprobeDuration(fp) {
@@ -576,13 +584,13 @@ function sharedPathsFor(userId) {
  * 与"队友共享给我的资产实际引用的文件"(见 sharedPathsFor);
  * (鉴权路由内的 FFmpeg/上游处理全部传 userId,封死借服务处理他人文件;免鉴权路由传 null 兼容) */
 function localUploadPath(p, userId) {
-  p = String(p || '');
-  if (!p.startsWith('/uploads/')) return null;
+  p = normUploadsPath(p); // R14:先规范化拒 ..,再做所有权前缀判定(此前 ACL 在未规范化串上判定,可被 gen/../ 穿越)
+  if (!p) return null;
   const rest = p.slice('/uploads/'.length);
   const SHARED = ['gen/', 'thumbs/']; // 服务端生成物缓存(内容寻址,非用户私有)
   if (userId && !SHARED.some(s => rest.startsWith(s)) && !rest.startsWith(userId + '/')
     && !sharedPathsFor(userId).has(p)) return null;
-  const fp = path.join(ROOT, p.replace(/\//g, path.sep));
+  const fp = path.join(UPLOADS_DIR, rest.replace(/\//g, path.sep)); // R14:按 UPLOADS_DIR 拼接(MV_UPLOADS_DIR 重定向后按 ROOT 拼必失效)
   return fp.startsWith(UPLOADS_DIR + path.sep) && fs.existsSync(fp) ? fp : null; // 前缀带分隔符,与 serveStatic 的防穿越口径一致
 }
 function ffOutName(ext) {
@@ -690,6 +698,20 @@ function readWallet(uid2) {
   writeJSON(walletFile(uid2), nw);
   return nw;
 }
+/* R19:只追加审计日志(data/audit.jsonl)——钱包 3000 条滚动截断后,完整资金/交付轨迹仍可对账。
+ * 钱(wallet 条目)与货(结果交付)双轨同文件;超 5MB 轮转一代(与请求日志同模式)。写失败静默,不阻断业务。 */
+const AUDIT_FILE = path.join(DATA_DIR, 'audit.jsonl');
+const AUDIT_MAX = 5 * 1024 * 1024;
+function auditAppend(kind, obj) {
+  try {
+    if (fs.existsSync(AUDIT_FILE) && fs.statSync(AUDIT_FILE).size > AUDIT_MAX) {
+      const bak1 = AUDIT_FILE + '.1';
+      try { fs.unlinkSync(bak1); } catch (_) {}
+      fs.renameSync(AUDIT_FILE, bak1);
+    }
+    fs.appendFileSync(AUDIT_FILE, JSON.stringify(Object.assign({ ts: Date.now(), kind }, obj)) + '\n');
+  } catch (_) {}
+}
 /* 追加账目:amount 正负号即方向;idem 幂等(重复提交返回原条目,不重复记账) */
 function walletAppend(uid2, type, amount, reason, idem) {
   const w = readWallet(uid2);
@@ -704,6 +726,7 @@ function walletAppend(uid2, type, amount, reason, idem) {
   w.balance = balance;
   if (w.entries.length > 3000) w.entries = w.entries.slice(-3000); // 账本滚动上限(保留最近 3000 条)
   writeJSON(walletFile(uid2), w);
+  auditAppend('wallet', { uid: uid2, seq: entry.seq, type, amount, balanceAfter: balance, reason: entry.reason, idem: entry.idem });
   return { dup: false, entry, wallet: w };
 }
 /* 账本 → state 投影:同步 users[].credits/creditLogs/orders(不动 rev,前端各视图照常可读) */
@@ -842,6 +865,7 @@ function opFind(db, userId, opId, action) { return BILLING.latestOp(db.list, use
 function requestHashOf(obj) {
   const o = Object.assign({}, obj);
   delete o.operationId; delete o.billingAction; delete o.step;
+  delete o._projectId; // 成本归集标签:只进 operation 台账,不进请求指纹(同 op 跨环境重放不失配)
   return crypto.createHash('sha256').update(JSON.stringify(o)).digest('hex').slice(0, 32);
 }
 /* 步骤交付(十一轮;十二轮返回布尔):标记 step.ok=true 并缓存响应文本;final=true(main 步/
@@ -880,15 +904,19 @@ function opMarkExecuting(userId, opId, action) {
 const EXEC_LOCKS = new Map();
 function execLock(key) { if (EXEC_LOCKS.has(key)) return false; EXEC_LOCKS.set(key, true); return true; }
 function execUnlock(key) { EXEC_LOCKS.delete(key); }
-/* 某 operation 的全部扣费条目(idem: px_<uid>_<opId>@<action> 或 ~n 重试后缀) */
-function opChargeEntries(wallet, userId, opId) {
-  const re = new RegExp('^px_' + userId + '_' + opId + '@[^~]+(~\\d+)?$');
+/* 某 operation 的全部扣费条目(idem: px_<uid>_<opId>@<action> 或 ~n 重试后缀)
+ * R14:可选 action 维度——传 action 时只取该动作的扣费(退费归集与扣费登记的 (opId,action) 口径对齐,
+ * 防同一 opId 跨端点复用时一个动作的失败退款误退另一动作的未交付扣费) */
+function opChargeEntries(wallet, userId, opId, action) {
+  const re = action
+    ? new RegExp('^px_' + userId + '_' + opId + '@' + action.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(~\\d+)?$')
+    : new RegExp('^px_' + userId + '_' + opId + '@[^~]+(~\\d+)?$');
   return wallet.entries.filter(e => e.idem && re.test(e.idem));
 }
 /* 该 operation 下"已扣且未退"的有效条目(每条charge的退费 idem = chargeIdem + '_rf') */
-function effectiveCharges(wallet, userId, opId) {
+function effectiveCharges(wallet, userId, opId, action) {
   const refunded = new Set(wallet.entries.filter(e => e.type === 'refund' && e.idem).map(e => e.idem));
-  return opChargeEntries(wallet, userId, opId).filter(c => !refunded.has(c.idem + '_rf'));
+  return opChargeEntries(wallet, userId, opId, action).filter(c => !refunded.has(c.idem + '_rf'));
 }
 /* 按次原子扣费(十轮):action 白名单定价 + operation/步骤状态机(判定核心在 billing.js
  * stepDecision 纯函数,此处编排 IO——server 侧状态机决策与单元测试同源)。
@@ -950,7 +978,9 @@ function proxyCharge(res, userId, action, reason, operationId, endpoint, reqBody
   if (opId) {
     /* 十一轮:新记录保存本次扣费的完整 chargeIdem(含 ~n 重试后缀)——退款按 idem 一对一精确归属,
      * 修复"退款重试后新扣费映射到旧 refunded 记录"导致的已交付扣费被退回 */
-    odb.list.push({ userId, opId, action, endpoint: endpoint || '', requestHash: rh, status: 'charged', chargeIdem, steps: isLlm ? { [step]: { rh, ok: false } } : undefined, createdAt: Date.now(), updatedAt: Date.now() });
+    // projectId 成本归集:前端在项目页内发起的调用注入 _projectId(视频任务取 job 三元组);未标记归入 unlabeled
+    const pid = sanitizeOpId(reqBody && reqBody._projectId) || sanitizeOpId(reqBody && reqBody.job && reqBody.job.projectId) || null;
+    odb.list.push({ userId, opId, action, endpoint: endpoint || '', requestHash: rh, status: 'charged', chargeIdem, projectId: pid, steps: isLlm ? { [step]: { rh, ok: false } } : undefined, createdAt: Date.now(), updatedAt: Date.now() });
     saveOps(odb);
   }
   return { cost, serverCharged: true, refundIdem: chargeIdem + '_rf', opId: finalOpId, chargeIdem, action };
@@ -966,17 +996,19 @@ function proxyRefund(userId, charge, reason) {
     if (!r.dup) syncWalletProjection(userId, r.wallet, r.entry, {});
     return;
   }
-  refundOperation(userId, charge.opId, '服务未交付:' + String(reason || '').slice(0, 40), false);
+  refundOperation(userId, charge.opId, '服务未交付:' + String(reason || '').slice(0, 40), false, charge.action || null);
 }
 /* operation 级退款(退款端点/晚失败/超时闭环共用):退该 operation 全部未退扣费,金额取自原账单。
  * 退款保护(十一轮,归属与判定核心在 billing.js refundPlan/refundDecision):按 chargeIdem
  * 精确归属每笔扣费到其创建记录——已 delivered/refunded、聚合已有成功步骤(部分交付)、登记缺失
- * 一律不退(客户端与内部一致;失败关闭,宁可少退不可多退)。返回实退总额。 */
-function refundOperation(userId, opId, reason, clientInitiated) {
+ * 一律不退(客户端与内部一致;失败关闭,宁可少退不可多退)。返回实退总额。
+ * R14:可选 action 维度——传 action 时记录与扣费均按 (opId,action) 归集,防同一 opId 跨端点复用时
+ * 互相误退(扣费登记本就按 (opId,action),退费口径对齐);不传(旧客户端退款端点)维持 opId 宽口径。 */
+function refundOperation(userId, opId, reason, clientInitiated, action) {
   const odb = opsDB();
-  const ops = odb.list.filter(o => o.userId === userId && o.opId === opId);
+  const ops = odb.list.filter(o => o.userId === userId && o.opId === opId && (!action || o.action === action));
   const w = readWallet(userId);
-  const eff = effectiveCharges(w, userId, opId);
+  const eff = effectiveCharges(w, userId, opId, action || null);
   let total = 0, dirty = false;
   for (const item of BILLING.refundPlan(ops, eff)) {
     if (item.decision !== 'refundable') continue; // blocked-delivered/refunded/ok-step/missing:一律不退
@@ -996,18 +1028,50 @@ function refundOperation(userId, opId, reason, clientInitiated) {
  * operation(视频等异步任务)跳过——其终态/退款由任务中心对账闭环负责。
  * 残留走内部退款(refundPlan 判定;部分交付 blocked-ok-step 不退,只收敛为 failed 终态不再悬挂)。
  * 5 分钟周期 + 退款端点/任务中心入口触发(幂等)——executing 对客户端永久拒退后,
- * 崩溃残留的退款出口完全由本看门狗承担 */
+ * 崩溃残留的退款出口完全由本看门狗承担。
+ * R14:退款前先查内存执行锁——EXEC_LOCKS 在进程内存中,进程崩溃/重启即清空,故"仍持锁"等价于
+ * "本进程内仍在正常执行"(如 80 段合成合法跑 40+ 分钟),绝不清算;无锁的陈旧 executing 才是崩溃残留。
+ * 同时按 (opId,action) 归集退款,与扣费登记口径对齐。 */
 const OP_EXECUTE_STALE_MS = 30 * 60 * 1000;
-function sweepStaleOps() {
+const RESULT_CLAIM_RETRY_MAX = 3;        // 结果领取失败自动重试次数(幂等 + 指数退避)
+function sweepStaleOps(forceRefund) {
+  // 1) 先做结果领取重试:executing → 先查 results.json 是否已经有交付,有则直接转为 succeeded(用户未 claim 也不算白跑),
+  //    本轮没 claim 的失败结果(claimRetries < 最大)不直接判失败,给下次 retry 机会,避免 sweep 竞态误伤。
   let odb = opsDB();
+  let dirty = false;
+  odb.list.forEach(o => {
+    if (o.status !== 'executing') return;
+    const r = resultFind(o.userId, o.opId);
+    if (r && r.payload && (r.payload.url || r.payload.done)) {   // 结果已经交付
+      const cur = opFind(odb, o.userId, o.opId, o.action);      // 用同一 odb 引用,避免每次 opsDB() 重读新实例修改丢失
+      if (cur && cur.status === 'executing') {
+        cur.status = 'succeeded'; cur.updatedAt = Date.now(); cur.resultSavedAt = r.savedAt; dirty = true;
+        auditAppend('stale_recover', { uid: o.userId, opId: o.opId, action: o.action || null, at: Date.now() });
+      }
+    }
+  });
+  if (dirty) saveOps(odb);
+  // 2) 原来的 executing→退款→failed 看门狗(在结果重试之后执行,避免"结果日志已在途中但 sweep 先退款"的窗口)
+  odb = opsDB();
   const stale = odb.list.filter(o => o.status === 'executing' && Date.now() - (o.updatedAt || o.createdAt || 0) > OP_EXECUTE_STALE_MS);
   if (!stale.length) return;
   const jdb = jobsDB();
   const activeOps = new Set(jdb.list.filter(j => j.status === 'running' || j.status === 'needs_reconcile').map(j => j.billingOperationId).filter(Boolean));
-  let dirty = false;
+  const locked = new Set([...EXEC_LOCKS.keys()].map(k => k.split(':')[2]).filter(Boolean)); // 锁键 <域>:<uid>:<opId>[:<action>] → 在途 opId 集合
+  dirty = false;
   stale.forEach(o => {
-    if (activeOps.has(o.opId)) return;
-    refundOperation(o.userId, o.opId, '执行残留看门狗(进程崩溃/重启,' + Math.round(OP_EXECUTE_STALE_MS / 60000) + ' 分钟未终态)', false);
+    if (activeOps.has(o.opId) || locked.has(o.opId)) return; // 活动任务/本进程仍在执行:跳过,防误伤合法长任务
+    // 领取重试:claimRetries 超限才退款,否则 +1 计数 + 延后 updatedAt,下轮 sweep 再看
+    // forceRefund=true(用户通过 /billing/refund 发起人工干预)时跳过 claimRetries,立即进入退款终态,避免 3 次 2min*3=6min 的等待
+    let cur0 = opFind(odb, o.userId, o.opId, o.action);
+    if (cur0 && cur0.status === 'executing' && !forceRefund) {
+      cur0.claimRetries = (cur0.claimRetries || 0) + 1;
+      if (cur0.claimRetries < RESULT_CLAIM_RETRY_MAX) {
+        cur0.updatedAt = Date.now() - OP_EXECUTE_STALE_MS + 2 * 60 * 1000; // 延后 2 分钟,下次 sweep 前不再次触发
+        dirty = true; return;
+      }
+    }
+    refundOperation(o.userId, o.opId, '执行残留看门狗(进程崩溃/重启,' + Math.round(OP_EXECUTE_STALE_MS / 60000) + ' 分钟未终态)', false, o.action || null);
     odb = opsDB(); // 重新读取(refundOperation 已按其判定落盘 refunded)
     const cur = opFind(odb, o.userId, o.opId, o.action);
     if (cur && cur.status === 'executing') { cur.status = 'failed'; cur.updatedAt = Date.now(); dirty = true; }
@@ -1044,6 +1108,7 @@ function resultPut(userId, opId, action, endpoint, payload) {
     const rec = { userId, opId, action, endpoint, payload: payload || {}, savedAt: Date.now(), claimed: false };
     if (i >= 0) db.list[i] = rec; else db.list.push(rec);
     saveResults(db);
+    auditAppend('deliver', { uid: userId, opId, action, endpoint, url: String((payload || {}).url || '').slice(0, 120) }); // R19:货轨(结果落库即交付凭证)
   } catch (_) { /* 结果日志失败不阻断交付 */ }
 }
 function resultFind(userId, opId) {
@@ -1128,7 +1193,7 @@ function sweepJobs() {
 function refundJob(j, reason) {
   if (!j || !j.billingOperationId || j.refunded) return;
   let got = 0;
-  try { got = refundOperation(j.userId, j.billingOperationId, reason); } catch (_) { return; }
+  try { got = refundOperation(j.userId, j.billingOperationId, reason, false, j.billingAction || null); } catch (_) { return; }
   if (got > 0) jobUpdate(jobsDB(), j.upstreamId, { refunded: true });
 }
 /* needs_reconcile 对账(十一轮 P1-4):60 分钟未终态的任务先查上游再决定退款,不再盲退——
@@ -1217,6 +1282,16 @@ function sweepGenCache() {
         if (m) referenced.add(m[1]);
       }
     } catch (_) {}
+    /* 十五轮:结果日志兜底引用——TTS/FFmpeg/生图已交付但客户端尚未认领(超时/断线)的结果
+     * 同样计入引用名单:此前默认 3 天即清,领取端点(保留 7 天)随后返回失效地址 */
+    try {
+      const rdb = readJSON(RESULTS_FILE, { list: [] });
+      for (const r of (rdb && rdb.list) || []) {
+        const u = r && r.payload && r.payload.url;
+        const m = u && String(u).match(/\/uploads\/gen\/([\w.-]+)/);
+        if (m) referenced.add(m[1]);
+      }
+    } catch (_) {}
     const cutoff = Date.now() - days * 24 * 3600 * 1000;
     let removed = 0, freed = 0;
     for (const f of fs.readdirSync(GEN_CACHE_DIR)) {
@@ -1228,6 +1303,21 @@ function sweepGenCache() {
       } catch (_) {}
     }
     if (removed) console.log(`[gen-cache] 清理未引用且超期文件 ${removed} 个,释放 ${(freed / 1048576).toFixed(1)}MB`);
+    /* R19:thumbs 一并清扫——键为 sha1(源路径+mtime),源文件删除/更新后旧缩略图永久孤儿;
+     * 纯缓存按需懒重生,超期即删无引用名单负担 */
+    try {
+      const THUMBS_DIR = path.join(UPLOADS_DIR, 'thumbs');
+      let tRemoved = 0;
+      for (const f of fs.readdirSync(THUMBS_DIR)) {
+        const fp = path.join(THUMBS_DIR, f);
+        try {
+          const st = fs.statSync(fp);
+          if (!st.isFile() || st.mtimeMs >= cutoff) continue;
+          fs.unlinkSync(fp); tRemoved++;
+        } catch (_) {}
+      }
+      if (tRemoved) console.log(`[gen-cache] 清理超期缩略图 ${tRemoved} 个`);
+    } catch (_) {}
   } catch (_) { /* 清理失败不影响服务 */ }
 }
 sweepGenCache();
@@ -1399,6 +1489,7 @@ function userUploadBytes(userId) {
   let total = 0;
   try {
     for (const f of fs.readdirSync(dir)) {
+      if (f.startsWith('tmp_')) continue; // R19:上传原子写残留(崩溃窗口)不计配额,由上传路径顺带清理
       try { total += fs.statSync(path.join(dir, f)).size; } catch (_) {}
     }
   } catch (_) {}
@@ -1433,7 +1524,7 @@ const server = http.createServer(async (req, res) => {
     const mUser = authUser(req);
     if (!mUser) return fail(res, 401, '登录后才能访问上传文件', 401);
     if (!mediaAllowed(mUser.id, canonPath)) return fail(res, 403, '无权访问该文件', 403);
-    const mAbs = path.normalize(path.join(ROOT, canonPath));
+    const mAbs = path.normalize(path.join(UPLOADS_DIR, canonPath.slice('/uploads/'.length))); // R14:按 UPLOADS_DIR 拼接(MV_UPLOADS_DIR 重定向后按 ROOT 拼必 403)
     if (!mAbs.startsWith(UPLOADS_DIR + path.sep)) return fail(res, 403, 'Forbidden');
     return fs.stat(mAbs, (err, st) => {
       if (err || !st.isFile()) return fail(res, 404, 'Not Found');
@@ -1547,6 +1638,8 @@ const server = http.createServer(async (req, res) => {
       const h = req.headers.authorization || '';
       const token = h.startsWith('Bearer ') ? h.slice(7) : '';
       sessions.delete(token);
+      const ck = String(req.headers.cookie || '').match(/(?:^|;\s*)mv_token=([^\s;]+)/); // R14:纯 cookie 会话场景一并吊销(此前 sessions.delete('') 空操作,共用机器上已复制的 cookie token 登出后仍可用)
+      if (ck) sessions.delete(ck[1]);
       flushSessions();
       clearSessionCookie(res); // 登出清媒体会话 cookie(共用机器上的媒体访问随之失效)
       return ok(res, { loggedOut: true });
@@ -1665,9 +1758,10 @@ const server = http.createServer(async (req, res) => {
       const b = await readJSONBody(req, 4096);
       const opId = sanitizeOpId(b.operationId) || sanitizeOpId(String(b.idem || '').replace(/_rf$/, ''));
       if (!opId) return fail(res, 400, '退款需提供 operationId(金额由服务端按原账本判定,不接受客户端提交金额)', 400);
-      sweepStaleOps(); // 十二轮:先清扫 executing 崩溃残留(无活动 job 且超 30 分钟 → 服务端自动退款/转终态)
+      const refAction = sanitizeOpId(b.billingAction) || null; // R14:可选动作维度——携带时按 (opId,action) 归集,跨端点同 opId 不误退
+      sweepStaleOps(true); // 十二轮:先清扫 executing 崩溃残留(无活动 job 且超 30 分钟 → 服务端自动退款/转终态);客户端请求即人工干预,跳过 claimRetries 延迟窗口立即清算
       const odb = opsDB();
-      const ops = odb.list.filter(o => o.userId === user.id && o.opId === opId);
+      const ops = odb.list.filter(o => o.userId === user.id && o.opId === opId && (!refAction || o.action === refAction));
       /* 十轮:客户端退款授权失败关闭——operation 登记缺失(operations.json 损坏/超保留期被淘汰)时
        * 一律 refunded:0,不再继续扫钱包扣费(此前 ownerOf 落空后已交付扣费可被退回;内部退款同口径) */
       if (!ops.length) {
@@ -1686,7 +1780,7 @@ const server = http.createServer(async (req, res) => {
       if (ops.length && !ops.some(o => o.status !== 'delivered' && !hasOkStep(o))) {
         return fail(res, 403, '该操作已成功交付(或已有成功调用),不可退款(失败路径的服务端退款已自动完成)', 403);
       }
-      const refunded = refundOperation(user.id, opId, b.reason || '客户端发起退费', true);
+      const refunded = refundOperation(user.id, opId, b.reason || '客户端发起退费', true, refAction);
       // 八轮:退款即取消关联在途任务(封死"前端超时本地退款后,上游晚成功又把视频发回来"的免费窗口;
       // cancelled 为退款终态,轮询端点不再查上游、不再交付)
       if (refunded > 0) {
@@ -1694,7 +1788,7 @@ const server = http.createServer(async (req, res) => {
         let dirty = false;
         jdb.list.forEach(j => {
           // 十一轮:needs_reconcile 同属未终态在途——退款即取消,防对账晚到把结果交付给已退款用户
-          if (j.billingOperationId === opId && (j.status === 'running' || j.status === 'needs_reconcile')) { j.status = 'cancelled'; j.updatedAt = Date.now(); dirty = true; }
+          if (j.billingOperationId === opId && (!refAction || j.billingAction === refAction) && (j.status === 'running' || j.status === 'needs_reconcile')) { j.status = 'cancelled'; j.updatedAt = Date.now(); dirty = true; }
         });
         if (dirty) saveJobs(jdb);
       }
@@ -1705,17 +1799,80 @@ const server = http.createServer(async (req, res) => {
      * 生图/TTS/FFmpeg 交付成功即落结果日志;同 opId 重试在 proxyCharge 内自动恢复(recovered:true),
      * 本端点供客户端按 operationId 主动领取(标记 claimed,幂等——重复领取返回同一结果)。 */
     if (pathname.startsWith('/api/operations/') && pathname.endsWith('/result') && req.method === 'GET') {
-      const opId = sanitizeOpId(decodeURIComponent(pathname.slice('/api/operations/'.length, -'/result'.length)));
+      let opId = '';
+      try { opId = sanitizeOpId(decodeURIComponent(pathname.slice('/api/operations/'.length, -'/result'.length))); } catch (_) { return fail(res, 400, '非法 operationId 编码', 400); } // R14:畸形 % 编码转 400 而非 500
       if (!opId) return fail(res, 400, '缺少 operationId', 400);
       const rec = resultFind(user.id, opId);
       if (!rec) return ok(res, { found: false });
       resultMarkClaimed(user.id, opId);
       return ok(res, { found: true, action: rec.action, endpoint: rec.endpoint, payload: rec.payload, savedAt: rec.savedAt, claimed: true });
     }
+    /* ---- 项目版本对比(跨设备协作:客户端本地 ver vs 服务端 ver) ----
+     * GET /api/projects/:id/compare?ver=<client__ver>[&since=<lastUpdateTs>]
+     * 返回:{serverVer, match, updatedAt, epidUpdates:[{epid, ver}]} match=true 版本一致,match=false 冲突或服务端更新
+     * 客户端拿到 match=false 后再自行拉 /api/state 合并,或 POST /state/restore 回滚 */
+    if (pathname.startsWith('/api/projects/') && pathname.endsWith('/compare') && req.method === 'GET') {
+      let pid;
+      try { pid = decodeURIComponent(pathname.slice('/api/projects/'.length, -'/compare'.length)); } catch (_) { return fail(res, 400, '非法 projectId 编码', 400); }
+      if (!pid) return fail(res, 400, '缺少 projectId', 400);
+      const cur = readJSON(stateFile(user.id), { rev: 0, state: null });
+      const p = (cur.state && cur.state.projects || []).find(x => x.id === pid);
+      if (!p) return fail(res, 404, '项目不存在', 404);
+      const clientVer = +((u.searchParams && u.searchParams.get('ver')) || 0);
+      const serverVer = +(p.__ver || 0);
+      const epidUpdates = (p.episodes || []).map(ep => ({ id: ep.id, ver: +(ep.__ver || 0), title: ep.title || null }));
+      return ok(res, {
+        serverVer, clientVer, match: clientVer === serverVer,
+        rev: cur.rev || 0,
+        updatedAt: p.__lastSaved || null,
+        epidUpdates,
+        digest: (p.releases && p.releases.length) ? p.releases[p.releases.length - 1].digest : null,
+      });
+    }
+    /* ---- 多项目增量更新(跨设备协作长轮询) ----
+     * GET /api/projects/updates?since=<msTimestamp>&limit=20
+     * 返回:{updates:[{pid, ver, updatedAt, epidUpdates}], serverTime} —— 只返回 since 之后有变动的项目 */
+    if (pathname === '/api/projects/updates' && req.method === 'GET') {
+      const since = +((u.searchParams && u.searchParams.get('since')) || 0);
+      const limit = Math.min(100, +((u.searchParams && u.searchParams.get('limit')) || 20));
+      const cur = readJSON(stateFile(user.id), { rev: 0, state: null });
+      const list = (cur.state && cur.state.projects || []).filter(p => +(p.__lastSaved || 0) > since)
+        .map(p => ({
+          id: p.id, name: p.name,
+          ver: +(p.__ver || 0),
+          updatedAt: p.__lastSaved || null,
+          epidUpdates: (p.episodes || []).map(ep => ({ id: ep.id, ver: +(ep.__ver || 0) })),
+        })).slice(0, limit);
+      return ok(res, { updates: list, serverTime: Date.now(), rev: cur.rev || 0 });
+    }
     /* ---- 钱包账本:余额 + 最近 100 条流水(审计/对账只读视图) ---- */
     if (pathname === '/api/wallet' && req.method === 'GET') {
       const w = readWallet(user.id);
       return ok(res, { balance: w.balance, entries: w.entries.slice(-100).reverse() });
+    }
+
+    /* ---- 项目维度成本聚合:operation 台账(projectId 在扣费登记时落标)按 (opId,action) 取最新记录
+     * 汇总——金额取动作白名单价(服务端权威);refunded 终态记退回,净消耗=charged-refunded;
+     * 未标 projectId 的调用(百宝箱工具/旧数据)归 unlabeled,不摊进任何项目 */
+    if (pathname === '/api/billing/usage' && req.method === 'GET') {
+      const odb = opsDB();
+      const latest = {};
+      odb.list.forEach(o => {
+        if (o.userId !== user.id) return;
+        const k = o.opId + '|' + o.action;
+        if (!latest[k] || (o.createdAt || 0) >= (latest[k].createdAt || 0)) latest[k] = o;
+      });
+      const mkBucket = () => ({ count: 0, charged: 0, refunded: 0, families: {} });
+      const projects = {}, unlabeled = mkBucket();
+      for (const k in latest) {
+        const o = latest[k];
+        const price = BILLING_ACTIONS[o.action] || 0;
+        const b = o.projectId ? (projects[o.projectId] = projects[o.projectId] || mkBucket()) : unlabeled;
+        const fam = String(o.action || '').split('.')[0];
+        const fb = b.families[fam] = b.families[fam] || { count: 0, charged: 0, refunded: 0 };
+        for (const s of [b, fb]) { s.count++; s.charged += price; if (o.status === 'refunded') s.refunded += price; }
+      }
+      return ok(res, { projects, unlabeled });
     }
 
     if (pathname === '/api/upload' && req.method === 'POST') {
@@ -1736,15 +1893,35 @@ const server = http.createServer(async (req, res) => {
       const hash = crypto.createHash('sha1').update(name + Date.now() + crypto.randomBytes(6)).digest('hex').slice(0, 16);
       const dir = path.join(UPLOADS_DIR, user.id);
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, hash + ext), Buffer.from(b64, 'base64'));
-      return ok(res, { url: `/uploads/${user.id}/${hash}${ext}` });
+      /* R19:tmp+rename 原子落盘(媒体路由不会读到写了一半的文件);
+       * 配额检查→落盘串行化(每用户锁):并发上传同过配额检查的 TOCTOU 超配就此封死 */
+      const upLock = 'upload:' + user.id;
+      if (!execLock(upLock)) return fail(res, 409, '有上传正在进行,请稍后重试', 409);
+      try {
+        const quota2 = (CONFIG.uploadQuotaMB ?? 200) * 1024 * 1024;
+        if (userUploadBytes(user.id) + bytes > quota2) {
+          return fail(res, 413, `上传配额已满(每用户 ${CONFIG.uploadQuotaMB ?? 200}MB),请先清理历史文件`, 413);
+        }
+        // 崩溃残留的 tmp_ 顺带清理(1 小时前的必为残留——持锁期间正常写入秒级完成)
+        try {
+          for (const f of fs.readdirSync(dir)) {
+            if (!f.startsWith('tmp_')) continue;
+            try { if (Date.now() - fs.statSync(path.join(dir, f)).mtimeMs > 3600 * 1000) fs.unlinkSync(path.join(dir, f)); } catch (_) {}
+          }
+        } catch (_) {}
+        const file = path.join(dir, hash + ext);
+        const tmp = path.join(dir, 'tmp_' + crypto.randomBytes(8).toString('hex'));
+        fs.writeFileSync(tmp, Buffer.from(b64, 'base64'));
+        fs.renameSync(tmp, file);
+        return ok(res, { url: `/uploads/${user.id}/${hash}${ext}` });
+      } finally { execUnlock(upLock); }
     }
 
     if (pathname === '/api/uploads' && req.method === 'GET') {
       const dir = path.join(UPLOADS_DIR, user.id);
       let files = [];
       try {
-        files = fs.readdirSync(dir).map(f => {
+        files = fs.readdirSync(dir).filter(f => !f.startsWith('tmp_')).map(f => {
           const st = fs.statSync(path.join(dir, f));
           return { name: f, url: `/uploads/${user.id}/${f}`, size: st.size, mtime: st.mtime.toISOString() };
         }).sort((a, b) => b.mtime.localeCompare(a.mtime));
@@ -1753,7 +1930,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname.startsWith('/api/uploads/') && req.method === 'DELETE') {
-      const fname = decodeURIComponent(pathname.slice('/api/uploads/'.length));
+      let fname = '';
+      try { fname = decodeURIComponent(pathname.slice('/api/uploads/'.length)); } catch (_) { return fail(res, 400, '非法文件名编码', 400); } // R14:畸形 % 编码转 400 而非 500
       if (!fname || fname.includes('/') || fname.includes('\\') || fname.includes('..')) {
         return fail(res, 403, '非法文件名', 403);
       }
@@ -2120,7 +2298,7 @@ const server = http.createServer(async (req, res) => {
         if (!r.ok) return failRefund(r.status === 401 ? 502 : r.status, volcFailMsg(r, text, '视频任务创建'), r.status);
         const data = parseUpstreamJSON(text, '视频任务创建');
         if (!data.id) return failRefund(502, '视频任务创建失败:未返回任务 id', 502);
-        jobRegister(jdb, user.id, data.id, b.job, inputHash, charge); // 登记到服务端任务中心(断点续查/审计;含计费操作,晚失败可自动退费)
+        jobRegister(jobsDB(), user.id, data.id, b.job, inputHash, charge); // 登记到服务端任务中心(断点续查/审计;含计费操作,晚失败可自动退费)。R14:重读最新快照——上方两次上游 await 期间他请求对 jobs.json 的写入(轮询回写/对账退款落标)不能被旧快照整体回滚
         return ok(res, { id: data.id, duration, droppedFrames, relayedVideo }); // duration=档位吸附后的实际上游时长;droppedFrames=混用兜底已去首尾帧;relayedVideo=参考视频经公网中转
         } finally { execUnlock(vidLock); } // 十一轮并发锁统一释放
       } catch (e) {
@@ -2137,7 +2315,8 @@ const server = http.createServer(async (req, res) => {
       if (!CONFIG.volcApiKey) return fail(res, 503, '服务端未配置火山引擎 key,请在 config.json 填入 volcApiKey(或设置环境变量 VOLC_API_KEY)', 503);
       sweepJobs(); // 超时清扫(七轮):任何轮询都顺带全量清扫过期任务(十一轮:清扫只转 needs_reconcile,退款由对账定)
       reconcileStaleJobs().catch(() => {}); // 十一轮 P1-4:顺带后台对账其它待对账任务(不阻塞本次响应)
-      const taskId = decodeURIComponent(pathname.slice('/api/volc/video/'.length));
+      let taskId = '';
+      try { taskId = decodeURIComponent(pathname.slice('/api/volc/video/'.length)); } catch (_) { return fail(res, 400, '非法任务 id 编码', 400); } // R14:畸形 % 编码转 400 而非 500
       if (!/^[\w-]+$/.test(taskId)) return fail(res, 400, '非法任务 id');
       // 任务归属校验:仅本人登记的任务可查询;未登记任务一律 404(关闭早期遗留任务的首查认领,封死跨账号任务 id 探测)
       {
@@ -2156,6 +2335,10 @@ const server = http.createServer(async (req, res) => {
             error: own.status === 'timed_out' ? '任务超时(60 分钟未终态且对账上游无结果,积分已由服务端退回)' : '任务已取消并退款',
           });
         }
+        // R14:其余终态(succeeded/failed)直接回本地登记态——不再打上游:上游任务过期(404)后
+        // 已交付任务的轮询不应返回上游错误;failed 终态也不重复触发晚失败退款判定(无效 IO)
+        if (own.status === 'succeeded') return ok(res, { status: 'succeeded', videoUrl: own.videoUrl || '', remoteUrl: own.remoteUrl || '' });
+        if (own.status === 'failed') return ok(res, { status: 'failed', error: own.error || '上游生成失败' });
       }
       let r;
       try {
@@ -2217,6 +2400,27 @@ const server = http.createServer(async (req, res) => {
       return ok(res, out);
     }
 
+    /* ---- 视频任务取消(R19):用户主动中止在途任务——job 转 cancelled 终态 + 按原账单退款。
+     * 与客户端退款镜像分离的原因:在途视频 operation 恒为 executing(交付发生在轮询 succeeded),
+     * 客户端退款端点对 executing 一律 409(P0-2 套利拦截);取消是服务端内部退款(幂等键同源防双退)。
+     * 安全闭环:cancelled 终态后轮询短路不查上游(2238),晚到的上游成功被交付守卫拦下(2283)——
+     * 退款与成品不可兼得。幂等:已 cancelled 返回 already;已终态(成功/失败/超时)409 不重复退款。 */
+    if (pathname.startsWith('/api/volc/video/') && pathname.endsWith('/cancel') && req.method === 'POST') {
+      let taskId = '';
+      try { taskId = decodeURIComponent(pathname.slice('/api/volc/video/'.length, -'/cancel'.length)); } catch (_) { return fail(res, 400, '非法任务 id 编码', 400); }
+      if (!/^[\w-]+$/.test(taskId)) return fail(res, 400, '非法任务 id');
+      const jdb = jobsDB();
+      const j = jdb.list.find(x => x.upstreamId === taskId);
+      if (!j) return fail(res, 404, '任务不存在或未登记(创建中的任务请稍候再取消)', 404);
+      if (j.userId !== user.id) return fail(res, 403, '无权取消该任务', 403);
+      if (j.status === 'cancelled') return ok(res, { cancelled: true, already: true, refunded: 0 });
+      if (JOB_TERMINAL.has(j.status)) return fail(res, 409, '任务已终态(' + j.status + '),不可取消', 409);
+      jobUpdate(jdb, taskId, { status: 'cancelled', error: '用户取消生成' }); // 先落终态:终态保护下并发轮询不得翻转
+      refundJob(jobsDB().list.find(x => x.upstreamId === taskId), '用户取消生成'); // 内部退款:退款成功置 refunded(交付守卫依据)
+      const jr = jobsDB().list.find(x => x.upstreamId === taskId); // 重读最新快照(refundJob 内部按新快照落 refunded)
+      return ok(res, { cancelled: true, refunded: !!(jr && jr.refunded) });
+    }
+
     /* ---- 任务中心:本人最近生成任务(视频断点续查/审计) ---- */
     if (pathname === '/api/jobs' && req.method === 'GET') {
       sweepJobs(); // 超时清扫(七轮):任何查询都顺带全量清扫过期任务(用户不再轮询也不再悬挂)
@@ -2269,15 +2473,22 @@ const server = http.createServer(async (req, res) => {
           return ok(res, data);
         };
 
-        /* 关键帧提取:{video,count?} → 按时间轴均匀抽帧 {frames:[url]} */
+        /* 关键帧提取:{video,count?} → 按时间轴均匀抽帧 {frames:[url]};
+         * 或 {video,times:[秒]} 定点抽帧(拉片按场景段中点取关键帧),与 count 二选一,均 ≤24 帧 */
         if (ff === 'frames') {
           const fp = localUploadPath(b.video, user.id); // 所有权隔离:只处理本人上传/服务端产物
           if (!fp) return ffFail(400, '视频不存在(需为本站 /uploads/ 路径)', 400);
-          const count = Math.max(1, Math.min(24, +(b.count || 6)));
           const dur = await ffprobeDuration(fp);
+          let ts;
+          if (Array.isArray(b.times) && b.times.length) {
+            ts = b.times.map(t => +t).filter(t => Number.isFinite(t) && t >= 0 && t < dur).slice(0, 24);
+            if (!ts.length) return ffFail(400, 'times 无有效时间点(需在 0~时长 秒内)', 400);
+          } else {
+            const count = Math.max(1, Math.min(24, +(b.count || 6)));
+            ts = Array.from({ length: count }, (_, i) => (dur * (i + 0.5)) / count);
+          }
           const frames = [];
-          for (let i = 0; i < count; i++) {
-            const t = (dur * (i + 0.5)) / count;
+          for (const t of ts) {
             const out = ffOutName('.jpg');
             await runFF(FFMPEG_BIN, ['-y', '-ss', t.toFixed(2), '-i', fp, '-frames:v', '1', '-q:v', '3', '-vf', 'scale=640:-2', out.abs], 60000);
             frames.push(out.url);
@@ -2332,6 +2543,14 @@ const server = http.createServer(async (req, res) => {
             segs.push({ start: points[i], dur: Math.round(Math.min(len, Math.max(Math.min(len, minD), Math.min(len, maxD))) * 10) / 10 });
           }
           if (!segs.length) segs = [{ start: 0, dur: Math.round(Math.min(dur, maxD) * 10) / 10 }]; // 无场景切换:整段截
+          /* detect_only(拉片):只探测不渲染——返回全部场景段(按时间序,max_number 放宽到 24),
+           * 调用方自取段中点抽帧+理解;与智剪同价(场景探测是价值本体,渲染只是顺路) */
+          if (b.detect_only) {
+            const cap = Math.max(1, Math.min(24, +(b.max_number || 24)));
+            let all = segs.sort((a, b2) => a.start - b.start);
+            if (all.length > cap) all = all.sort((a, b2) => b2.dur - a.dur).slice(0, cap).sort((a, b2) => a.start - b.start); // 超上限:保留最长段(时间序)
+            return ffOk({ segments: all, scenes: points.length - 1, duration: dur, detectOnly: true });
+          }
           segs.sort((a, b2) => b2.dur - a.dur);
           const picked = (b.cut_mode === 'Single' ? segs.slice(0, 1) : segs.slice(0, maxN))
             .sort((a, b2) => a.start - b.start);
@@ -2732,7 +2951,7 @@ const server = http.createServer(async (req, res) => {
       if (!target) return fail(res, 404, '用户不存在');
       const delta = Math.trunc(+b.delta || 0);
       if (!delta) return fail(res, 400, '调整数量不能为 0');
-      const granted = grantCredits(target.id, delta, { reason: '管理员调整:' + String(b.reason || '').slice(0, 80), username: target.username, type: delta > 0 ? 'gain' : 'spend' });
+      const granted = grantCredits(target.id, delta, { reason: '管理员调整:' + String(b.reason || '').slice(0, 80), username: target.username, type: delta > 0 ? 'gain' : 'spend', idem: 'admin_' + target.id + '_' + delta + '_' + String(b.reason || '').slice(0, 20) + '_' + Math.floor(Date.now() / 5000) }); // R14:5 秒窗口幂等——双击/重试同参数调整只入账一次,窗口外的人工重复调整不受影响
       if (!granted) return fail(res, 409, '对方账号数据未就绪(未登录过前端)', 409);
       return ok(res, { adjusted: delta });
     }

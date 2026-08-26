@@ -25,6 +25,27 @@
     </div>`;
   }
 
+  /* ---- 镜头状态归一(P1-4):分散角标(确认闸/审片红标/终稿锁/素材过期/完成勾)合并为单一状态条,颜色分级、纯 UI 归并不动数据。
+   * 优先级:终稿 > 素材已更新 > 失败 > 已出片(带审分) > 已确认 > 待确认;生成中不走过场条——整幅蒙层(带取消)即其状态。 ---- */
+  function shotStatusHTML(p, s) {
+    const vstat = (s.video && s.video.status) || 'none';
+    const base = 'position:absolute;left:5px;bottom:5px;font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;color:#fff;';
+    if (s.final) return `<span data-unfinal="${s.id}" style="${base}background:rgba(245,158,11,.95);cursor:pointer" title="已定为终稿(点击解锁,解锁后可重新生成/回收)">🔒 终稿</span>`;
+    if (Store.shotVideoStale(p, s)) return `<span style="${base}background:rgba(245,158,11,.95)" title="引用素材已更新,下次生成自动用新图;建议重新生成该镜">↻ 素材已更新</span>`;
+    if (vstat === 'failed') return `<span style="${base}background:#f87171" title="${U.esc(s.video.error || '生成失败')}">✗ 失败</span>`;
+    if (vstat === 'done') {
+      const rv = (s.reviews || [])[0];
+      if (rv && !(window.Review && Review.reportStale(s))) {
+        const low = rv.score < 7;
+        return `<span style="${base}background:${low ? '#f87171' : 'var(--green)'}" title="最近审片 ${rv.score.toFixed(1)} 分${low ? ',低于达标线 7.0,建议重抽' : ''}">✓ 已出片 · 审 ${rv.score.toFixed(1)}</span>`;
+      }
+      return `<span style="${base}background:var(--green)" title="已出片${rv ? '(审片报告已过期,建议重审)' : ''}">✓ 已出片</span>`;
+    }
+    return s.confirm
+      ? `<span data-cfm="${s.id}" style="${base}background:var(--green);cursor:pointer" title="已确认(点击取消确认)">✓ 已确认</span>`
+      : `<span data-cfm="${s.id}" style="${base}background:rgba(120,128,140,.88);cursor:pointer" title="待确认:点击确认本镜剧情与提示词;未确认镜头不参与批量生成">待确认</span>`;
+  }
+
   /* ---- 单镜缩略图块(分镜视频/剪辑两视图共用;column 时补 width:100% 撑满竖列) ---- */
   function shotThumbHTML(p, ep, s, i, sel, col) {
     const sm = window.__selMode;
@@ -42,15 +63,7 @@
           ${useVideoThumb
             ? `<video src="${svurl}" preload="metadata" muted style="width:100%;height:100%;object-fit:cover;pointer-events:none"></video>`
             : f ? `<img src="${U.thumb(f)}">` : '<div class="ws-thumb-empty">无画面</div>'}
-          ${vstat === 'generating' ? '<div class="ws-gen"><span class="spinner"></span>生成中</div>' : ''}
-          ${vstat === 'failed' ? `<div class="ws-fail" title="${U.esc(s.video.error || '生成失败')}">✗ 失败</div>` : ''}
-          ${vstat === 'done' ? '<span class="ws-done">✓</span>' : ''}
-          ${Store.shotVideoStale(p, s) ? '<span style="position:absolute;left:5px;bottom:5px;background:rgba(245,158,11,.95);color:#fff;font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700" title="引用素材已更新,下次生成自动用新图;建议重新生成该镜">↻ 素材已更新</span>' : ''}
-          ${s.final ? `<span class="ws-final" data-unfinal="${s.id}" style="cursor:pointer" title="已定为终稿(点击解锁,解锁后可重新生成/回收)">终稿</span>` : ''}
-          ${s.confirm
-            ? `<span data-cfm="${s.id}" style="position:absolute;right:5px;top:5px;width:17px;height:17px;border-radius:50%;background:var(--green);color:#fff;font-size:11px;font-weight:800;display:flex;align-items:center;justify-content:center;cursor:pointer" title="已确认(点击取消确认)">✓</span>`
-            : `<span data-cfm="${s.id}" style="position:absolute;right:5px;top:5px;background:rgba(120,128,140,.88);color:#fff;font-size:9px;padding:2px 6px;border-radius:5px;font-weight:700;cursor:pointer" title="待确认:点击确认本镜剧情与提示词;未确认镜头不参与批量生成">待确认</span>`}
-          ${(s.reviews || [])[0] && s.reviews[0].score < 7 && !(window.Review && Review.reportStale(s)) ? `<span style="position:absolute;left:5px;top:5px;background:#f87171;color:#fff;font-size:10px;padding:2px 6px;border-radius:5px;font-weight:700" title="最近审片 ${s.reviews[0].score.toFixed(1)} 分,低于达标线 7.0,建议重抽">审 ${s.reviews[0].score.toFixed(1)}</span>` : ''}
+          ${vstat === 'generating' ? `<div class="ws-gen"><span class="spinner"></span>生成中${s.video.upstreamId ? `<span class="ws-cancel" data-cancel="${s.id}" title="取消生成:积分退回,上游结果不再交付">✕ 取消</span>` : ''}</div>` : shotStatusHTML(p, s)}
         </div>
         <div class="ws-thumb-name">${(() => { const g = s.groupId && (ep.groups || []).find(x => x.id === s.groupId); return g ? `<span style="color:hsl(${U.hashColor(g.id) % 360},70%,55%)" title="镜头组:${U.esc(g.name)}">●</span> ` : ''; })()}${i + 1}. ${U.esc((s.name || s.plot || '镜头' + (i + 1)).slice(0, 10))}</div>
       </div>`;
@@ -75,6 +88,7 @@
                 <div class="hint" style="line-height:1.7">💡 ${U.esc(ferr.advice)}</div>
                 <div class="row" style="margin-top:10px;gap:8px">
                   <button class="btn sm" data-x="editprompt">✏ 修改提示词</button>
+                  <button class="btn sm" data-x="valimg" title="廉价改图验证:先按当前提示词出静态验证图(2~3 积分,约 1 分钟),画面满意后再抽视频">🖼 先出验证图</button>
                   <button class="btn sm primary" data-x="retrygen">↻ 调整后重新生成</button>
                 </div>
               </div>
@@ -232,18 +246,12 @@
     </div>`;
   }
 
-  /* ---- 美术风格后缀:默认取项目风格+影调,可按集自定义;注入本集每个分镜的生成提示词(已含不重复) ---- */
+  /* ---- 美术风格后缀:实现下沉 domain.js(双端单一来源);注入本集每个分镜的生成提示词(已含不重复) ---- */
   function artSuffixOf(p, ep) {
-    if (ep.styleSuffix !== undefined && ep.styleSuffix !== null && String(ep.styleSuffix).trim() !== '') return String(ep.styleSuffix).trim();
-    // 默认:项目风格 + 影调(非「无」时)+ 全局设定
-    const parts = [styleOf(p)];
-    if (p.globalSetting) parts.push(p.globalSetting);
-    return parts.join(',');
+    return Domain.artSuffixOf(p, ep);
   }
   function artSuffixApp(p, ep, base) {
-    const suf = artSuffixOf(p, ep);
-    if (!suf) return '';
-    return (base || '').includes(suf) ? '' : ',' + suf;
+    return Domain.artSuffixApp(p, ep, base);
   }
 
   /* 美术风格后缀编辑弹窗:附项目风格/影调/专家/导演设定参照,保存后注入本集全部分镜提示词 */
@@ -280,15 +288,20 @@
       const r = Store.findSubject(p, name);
       return r ? (r.form ? { name, image: r.form.image, kind: r.s.kind, refAudio: r.s.refAudio } : r.s) : null;
     };
-    /* 分镜 tab 预计算:连抽数/缺图与素材审核警示/参考图/识别补充(版本与审片数据由 versCardHTML 自算) */
+    /* 分镜 tab 预计算:连抽数/主体缺失与缺图/素材审核警示/参考图/识别补充(版本与审片数据由 versCardHTML 自算)
+     * 十六轮 主体缺失标记:引用名在主体库中找不到(被删除,formerNames 也兜不住)与"主体在但缺图"分开标记——
+     * 前者生成时完全不带主体参考(静默丢一致性),后者只是废片风险高 */
     const drawN = [1, 2, 3].includes(ep.uiDrawN) ? ep.uiDrawN : 1;
-    const missImg = (sel.characters || []).filter(c => { const sj = subjOf(c); return !(sj && (sj.image || sj.imgRef)); });
-    if (sel.scene) { const sj = subjOf(sel.scene); if (!(sj && (sj.image || sj.imgRef))) missImg.push(sel.scene); }
+    const missSubj = [], missImg = [];
+    (sel.characters || []).forEach(c => { const sj = subjOf(c); if (!sj) missSubj.push(c); else if (!(sj.image || sj.imgRef)) missImg.push(c); });
+    if (sel.scene) { const sj = subjOf(sel.scene); if (!sj) missSubj.push(sel.scene); else if (!(sj.image || sj.imgRef)) missImg.push(sel.scene); }
+    (sel.props || []).forEach(pr => { if (!subjOf(pr)) missSubj.push(pr); });
     const revStatus = {}; (Store.state.assetReviews || []).forEach(r => { if (r.url && !(r.url in revStatus)) revStatus[r.url] = r.status; });
     const shotUrls = window.HumanReview ? HumanReview.shotImageUrls(p, sel) : [];
     const rejCnt = shotUrls.filter(u2 => revStatus[u2] === 'rejected').length;
     const pendCnt = shotUrls.filter(u2 => revStatus[u2] === 'pending').length;
     const warnLines = [];
+    if (missSubj.length) warnLines.push(`出场主体不存在:${missSubj.map(U.esc).join('、')}——可能已被删除,生成时将不带其参考;请到「主体」重建,或从分镜中移除`);
     if (missImg.length) warnLines.push(`出场主体缺图:${missImg.map(U.esc).join('、')}——废片风险高,先到「主体」补图或注册主体`);
     if (rejCnt) warnLines.push(`${rejCnt} 个引用素材真人审核未通过,生成会被拦截,请更换或重新提交审核`);
     if (pendCnt) warnLines.push(`${pendCnt} 个引用素材真人审核中,通过前生成可能失败`);
@@ -318,15 +331,15 @@
       <label class="field" style="margin-bottom:8px"><span>视频出镜(出场主体)</span>
         <div class="row wrap" style="gap:5px;align-items:center">
           <span class="small muted" style="flex:none;width:56px">参考角色</span>
-          ${(sel.characters || []).map(c => { const sj = subjOf(c); const noImg = !(sj && (sj.image || sj.imgRef)); return `<span class="tag ${noImg ? 'red' : 'cyan'}" title="${noImg ? '⚠ 缺主体图,废片风险高(到「主体」补图)' : '已绑定主体图'}">${noImg ? '⚠ ' : '🖼 '}${U.esc(c)}</span>`; }).join('') || '<span class="small muted">无</span>'}
+          ${(sel.characters || []).map(c => { const sj = subjOf(c); if (!sj) return `<span class="tag red" title="✕ 主体不存在(可能已删除),生成时将不带其参考——到「主体」重建或从分镜移除">✕ ${U.esc(c)}</span>`; const noImg = !(sj.image || sj.imgRef); return `<span class="tag ${noImg ? 'red' : 'cyan'}" title="${noImg ? '⚠ 缺主体图,废片风险高(到「主体」补图)' : '已绑定主体图'}">${noImg ? '⚠ ' : '🖼 '}${U.esc(c)}</span>`; }).join('') || '<span class="small muted">无</span>'}
         </div>
         <div class="row wrap" style="gap:5px;align-items:center;margin-top:5px">
           <span class="small muted" style="flex:none;width:56px">参考场景</span>
-          ${sel.scene ? (() => { const sj = subjOf(sel.scene); const noImg = !(sj && (sj.image || sj.imgRef)); return `<span class="tag ${noImg ? 'red' : 'green'}" title="${noImg ? '⚠ 缺场景图(到「主体」补图)' : '已绑定场景图'}">${noImg ? '⚠ ' : '🏞 '}${U.esc(sel.scene)}</span>`; })() : '<span class="small muted">无</span>'}
+          ${sel.scene ? (() => { const sj = subjOf(sel.scene); if (!sj) return `<span class="tag red" title="✕ 场景主体不存在(可能已删除),生成时将不带其参考——到「主体」重建或从分镜移除">✕ ${U.esc(sel.scene)}</span>`; const noImg = !(sj.image || sj.imgRef); return `<span class="tag ${noImg ? 'red' : 'green'}" title="${noImg ? '⚠ 缺场景图(到「主体」补图)' : '已绑定场景图'}">${noImg ? '⚠ ' : '🏞 '}${U.esc(sel.scene)}</span>`; })() : '<span class="small muted">无</span>'}
         </div>
         <div class="row wrap" style="gap:5px;align-items:center;margin-top:5px">
           <span class="small muted" style="flex:none;width:56px">参考道具</span>
-          ${(sel.props || []).map(pr => `<span class="tag yellow">🗡 ${U.esc(pr)}</span>`).join('') || '<span class="small muted">无</span>'}
+          ${(sel.props || []).map(pr => subjOf(pr) ? `<span class="tag yellow">🗡 ${U.esc(pr)}</span>` : `<span class="tag red" title="✕ 道具主体不存在(可能已删除)——到「主体」重建或从分镜移除">✕ ${U.esc(pr)}</span>`).join('') || '<span class="small muted">无</span>'}
         </div>
         ${recogExtra.length ? `<div class="row wrap" style="gap:5px;margin-top:5px;align-items:center">
           <span class="small muted" style="flex:none">已识别:</span>
@@ -363,7 +376,10 @@
           <div style="flex:1">
             <div class="small muted" style="margin-bottom:4px">首帧</div>
             <div class="ws-thumb-img" style="aspect-ratio:16/9">${sel.firstFrame ? `<img src="${U.thumb(sel.firstFrame)}">` : '<div class="ws-thumb-empty">未设置</div>'}</div>
-            <button class="btn ghost sm" style="margin-top:4px" data-ract="ffirst">↻ 生成首帧</button>
+            <div class="row" style="gap:4px;margin-top:4px">
+              <button class="btn ghost sm" data-ract="ffirst">↻ 生成首帧</button>
+              <button class="btn ghost sm" data-ract="fpick" title="宫格海选:一次文生图出 2×2 构图变体(1 次 ${COST.image} 积分顶 4 张,同批风格一致),4 选 1 回填首帧">🀄 海选</button>
+            </div>
           </div>
           <div style="flex:1">
             <div class="small muted" style="margin-bottom:4px">尾帧</div>
@@ -375,12 +391,17 @@
           <span class="switch ${sel.inheritTail ? 'on' : ''}"></span>
           <span class="small">继承前镜尾帧${selIdx === 0 ? '(第一镜无上一镜,不可用)' : '(首帧自动 = 上一镜尾帧,保持画面连贯)'}</span>
         </div>` : ''}
+        <div class="row" style="gap:6px;margin-top:10px">
+          <button class="btn sm grow" data-ract="valimg" ${sel.final ? 'disabled title="已定为终稿,解锁后可重新生成"' : ''} title="廉价改图验证:改提示词/换主体后,先按当前输入出一张静态验证图(主体参考≥2 张按多图融合 3 积分,否则文生图 2 积分,约 1 分钟),满意后再点「生成视频」;验证图自动设为分镜参考图(ref 策略生效),覆盖前自动留档可回滚">🖼 出验证图 <span class="cost-pill" style="margin:0 0 0 6px">${COST.image}~${COST.fusion} 积分</span></button>
+        </div>
+        <div class="hint" style="margin-top:4px">改图先验证:出图 2~3 积分 ≈ 1 分钟,远比直接抽视频(${COST.video} 积分起)便宜;验证图即 ref 策略的分镜参考图</div>
       </div>
       ${versCardHTML(sel)}
       <div class="row" style="gap:5px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
         <div class="dd">
           <button class="btn ghost sm" data-x="dd-ops">⋯ 分镜操作 ▾</button>
           <div class="dd-menu" data-ddm="ops" style="display:none">
+            <button data-ract="chatref">📎 加入对话<span class="small muted" style="display:block;font-weight:400">把本镜挂进导演助手引用,对话里精准@它</span></button>
             <button data-ract="insert">＋ 插入分镜<span class="small muted" style="display:block;font-weight:400">在本镜之后插入空白分镜</span></button>
             <button data-ract="trans">⇄ 新增转场<span class="small muted" style="display:block;font-weight:400">本镜与下一镜之间</span></button>
             <button data-ract="dl">⬇ 下载本镜</button>
@@ -454,14 +475,16 @@
     };
     main.querySelector('[data-x=bigplay]').onclick = e => {
       if (e.target && e.target.closest && e.target.closest('[data-pv]')) return; // 点在真实视频上:交给播放器控件,不抢事件
-      if (e.target && e.target.closest && e.target.closest('[data-x=stopadv],[data-x=retrygen],[data-x=editprompt]')) return; // 失败诊断卡片:按钮自处理,不触发全屏预览
+      if (e.target && e.target.closest && e.target.closest('[data-x=stopadv],[data-x=retrygen],[data-x=editprompt],[data-x=valimg]')) return; // 失败诊断卡片:按钮自处理,不触发全屏预览
       window.SB.openPlayer(p, ep, false);
     };
-    // 失败诊断卡片:修改提示词 / 重新生成
+    // 失败诊断卡片:修改提示词 / 廉价验证图 / 重新生成
     const epb = main.querySelector('[data-x=editprompt]');
     if (epb) epb.onclick = e => { e.stopPropagation(); openPromptPanel(p, ep, sel, main); };
+    const vig = main.querySelector('[data-x=valimg]');
+    if (vig) vig.onclick = e => { e.stopPropagation(); SBGen.genShotValidate(p, ep, sel, main); };
     const rpg = main.querySelector('[data-x=retrygen]');
-    if (rpg) rpg.onclick = e => { e.stopPropagation(); SBGen.createShotVideo(p, ep, sel, main); };
+    if (rpg) rpg.onclick = e => { e.stopPropagation(); Commands.execute('shot.generateVideo', { pid: p.id, epid: ep.id, sid: sel.id, main, ui: true }).then(r => Commands.digest(r)); }; // 统一命令层(ui 模式)
     // 剧情概要轨道:点击概要格切镜;与时间轴双向滚动联动;渲染后选中镜居中(概要起始位随时间轴滑动)
     main.querySelectorAll('.ws-refcell[data-ref]').forEach(c => c.onclick = () => {
       if (window.__selMode) return;
@@ -588,6 +611,26 @@
       U.toast(`镜头${ep.shots.indexOf(s) + 1} ${s.confirm ? '已确认' : '已取消确认'}`, 'success');
       Views.episode(main, p.id, ep.id);
     });
+    // 取消生成(R19):在途视频任务主动中止——服务端转 cancelled 并按原账单退款,上游晚成功不再交付;
+    // 本地不落 upstreamId(已取消不可续查),积分以服务端权威余额回写(本路径不走 U.refund 镜像)
+    main.querySelectorAll('[data-cancel]').forEach(b => b.onclick = e => {
+      if (window.__selMode) return;
+      e.stopPropagation();
+      const s = ep.shots.find(x => x.id === b.dataset.cancel);
+      if (!s || !s.video || s.video.status !== 'generating' || !s.video.upstreamId) return;
+      U.confirm(`取消镜头${ep.shots.indexOf(s) + 1} 的视频生成?已扣积分将退回,上游任务即使晚成功也不再交付。`, async () => {
+        try {
+          await Media.cancelVideo(s.video.upstreamId);
+          s.video = { status: 'failed', error: '已取消生成(积分已退回)', model: s.video.model };
+          Store.save();
+          if (U.syncCreditsFromServer) U.syncCreditsFromServer(); // 服务端已退:余额回写对齐
+          U.toast(`镜头${ep.shots.indexOf(s) + 1} 已取消,积分已退回`, 'success');
+          Views.episode(main, p.id, ep.id);
+        } catch (err) {
+          U.toast('取消失败:' + err.message, 'error', 3500);
+        }
+      });
+    });
     /* ---- 剪辑视图专属:转场槽/转场卡/时间线微调/预览/合成 ---- */
     main.querySelectorAll('[data-tslot]').forEach(t => t.onclick = () => {
       const s2 = ep.shots.find(x => x.id === t.dataset.tslot);
@@ -608,7 +651,7 @@
         const usable = ep.shots.filter(s => (Store.shotVideoReady(s) && s.video.url) || s.image); // 统一就绪判定
         if (usable.length) return Timeline.openCompose(p, ep, main);
       }
-      window.SB.composeVideo(p, ep, main);
+      Commands.execute('episode.compose', { pid: p.id, epid: ep.id, main, ui: true }).then(r => Commands.digest(r)); // 统一命令层(ui 模式)
     };
   }
 
@@ -641,6 +684,7 @@
       const ddm = b.closest('[data-ddm]'); if (ddm) ddm.style.display = 'none'; // 菜单项触发后收起下拉
       const act = b.dataset.ract;
       if (act === 'ffirst') { SBGen.genShotFrame(p, ep, sel, 'first', main); return; }
+      if (act === 'fpick') { SBGen.genShotFramePick(p, ep, sel, main); return; }
       if (act === 'flast') { SBGen.genShotFrame(p, ep, sel, 'last', main); return; }
       if (act === 'adopthint') { // 采纳拆镜策略建议(与手动点选策略同一套 frames 初始化)
         if (!sel.strategyHint) return;
@@ -664,8 +708,13 @@
         }
         rerender(); return;
       }
-      if (act === 'create') SBGen.drawShotTimes(p, ep, sel, main, ep.uiDrawN || 1);
-      else if (act === 'redraw') SBGen.createShotVideo(p, ep, sel, main); // 再抽一次:同参数直接重生成
+      if (act === 'create') { // 单抽走统一命令层(ui 模式);连抽×N 为 UI 专属多版流程,维持 drawShotTimes
+        const drawN = ep.uiDrawN || 1;
+        if (drawN <= 1) Commands.execute('shot.generateVideo', { pid: p.id, epid: ep.id, sid: sel.id, main, ui: true }).then(r => Commands.digest(r));
+        else SBGen.drawShotTimes(p, ep, sel, main, drawN);
+      }
+      else if (act === 'valimg') SBGen.genShotValidate(p, ep, sel, main); // 廉价改图验证:先出静态验证图再决定出视频
+      else if (act === 'redraw') Commands.execute('shot.generateVideo', { pid: p.id, epid: ep.id, sid: sel.id, main, ui: true }).then(r => Commands.digest(r)); // 再抽一次:同参数直接重生成(统一命令层 ui 模式)
       else if (act === 'audio') genAudio(p, ep, sel, main);
       else if (act === 'del') U.confirm('删除该分镜?', async () => {
         // 在飞拦截(十一轮):本地任务 + 服务端 running jobs 合并判定(防刷新后孤儿上游任务)
@@ -677,6 +726,10 @@
       }, '删除');
       else if (act === 'dl') downloadShot(sel);
       else if (act === 'recycle') { if (sel.final) return U.toast('该分镜已定为终稿,请先「解锁终稿」', 'error'); snapshotShot(sel, '回收前状态'); sel.video = { status: 'none' }; sel.image = null; rerender(); U.toast('已回收到待生成状态', 'success'); }
+      else if (act === 'chatref') { // 📎 加入对话:本镜挂进导演助手引用(集级面板 chips,发送时活内容注入 LLM)
+        AgentRefs.add({ kind: 'shot', pid: p.id, eid: ep.id, id: sel.id, label: `@镜头${selIdx + 1}${sel.name ? '·' + String(sel.name).slice(0, 8) : ''}` });
+        if (!ep.agentOpen) { ep.agentOpen = true; Store.save(); Views.episode(main, p.id, ep.id); }
+      }
       else if (act === 'more') openMoreTools(p, sel);
       else if (act === 'artsuffix') openArtSuffix(p, ep, main);
       else if (act === 'bigprompt') openPromptPanel(p, ep, sel, main, true);
@@ -970,9 +1023,11 @@
         <div class="model-opt" data-t="light">💡 强化光影氛围</div>
         <div class="model-opt" data-t="camera">🎥 补充镜头语言</div>
         <div class="model-opt" data-t="style">🎨 统一项目风格(${U.esc(p.style)})</div>
+        <div class="model-opt" data-t="comment">💬 按指令改(说一句要改成什么样,AI 改写后可立即重新生成)</div>
       </div>`,
       onMount(m, close) {
         m.querySelectorAll('[data-t]').forEach(o => o.onclick = async () => {
+          if (o.dataset.t === 'comment') return; // 按指令改:单独接线(forEach 后会重新绑定)
           close();
           const strat = {
             detail: '增强细节描写,补充材质/纹理/微表情等画面细节',
@@ -1006,6 +1061,63 @@
           U.toast('提示词已优化(本地规则)', 'success');
           renderShots(main, p, ep);
         });
+        m.querySelector('[data-t=comment]').onclick = () => { close(); openCommentGen(s, main, p, ep); };
+      },
+    });
+  }
+
+  /* ---------- 按指令改(评论生成):一句自然语言 → LLM 结合镜头上下文改写提示词 → 应用并可立即重新生成 ----------
+   * 与上方四策略优化同层但更自由:用户指令驱动;改写走轻量 LLM(同优化路径的直连计费惯例,llm.optimize 标签),
+   * 重生成复用 SBGen.createShotVideo 完整管线(确认闸/计费/历史快照不变)。 */
+  function openCommentGen(s, main, p, ep) {
+    if (!API.isReady()) return U.toast('按指令改需要配置 LLM(改写提示词),请先登录后端或在「API 设置」配置直连', 'error');
+    const cur = (s.video && s.video.status === 'done' && s.video.frame) || s.image || '';
+    U.openModal({
+      title: '按指令改 · 镜头' + (s.order + 1),
+      body: `
+      <div class="hint" style="margin-bottom:10px">说一句要改成什么样(如「把背景换成雨夜」「人物换成红裙」「镜头拉远成全景」),AI 结合当前提示词与镜头上下文改写;确认新提示词后可立即重新生成。</div>
+      ${cur && !String(cur).startsWith('data:') ? `<div class="ws-thumb-img" style="width:220px;aspect-ratio:16/9;margin-bottom:10px"><img src="${U.thumb(cur)}"></div>` : ''}
+      <label class="field"><span>修改指令</span><textarea class="input" data-f="inst" rows="2" placeholder="把背景换成雨夜…"></textarea></label>
+      <div data-newp style="display:none;margin-top:8px">
+        <label class="field"><span>改写后的提示词(可再编辑)</span><textarea class="input" data-f="newprompt" rows="5"></textarea></label>
+      </div>`,
+      footer: `<button class="btn" data-x="cancel">取消</button>
+        <button class="btn" data-x="rewrite">改写提示词(-${COST.optimize}积分)</button>
+        <button class="btn primary" data-x="apply" disabled>应用并重新生成(-${COST.video}积分)</button>`,
+      onMount(m, close) {
+        m.querySelector('[data-x=cancel]').onclick = close;
+        m.querySelector('[data-x=rewrite]').onclick = async () => {
+          const inst = m.querySelector('[data-f=inst]').value.trim();
+          if (!inst) return U.toast('请先填写修改指令', 'error');
+          const btn = m.querySelector('[data-x=rewrite]');
+          btn.disabled = true;
+          try {
+            U.toast('AI 改写提示词中…', 'info');
+            const out = await API.chatJSON({
+              system: '你是短剧分镜改图专家。按用户指令改写文生图提示词:保留原提示词中与指令无关的画面要素与风格约定,只落实指令要求的变更;输出中文提示词,不超过120字。',
+              messages: [{ role: 'user', content: `镜头剧情:${s.plot || '(无)'}\n场景:${s.scene || '(无)'}\n出场:${(s.characters || []).join('、') || '(无)'}\n项目风格:${p.style || ''}\n当前提示词:${s.prompt || '(空,请据剧情与指令撰写)'}\n\n修改指令:${inst}\n\n返回 {"prompt":"改写后的完整提示词"}` }],
+              temperature: 0.7, max_tokens: 500, billingAction: 'llm.optimize',
+            });
+            if (!out || !out.prompt) throw new Error('LLM 返回为空');
+            m.querySelector('[data-f=newprompt]').value = String(out.prompt);
+            m.querySelector('[data-newp]').style.display = '';
+            m.querySelector('[data-x=apply]').disabled = false;
+            U.toast('提示词已改写,确认后可立即重新生成', 'success');
+          } catch (e) {
+            U.toast('改写失败:' + e.message, 'error', 3500);
+          } finally { btn.disabled = false; }
+        };
+        m.querySelector('[data-x=apply]').onclick = () => {
+          const np = m.querySelector('[data-f=newprompt]').value.trim();
+          if (!np) return U.toast('提示词为空', 'error');
+          Store.setShotPrompt(s, np);
+          s.confirm = false; // 提示词被改写,自动回落为未确认
+          close();
+          renderShots(main, p, ep);
+          U.confirm(`提示词已更新。立即按新提示词重新生成镜头${s.order + 1} 的视频?(-${COST.video}积分)`, () => {
+            Commands.execute('shot.generateVideo', { pid: p.id, epid: ep.id, sid: s.id, main, ui: true }).then(r => Commands.digest(r)); // 统一命令层(ui 模式)
+          }, '立即重新生成');
+        };
       },
     });
   }
@@ -1227,5 +1339,5 @@
     });
   }
 
-  window.SBViews = { scriptTrackHTML, scriptRefHTML, shotThumbHTML, playerBlockHTML, progressBlockHTML, versCardHTML, centerHTML, rightHTML, cutHTML, cutRightHTML, openTransPicker, bindCenter, bindRight, openPromptPanel, favPrompt, openPromptHistory, openPromptTool, openAssetPicker, smartLinkAssets, attachAssetName, assetChipsHTML, assetsInText, assetNamesOf, recognizedRefs, openMoreTools, openQuickEdit, openArtSuffix, artSuffixOf, artSuffixApp, downloadShot };
+  window.SBViews = { scriptTrackHTML, scriptRefHTML, shotThumbHTML, shotStatusHTML, playerBlockHTML, progressBlockHTML, versCardHTML, centerHTML, rightHTML, cutHTML, cutRightHTML, openTransPicker, bindCenter, bindRight, openPromptPanel, favPrompt, openPromptHistory, openPromptTool, openAssetPicker, smartLinkAssets, attachAssetName, assetChipsHTML, assetsInText, assetNamesOf, recognizedRefs, openMoreTools, openQuickEdit, openArtSuffix, artSuffixOf, artSuffixApp, downloadShot };
 })();

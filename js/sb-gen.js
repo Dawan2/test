@@ -188,7 +188,7 @@
       const rerender = () => { Store.save(); if (onEpPage(p, ep)) Views.episode(main, p.id, ep.id); };
       if (!(window.Media && Media.isReady())) {
         if (kind === 'first') { s.firstFrame = framePH(s, 'first'); s.__inheritPrevEp = false; }
-        else { s.lastFrame = framePH(s, 'last'); syncFrames(ep, p); }
+        else { s.lastFrame = framePH(s, 'last'); syncFramesWithNote(ep, p); }
         rerender();
         U.toast(label + '已重新生成(离线占位)', 'success');
         return;
@@ -200,14 +200,149 @@
         const prompt = (s.prompt || s.plot || '镜头画面') + ',电影感,' + label + '画面';
         const r = await Media.genImage({ prompt, size: '1280x720', model: Media.realModel(MODELS.image[0]), billingAction: 'image.gen', operationId: tk.id });
         if (kind === 'first') { s.firstFrame = r.url; s.__inheritPrevEp = false; }
-        else { s.lastFrame = r.url; syncFrames(ep, p); }
+        else { s.lastFrame = r.url; syncFramesWithNote(ep, p); }
         Store.save();
         Tasks.done(tk, { filename: `镜头${s.order + 1}_${label}.png`, dataURL: r.url });
         U.toast(label + '已生成' + (kind === 'last' ? ',开启继承的下一镜已联动' : ''), 'success');
       } catch (e) {
-        U.refund(COST.image, label + '生成失败');
+        U.refund(COST.image, label + '生成失败', (e && e.__opId) || tk.id); // 十七轮:镜像关联原 operation(服务端按原账单退)
         Tasks.fail(tk, e.message);
         U.toast(label + '生成失败,积分已自动返还:' + e.message, 'error', 4000);
+      }
+      rerender();
+    } finally {
+      s.__busy = false;
+    }
+  }
+
+  /* 首帧宫格海选:一次文生图出 2×2 构图变体(1 次计费顶 4 张,同批风格一致),切分后 4 选 1 回填首帧;
+   * 整图 1280x720 均分 → 每格 640x360 恰为 16:9,与首帧画幅一致;选中格传服务端换 /uploads/ 路径 */
+  async function genShotFramePick(p, ep, s, main) {
+    if (s.__busy) return U.toast('该分镜正在处理中', 'info');
+    s.__busy = true;
+    try {
+      const rerender = () => { Store.save(); if (onEpPage(p, ep)) Views.episode(main, p.id, ep.id); };
+      let cells = [];
+      if (!(window.Media && Media.isReady())) {
+        cells = PH.gridCells('镜头' + (s.order + 1), 'shot', 2, Date.now() % 991);
+        U.toast('海选宫格已生成(离线占位)', 'info');
+      } else {
+        const tk = Tasks.start({ type: '文生图(首帧海选)', model: MODELS.image[0], target: `${ep.title}·镜头${s.order + 1}`, cost: COST.image, projectId: p.id, episodeId: ep.id, shotId: s.id });
+        if (!U.charge(COST.image, '首帧海选(2×2 宫格):镜头' + (s.order + 1))) { Tasks.fail(tk, '积分不足'); return; }
+        U.toast('首帧海选宫格生成中(约 1 分钟)…', 'info');
+        try {
+          const prompt = (s.prompt || s.plot || '镜头画面') + ',2x2 宫格图,严格 2 行 2 列网格均分,每格同一镜头的不同构图方案(角度与景别变体),电影感首帧画面,网格线清晰';
+          const r = await Media.genImage({ prompt, size: '1280x720', model: Media.realModel(MODELS.image[0]), billingAction: 'image.gen', operationId: tk.id });
+          cells = await U.cropGridCells(r.url, 2);
+          if (!cells.length) {
+            // 与主体宫格同口径:原图已由上游交付,切分是本地后处理,失败不退费;原图直接回填首帧
+            snapshotShot(s, '首帧替换前');
+            s.firstFrame = r.url; s.__inheritPrevEp = false;
+            Store.save();
+            Tasks.done(tk, { filename: `镜头${s.order + 1}_首帧海选.png`, dataURL: r.url });
+            U.toast('宫格切分失败(跨域等),原图已直接回填首帧;本次不退费', 'info', 4500);
+            rerender();
+            return;
+          }
+          Tasks.done(tk, { filename: `镜头${s.order + 1}_首帧海选宫格.png`, dataURL: r.url });
+        } catch (e) {
+          U.refund(COST.image, '首帧海选失败:镜头' + (s.order + 1), (e && e.__opId) || tk.id); // 十七轮:镜像关联原 operation
+          Tasks.fail(tk, e.message);
+          U.toast('首帧海选失败,积分已自动返还:' + e.message, 'error', 4000);
+          return;
+        }
+      }
+      /* 4 选 1:点选格 → 上传 → 回填首帧(覆盖前留档可回滚) */
+      let picked = -1;
+      U.openModal({
+        title: `首帧海选 · 镜头${s.order + 1}(4 选 1)`,
+        wide: true,
+        body: `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+          ${cells.map((c, i) => `<img src="${U.thumb(c)}" data-cell="${i}" style="width:100%;border-radius:6px;cursor:pointer;border:2px solid transparent;display:block">`).join('')}
+        </div>
+        <div class="hint" style="margin-top:8px">同一批生成的 4 个构图方案,风格一致;点击选定即回填首帧。</div>`,
+        footer: `<button class="btn" data-x="cancel">放弃</button><button class="btn primary" data-x="ok" disabled>选定此格为首帧</button>`,
+        onMount(m, close) {
+          const ok = m.querySelector('[data-x=ok]');
+          m.querySelectorAll('[data-cell]').forEach(im => im.onclick = () => {
+            picked = +im.dataset.cell;
+            m.querySelectorAll('[data-cell]').forEach(x => x.style.borderColor = 'transparent');
+            im.style.borderColor = 'var(--accent)';
+            ok.disabled = false;
+          });
+          m.querySelector('[data-x=cancel]').onclick = close;
+          ok.onclick = async () => {
+            if (picked < 0) return;
+            ok.disabled = true; ok.innerHTML = '<span class="spinner"></span> 回填中…';
+            let img = cells[picked];
+            const up = await U.uploadData(`镜头${s.order + 1}_首帧海选-${picked + 1}.png`, img);
+            if (up) img = up;
+            snapshotShot(s, '首帧替换前');
+            s.firstFrame = img; s.__inheritPrevEp = false;
+            Store.save();
+            close();
+            U.toast(`海选方案 ${picked + 1} 已设为镜头${s.order + 1} 首帧`, 'success');
+            rerender();
+          };
+        },
+      });
+    } finally {
+      s.__busy = false;
+    }
+  }
+
+  /* ================= 廉价改图验证 =================
+   * 改提示词/换主体后,先出一张静态验证图(2~3 积分,约 1 分钟)再决定是否出视频(5~10 积分,数分钟):
+   * 提示词与主体参考和视频生成同源(shotRefImages 打标 + 运镜/机位 + 美术后缀 + 负面约束),
+   * 验证图写入 s.image(ref 策略下次生成直接作分镜参考;已出片镜头因 inputHash 变化如实判"素材已更新·建议重生成"),
+   * 覆盖前 snapshotShot 留档可回滚。计费确定性:主体参考 ≥2 张走多图融合(服务端一律推导 image.fusion),
+   * 否则纯文生图(服务端无图一律 image.gen)——均与 prompt 内容信号无关,客户端标签恒匹配 */
+  async function genShotValidate(p, ep, s, main) {
+    if (s.final) return U.toast('该分镜已定为终稿,请先「解锁终稿」', 'error');
+    if (s.__busy) return U.toast('该分镜正在处理中', 'info');
+    if (window.Compliance && !Compliance.guardText(s.prompt || '')) {
+      U.toast(`镜头${s.order + 1} 提示词含敏感词已被内容安全拦截(未扣费):${Compliance.GUIDE}`, 'error', 4000);
+      return;
+    }
+    s.__busy = true;
+    try {
+      const rerender = () => { Store.save(); if (onEpPage(p, ep)) Views.episode(main, p.id, ep.id); };
+      const { refImages, suffix } = shotRefImages(p, s); // 与视频生成同源的主体参考(打标)
+      const refs = (refImages || []).map(r => r.url).filter(u => u && !String(u).startsWith('data:')).slice(0, 5);
+      const fusion = refs.length >= 2;
+      const cost = fusion ? COST.fusion : COST.image;
+      const base = s.prompt || s.plot || '镜头画面';
+      const cam = (s.camera ? `;运镜:${s.camera}` : '') + (s.cameraSpec ? `,机位:${(window.CAMERA && CAMERA.describe(s.cameraSpec)) || ''}` : '');
+      const prompt = (fusion ? suffix : '') + base + cam + SBViews.artSuffixApp(p, ep, base) + (window.negOf ? negOf(p) : '');
+      const size = ({ '1:1': '1024x1024', '9:16': '720x1280' })[(ep.sbConfig || {}).ratio] || '1280x720'; // 与 role-editor 同映射
+      const offline = !(window.Media && Media.isReady());
+      const tk = offline ? null : Tasks.start({ type: fusion ? '多图融合(验证图)' : '文生图(验证图)', model: MODELS.image[0], target: `${ep.title}·镜头${s.order + 1}`, cost, projectId: p.id, episodeId: ep.id, shotId: s.id });
+      if (!offline && !U.charge(cost, '验证图生成:镜头' + (s.order + 1))) { Tasks.fail(tk, '积分不足'); return; }
+      try {
+        let url;
+        if (offline) { // 离线回退 PH 占位(与 framePH 同约,不冒充真实出图)
+          url = PH.image({ label: '验证图 · 镜头' + (s.order + 1), sub: (s.plot || '').slice(0, 16), kind: 'shot', w: 480, h: 270, seedText: 'valimg:' + s.id + ':' + Date.now() % 997 });
+        } else {
+          U.toast('验证图生成中(约 1 分钟)…', 'info');
+          const r = await Media.genImage({
+            prompt, size, model: Media.realModel(MODELS.image[0]),
+            image: fusion ? refs : undefined, // ≥2 张主体参考走多图融合;单/无主体纯文生(计费推导确定性,见函数头注释)
+            billingAction: fusion ? 'image.fusion' : 'image.gen', operationId: tk.id,
+          });
+          url = r.url;
+        }
+        snapshotShot(s, '验证图生成前'); // 覆盖 s.image 前留档可回滚
+        s.image = url;
+        s.history = s.history || [];
+        s.history.unshift({ type: '验证图', model: offline ? '离线模拟' : MODELS.image[0], time: Store.now(), prompt: s.prompt, frame: url });
+        Store.save();
+        if (tk) Tasks.done(tk, { filename: `镜头${s.order + 1}_验证图.png`, dataURL: url });
+        U.toast('验证图已生成并设为分镜参考图,满意后点「生成视频」' + (Store.shotVideoStale(p, s) ? '(本镜已出片视频标记为素材已更新)' : '') + (offline ? '(离线占位)' : ''), 'success', 3500);
+      } catch (e) {
+        U.refund(cost, '验证图生成失败', (e && e.__opId) || tk.id); // 镜像关联原 operation(服务端按原账单退)
+        Tasks.fail(tk, e.message);
+        U.toast('验证图生成失败,积分已自动返还:' + e.message, 'error', 4000);
       }
       rerender();
     } finally {
@@ -229,6 +364,17 @@
         first.__inheritPrevEp = true;
       }
     }
+  }
+  /* 十六轮 级联提示:素材变更(重生成尾帧/视频)后调用——syncFrames 会把尾帧联动到开启继承的
+   * 后续分镜首帧,其中已有成片的分镜因输入指纹变化自动判"素材已更新·建议重生成";
+   * 如实提示影响面,不再静默级联(渲染链路内的 syncFrames 调用仍走静默版,避免每次重渲弹提示) */
+  function syncFramesWithNote(ep, p) {
+    const before = new Map();
+    ep.shots.forEach((s, i) => { if (s.inheritTail && i > 0 && s.video && s.video.status === 'done') before.set(s.id, s.firstFrame || null); });
+    syncFrames(ep, p);
+    const hit = [];
+    ep.shots.forEach(s => { if (before.has(s.id) && before.get(s.id) !== (s.firstFrame || null)) hit.push(s.order + 1); });
+    if (hit.length) U.toast(`尾帧联动:镜头${hit.join('、')} 的首帧已随上一镜尾帧更新,其已生成视频标记为"素材已更新·建议重生成"`, 'info', 4500);
   }
 
   /* 连抽 ×N:同参数连出 N 版(逐版扣费/失败退费即停;合规承诺/敏感词/真人审核只做一次),
@@ -261,68 +407,18 @@
     return run();
   }
 
-  /* ---- 主体参考(打标):收集本镜出场人物/场景/道具中已有真实主体图的,随参考图传模型并生成主体定义后缀 ---- */
+  /* ---- 主体参考(打标)/canonical 生成请求/时长预估/轴线规则:实现已下沉 domain.js(双端单一来源,
+   * CLI 经 require 复用同一构造点,CLI 生成请求与指纹和主应用逐字节一致);此处仅委托保持局部签名不变 ---- */
   function shotRefImages(p, s) {
-    const seen = new Set();
-    const subs = [];
-    const push = name => {
-      const r = name && Store.findSubject(p, name);
-      if (!r) return;
-      // 取图优先级:形态自带图 > 视频参考大头照(imgRef,官方推荐) > 权威参考图(三视图,易误判多主体,兜底)
-      const img = (r.form && r.form.image) || r.s.imgRef || r.s.image;
-      const fullName = r.form ? r.s.name + '-' + r.form.name : r.s.name;
-      const key = r.s.id + (r.form ? '|' + r.form.id : '');
-      if (img && !String(img).startsWith('data:') && !seen.has(key)) { seen.add(key); subs.push({ name: fullName, image: img }); }
-    };
-    (s.characters || []).forEach(push);
-    push(s.scene);
-    (s.props || []).forEach(push);
-    const refImages = subs.slice(0, 5).map(rs => ({ name: rs.name, url: rs.image })); // 官方素材策略:总数 4-5 个为宜(角色1-2+场景1+道具/音频),参考人物≤4,过多易主体识别模糊
-    const suffix = refImages.length
-      ? `主体定义:${refImages.map((rs, i) => `将图片${i + 1}定义为「${rs.name}」`).join(',')};视频中这些主体的形象、服饰、发型须与对应参考图严格保持一致,同一主体全程不漂移,不出现重复人物或分身。`
-      : '';
-    // 音色参考:第一个绑定了真实音频的出场角色(role=reference_audio 随生成注入)
-    let refAudio = null;
-    for (const c of (s.characters || [])) {
-      const r = Store.findSubject(p, c);
-      if (r && r.s.refAudio && r.s.refAudio.url && !String(r.s.refAudio.url).startsWith('data:')) { refAudio = r.s.refAudio.url; break; }
-    }
-    return { refImages, suffix, refAudio };
+    return Domain.shotRefImages(p, s);
   }
 
   /* 轴线规则系统默认(已从用户填写项下线):固定注入生成提示词;分镜数据上的 axisRule(AI 拆镜管线产出)优先 */
-  const axisNoteOf = s => `;镜头遵循180度轴线规则,机位位于动作轴线同侧,不越轴${s.axisRule ? ',' + s.axisRule : ''}`;
+  const axisNoteOf = Domain.axisNoteOf;
 
-  /* ---- canonical 视频生成请求(六轮建立 / 七轮策略映射):真实生成请求的唯一构造点 ----
-   * prompt 组装 = 主体定义前置 + 剧情提示词 + 轴线规则 + 运镜 + 机位(视角·角度·景别·光圈) + 美术风格后缀 + 负面约束;
-   * 参考图按生成策略显式映射(七轮):ref→s.image(分镜图)、frames→s.firstFrame/s.lastFrame、fusion→主体参考图组,
-   * 不再全部读 firstFrame(ref 策略此前拿不到分镜图参考);
-   * Store.shotInputHash 对本函数返回值做稳定序列化——生成逻辑与过期判定共用同一份字段清单。
-   * opts.promptOverride:批量/镜头组场景的前缀注入(与实际发送口径一致) */
-  function buildVideoRequest(p, ep, s, opts) {
-    opts = opts || {};
-    const realRef = v => (v && !String(v).startsWith('data:')) ? v : undefined; // 仅真实图片(服务端路径/远程 url)喂模型
-    const strategy = STRATEGIES.find(st => st.id === (s.genStrategy || 'ref')) || STRATEGIES[0];
-    const { refImages, suffix, refAudio } = shotRefImages(p, s); // 主体参考(打标)+ 音色参考
-    let image;
-    if (strategy.id === 'frames') image = realRef(s.firstFrame);            // 首尾帧:首帧控制(缺真首帧由调用方前置拦截)
-    else if (strategy.id === 'fusion') image = undefined;                    // 多图融合:参考走 refImages
-    else image = realRef(s.image) || realRef(s.firstFrame);                  // 分镜参考:分镜图为参考,缺则回退首帧
-    const base = opts.promptOverride !== undefined ? opts.promptOverride : (s.prompt || s.plot);
-    const camNote = s.camera ? `;运镜:${s.camera}` : ''; // 运镜/机位真实进入生成输入(此前仅 UI 展示)
-    const specNote = s.cameraSpec ? `,机位:${(window.CAMERA && CAMERA.describe(s.cameraSpec)) || ''}${s.cameraSpec.aperture ? ' ' + s.cameraSpec.aperture : ''}` : '';
-    const neg = window.negOf ? negOf(p) : '';
-    return {
-      prompt: suffix + base + axisNoteOf(s) + camNote + specNote + SBViews.artSuffixApp(p, ep, base) + neg,
-      ratio: (ep && ep.sbConfig && ep.sbConfig.ratio) || '16:9',
-      duration: estShotDuration(s),
-      model: s.videoModel || (ep && ep.sbConfig && ep.sbConfig.batchVideoModel) || '',
-      image,
-      lastFrame: strategy.id === 'frames' ? realRef(s.lastFrame) : undefined,
-      refImages, refAudio,
-      strategy: strategy.id,
-    };
-  }
+  /* canonical 视频生成请求(六轮建立 / 七轮策略映射 / 双端单源):真实生成请求的唯一构造点。
+   * Store.shotInputHash 对 Domain.buildVideoRequest 返回值做稳定序列化——生成逻辑与过期判定共用同一份字段清单。 */
+  const buildVideoRequest = Domain.buildVideoRequest;
   /* frames 策略前置校验(七轮):缺真实首帧时阻止生成并明确引导——不允许拿占位 dataURL 静默退化成文生视频 */
   function framesStrategyBlocked(s) {
     return (s.genStrategy || 'ref') === 'frames' && !(s.firstFrame && !String(s.firstFrame).startsWith('data:'));
@@ -334,12 +430,9 @@
     return { cost: long ? COST.video * 2 : COST.video, action: long ? 'video.beat' : 'video.gen' };
   }
 
-  /* 单镜时长自动预估(不由人工填写):台词/旁白按约 4.5 字/秒 + 提示词动作密度,3-15s 钳制(分镜板块上限 15s);
-   * promptOverride 供输入时实时预估(textarea 未失焦保存前) */
+  /* 单镜时长自动预估(不由人工填写;实现下沉 domain.js,双端同口径) */
   function estShotDuration(s, promptOverride) {
-    const speak = String(((s.dialogue || '') + (s.narration || ''))).replace(/\s/g, '').length;
-    const action = String(promptOverride !== undefined ? promptOverride : (s.prompt || s.plot || '')).replace(/\s/g, '').length;
-    return Math.max(3, Math.min(15, Math.round(2 + speak / 4.5 + action / 60)));
+    return Domain.estShotDuration(s, promptOverride);
   }
 
   /* ================= 单镜视频生成 ================= */
@@ -425,9 +518,9 @@
       // frames 策略前置校验(七轮):缺真实首帧时阻止生成(在线),引导先生成首帧——不再静默退化成文生视频
       if (framesStrategyBlocked(s)) {
         if (window.Media && Media.isReady()) {
-          s.video = { status: 'failed', error: '首尾帧策略需要真实首帧(占位图不喂模型):请先生成/上传首帧,或切换「分镜参考」策略' };
-          Store.save(); if (onEpPage(p, ep)) renderShots(main, p, ep);
-          U.toast('首尾帧策略缺真实首帧,已阻止生成:请先生成首帧或切换策略', 'error', 4200);
+          /* 十六轮 状态可逆:预校验未过(未扣费未发起)不再把旧成片覆盖为 failed——
+           * 旧视频/分镜图保持原状,仅提示引导(此前一点重抽就丢失旧成片展示,只能去版本记录翻) */
+          U.toast('首尾帧策略缺真实首帧,已阻止生成:请先生成/上传首帧,或切换「分镜参考」策略', 'error', 4200);
           return;
         }
       }
@@ -502,7 +595,7 @@
 
   /* 视频生成完成后的公共收尾:首尾帧联动/历史/同步语音/任务登记/重渲 */
   function finishVideoDone(p, ep, s, main, tk, target, strategy, vrefCnt) {
-    syncFrames(ep, p);
+    syncFramesWithNote(ep, p); // 十六轮:尾帧取自新视频,级联影响继承镜时如实提示
     s.history = s.history || [];
     s.history.unshift({ type: '视频', model: s.video.model, time: Store.now(), strategy: s.genStrategy || 'ref', prompt: s.prompt, frame: s.video.frame, url: s.video.url || '', voiceRef: vrefCnt, firstFrame: s.firstFrame || null, lastFrame: s.lastFrame || null });
     if (ep.sbConfig.syncVoice && !s.audio) syncVoiceShot(p, ep, s, main); // 在线真实 TTS(异步),离线打标记
@@ -539,8 +632,8 @@
       if (unconfirmed.length) { openConfirmGateModal(p, ep, main, shots, unconfirmed, opts, done); return; }
     }
     const gn = opts.groupName;
-    // 合规承诺:首次生成前须同意「上传与创作合规承诺」
-    if (window.Compliance && !(await Compliance.ensureAccepted())) { done && done(); return; }
+    // 合规承诺:首次生成前须同意「上传与创作合规承诺」(命令层 headless 调用传 skipCompliance 跳过交互弹窗)
+    if (!opts.skipCompliance && window.Compliance && !(await Compliance.ensureAccepted())) { done && done(); return; }
     // 九轮:逐镜按预估时长登记成本(长镜头>10s 按 2 镜计价)——与实际扣费一致,
     // 任务监控/"今日消耗"不再按单镜价少记一半(八轮前统一 COST.video)
     const tks = shots.map(s => Tasks.start({ type: '文生视频', model: (s.videoModel || ep.sbConfig.batchVideoModel) + (gn ? '·镜头组' : '·' + (({ fusion: '多图融合', frames: '首尾帧', ref: '分镜参考' })[s.genStrategy || 'ref'])), target: gn ? `${ep.title}·${gn}·镜头${s.order + 1}` : `${ep.title}·镜头${s.order + 1}`, cost: shotVideoBilling(s).cost, projectId: p.id, episodeId: ep.id, shotId: s.id }));
@@ -550,7 +643,7 @@
     const upd = (i, html) => { const el = dock && dock.m.querySelector(`[data-bd="${i}"]`); if (el) el.innerHTML = html; };
     if (dock) {
       shots.forEach((s, i) => dock.say(`<span data-bd="${i}">⏳ 镜头${s.order + 1} 等待中</span>`));
-      if (window.Agent && Agent.notify) Agent.notify(p, ep, main, `🎬 开始批量生成 ${shots.length} 镜视频(每镜数分钟,右侧进度面板可最小化)。等待期间可以继续调整分镜或跟我说要改什么。`);
+      if (window.Bus) Bus.emit('shots.batchStart', { p, ep, main, total: shots.length, group: gn || undefined, brief: `${gn ? '镜头组「' + gn + '」' : '整集'}开始批量生成 ${shots.length} 镜` }); // 事件总线:Agent 对话流订阅转译
     } else {
       await new Promise(res => U.runTask({
         title: gn ? `镜头组「${gn}」生成中` : '批量生成视频中', cancellable: false,
@@ -563,11 +656,10 @@
     for (let i = 0; i < shots.length; i++) {
       const s = shots[i];
       if (dock && dock.cancelled) { Tasks.fail(tks[i], '用户取消'); failCnt++; failed.push({ s, err: '用户取消' }); upd(i, `✕ 镜头${s.order + 1} 已取消(未扣费)`); continue; }
-      // 内容安全前置拦截:提示词命中敏感词直接失败该镜(不扣费)
+      // 内容安全前置拦截:提示词命中敏感词直接失败该镜(不扣费;十六轮:不再覆盖旧成片为 failed,保持原状)
       if (window.Compliance) {
         const hits = Compliance.checkText(s.prompt || '').hits;
         if (hits.length) {
-          s.video = { status: 'failed', error: '内容安全拦截:含敏感词' };
           Tasks.fail(tks[i], '内容安全拦截:含敏感词(' + hits.map(h => h.word).join('、') + ')');
           failCnt++; blockedCnt++;
           failed.push({ s, err: '内容安全拦截:含敏感词(' + hits.map(h => h.word).join('、') + ')' });
@@ -651,7 +743,7 @@
       okCnt++;
     }
     if (blockedCnt) U.toast(`有 ${blockedCnt} 镜因提示词含敏感词被内容安全拦截(未扣费):${Compliance.GUIDE}`, 'error', 4500);
-    syncFrames(ep, p);
+    syncFramesWithNote(ep, p); // 十六轮:批量出新尾帧后,级联影响继承镜时如实提示
     ep.composed = false; // 重新生成后需重新合成
     Store.save();
     const summary = gn
@@ -659,9 +751,9 @@
       : `批量生成完成:${okCnt}/${shots.length} 成功${failCnt ? `,${failCnt} 项失败(未扣费),可单独或全部重试` : ''}`;
     U.toast(summary, failCnt ? 'info' : 'success', gn ? undefined : 3000);
     if (dock) dock.finish(`<b style="color:${failCnt ? 'var(--yellow)' : 'var(--green)'}">${summary}</b>`);
-    if (window.Agent && Agent.notify) Agent.notify(p, ep, main, `📊 ${summary}。${failCnt ? '失败的镜已退费,可以让我帮你改提示词后重试。' : '下一步可以合成成片,或先让我整集审片。'}`);
-    // 失败结果汇总弹窗:逐镜诊断+单独重试/全部重试;可关闭,不阻断
-    if (failed.length) openBatchRetryModal(p, ep, main, shots.length, failed);
+    if (window.Bus) Bus.emit('shots.batchDone', { p, ep, main, ok: okCnt, fail: failCnt, total: shots.length, group: gn || undefined, brief: `批量生成完成:${okCnt}/${shots.length} 成功${failCnt ? ',' + failCnt + ' 失败' : ''}` }); // 事件总线:整集推事件续谈卡,镜头组走轻提示(Agent 侧转译,原 pushEvent/notify 语义不变)
+    // 失败结果汇总弹窗:逐镜诊断+单独重试/全部重试;可关闭,不阻断(命令层 quiet 调用跳过弹窗,失败清单走结构化返回)
+    if (failed.length && !opts.quiet) openBatchRetryModal(p, ep, main, shots.length, failed);
     if (onEpPage(p, ep)) renderShots(main, p, ep); else Store.save();
     // 智能审片闭环:开启时生成后自动评审+不达标重生成
     if (!opts.skipSmartReview && ep.sbConfig && ep.sbConfig.smartReview && window.Review && okCnt) {
@@ -720,7 +812,7 @@
     });
   }
 
-  window.SBGen = { shotVersions, openVersions, framePH, genShotFrame, syncFrames, shotRefImages, axisNoteOf, estShotDuration, createShotVideo, finishVideoDone, syncVoiceShot, batchGenVideos, openBatchRetryModal, drawShotTimes };
+  window.SBGen = { shotVersions, openVersions, framePH, genShotFrame, genShotFramePick, genShotValidate, syncFrames, shotRefImages, axisNoteOf, estShotDuration, shotVideoBilling, createShotVideo, finishVideoDone, syncVoiceShot, batchGenVideos, openBatchRetryModal, drawShotTimes };
   /* 拆分前 window.SB 的成员继续透出(sb-io.js/produce.js/timeline.js/beatboard.js 等 SB.xxx 调用点不变) */
   Object.assign(window.SB, { syncFrames, framePH, batchGenVideos, shotVersions, estShotDuration, buildVideoRequest });
 })();

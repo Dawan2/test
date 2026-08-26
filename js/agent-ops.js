@@ -37,22 +37,44 @@
     const hi = /^删除(镜头|分集)/.test(c);
     return `<div class="small"${hi ? ' style="color:var(--red)"' : ''}>· ${hi ? '🔴 ' : ''}${U.esc(c)}</div>`;
   }
-  // 分镜工作区动作 → 真实按钮(下拉项处理函数绑定即生效,直接 click 即可触发)
-  const WB_RUN = {
-    '智能分镜': ['[data-x=dd-sb]'], '生成分镜': ['[data-x=dd-sb]'], // AI分镜师入口已整合进智能分镜(评审修订),不再单列
-    'AI拆解': ['[data-x=bd-ai]'], '拆解场次节拍': ['[data-x=bd-ai]'], '拆解文字分镜': ['[data-x=bd-draft]'],
-    '生成视频': ['[data-x=genv]'], '批量生成视频': ['[data-x=genv]'],
-    '合成成片': ['[data-x=compose]'], '整集审片': ['[data-x=epreview]'], // 「预览长视频」顶栏入口已改为「显示方式」,预览播放器经成片库/Pipeline 进入
+  /* ---- 动作类 op → 统一领域命令(第二阶段:不再模拟点击按钮,结构化回执驱动反馈) ----
+   * 命令经 Commands.execute 真实执行(headless:未确认镜跳过/不弹决策弹窗),结果 {ok,status,result,error,cost,next}
+   * 回执摘要进聊天记录;视图类 goto/select 维持本地即时动作。 */
+  const ACT_CMD = {
+    '智能分镜': 'episode.generateStoryboard', '生成分镜': 'episode.generateStoryboard',
+    '生成视频': 'episode.generateVideos', '批量生成视频': 'episode.generateVideos',
+    '合成成片': 'episode.compose', '整集审片': 'episode.smartReview',
+    '一键成片': 'episode.produce', '本集理解': 'episode.understanding',
   };
+  /* 结构化回执 → 一句话摘要(与 run 结果 ok/error/cost 对齐,Agent 据此如实汇报,不凭"已发起"声称成功) */
+  function cmdDigest(cmd, r) {
+    if (!r) return '无回执';
+    if (r.error) return r.error.message + (r.cost ? '(-' + r.cost + '积分)' : '');
+    const z = r.result || {};
+    let s = '';
+    if (cmd === 'episode.generateVideos') s = `出片 ${z.ok}/${z.total}` + (z.skipped && z.skipped.length ? `,跳过未确认 ${z.skipped.length} 镜` : '') + (z.failed && z.failed.length ? `,失败 ${z.failed.length} 镜(已退费)` : '');
+    else if (cmd === 'episode.compose') s = '成片已归档,可预览导出';
+    else if (cmd === 'episode.smartReview') s = `达标 ${z.pass}·重抽 ${z.retry}·待人工 ${z.manual}`;
+    else if (cmd === 'episode.generateStoryboard') s = `分镜 ${z.shots} 镜` + (z.plans ? `(${z.plans} 套候选方案待择优)` : '');
+    else if (cmd === 'episode.produce') s = '全流程完成:' + (z.steps || []).map(x => x.step + (x.ok ? '✓' : '✕')).join(' → ');
+    else if (cmd === 'episode.understanding') s = '本集理解已更新';
+    else s = '完成';
+    return s + (r.cost ? '(-' + r.cost + '积分)' : '');
+  }
   const WB_GOTO = { '分镜脚本': 'board', '脚本层': 'board', '分镜表': 'shots', '分镜视频': 'shots', '分镜表模式': 'shots', '剪辑': 'cut', '剪辑台': 'cut', '节拍板': 'bb', '节拍板模式': 'bb', '镜头组': 'groups' };
-  function runEpisodeActions(p, ep, acts, main) {
+  async function runEpisodeActions(p, ep, acts, main) {
     const done = [];
     for (const op of acts) {
       if (op.op === 'run') {
-        const sels = WB_RUN[String(op.action || '').trim()];
-        if (!sels) continue;
-        sels.forEach(sel => { const el = main.querySelector(sel); if (el) el.click(); });
-        done.push('▶ 执行:' + op.action);
+        const act = String(op.action || '').trim();
+        const cmd = ACT_CMD[act];
+        if (!cmd || !window.Commands) { done.push('⊘ 暂不支持自动执行:' + act); continue; }
+        try {
+          const r = await Commands.execute(cmd, { pid: p.id, epid: ep && ep.id, main });
+          done.push(`▶ ${act}:${r.ok ? '✓' : '✕'} ${cmdDigest(cmd, r)}`);
+        } catch (e) {
+          done.push(`▶ ${act}:✕ 异常(${(e && e.message) || e})`);
+        }
       } else if (op.op === 'select') {
         const n = (+op.shot) - 1, s = ep.shots[n];
         if (s) { ep.uiSel = s.id; Store.save(); done.push('◎ 选中镜头 ' + (n + 1)); }
@@ -96,6 +118,7 @@
   const PREARR_FIELDS = {
     sb: [ // 分镜生成类
       { k: 'shotCount', t: '分镜数量', type: 'number', min: 2, max: 40 },
+      { k: 'sbPlans', t: '分镜方案数(多方案对比)', type: 'number', min: 1, max: 3 },
       { k: 'sbMode', t: '分镜模式', type: 'seg', opts: [['create', '创作模式'], ['tweet', '推文模式']] },
       { k: 'shotDur', t: '单镜时长(秒)', type: 'number', min: 2, max: 15 },
       { k: 'batchVideoModel', t: '视频模型', type: 'select', opts: () => (window.MODELS ? MODELS.video : []) },
@@ -199,7 +222,7 @@
     });
   }
 
-  /* 按此方案执行:参数写入 ep.sbConfig → Store.save() → 调起真实功能入口(扣费/确认闸由原入口承担) */
+  /* 按此方案执行:参数写入 ep.sbConfig → Store.save() → 经统一命令层调起真实功能(扣费/确认闸由命令与原入口承担) */
   function execPrearr(ctx, plan, main) {
     const { p, ep } = ctx;
     if (!p || !ep) { U.toast('请先进入分集工作区再执行预排方案', 'error'); return false; }
@@ -215,18 +238,14 @@
     U.toast('参数已预排,正在发起…', 'info', 2000);
     const m = main || document.getElementById('main');
     if (plan.action === 'sb') {
-      // 等价路径:点击工作台「智能分镜」真实入口(与 WB_RUN 一致,扣费/理解闸由 runSmartSB 承担)
-      const btn = m && m.querySelector('[data-x=dd-sb]');
-      if (!btn) { U.toast('未找到智能分镜入口,请切换到该分集的分镜工作区', 'error'); return false; }
-      btn.click();
+      // 统一命令层:智能分镜(与「智能分镜」按钮同一引擎 runSmartSB,结构化回执;预排卡片已含参数确认,执行不再弹决策窗)
+      if (!window.Commands) { U.toast('命令层未加载,请稍后重试', 'error'); return false; }
+      Commands.execute('episode.generateStoryboard', { pid: p.id, epid: ep.id, main: m }).then(r => Commands.digest(r));
     } else {
       const pend = ep.shots.filter(s => !s.final && (!s.video || s.video.status !== 'done'));
       if (!pend.length) { U.toast('所有分镜视频均已生成', 'info'); return false; }
-      const run = () => window.SB.batchGenVideos(p, ep, m, pend);
-      if (window.HumanReview) { // 与原「批量生成视频」相同的真人审核预审闸,不绕过
-        const urls = [...new Set(pend.flatMap(s => HumanReview.shotImageUrls(p, s)))];
-        HumanReview.guard(urls, run);
-      } else run();
+      // 统一命令层(ui 模式):真人预审 guardAsync/镜头确认闸/合规承诺由命令层承担(用户已点「按此方案执行」,属交互语境)
+      Commands.execute('episode.generateVideos', { pid: p.id, epid: ep.id, main: m, ui: true }).then(r => Commands.digest(r));
     }
     return true;
   }
@@ -310,6 +329,312 @@
     });
   }
 
+  /* ---- 工作台状态摘要(Agent 感知层):让助手看得见 生成/确认/审片/合成/在飞任务 实时状态,不只看得见创作字段 ---- */
+  function stateDigest(p, ep) {
+    const d = { total: 0, uncfm: 0, generating: 0, failed: 0, done: 0, stale: 0, noVideo: 0, reviewAvg: null, reviewStale: false, lowShots: [], composed: false, running: 0 };
+    if (!ep) return d;
+    (ep.shots || []).forEach(s => {
+      d.total++;
+      if (!s.confirm) d.uncfm++;
+      const st = s.video && s.video.status;
+      if (st === 'done') { d.done++; if (p && Store.shotVideoStale && Store.shotVideoStale(p, s)) d.stale++; }
+      else if (st === 'generating') d.generating++;
+      else if (st === 'failed') d.failed++;
+      else d.noVideo++;
+    });
+    const lr = ep.lastReview;
+    if (lr) {
+      d.reviewAvg = lr.avg;
+      d.reviewStale = !!(window.Review && Review.episodeReviewStale && Review.episodeReviewStale(ep));
+      d.lowShots = (lr.perShot || []).filter(x => x.score < 7).map(x => {
+        const i = (ep.shots || []).findIndex(s => s.id === x.shotId);
+        return { n: i >= 0 ? i + 1 : (x.order || 0) + 1, score: x.score };
+      }).slice(0, 5);
+    }
+    d.composed = !!(Store.epComposedReady && Store.epComposedReady(ep));
+    d.running = (window.Tasks && Tasks.runningInScope ? Tasks.runningInScope({ episodeId: ep.id }) : []).length;
+    return d;
+  }
+  /* 状态摘要 → LLM 注入文本(只列非零项,简短;ep=null 时给项目级各集一行进度,≤8 集) */
+  function stateBlock(p, ep) {
+    if (ep) {
+      const d = stateDigest(p, ep);
+      const parts = [];
+      if (d.total) {
+        const seg = [`共${d.total}镜`];
+        if (d.done) seg.push(`${d.done}已出片`);
+        if (d.generating) seg.push(`${d.generating}生成中`);
+        if (d.failed) seg.push(`${d.failed}失败`);
+        if (d.noVideo) seg.push(`${d.noVideo}未生成`);
+        if (d.uncfm) seg.push(`${d.uncfm}待确认`);
+        if (d.stale) seg.push(`${d.stale}已过期(需重生成)`);
+        parts.push('分镜:' + seg.join('/'));
+      }
+      if (d.reviewAvg !== null && d.reviewAvg !== undefined) {
+        parts.push(`审片:均分${d.reviewAvg}${d.reviewStale ? '(旧版)' : ''}` + (d.lowShots.length ? `;低分镜:${d.lowShots.map(x => x.n + '镜' + x.score + '分').join('、')}` : ';全部达标'));
+      } else if (d.done) parts.push('审片:未审');
+      if (d.total && d.done === d.total) parts.push(d.composed ? '成片:已合成' : '成片:全部出片可合成');
+      if (d.running) parts.push(`在飞任务:${d.running}个`);
+      return parts.length ? `\n★ 工作台实时状态:${parts.join(';')}` : '';
+    }
+    if (!p) return '';
+    const rows = (p.episodes || []).slice(0, 8).map(e => {
+      const d = stateDigest(p, e);
+      const seg = [];
+      if (d.total) seg.push(`${d.done}/${d.total}出片`); else seg.push('未拆镜');
+      if (d.failed) seg.push(`${d.failed}失败`);
+      if (d.stale) seg.push(`${d.stale}过期`);
+      if (d.reviewAvg !== null && d.reviewAvg !== undefined) seg.push(`审${d.reviewAvg}`);
+      if (d.composed) seg.push('已合成');
+      return `${e.title}(${seg.join('/')})`;
+    });
+    return rows.length ? `\n★ 各集实时状态:${rows.join('、')}` : '';
+  }
+
+  /* ---- 动态开场(情境建议):按本地实时状态推导情境 chips 与开场白,纯本地推导不耗 LLM ---- */
+  /* 情境 chips:[{t,d,run|goto|gotoEp|text}] ≤3 条;run/goto/gotoEp 直执(按钮自带确认计费),text 作为指令发给助手(LLM 轮) */
+  function dynamicChips(p, ep) {
+    const out = [];
+    if (ep) {
+      const d = stateDigest(p, ep);
+      if (!d.total) {
+        if ((ep.content || '').trim()) out.push({ t: '拆解本集分镜', d: '智能分镜(含本集理解)', run: '智能分镜' });
+        return out;
+      }
+      if (d.uncfm) out.push({ t: `确认 ${d.uncfm} 镜提示词`, d: '生成前先过一遍确认闸', goto: '分镜视频' });
+      if (d.failed) out.push({ t: `处理 ${d.failed} 个失败镜`, d: '失败已退费,可改提示词重试', goto: '分镜视频' });
+      if (d.stale) out.push({ t: `${d.stale} 镜已过期`, d: '输入已变更,需重新生成', goto: '分镜视频' });
+      if (d.lowShots.length) out.push({ t: `修订 ${d.lowShots.length} 个低分镜`, d: '按审片问题清单优化提示词(发助手)', text: `镜头${d.lowShots.map(x => x.n).join('、')} 审片低于 7 分,请按整集审片的问题清单优化这些镜头的提示词,保持风格一致性` });
+      if (d.noVideo && d.done && !d.generating && !d.failed && d.noVideo + d.done === d.total) out.push({ t: `生成剩余 ${d.noVideo} 镜`, d: '批量生成,按规则扣费', run: '生成视频' });
+      if (d.done === d.total && !d.stale) {
+        if (d.reviewAvg === null || d.reviewAvg === undefined || d.reviewStale) out.push({ t: '整集审片', d: '四维评审把关', run: '整集审片' });
+        else if (!d.composed) out.push({ t: '合成成片', d: '合成本集成片', run: '合成成片' });
+      }
+      return out.slice(0, 3);
+    }
+    if (!p) return out;
+    const noImg = (p.subjects || []).filter(s => !s.image).length;
+    if (noImg) out.push({ t: `补齐 ${noImg} 个主体形象`, d: '缺权威参考图,生成会触发防废片警示', goto: '主体' });
+    const eps = p.episodes || [];
+    const unShot = eps.find(e => !(e.shots || []).length && (e.content || '').trim());
+    if (unShot) out.push({ t: `拆解「${unShot.title}」`, d: '已有剧本未拆镜', gotoEp: unShot.id });
+    const failedEp = eps.find(e => stateDigest(p, e).failed);
+    if (failedEp) out.push({ t: `「${failedEp.title}」有失败镜`, d: '失败已退费,可重试', gotoEp: failedEp.id });
+    const readyEp = eps.find(e => { const d = stateDigest(p, e); return d.total && d.done === d.total && !d.stale && !d.composed; });
+    if (readyEp) out.push({ t: `合成「${readyEp.title}」`, d: '全部出片,可合成', gotoEp: readyEp.id });
+    return out.slice(0, 3);
+  }
+  /* 开场白(空对话占位,每次渲染重算):一句话告诉你这集/这个项目现在最该做什么 */
+  function openingLine(p, ep) {
+    if (ep) {
+      const d = stateDigest(p, ep);
+      if (!d.total) return `「${ep.title}」还没拆镜——可以智能分镜(含本集理解),或拉片建集。`;
+      const seg = [`${d.total} 镜`];
+      if (d.done) seg.push(`${d.done} 已出片`);
+      if (d.generating) seg.push(`${d.generating} 生成中`);
+      if (d.failed) seg.push(`${d.failed} 失败`);
+      if (d.uncfm) seg.push(`${d.uncfm} 待确认`);
+      if (d.stale) seg.push(`${d.stale} 已过期`);
+      let tail = '';
+      if (d.uncfm) tail = '建议先逐镜确认提示词。';
+      else if (d.failed) tail = '失败镜已退费,可改提示词重试。';
+      else if (d.stale) tail = '过期镜需重新生成。';
+      else if (d.lowShots.length) tail = `镜头${d.lowShots.map(x => x.n).join('、')} 审片偏低,可让我按问题清单优化。`;
+      else if (d.noVideo) tail = '可以批量生成剩余镜头。';
+      else if (d.reviewAvg === null || d.reviewAvg === undefined || d.reviewStale) tail = '全部出片,建议先整集审片把关。';
+      else if (!d.composed) tail = `审片均分 ${d.reviewAvg},可以合成成片了。`;
+      else tail = '成片已合成,可去剪辑台导出交付。';
+      return `「${ep.title}」${seg.join(' · ')}。${tail}`;
+    }
+    if (p) {
+      const eps = p.episodes || [];
+      if (!eps.length) return `「${p.name}」还没有分集——上传剧本自动分集,或拉片建集。`;
+      const comps = eps.filter(e => Store.epComposedReady && Store.epComposedReady(e)).length;
+      return `「${p.name}」共 ${eps.length} 集,${comps} 集已出成片。${comps < eps.length ? '点下方情境建议继续推进,或直接跟我说要做什么。' : '全部出片,可去成片库导出交付。'}`;
+    }
+    return '';
+  }
+
+  /* ---- 事件续谈卡(管线事件 → 对话流可操作卡片):批量出片/整集审片/合成/拉片完成时推入,选项直执真实工作流(run/goto 注册表,免 LLM 轮次) ---- */
+  function pushEvent(p, ep, ev) { // ev:{key,text,options:[{t,d,run|goto}]}
+    if (!ep || !ev || !ev.text) return false;
+    ep.agentChat = ep.agentChat || [];
+    if (ep.agentChat.slice(-8).some(x => x.event && x.event.key === ev.key && !x.eventDone)) return false; // 同事件未处理不重复推
+    ep.agentChat.push({ role: 'assistant', text: ev.text, event: { key: ev.key, options: (ev.options || []).filter(o => o && o.t && (o.run || o.goto)).slice(0, 4) }, time: Store.now() });
+    ep.agentChat = ep.agentChat.slice(-50);
+    Store.save();
+    // 面板开着→即时重渲;都关着→轻提示(消息留存对话流待看)
+    const gOpen = window.AgentG && AgentG.isOpen && AgentG.isOpen();
+    if (gOpen && AgentG.refreshGlobal) AgentG.refreshGlobal();
+    if (ep.agentOpen && typeof document !== 'undefined') { const main = document.getElementById('main'); if (main && p && window.Views) Views.episode(main, p.id, ep.id); }
+    if (!gOpen && !ep.agentOpen) U.toast('🐋 ' + String(ev.text).slice(0, 42), 'info', 2600);
+    return true;
+  }
+  /* 事件卡渲染:选项即按钮(run ▶ / goto →)单击直执;已处理(eventDone)置灰留痕 */
+  function eventCardHTML(m2, msgIdx, pre) {
+    const ev = m2.event;
+    if (!ev || !ev.options || !ev.options.length) return '';
+    if (m2.eventDone) return `
+    <div class="agent-choice done">
+      <div class="agent-choice-head"><b>✓ 已处理</b><span class="agent-choice-done-tag">${U.esc(m2.eventDone)}</span></div>
+    </div>`;
+    return `
+    <div class="agent-choice">
+      <div class="agent-choice-opts">
+        ${ev.options.map((o, oi) => `
+        <div class="agent-choice-opt" data-${pre}-evopt="${msgIdx}_${oi}">
+          <div class="agent-choice-t">${o.run ? '▶' : '→'} ${U.esc(o.t)}</div>
+          ${o.d ? `<div class="agent-choice-d">${U.esc(o.d)}</div>` : ''}
+        </div>`).join('')}
+      </div>
+    </div>`;
+  }
+  /* 事件卡绑定(集级 a / 全局 g 前缀复用,同 bindChoices 模式):单击选项 → h.exec 直执(run/goto 由面板提供落法) → 面板置 eventDone 留痕 */
+  function bindEvents(root, pre, h) { // h:{getChat, exec(m2, o)}
+    const dk = k => pre + k.charAt(0).toUpperCase() + k.slice(1);
+    root.querySelectorAll(`[data-${pre}-evopt]`).forEach(el => el.onclick = () => {
+      const [mi, oi] = String(el.dataset[dk('evopt')]).split('_').map(Number);
+      const m2 = h.getChat(mi);
+      if (!m2 || !m2.event || m2.eventDone) return;
+      const o = m2.event.options[oi];
+      if (o) h.exec(m2, o);
+    });
+  }
+
+  /* ---- 管线事件总线订阅(第三阶段):管线模块(sb-gen/sb-io/review/produce/proj-upload)只 Bus.emit, ----
+   * Agent 侧集中转译为对话流事件卡(pushEvent)/轻提示(notify),文案与选项与原直调完全等价;
+   * 订阅者异常由 Bus 隔离,不阻断管线;emit 点不再感知 Agent 是否加载。 */
+  function subscribeBus() {
+    if (!window.Bus || subscribeBus._done) return;
+    subscribeBus._done = true;
+    Bus.on('shots.batchStart', ({ p, ep, main, total, group }) => {
+      if (window.Agent && Agent.notify) Agent.notify(p, ep, main, group ? `🎬 镜头组「${group}」开始生成 ${total} 镜视频。` : `🎬 开始批量生成 ${total} 镜视频(每镜数分钟,右侧进度面板可最小化)。等待期间可以继续调整分镜或跟我说要改什么。`);
+    });
+    Bus.on('shots.batchDone', ({ p, ep, main, ok, fail, total, group }) => {
+      const summary = group
+        ? `镜头组「${group}」生成完成:${ok}/${total} 成功${fail ? `,${fail} 项失败(未扣费),可单独或全部重试` : ''}(已注入一致性前缀)`
+        : `批量生成完成:${ok}/${total} 成功${fail ? `,${fail} 项失败(未扣费),可单独或全部重试` : ''}`;
+      if (!group) { // 整集批量出片:事件续谈卡(下一步引导);镜头组局部生成保持轻提示
+        pushEvent(p, ep, {
+          key: `batchgen:${ok}/${total}/${fail}`,
+          text: `📊 ${summary}。${fail ? '失败的镜已退费,可在失败汇总里单独/全部重试,或让我帮你改提示词后重试。' : '全部出片成功,下一步可以整集审片把关,或直接合成成片。'}`,
+          options: fail
+            ? [{ t: '去分镜视频处理失败镜', d: '失败镜已退费,可单独重试', goto: '分镜视频' }]
+            : [{ t: '整集审片', d: '四维评审 + 低分标注', run: '整集审片' }, { t: '合成成片', d: '把已出片镜头合成本集成片', run: '合成成片' }],
+        });
+      } else if (window.Agent && Agent.notify) Agent.notify(p, ep, main, `📊 ${summary}。${fail ? '失败的镜已退费,可以让我帮你改提示词后重试。' : '下一步可以合成成片,或先让我整集审片。'}`);
+    });
+    Bus.on('episode.ripped', ({ p, ep, count }) => {
+      pushEvent(p, ep, {
+        key: 'rip:' + ep.id,
+        text: `🎞 拉片建集完成:${count} 镜已生成分镜表(关键帧已作分镜底图)。拉片产出是时间轴文字记录,建议先跑「本集理解」定导演基调——后续提示词优化与视频生成都会注入它,质量更稳。`,
+        options: [
+          { t: '跑本集理解(推荐)', d: '导演理解前置(-2 积分),注入后续生成', run: '本集理解' },
+          { t: '直接微调分镜表', d: '检查/修改拉片分镜(确认闸待确认)', goto: '分镜视频' },
+          { t: '去生成视频', d: '批量生成,按规则扣费', run: '生成视频' },
+        ],
+      });
+    });
+    Bus.on('compose.start', ({ p, ep, main, subtitle }) => {
+      if (window.Agent && Agent.notify) Agent.notify(p, ep, main, `🎞 开始合成「${ep.title}」成片(规格化+拼接${subtitle ? '+字幕烧录' : ''},数分钟)。可继续操作页面。`);
+    });
+    Bus.on('compose.done', ({ p, ep, main, count }) => {
+      pushEvent(p, ep, {
+        key: 'compose:' + count + ':' + (ep.shots || []).length,
+        text: `✅ 「${ep.title}」成片合成完成(${count} 镜)!已归档成片库,可预览/导出;调整镜头后需重新合成。`,
+        options: [
+          ...(ep.lastReview ? [] : [{ t: '整集审片', d: '交付前四维评审把关', run: '整集审片' }]),
+          { t: '去剪辑台', d: '预览时间线/导出交付', goto: '剪辑' },
+        ],
+      });
+    });
+    Bus.on('compose.failed', ({ p, ep, main, error }) => {
+      if (window.Agent && Agent.notify) Agent.notify(p, ep, main, `⚠ 「${ep.title}」合成失败:${error}。可以检查素材后重试。`);
+    });
+    Bus.on('review.episodeStart', ({ p, ep, main, total }) => {
+      if (window.Agent && Agent.notify) Agent.notify(p, ep, main, `🎬 整集审片开始(${total} 镜):进度在右侧面板,期间可正常操作页面。`);
+    });
+    Bus.on('review.episodeDone', ({ p, ep, main, avg }) => {
+      const lows = ((ep.lastReview || {}).perShot || []).filter(x => x.score < 7).map(x => {
+        const li = (ep.shots || []).findIndex(s => s.id === x.shotId);
+        return (li >= 0 ? li + 1 : (x.order || 0) + 1) + '镜(' + x.score + '分)';
+      });
+      pushEvent(p, ep, {
+        key: 'review:' + ((ep.lastReview || {}).time || avg),
+        text: `🎬 整集审片完成:均分 ${avg}${lows.length ? ';低于 7 分:' + lows.slice(0, 6).join('、') : ',全部达标'}。报告已生成${lows.length ? ',需要的话我可以按问题清单逐镜优化提示词' : ''}。`,
+        options: [{ t: '合成成片', d: '把已出片镜头合成本集成片', run: '合成成片' }, { t: '去剪辑台', d: '调序/转场/多机位选优', goto: '剪辑' }],
+      });
+    });
+    Bus.on('review.smartStart', ({ p, ep, main, total, maxRetry }) => {
+      if (window.Agent && Agent.notify) Agent.notify(p, ep, main, `🧠 智能审片开始(${total} 镜,达标线 7.0):逐镜评审,不达标自动重生成。进度在右侧面板,你可以继续干活。`);
+    });
+    Bus.on('review.smartDone', ({ p, ep, main, pass, retry, manual, quiet }) => {
+      if (quiet) return; // headless(跑批/命令层 quiet 调用)不推对话流,由调用方结构化回执汇报
+      const summary = `完成:达标 ${pass} 镜 · 自动重生成 ${retry} 次 · 待人工 ${manual} 镜`;
+      if (window.Agent && Agent.notify) Agent.notify(p, ep, main, `🧠 智能审片${summary}${manual ? '。待人工的镜头跟我说,我帮你改提示词重抽。' : '。全部达标,可以合成成片了。'}`);
+    });
+  }
+  if (typeof window !== 'undefined') subscribeBus();
+
+  /* ================= Agent 按需查询(第三阶段):LLM 拉数据,不再只吃截断快照 =================
+   * 默认注入的分镜表(前 20 镜)/剧本摘要(前 500 字)是截断的;LLM 需要更多数据时首轮返回
+   * {"query":[{type,...}]},本地补齐后自动续问(≤2 轮,共用同 opId 的 q1/q2 步骤槽位,不另扣费)。
+   * 查询全部本地即时执行(纯读),白名单类型 + 范围钳制,未加载的模块如实回报。 */
+  const QUERY_TYPES = ['shots', 'script', 'subjects', 'review', 'understanding', 'issues', 'plan', 'workflow', 'events', 'tasks'];
+  /* 协议文本(注入 system 提示词,集级/全局两个面板共用) */
+  function queryProtocol() {
+    return `\n★ 按需查询:上下文中的分镜表/剧本摘要是截断快照。若回答需要更多数据,本轮返回 JSON 可选键 "query":[{...}](1-3 条),系统会本地补齐后自动再问你一轮;拿到补齐数据后直接作答,不要再发 query(最多续问 2 轮)。
+可用查询:{type:"shots",from:1,to:20}(分镜区间,镜头号闭区间);{type:"script",from:0,chars:1500}(本集正文展开);{type:"subjects"}(主体清单与参考图状态);{type:"review"}(整集审片报告);{type:"understanding"}(本集理解);{type:"issues"}(项目待处理问题清单);{type:"plan"}(当前制作计划与进度);{type:"workflow"}(项目主线状态);{type:"events"}(最近管线事件);{type:"tasks"}(在飞/最近任务)。`;
+  }
+  /* 执行查询 → 注入续问的文本块(白名单外的类型忽略;逐条异常隔离) */
+  function answerQueries(p, ep, scope, qs) {
+    const blocks = [];
+    (Array.isArray(qs) ? qs : []).slice(0, 3).forEach(q => {
+      const t = q && QUERY_TYPES.includes(q.type) ? q.type : null;
+      if (!t) return;
+      let txt = '(无数据)';
+      try {
+        if (t === 'shots' && ep) {
+          const n = (ep.shots || []).length;
+          if (!n) txt = '(本集暂无分镜)';
+          else {
+            const from = Math.max(1, Math.round(+q.from) || 1);
+            const to = Math.min(n, Math.round(+q.to) || Math.min(n, from + 19));
+            txt = compactShots({ shots: ep.shots.slice(from - 1, to) }, to - from + 1, from - 1) + `\n(共 ${n} 镜,本次返回第 ${from}-${to} 镜)`;
+          }
+        } else if (t === 'script' && ep) {
+          const c = ep.content || '';
+          const from = Math.max(0, Math.round(+q.from) || 0);
+          const chars = Math.max(200, Math.min(4000, Math.round(+q.chars) || 1500));
+          txt = c.slice(from, from + chars) + (c.length > from + chars ? `\n(共 ${c.length} 字,其后 ${c.length - from - chars} 字可继续查询)` : '');
+        } else if (t === 'subjects' && p) {
+          txt = (p.subjects || []).map(s => `· ${s.name}(${ { character: '角色', scene: '场景', prop: '道具' }[s.kind] || s.kind }) ${s.image ? '参考图✓' : '缺图⚠'}${(s.forms || []).length ? `,${s.forms.length} 形态` : ''}:${String(s.prompt || '').slice(0, 60)}`).join('\n') || '(暂无主体)';
+        } else if (t === 'review' && ep) {
+          const lr = ep.lastReview;
+          txt = !lr ? '(本集未审片)' : `均分 ${lr.avg}${window.Review && Review.episodeReviewStale && Review.episodeReviewStale(ep) ? '(旧版:剧本/图谱已变化)' : ''};逐镜:${(lr.perShot || []).map(x => (x.order + 1) + '镜' + x.score + '分').join('、')};共性问题:${String(lr.common || '无').slice(0, 120)};剪辑建议:${String(lr.cut || '无').slice(0, 120)}`;
+        } else if (t === 'understanding' && ep) {
+          const u = ep.understanding;
+          txt = !u ? '(本集未生成本集理解)' : JSON.stringify(u).slice(0, 1500) + (window.Domain && Domain.understandingStale && Domain.understandingStale(ep) ? '(旧版:剧本已变化)' : '');
+        } else if (t === 'issues' && p) {
+          txt = window.Issues && Issues.collect ? Issues.collect(p).map(i => `· [${i.sev}] ${i.label} — ${i.detail}`).join('\n') || '(项目无待处理问题)' : '(问题中心未加载)';
+        } else if (t === 'plan' && p) {
+          const pl = window.Plans && Plans.of ? Plans.of(p) : null;
+          txt = !pl ? '(当前无制作计划)' : `「${pl.title}」(${pl.steps.filter(s => s.status === 'done').length}/${pl.steps.length} 完成):${pl.steps.map(s => (s.status === 'done' ? '✓' : s.status === 'failed' ? '✕' : s.status === 'blocked' ? '⚠' : '○') + s.label).join(' → ')}`;
+        } else if (t === 'workflow' && p) {
+          txt = window.Domain ? Domain.workflow(p, !!(window.Media && Media.isReady && Media.isReady())).steps.map(s => `${s.done ? '✓' : s.side ? '·' : '▶'}${s.name}${(s.blockers || []).length ? '(' + s.blockers.map(b => b.label).join(';') + ')' : ''}`).join('\n') : '(Domain 未加载)';
+        } else if (t === 'events') {
+          txt = window.Bus && Bus.recent ? Bus.recent(12, p && p.id).map(h => `· ${h.time} ${h.name}${h.brief ? ' ' + h.brief : ''}`).join('\n') || '(最近无管线事件)' : '(事件总线未加载)';
+        } else if (t === 'tasks' && ep) {
+          const run = (window.Tasks && Tasks.runningInScope ? Tasks.runningInScope({ episodeId: ep.id }) : []).map(t2 => `${t2.type}·${t2.target}`);
+          const rec = ((window.Store && Store.state && Store.state.tasks) || []).slice(0, 10).map(t2 => `${t2.status === 'running' ? '⏳' : t2.status === 'failed' ? '✕' : t2.status === 'done' ? '✓' : '◌'}${t2.type}·${t2.target}`);
+          txt = (run.length ? `在飞:${run.join('、')}\n` : '在飞:无\n') + '最近:' + (rec.join('、') || '无');
+        }
+      } catch (e) { txt = '(查询失败:' + ((e && e.message) || e) + ')'; }
+      blocks.push(`\n[查询结果·${t}]\n${txt}`);
+    });
+    return blocks.join('');
+  }
+
   /* 预排模式 LLM 协议:返回 {"plan":{"action":"sb"|"batchvideo","summary":"一句话方案","params":{...}}} + {"reply":"给用户的解释"} */
   function prearrPrompt(p, ep, sysExtra) {
     const c = (ep && ep.sbConfig) || {};
@@ -321,7 +646,7 @@
 返回 JSON {"reply":"给用户的解释(说明方案思路)","thinking":"一句话思考摘要","plan":{"action":"sb|batchvideo","summary":"一句话方案说明","params":{...}}}。
 action 二选一:
 - "sb":智能分镜/拆镜/生成分镜类意图。params 可用键(对齐分镜配置,数值必须钳在范围内):
-  shotCount 整数2-40;sbMode "create"(创作模式)或"tweet"(推文模式);shotDur 数字2-15(秒/镜);batchVideoModel 视频模型;quality "480p"|"720p"|"1080p";ratio "16:9"|"9:16"|"1:1";autoOptimize true/false(自动优化提示词);smartReview true/false(智能审片)
+  shotCount 整数2-40;sbPlans 整数1-3(分镜方案数,>1 时多方案对比择优);sbMode "create"(创作模式)或"tweet"(推文模式);shotDur 数字2-15(秒/镜);batchVideoModel 视频模型;quality "480p"|"720p"|"1080p";ratio "16:9"|"9:16"|"1:1";autoOptimize true/false(自动优化提示词);smartReview true/false(智能审片)
 - "batchvideo":批量生成视频类意图。params 可用键:
   batchVideoModel;quality "480p"|"720p"|"1080p";ratio "16:9"|"9:16"|"1:1";batchStrategy(${strats});batchCamera 运镜(${cams})
 可用视频模型:${vmodels}。
@@ -402,10 +727,12 @@ action 二选一:
     return recent.map(m2 => (m2.role === 'user' ? '用户:' : '助手:') + String(m2.text || '').replace(/\s+/g, ' ').slice(0, 100)).join('\n');
   }
 
-  /* ---- 分镜表压缩(长则截断) ---- */
-  function compactShots(ep, maxShots) {    maxShots = maxShots || 20;
+  /* ---- 分镜表压缩(长则截断);offset=区间查询起始镜号-1(按需查询按绝对镜号对齐) ---- */
+  function compactShots(ep, maxShots, offset) {
+    maxShots = maxShots || 20;
+    const off = offset || 0;
     const shots = ep.shots.slice(0, maxShots).map((s, i) => ({
-      镜头: i + 1, 名称: (s.name || '').slice(0, 10), 剧情: (s.plot || '').slice(0, 50),
+      镜头: off + i + 1, 名称: (s.name || '').slice(0, 10), 剧情: (s.plot || '').slice(0, 50),
       运镜: s.camera, 机位: s.cameraSpec ? CAMERA.describe(s.cameraSpec) : '',
       提示词: (s.prompt || '').slice(0, 60), 旁白: (s.narration || '').slice(0, 30), 台词: (s.dialogue || '').slice(0, 30), 时长: (window.SB && SB.estShotDuration ? SB.estShotDuration(s) : (s.duration || 5)),
     }));
@@ -666,6 +993,188 @@ action 二选一:
     return `(⚠ ${v.fails.length} 项未生效:${v.fails.slice(0, 3).join(';')})`;
   }
 
-  window.AgentOps = { splitOps, opRisk, actDesc, changeLineHTML, runEpisodeActions, runGlobalActions, prearrSend, prearrCardHTML, bindPrearr, bindChoices, parseChoices, choiceCardHTML, execPrearr, compactChat, chatLines, compactShots, focusOf, focusBlock, applyOps, verifyOps, verifyNote, OP_TOOLS, FIELD_MAP };
-  window.__AGENT_TEST = { applyOps, compactShots, FIELD_MAP, focusOf, focusBlock, OP_TOOLS, verifyOps, compactChat };
+  /* ================= ⚠ 并行编辑冲突(手动修改 vs 助手方案) =================
+   * 基线:发送消息时对目标域打指纹(WeakMap 随消息存,会话内有效不落库;刷新后预览卡退化为原直接应用语义)。
+   * 应用前 detectConflicts 比对当前指纹,命中 → openConflictPanel 逐项「保留我的/采用助手」;
+   * resolveOps 按选择过滤(batch 冲突按镜拆为 update,未冲突目标不受影响)。 */
+  const pendingBase = new WeakMap();
+  const setPendingBase = (msg, base) => { if (msg && base) pendingBase.set(msg, base); };
+  const getPendingBase = msg => (msg && pendingBase.get(msg)) || null;
+
+  function fpShot(s) {
+    return JSON.stringify([s.name, s.plot, s.prompt, s.narration, s.dialogue, s.camera, s.duration, s.voice, s.videoModel, s.genStrategy, s.cameraSpec || null]);
+  }
+  /* 目标域指纹基线:分镜(按 id 内容指纹 + 位置序)/脚本层场次与节拍(按序号)/主体(按 id)/分集(按 id)/项目与剧本元 */
+  function fingerprint(ctx) {
+    const { p, ep } = ctx || {};
+    const fp = { shots: {}, order: [], scenes: {}, beats: {}, subs: {}, eps: {}, proj: '', meta: '' };
+    if (ep) {
+      (ep.shots || []).forEach((s, i) => { fp.shots[s.id] = fpShot(s); fp.order[i] = s.id; });
+      ((ep.scriptBoard && ep.scriptBoard.scenes) || []).forEach((sc, si) => {
+        fp.scenes[si] = JSON.stringify([sc.title, sc.text]);
+        (sc.beats || []).forEach((b, bi) => { fp.beats[si + '_' + bi] = JSON.stringify([b.emotion, b.plot, b.shot]); });
+      });
+    }
+    if (p) {
+      (p.subjects || []).forEach(s => { fp.subs[s.id] = JSON.stringify([s.name, s.prompt, s.description]); });
+      (p.episodes || []).forEach(e => { fp.eps[e.id] = JSON.stringify([e.title, e.content, (e.shots || []).length]); });
+      fp.proj = JSON.stringify([p.name, p.style, p.tone, p.globalSetting, p.locale]);
+      fp.meta = JSON.stringify(p.scriptMeta || null);
+    }
+    return fp;
+  }
+  function shotFieldVal(s, k) {
+    const key = FIELD_MAP[k] || k;
+    if (['view', 'angle', 'shotSize', 'aperture'].includes(key)) return (s.cameraSpec || {})[key] || '';
+    return s[key] === undefined || s[key] === null ? '' : String(s[key]);
+  }
+  /* ops 目标对象当前指纹 vs 基线 → 冲突项数组(无冲突返回 [];batch 按镜逐条,带 batchShot 供拆分) */
+  function detectConflicts(ops, base, ctx) {
+    const { p, ep } = ctx || {};
+    const out = [];
+    if (!base || !ops) return out;
+    const BF = { 情绪: 'emotion', 剧情: 'plot', 分镜文字: 'shot', 文字分镜: 'shot' };
+    const SF = { 标题: 'title', 剧情: 'text', 内容: 'text' };
+    const P_FIELDS = { 名称: 'name', 风格: 'style', 影调: 'tone', 全局设定: 'globalSetting', 目标市场: 'locale' };
+    const SM_FIELDS = { 卖点: 'logline', 梗概: 'synopsis' };
+    const S_FIELDS = { 名称: 'name', 提示词: 'prompt', 描述: 'description' };
+    const shotRows = (op, cur) => {
+      if (op.op === 'delete') return [{ f: '剧情', cur: (cur.plot || '').slice(0, 60), next: '(删除该镜)' }];
+      if (op.op === 'move') return [{ f: '位置', cur: '当前位置', next: '移动到位置' + op.to }];
+      return Object.entries(op.fields || {}).map(([k, v]) => ({ f: k, cur: shotFieldVal(cur, k), next: String(v) }));
+    };
+    (ops || []).forEach((op, oi) => {
+      if (!op || !op.op) return;
+      const n = (+op.shot) - 1;
+      if ((op.op === 'update' || op.op === 'delete' || op.op === 'move') && ep) {
+        const cur = ep.shots[n];
+        const lb = `镜头${n + 1}${cur && cur.name ? '「' + cur.name + '」' : ''}`;
+        if (!cur) { out.push({ key: `o${oi}`, opIdx: oi, label: lb, reason: '该镜头已不存在', rows: [{ f: '操作', cur: '(已删除)', next: op.op }] }); return; }
+        if (base.shots[cur.id] === undefined || (base.order || [])[n] !== cur.id) { out.push({ key: `o${oi}`, opIdx: oi, label: lb, reason: '该位置的镜头已变化(调序/新增)', rows: shotRows(op, cur) }); return; }
+        if (base.shots[cur.id] !== fpShot(cur)) out.push({ key: `o${oi}`, opIdx: oi, label: lb, reason: '你改过此镜', rows: shotRows(op, cur) });
+      } else if (op.op === 'batch' && ep) {
+        const who = op.filter && op.filter.含人物;
+        ep.shots.forEach((s, i) => {
+          if (who && !(s.characters || []).includes(who)) return;
+          if (base.shots[s.id] === undefined) {
+            out.push({ key: `o${oi}_${s.id}`, opIdx: oi, batchShot: s.id, label: `镜头${i + 1}${s.name ? '「' + s.name + '」' : ''}(批量${who ? '·' + who : ''})`, reason: '此镜为方案生成后新增', rows: shotRows(op, s) });
+          } else if (base.shots[s.id] !== fpShot(s)) {
+            out.push({ key: `o${oi}_${s.id}`, opIdx: oi, batchShot: s.id, label: `镜头${i + 1}${s.name ? '「' + s.name + '」' : ''}(批量${who ? '·' + who : ''})`, reason: '你改过此镜', rows: shotRows(op, s) });
+          }
+        });
+      } else if (op.op === 'beatupdate' && ep) {
+        const si = (+op.scene) - 1, bi = (+op.beat) - 1;
+        const bt = ep.scriptBoard && ep.scriptBoard.scenes && ep.scriptBoard.scenes[si] && ep.scriptBoard.scenes[si].beats[bi];
+        const curFp = bt ? JSON.stringify([bt.emotion, bt.plot, bt.shot]) : '';
+        if (base.beats[si + '_' + bi] !== curFp) {
+          out.push({ key: `o${oi}`, opIdx: oi, label: `场次${si + 1}·节拍${bi + 1}`, reason: bt ? '你改过此节拍' : '该节拍已不存在', rows: Object.entries(op.fields || {}).map(([k, v]) => ({ f: k, cur: bt ? String(bt[BF[k] || k] || '') : '(已删除)', next: String(v) })) });
+        }
+      } else if (op.op === 'sceneupdate' && ep) {
+        const si = (+op.scene) - 1;
+        const sc = ep.scriptBoard && ep.scriptBoard.scenes && ep.scriptBoard.scenes[si];
+        const curFp = sc ? JSON.stringify([sc.title, sc.text]) : '';
+        if (base.scenes[si] !== curFp) {
+          out.push({ key: `o${oi}`, opIdx: oi, label: `场次${si + 1}${sc && sc.title ? '「' + sc.title + '」' : ''}`, reason: sc ? '你改过此场次' : '该场次已不存在', rows: Object.entries(op.fields || {}).map(([k, v]) => ({ f: k, cur: sc ? String(sc[SF[k] || k] || '') : '(已删除)', next: String(v) })) });
+        }
+      } else if (op.op === 'project' && p) {
+        if (base.proj !== JSON.stringify([p.name, p.style, p.tone, p.globalSetting, p.locale])) {
+          out.push({ key: `o${oi}`, opIdx: oi, label: `项目「${p.name}」`, reason: '你改过项目设置', rows: Object.entries(op.fields || {}).map(([k, v]) => ({ f: k, cur: String(p[P_FIELDS[k] || k] || ''), next: String(v) })) });
+        }
+      } else if (op.op === 'scriptmeta' && p) {
+        if (base.meta !== JSON.stringify(p.scriptMeta || null)) {
+          out.push({ key: `o${oi}`, opIdx: oi, label: '剧本卖点/梗概', reason: '你改过剧本元信息', rows: Object.entries(op.fields || {}).map(([k, v]) => ({ f: k, cur: String((p.scriptMeta || {})[SM_FIELDS[k] || k] || ''), next: String(v) })) });
+        }
+      } else if (op.op === 'subject' && p) {
+        const s = (p.subjects || []).find(x => x.name === String(op.name || '').trim());
+        if (!s) { out.push({ key: `o${oi}`, opIdx: oi, label: `主体「${op.name}」`, reason: '主体已不存在或已改名', rows: [{ f: '操作', cur: '(未找到)', next: '修改主体' }] }); return; }
+        if (base.subs[s.id] !== JSON.stringify([s.name, s.prompt, s.description])) {
+          out.push({ key: `o${oi}`, opIdx: oi, label: `主体「${s.name}」`, reason: '你改过此主体', rows: Object.entries(op.fields || {}).map(([k, v]) => ({ f: k, cur: String(s[S_FIELDS[k] || k] || ''), next: String(v) })) });
+        }
+      } else if ((op.op === 'episode' || op.op === 'delep') && p) {
+        const e2 = (p.episodes || []).find(x => x.title === String(op.ep || '').trim() || x.title.includes(String(op.ep || '').trim()));
+        if (!e2) { out.push({ key: `o${oi}`, opIdx: oi, label: `分集「${op.ep}」`, reason: '分集已不存在', rows: [{ f: '操作', cur: '(未找到)', next: op.op === 'delep' ? '删除分集' : '修改分集' }] }); return; }
+        if (base.eps[e2.id] !== JSON.stringify([e2.title, e2.content, (e2.shots || []).length])) {
+          out.push({
+            key: `o${oi}`, opIdx: oi, label: `分集「${e2.title}」`, reason: '你改过此分集',
+            rows: op.op === 'delep' ? [{ f: '分集', cur: `${(e2.content || '').length}字/${(e2.shots || []).length}镜`, next: '(删除该集)' }]
+              : Object.entries(op.fields || {}).map(([k, v]) => ({ f: k, cur: k === '正文' ? (e2.content || '').slice(0, 60) : e2.title, next: String(v).slice(0, 60) })),
+          });
+        }
+      }
+    });
+    return out;
+  }
+  /* 按选择过滤 ops:保留我的 → 丢弃对应 op(batch 按镜剔除后拆为逐镜 update);采用助手 → 保留 */
+  function resolveOps(ops, conflicts, decisions, ctx) {
+    const drop = new Set(), batchExcl = {}; // opIdx → Set(shotId)
+    (conflicts || []).forEach(c => {
+      if (!decisions || decisions[c.key] === 'agent') return;
+      if (c.batchShot) (batchExcl[c.opIdx] = batchExcl[c.opIdx] || new Set()).add(c.batchShot);
+      else drop.add(c.opIdx);
+    });
+    const out = [];
+    (ops || []).forEach((op, oi) => {
+      if (drop.has(oi)) return;
+      if (op.op === 'batch' && batchExcl[oi]) {
+        const eps = ctx && ctx.ep;
+        if (!eps) return;
+        const who = op.filter && op.filter.含人物;
+        eps.shots.forEach((s, i) => {
+          if (who && !(s.characters || []).includes(who)) return;
+          if (batchExcl[oi].has(s.id)) return;
+          out.push({ op: 'update', shot: i + 1, fields: op.fields });
+        });
+        return;
+      }
+      out.push(op);
+    });
+    return out;
+  }
+  /* 冲突面板:逐项版本选择(默认保留我的=安全侧);onDone(null)=取消(不扣费,预览卡保留),onDone(decisions)=按选择应用 */
+  function openConflictPanel(conflicts, onDone) {
+    const decisions = {};
+    conflicts.forEach(c => { decisions[c.key] = 'mine'; });
+    U.openModal({
+      title: `⚠ 并行编辑冲突(${conflicts.length} 处)`,
+      wide: true,
+      body: `
+      <div class="hint" style="margin-bottom:10px">你在助手生成方案期间手动改过以下内容。逐项选择:<b>保留我的</b>(助手该项放弃)或 <b>采用助手</b>(覆盖你的修改);未列出的方案项不受影响,照常应用。</div>
+      ${conflicts.map((c, ci) => `
+      <div class="card" style="padding:10px 12px;margin-bottom:8px">
+        <div class="row" style="gap:6px;margin-bottom:6px;flex-wrap:wrap;align-items:center">
+          <b class="small">${U.esc(c.label)}</b><span class="tag yellow" style="font-size:10px">${U.esc(c.reason)}</span>
+          <span class="grow"></span>
+          <div class="model-row" style="gap:4px">
+            <div class="model-opt sel" data-cdec="${ci}" data-v="mine" style="padding:3px 10px">保留我的</div>
+            <div class="model-opt" data-cdec="${ci}" data-v="agent" style="padding:3px 10px">采用助手</div>
+          </div>
+        </div>
+        ${c.rows.map(r => `
+        <div class="row" style="gap:8px;align-items:flex-start;margin-bottom:3px">
+          <span class="tag" style="flex:none;font-size:10px">${U.esc(r.f)}</span>
+          <span class="small grow" style="word-break:break-all">${U.esc(String(r.cur === undefined || r.cur === '' ? '空' : r.cur).slice(0, 90))}</span>
+          <span style="flex:none">→</span>
+          <span class="small grow" style="word-break:break-all;color:var(--accent)">${U.esc(String(r.next === undefined || r.next === '' ? '空' : r.next).slice(0, 90))}</span>
+        </div>`).join('')}
+      </div>`).join('')}`,
+      footer: `<button class="btn" data-x="cancel">取消(暂不应用)</button>
+        <button class="btn" data-x="allmine">全部保留我的</button>
+        <button class="btn" data-x="allagent">全部采用助手</button>
+        <button class="btn primary" data-x="apply">按所选应用</button>`,
+      onMount(m, close) {
+        m.querySelectorAll('[data-cdec]').forEach(o => o.onclick = () => {
+          const ci = o.dataset.cdec;
+          decisions[conflicts[+ci].key] = o.dataset.v;
+          m.querySelectorAll(`[data-cdec="${ci}"]`).forEach(x => x.classList.toggle('sel', x === o));
+        });
+        m.querySelector('[data-x=cancel]').onclick = () => { close(); onDone(null); };
+        m.querySelector('[data-x=allmine]').onclick = () => { conflicts.forEach(c => { decisions[c.key] = 'mine'; }); close(); onDone(decisions); };
+        m.querySelector('[data-x=allagent]').onclick = () => { conflicts.forEach(c => { decisions[c.key] = 'agent'; }); close(); onDone(decisions); };
+        m.querySelector('[data-x=apply]').onclick = () => { close(); onDone(decisions); };
+      },
+    });
+  }
+
+  window.AgentOps = { splitOps, opRisk, actDesc, changeLineHTML, runEpisodeActions, runGlobalActions, prearrSend, prearrCardHTML, bindPrearr, bindChoices, parseChoices, choiceCardHTML, execPrearr, compactChat, chatLines, compactShots, focusOf, focusBlock, applyOps, verifyOps, verifyNote, OP_TOOLS, FIELD_MAP, setPendingBase, getPendingBase, fingerprint, detectConflicts, resolveOps, openConflictPanel, stateDigest, stateBlock, dynamicChips, openingLine, pushEvent, eventCardHTML, bindEvents, queryProtocol, answerQueries };
+  window.__AGENT_TEST = { applyOps, compactShots, FIELD_MAP, focusOf, focusBlock, OP_TOOLS, verifyOps, compactChat, fingerprint, detectConflicts, resolveOps, stateDigest, stateBlock, dynamicChips, openingLine, pushEvent, eventCardHTML, bindEvents, queryProtocol, answerQueries, subscribeBus };
 })();

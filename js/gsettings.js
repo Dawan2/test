@@ -427,6 +427,13 @@
         <label class="field" style="margin-bottom:0"><span>审片模板</span><textarea class="input small" rows="2" data-f="tplReview">${U.esc(s.tplReview)}</textarea></label>
       </div>
       <div class="card" style="margin-bottom:16px">
+        <b>核心提示词 skill(主线流程系统提示词,在线改写即生效)</b>
+        <div class="hint" style="margin:4px 0 12px">拆镜/本集理解/审片等主线 LLM 调用的系统提示词与评审指令,集中登记于 prompts.js;改写存为覆盖,清空即恢复系统默认。标注变量的条目支持变量替换。</div>
+        ${Prompts.list().map(pr => `
+        <label class="field"><span>${U.esc(pr.name)}${pr.overridden ? ' <span class="tag cyan" style="font-size:10px">已覆盖</span>' : ''}${pr.vars.length ? ` <span class="small muted">变量:${pr.vars.join(' ')}</span>` : ''}</span>
+          <textarea class="input small" rows="${pr.def.length > 200 ? 6 : 2}" data-pk="${pr.key}" style="font-family:inherit">${U.esc(pr.value)}</textarea></label>`).join('')}
+      </div>
+      <div class="card" style="margin-bottom:16px">
         <b>默认模型</b>
         <div class="grid" style="grid-template-columns:1fr 1fr;gap:12px 18px;margin-top:12px">
           <label class="field"><span>LLM 模型</span>
@@ -513,6 +520,9 @@
           defVoice: host.querySelector('[data-f=defVoice]').value,
           defQuality: quality, defRatio: ratio,
         });
+        const pmap = {}; // 核心提示词覆盖:空文本/与默认相同即清除覆盖(Prompts.setAll 内部判默认)
+        host.querySelectorAll('[data-pk]').forEach(t => pmap[t.dataset.pk] = t.value);
+        Prompts.setAll(pmap);
         Store.save();
         U.toast('全局配置已保存,各生成入口默认值已更新', 'success', 3000);
       };

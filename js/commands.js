@@ -1,0 +1,263 @@
+/* ============ commands.js 统一领域命令注册表(第二阶段;第三阶段补 UI 模式) ============
+ * Commands.execute(name, args) → Promise<{ ok, status, result?, error?, cost?, next? }>
+ *   - ok:     是否成功;status: done/blocked/failed/needs_human/running(与 WorkflowState 同词汇)
+ *   - result: 命令结构化结果;error: {code,message};cost: 本次实际净扣费(Store.credits 前后差值,含子调用扣费与退费回补)
+ *   - next:   执行后按 Domain.episodeState/workflow 重推的建议动作(与流程条/下一步/CLI workflow 同口径)
+ * UI 按钮、导演助手(Agent)、量产跑批共用本注册表;CLI 侧经 `hujing exec` 对齐同一命令名与结果结构。
+ *
+ * headless 约定(Agent/跑批/CLI 语境,默认):不弹决策类弹窗(U.confirm/确认闸/合规承诺/失败重试汇总),
+ *   未确认镜头跳过并在 result.skipped 如实报告(与 CLI gen-episode 同口径);信息性 toast/后台面板保留。
+ * ui 模式(args.ui=true,UI 按钮语境):决策弹窗全部保留(确认闸/合规承诺/真人预审 guardAsync/失败重试汇总/
+ *   审片后台面板),命令仍回结构化回执;调用方经 Commands.digest 统一消化命令级拦截(blocked/inflight 等),
+ *   引擎执行过程的成败提示由引擎自身负责(toast/弹窗/后台面板),不重复播报。
+ * 引擎全部复用现有函数编排(SBGen.batchGenVideos/SB.composeVideo/SB.autoSmartReview/SB.runSmartSB/
+ *   Understanding.regen),计费五件套/失败退费/任务登记链路原样不变。
+ * 加载顺序:produce.js 之后、agent.js 之前;全部依赖运行时 window 查找(无加载时绑定,可 vm 沙箱测试)。
+ */
+(function () {
+  const REG = {};
+  const INFLIGHT = new Set(); // 执行中守卫:name+pid+epid+sid 粒度,防 Agent/重试并发重入(重复扣费)
+
+  /* ---- 统一返回构造 ---- */
+  const ok = (result, extra) => Object.assign({ ok: true, status: 'done', result: result || {} }, extra);
+  const fail = (code, message, extra) => Object.assign({ ok: false, status: 'failed', error: { code, message: String(message || code) } }, extra);
+  const blocked = (code, message, result) => ({ ok: false, status: 'blocked', error: { code, message: String(message || code) }, result: result || {} });
+
+  const online = () => !!(window.Media && Media.isReady && Media.isReady());
+  /* 渲染汇流排:调用方未传 main 时用 detached sink(与跑批同模式,不上屏) */
+  const sinkOf = args => (args && args.main) || document.createElement('div');
+  /* 分集参数兜底:未打开过工作区的集 sbConfig 可能缺键(与跑批 reallyRun 同口径) */
+  const ensureSBCfg = (p, ep) => { ep.sbConfig = Object.assign(window.SB && SB.defaultSBConfig ? SB.defaultSBConfig(p) : {}, ep.sbConfig || {}); return ep.sbConfig; };
+
+  /* 执行后统一推导 next(流程条/下一步/CLI workflow 同一口径) */
+  function nextOf(p, ep) {
+    if (!window.Domain || !p) return null;
+    if (ep) { const st = Domain.episodeState(p, ep, online()); return Object.assign({ status: st.status }, st.action || {}); }
+    const wf = Domain.workflow(p, online());
+    return wf.recommendedAction || null;
+  }
+
+  /* ---- 命令注册 ---- */
+  function reg(name, meta, handler) { REG[name] = Object.assign({ name, risk: 'exec', meter: true, needs: ['p', 'ep'] }, meta, { handler }); }
+
+  /* 生产就绪检查(read):Domain.episodeState 单源推导,流程条/下一步/CLI 同口径 */
+  reg('episode.preflight', { risk: 'read', meter: false, label: '生产就绪检查' }, async ({ p, ep }) => {
+    const st = Domain.episodeState(p, ep, online());
+    return { ok: st.status !== 'blocked' && !st.shotsStale, status: st.status, result: st };
+  });
+
+  /* 智能分镜(exec):runSmartSB hooks Promise 化;缺剧本/积分不足走 blocked(预检与 runSmartSB 同口径,防 hooks 不触发悬挂);
+   * headless 传 quiet:多方案自动择优发布、本地兜底不弹「下一步批量生成」确认(ui 模式原样保留对比窗/确认弹窗) */
+  reg('episode.generateStoryboard', { label: '智能分镜' }, ({ p, ep, args }) => metered(REG['episode.generateStoryboard'], () => new Promise(resolve => {
+    if (!(ep.content || '').trim()) return resolve(blocked('no-script', '本分集暂无剧本内容,请先补充剧本'));
+    const c = ensureSBCfg(p, ep);
+    const planN = Math.max(1, Math.min(3, +c.sbPlans || 1));
+    const total = (window.COST ? COST.smartSB : 0) * planN + (c.sbMode === 'tweet' ? c.shotCount * (window.COST ? COST.tweetShot : 0) : 0);
+    if (window.Store && Store.credits && Store.credits() < total) return resolve(blocked('no-credits', '积分不足:智能分镜需 ' + total + ' 积分'));
+    window.SB.runSmartSB(p, ep, sinkOf(args), {
+      quiet: !args.ui,
+      done: () => { const r = ok({ shots: (ep.shots || []).length, plans: (ep.sbPlans || []).length }); r.next = nextOf(p, ep); resolve(r); },
+      error: e => resolve(fail('smartSB', (e && e.message) || e)),
+    });
+  })));
+
+  /* 批量生成视频(exec):headless 确认闸口径=未确认镜跳过(与 CLI gen-episode 一致);confirmAll 显式授权全量;
+   * ui 模式:确认闸/合规承诺/真人预审/失败重试汇总/审片联动弹窗全保留(done 回调 Promise 化);
+   * args.shotIds 子集执行(UI 断点校准/建议策略壳传子集;CLI --args 同参) */
+  reg('episode.generateVideos', { label: '批量生成视频' }, ({ p, ep, args }) => metered(REG['episode.generateVideos'], async () => {
+    ensureSBCfg(p, ep);
+    let pend = (ep.shots || []).filter(s => !s.final && !Store.shotVideoReady(s));
+    if (Array.isArray(args.shotIds) && args.shotIds.length) { const ids = new Set(args.shotIds); pend = pend.filter(s => ids.has(s.id)); }
+    if (!pend.length) { const r = ok({ total: 0, ok: 0, failed: [], skipped: [] }); r.next = nextOf(p, ep); return r; }
+    let skipped = [];
+    if (args.ui) {
+      if (window.HumanReview && HumanReview.guardAsync) { // 真人素材预审:驳回/取消如实 blocked(与 runBatchOp 原预审闸同口径)
+        const urls = [...new Set(pend.flatMap(s => HumanReview.shotImageUrls(p, s)))];
+        if (!(await HumanReview.guardAsync(urls))) return blocked('human-review', '真人素材预审未放行,已取消生成', { total: 0, ok: 0, failed: [], skipped: [] });
+      }
+      await new Promise(res => SBGen.batchGenVideos(p, ep, sinkOf(args), pend, {}, res));
+      skipped = pend.filter(s => !Store.shotVideoReady(s) && !(s.video && s.video.status === 'failed'))
+        .map(s => ({ shotId: s.id, order: s.order + 1, reason: s.confirm ? '未执行' : '未确认' }));
+    } else {
+      const unconfirmed = pend.filter(s => !s.confirm);
+      if (args.confirmAll) { unconfirmed.forEach(s => { s.confirm = true; }); Store.save(); }
+      const todo = pend.filter(s => s.confirm);
+      skipped = args.confirmAll ? [] : unconfirmed.map(s => ({ shotId: s.id, order: s.order + 1, reason: '未确认' }));
+      if (!todo.length) return blocked('unconfirmed', unconfirmed.length + ' 镜未确认已跳过(confirmAll 可授权全量生成)', { total: 0, ok: 0, failed: [], skipped });
+      pend = todo;
+      await SBGen.batchGenVideos(p, ep, sinkOf(args), todo, { skipConfirmGate: true, skipSmartReview: true, skipCompliance: true, quiet: true });
+    }
+    const failed = pend.filter(s => s.video && s.video.status === 'failed').map(s => ({ shotId: s.id, order: s.order + 1, error: String(s.video.error || '').slice(0, 80) }));
+    const okCnt = pend.filter(s => Store.shotVideoReady(s)).length;
+    const r = { ok: failed.length === 0, status: failed.length ? 'failed' : 'done', result: { total: pend.length, ok: okCnt, failed, skipped } };
+    if (failed.length) r.error = { code: okCnt ? 'partial' : 'gen-failed', message: failed.length + ' 镜生成失败(已退费),可修复后重试' };
+    r.next = nextOf(p, ep);
+    return r;
+  }));
+
+  /* 单镜生成(exec):createShotVideo(skipReviewGuard) — 确认闸/敏感词由命令层前置,断点续查/扣费/失败退费原样;
+   * ui 模式:无确认闸(与原单镜按钮语义一致,确认闸只管批量),合规承诺/真人预审经 awaitable 闸,取消如实 blocked */
+  reg('shot.generateVideo', { label: '单镜生成', needs: ['p', 'ep', 's'] }, ({ p, ep, s, args }) => metered(REG['shot.generateVideo'], async () => {
+    ensureSBCfg(p, ep);
+    if (s.final) return blocked('final', '该分镜已定为终稿,请先「解锁终稿」');
+    if (!args.ui && !s.confirm) return blocked('unconfirmed', '镜头未确认:请先确认本镜(或经 episode.generateVideos confirmAll 授权)');
+    if (window.Compliance) {
+      const hits = Compliance.checkText(s.prompt || '').hits;
+      if (hits.length) return blocked('compliance', '提示词含敏感词:' + hits.map(h => h.word).join('、'));
+      if (args.ui && !(await Compliance.ensureAccepted())) return blocked('compliance-declined', '已取消:需先同意「上传与创作合规承诺」');
+    }
+    if (args.ui && window.HumanReview && HumanReview.guardAsync) {
+      if (!(await HumanReview.guardAsync(HumanReview.shotImageUrls(p, s)))) return blocked('human-review', '真人素材预审未放行,已取消生成');
+    }
+    await SBGen.createShotVideo(p, ep, s, sinkOf(args), true);
+    if (s.video && s.video.status === 'done') { const r = ok({ shotId: s.id, url: s.video.url || '', simulated: !!s.video.simulated }); r.next = nextOf(p, ep); return r; }
+    return fail('gen', (s.video && s.video.error) || '生成未完成', { result: { shotId: s.id, status: s.video && s.video.status } });
+  }));
+
+  /* 智能审片(exec):autoSmartReview 闭环(不达标先修订提示词再重抽);manual>0 → needs_human;
+   * ui 模式 quiet=false(后台面板可视),headless 默认 quiet */
+  reg('episode.smartReview', { label: '智能审片' }, ({ p, ep, args }) => metered(REG['episode.smartReview'], async () => {
+    if (!window.Review || !window.SB || !SB.autoSmartReview) return fail('unavailable', '审片模块未加载');
+    ensureSBCfg(p, ep);
+    const r = await SB.autoSmartReview(p, ep, sinkOf(args), ep.shots, args.ui ? false : args.quiet !== false);
+    const out = ok(r);
+    if (r && r.manual > 0) out.status = 'needs_human'; // 待人工镜头:质量闸门语义,produce/跑批据此阻断合成
+    out.next = nextOf(p, ep);
+    return out;
+  }));
+
+  /* 合成成片(exec):composeVideo + onTask 句柄轮询(原跑批等待逻辑下沉);
+   * headless quiet+失败镜头前置 blocked;ui 模式保留素材不齐确认/失败镜阻塞弹窗(用户取消 → blocked cancelled 静默) */
+  reg('episode.compose', { label: '合成成片' }, ({ p, ep, args }) => metered(REG['episode.compose'], async () => {
+    ensureSBCfg(p, ep);
+    if (!(ep.shots || []).length) return blocked('no-shots', '暂无分镜');
+    if (!args.ui) {
+      const failedCnt = ep.shots.filter(s => s.video && s.video.status === 'failed').length;
+      if (failedCnt) return blocked('failed-shots', failedCnt + ' 个失败镜头阻塞合成,请先处理', { failed: failedCnt });
+    }
+    let ct = null;
+    window.SB.composeVideo(p, ep, sinkOf(args), { quiet: !args.ui, onTask: tk => { ct = tk; } });
+    if (!ct) return args.ui ? blocked('cancelled', '已取消合成') : fail('intercepted', '合成被拦截(积分不足/无可合成素材)');
+    for (let i = 0; i < 200 && ct.status === 'running'; i++) await U.delay(3000); // 上限 10 分钟,每 3s 一次
+    if (ct.status === 'done') { const r = ok({ url: ep.composedUrl || '', count: (ep.shots || []).length }); r.next = nextOf(p, ep); return r; }
+    return fail('compose', ct.status === 'failed' ? ('合成失败:' + (ct.reason || '')) : '合成超时未完成(任务仍在后台,可稍后重试)');
+  }));
+
+  /* 本集理解(exec):Understanding.regen(计费/失败退费与编辑器「重新生成」同源) */
+  reg('episode.understanding', { label: '本集理解' }, ({ p, ep }) => metered(REG['episode.understanding'], async () => {
+    if (!window.Understanding || !Understanding.regen) return fail('unavailable', '理解模块未加载');
+    if (!(ep.content || '').trim()) return blocked('no-script', '本分集暂无剧本内容,请先补充剧本');
+    const okU = await Understanding.regen(p, ep);
+    return okU ? ok({}) : fail('understanding', '本集理解生成失败(已退费)');
+  }));
+
+  /* 一键成片(exec,编排):就绪检查 → 批量生成 → 智能审片(质量闸门) → 合成成片;
+   * 待人工镜头默认阻断合成(riskyCompose 放行);onStep(stepKey) 供跑批行内状态回报;
+   * 子执行一律 headless(一键成片语义=一次确认后无值守;审片后台面板经 quiet/ui 字段单独控制) */
+  reg('episode.produce', { label: '一键成片', meter: false }, async ({ p, ep, args }) => {
+    const steps = [];
+    const cost = () => steps.reduce((n, x) => n + (x.cost || 0), 0);
+    const push = (key, r) => { steps.push({ step: key, ok: r.ok, status: r.status, cost: r.cost || 0, result: r.result, error: r.error || null }); return r; };
+    const onStep = typeof args.onStep === 'function' ? args.onStep : () => {};
+    const sub = Object.assign({}, args, { ui: false });
+    ensureSBCfg(p, ep);
+    // 1. 就绪检查(与跑批 preflight 同口径)
+    onStep('就绪检查');
+    const st = Domain.episodeState(p, ep, online());
+    if (st.status === 'blocked' || st.shotsStale) return Object.assign(blocked('preflight', '就绪检查未通过:' + (st.blockers.map(b => b.label).join('/') || '分镜已过期'), { steps, blockers: st.blockers }), { cost: 0, next: nextOf(p, ep) });
+    if (!(ep.shots || []).length) return Object.assign(blocked('no-shots', '未分镜', { steps }), { cost: 0, next: nextOf(p, ep) });
+    // 2. 批量生成(失败镜不阻塞后续,合成前统一拦截)
+    onStep('批量生成视频');
+    const g = push('generateVideos', await execute('episode.generateVideos', sub));
+    // 3. 智能审片(默认开;不达标先修订提示词再重抽)
+    if (args.smartReview !== false && window.Review) {
+      onStep('智能审片');
+      ep.sbConfig.maxRetry = Math.max(1, Math.min(5, args.maxRetry || ep.sbConfig.maxRetry || 2));
+      const rv = push('smartReview', await execute('episode.smartReview', args));
+      // 质量闸门:存在待人工镜头默认阻断合成(防止带病成片),仅显式 riskyCompose 放行
+      if (rv.result && rv.result.manual > 0 && !args.riskyCompose) {
+        return Object.assign({ ok: false, status: 'needs_human', error: { code: 'manual-gate', message: '待人工 ' + rv.result.manual + ' 镜,质量闸门已阻断合成(riskyCompose 可放行)' }, result: { steps } }, { cost: cost(), next: nextOf(p, ep) });
+      }
+    }
+    // 4. 合成成片
+    onStep('合成成片');
+    const c = push('compose', await execute('episode.compose', sub));
+    if (!c.ok) return Object.assign({ ok: false, status: c.status, error: c.error, result: { steps } }, { cost: cost(), next: nextOf(p, ep) });
+    return Object.assign(ok({ steps, url: c.result.url }), { cost: cost(), next: nextOf(p, ep) });
+  });
+
+  /* ---- 计费计量:Store.credits 前后差值(本地口径,含子调用全部扣费与退费回补) ---- */
+  async function metered(cmd, fn) {
+    if (!cmd.meter || !window.Store || !Store.credits) return fn();
+    const c0 = Store.credits();
+    const r = await fn();
+    r.cost = Math.max(0, c0 - Store.credits());
+    return r;
+  }
+
+  /* ---- 上下文解析:pid/epid/sid → {p,ep,s};缺失抛 {code,message} ---- */
+  function resolveCtx(args, needs) {
+    const out = { args };
+    if (!needs.includes('p')) return out;
+    const p = window.Store && Store.getProject(args.pid);
+    if (!p) throw { code: 'not-found', message: '项目不存在:' + (args.pid || '(缺 pid)') };
+    out.p = p;
+    if (!needs.includes('ep')) return out;
+    const ep = (p.episodes || []).find(e => e.id === args.epid);
+    if (!ep) throw { code: 'not-found', message: '分集不存在:' + (args.epid || '(缺 epid)') };
+    out.ep = ep;
+    if (!needs.includes('s')) return out;
+    const s = (ep.shots || []).find(x => x.id === args.sid) || (ep.shots || [])[(+args.sid) - 1]; // sid 支持 id 或镜头号
+    if (!s) throw { code: 'not-found', message: '镜头不存在:' + (args.sid || '(缺 sid)') };
+    out.s = s;
+    return out;
+  }
+
+  /* ---- 统一入口 ---- */
+  async function execute(name, args) {
+    const cmd = REG[name];
+    if (!cmd) return fail('unknown-command', '未注册命令:' + name + '(可用:' + Object.keys(REG).join(', ') + ')');
+    args = args || {};
+    const key = name + ':' + (args.pid || '') + ':' + (args.epid || '') + ':' + (args.sid || '');
+    if (cmd.risk === 'exec') {
+      if (INFLIGHT.has(key)) return { ok: false, status: 'running', error: { code: 'inflight', message: '相同命令正在执行中,等待完成后再试' }, result: {} };
+      INFLIGHT.add(key);
+    }
+    try {
+      const ctx = resolveCtx(args, cmd.needs);
+      return await cmd.handler(ctx);
+    } catch (e) {
+      if (e && e.code === 'not-found') return blocked('not-found', e.message);
+      return fail('exception', (e && e.message) || e);
+    } finally {
+      INFLIGHT.delete(key);
+    }
+  }
+
+  /* 自省:list 供 Agent/CLI 发现可用命令(名称/语义/风险级/参数) */
+  function list() {
+    return Object.keys(REG).map(n => ({ name: n, label: REG[n].label || n, risk: REG[n].risk, needs: REG[n].needs }));
+  }
+
+  /* ---- UI 调用方统一消化命令回执(第三阶段) ----
+   * 命令级拦截(blocked/inflight/failed/needs_human)统一 toast 口径,引擎执行过程提示不重复播报;
+   * 用户主动取消(cancelled/compliance-declined/human-review 等决策类 blocked)默认静默(opts.silentCancel=false 可开);
+   * 成功默认静默(引擎自身已 toast/弹窗),opts.okToast 可强制播报。返回 r 便于调用方链式读 result/next。 */
+  function digest(r, opts) {
+    opts = opts || {};
+    if (!r) return r;
+    if (r.ok) { if (opts.okToast) U.toast(opts.okToast === true ? '执行完成' : opts.okToast, 'success'); return r; }
+    const code = r.error && r.error.code, msg = (r.error && r.error.message) || '执行未完成';
+    if (r.status === 'running' || code === 'inflight') { U.toast(msg, 'info', 2500); return r; }
+    if (r.status === 'blocked') {
+      const silent = code === 'cancelled' || code === 'compliance-declined' || code === 'human-review';
+      if (!silent || opts.silentCancel === false) U.toast(msg, 'info', 3200);
+      return r;
+    }
+    if (r.status === 'needs_human') { U.toast(msg, 'info', 4000); return r; } // 质量闸门:待人工,非错误
+    U.toast(msg, 'error', 4000); // failed
+    return r;
+  }
+
+  window.Commands = { execute, list, digest, REG };
+})();

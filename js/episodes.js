@@ -14,6 +14,21 @@
     const PER = 20;
     const TABS = ['制片', '剧本', '导演', '主体', '分集', '成片库', '剧壳', '切片']; // 分镜工作台从「分集」列表对应分集进入;实验室/AI策划/剧本译制已迁至「百宝箱 → 项目实验台」
 
+    /* 项目成本汇总行:GET /api/billing/usage 按 operation 台账聚合(金额=服务端白名单价);
+     * 净消耗=扣费-已退,按动作族分项(图/视/LLM/音/工具);未登录/接口不可达静默不显示 */
+    function fillCostLine() {
+      const el = main.querySelector('[data-cost-line]');
+      if (!el || !Store.getToken()) return;
+      fetch('/api/billing/usage', { headers: { Authorization: 'Bearer ' + Store.getToken() } })
+        .then(r => r.json()).then(j => {
+          const u = j && j.code === 0 && (j.data.projects || {})[p.id];
+          if (!u || !u.count) return;
+          const FAM = { image: '图', video: '视', llm: 'LLM', tts: '音', ff: '工具' };
+          const parts = Object.keys(FAM).filter(k => u.families[k]).map(k => FAM[k] + ' ' + (u.families[k].charged - u.families[k].refunded));
+          el.innerHTML = `💰 累计消耗 <b>${u.charged - u.refunded}</b> 积分(${parts.join(' · ')})` + (u.refunded ? `<span title="失败/取消已自动退回的部分">,含已退 ${u.refunded}</span>` : '');
+        }).catch(() => { /* 离线/接口不可达:静默 */ });
+    }
+
     function render() {
       let eps = p.episodes.slice().sort((a, b) => asc ? a.order - b.order : b.order - a.order);
       if (search) eps = eps.filter(e => e.title.toLowerCase().includes(search.toLowerCase()));
@@ -31,12 +46,16 @@
         <div class="crumb" onclick="location.hash='#/projects'">‹ 返回项目管理</div>
         <div style="text-align:center;margin-bottom:6px">
           <div class="page-title" style="font-size:18px">${U.esc(p.name)}</div>
+          <div class="small muted" data-cost-line></div>
         </div>
         <div class="row" style="gap:0;border-bottom:1px solid var(--border);margin-bottom:16px;overflow-x:auto">
           <button class="btn ghost sm" onclick="location.hash='#/projects'" style="flex:none">‹</button>
           ${TABS.map(t => `<div class="tab ${tab === t ? 'active' : ''}" data-tab="${t}" style="flex:none">${t}${stepDone[TAB_STEP[t]] ? '<span style="color:var(--green);margin-left:3px">✓</span>' : ''}</div>`).join('')}
           <span style="flex:none;margin:0 6px;border-left:1px solid var(--border)"></span>
           ${pm === '一键跑批' ? '<span class="tag cyan" style="flex:none;align-self:center" title="一键跑批项目:Agent 全自动量产(创建时选定,不可修改)">🏭 一键跑批</span>' : ''}
+          ${window.Issues ? `<button class="btn ghost sm" data-x="pissues" data-pid="${p.id}" style="flex:none" title="问题中心:全项目待处理问题聚合(失败镜/过期/未分镜/低分/待确认/缺图),可一键处置">🩺 问题${(n => n ? ` <b style="color:var(--red)">${n}</b>` : '')(Issues.count(p))}</button>` : ''}
+          ${window.Plans ? `<button class="btn ghost sm" data-x="pplan" style="flex:none" title="制作计划:跨会话持久的推进步骤清单,步骤映射统一领域命令">📋 计划${((sm => sm ? (sm.pending ? ` ${sm.done}/${sm.total}` : ' ✓') : ''))(Plans.summary(p))}</button>` : ''}
+          ${window.Release ? Release.badgeHTML(p) : ''}
           <span class="grow"></span>
           ${tab === '分集' ? `
           <select class="select small" data-x="sort" style="width:auto;flex:none"><option value="asc" ${asc ? 'selected' : ''}>排序:正序</option><option value="desc" ${!asc ? 'selected' : ''}>排序:倒序</option></select>
@@ -46,6 +65,22 @@
       </div>`;
 
       main.querySelectorAll('[data-tab]').forEach(t => t.onclick = () => openTab(t.dataset.tab));
+      // 问题中心/制作计划入口(第三阶段协同层):角标由 Issues 的 Bus 通配订阅实时刷新
+      const issuesBtn = main.querySelector('[data-x=pissues]');
+      if (issuesBtn) issuesBtn.onclick = () => window.Issues && Issues.openModal(p, main);
+      const planBtn = main.querySelector('[data-x=pplan]');
+      if (planBtn) planBtn.onclick = () => window.Plans && Plans.openModal(p, main);
+      const releaseBtn = main.querySelector('[data-x=prelease]');
+      if (releaseBtn) releaseBtn.onclick = () => window.Release && Release.openModal(p, main);
+      // Bus 订阅:问题/计划/交付角标随主线事件实时刷新(项目页不切换不重建 render,避免每事件整页刷新)
+      if (window.Bus) Bus.on('*', function refreshB(ev) {
+        if (!ev || !ev.name) return;
+        const tabRow = main.querySelector('[data-x=pissues]'); if (tabRow && window.Issues) tabRow.innerHTML = Issues.badgeHTML(p);
+        const planB = main.querySelector('[data-x=pplan]'); if (planB && window.Plans) planB.innerHTML = Plans.badgeHTML(p);
+        const relB = main.querySelector('[data-x=prelease]'); if (relB && window.Release) relB.outerHTML = Release.badgeHTML(p);
+        const nb = main.querySelector('[data-x=prelease]'); if (nb) nb.onclick = () => window.Release && Release.openModal(p, main);
+      });
+      fillCostLine(); // 项目成本汇总(服务端 operation 台账聚合,异步填充,失败静默)
       // 「量产跑批」入口已从项目页移除(保留在分镜工作台顶部「🏭 一键跑批」与分镜表模式内)
       if (tab === '导演') bindConcept();
       if (tab === '制片') bindProduction();
@@ -99,6 +134,7 @@
       <div class="grid proj-grid">
         <div class="card dash-card">
           <div class="dash-cell" data-x="newep"><span style="font-size:22px;color:var(--accent)">＋</span><span>新建分集</span></div>
+          <div class="dash-cell" data-x="rip"><span style="font-size:22px;color:var(--accent)">🎞</span><span>拉片建集</span></div>
         </div>
         ${shown.map(ep => {
         /* 进度信息(EP 卡片):分镜 N 镜 / 镜头组 N 组 / 视频 x/y / 已合成;未拆镜时按剧本体量预估(约 55 字/镜、4 镜/组) */
@@ -149,6 +185,7 @@
 
     function bindEpisodes() {
       main.querySelector('[data-x=newep]').onclick = () => openNewEpisode(p, main);
+      main.querySelector('[data-x=rip]').onclick = () => EpisodeUtil.openRip(p, main); // 拉片建集:参考视频→场景切段→画面理解→分镜表
       // 主体分类 tag:点击跳「主体」tab 定位到该主体卡片(经 __roleFocus 传递,roles.js 消费)
       main.querySelectorAll('[data-subj]').forEach(t => t.onclick = e => {
         e.stopPropagation();

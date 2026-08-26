@@ -16,7 +16,7 @@
     const run = () => {
       const main = document.getElementById('main');
       if (!main) return;
-      if (t.type === '文生视频') SBGen.createShotVideo(p, ep, s, main);
+      if (t.type === '文生视频') Commands.execute('shot.generateVideo', { pid: p.id, epid: ep.id, sid: s.id, main, ui: true }).then(r => Commands.digest(r)); // 统一命令层(ui 模式)
       else SB.genAudio(p, ep, s, main);
     };
     const targetHash = `#/project/${p.id}/episode/${ep.id}`;
@@ -78,24 +78,16 @@
   async function runBatchOp(p, ep, main, op) {
     if (!ep.shots.length) return U.toast('暂无分镜', 'error');
     if (op === 'video') {
-      const pend = ep.shots.filter(s => !s.final && (!s.video || !Store.shotVideoReady(s)));
-      if (!pend.length) return U.toast('所有分镜视频均已生成', 'info');
-      // 真人审核预审:批量生成同样校验引用素材
-      if (window.HumanReview) {
-        const urls = [...new Set(pend.flatMap(s => HumanReview.shotImageUrls(p, s)))];
-        return HumanReview.guard(urls, () => runBatchOp(p, ep, main, 'video:noguard'));
-      }
-      return runBatchOp(p, ep, main, 'video:noguard'); // 无审核模块时直接继续
-    }
-    if (op === 'video:noguard') {
+      // 执行走统一领域命令(ui 模式):真人预审 guardAsync/镜头确认闸/合规承诺/失败重试汇总由命令层与引擎保留;
+      // 本函数只承担 UI 决策壳:成本预估 + 断点校准(先 3 镜再放量)+ 采纳拆镜建议策略
       const pend = ep.shots.filter(s => !s.final && (!s.video || !Store.shotVideoReady(s)));
       if (!pend.length) return U.toast('所有分镜视频均已生成', 'info');
       const per = s => (s.duration > 10 ? COST.video * 2 : COST.video); // 长镜头(>10s)按 2 镜计价
       const total = pend.reduce((n, s) => n + per(s), 0);
       // 拆镜策略建议:LLM 拆镜时按画面动态标注的建议策略,批量入口可一键采纳后执行
       const hints = pend.filter(s => s.strategyHint && (s.genStrategy || 'ref') !== s.strategyHint);
-      // 逐条扣减:每镜单独扣费,余额不足时仅该镜失败
-      const run = shots => SBGen.batchGenVideos(p, ep, main, shots);
+      // 逐条扣减:每镜单独扣费,余额不足时仅该镜失败;shotIds 子集执行(校准/放量两段)
+      const run = shots => Commands.execute('episode.generateVideos', { pid: p.id, epid: ep.id, main, ui: true, shotIds: shots.map(s => s.id) }).then(r => Commands.digest(r));
       if (pend.length <= 3) { await run(pend); return; }
       // >3 镜:断点校准(先校准 3 张再放量)
       U.openModal({
@@ -203,6 +195,12 @@
             updM(s, `<span style="color:var(--green)">✓ 镜头${s.order + 1} 完成</span>`);
           } catch (e) {
             U.refund(1, `镜头${s.order + 1} 混流失败退费`, tk.id + '_m' + s.order);
+            // R15:inner opId 落任务——该镜超时但服务端已交付时,任务中心「领取结果」按此键找回并应用回分镜
+            if (e && e.__opId) {
+              tk.opIds = tk.opIds || [];
+              if (!tk.opIds.some(x => x.opId === e.__opId)) tk.opIds.push({ opId: e.__opId, shotId: s.id, label: '镜头' + (s.order + 1) });
+              Store.save();
+            }
             failCnt++;
             updM(s, `<span style="color:var(--red)">✕ 镜头${s.order + 1} 失败(已退费)</span>`);
             U.toast(`镜头${s.order + 1} 合成失败:` + e.message, 'error', 3500);

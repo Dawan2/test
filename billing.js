@@ -169,7 +169,8 @@ function stepDecision(op, step, rh, opts) {
  *  - blocked-missing     : 登记缺失(被淘汰/文件损坏)→ 失败关闭,不可退 */
 function refundDecision(op) {
   if (!op) return 'blocked-missing';
-  if (op.status === 'delivered') return 'blocked-delivered';
+  // 终态成功:delivered(同步端点)/succeeded(看门狗恢复的同步交付)/succeeded-by-job(任务中心)一律不可退
+  if (op.status === 'delivered' || op.status === 'succeeded') return 'blocked-delivered';
   if (op.status === 'refunded') return 'blocked-refunded';
   if (op.steps && Object.values(op.steps).some(st => st && st.ok)) return 'blocked-ok-step';
   return 'refundable';

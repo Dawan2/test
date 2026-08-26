@@ -2,36 +2,13 @@
 (function () {
   window.Views = window.Views || {};
 
-  /* 画风库:12 个预设,kw 为注入全库生成 prompt 的关键词包,hue 为占位卡片渐变基色 */
-  const STYLE_LIB = [
-    { name: '漫剧', kw: '日系唯美,线条流畅,色彩明快', hue: 320 },
-    { name: '动漫', kw: '2D 平涂,高分镜感', hue: 200 },
-    { name: '写实', kw: '照片级真实,自然光', hue: 30 },
-    { name: '经典古装', kw: '宫廷华服,工笔质感', hue: 0 },
-    { name: '现代短剧', kw: '都市实景,网剧布光', hue: 210 },
-    { name: '院线电影风', kw: '电影级光影,胶片颗粒', hue: 40 },
-    { name: '黑泽明', kw: '黑白对比,磅礴构图', hue: 240 },
-    { name: '诺兰', kw: '冷调宏大,写实硬核', hue: 220 },
-    { name: '王家卫', kw: '暧昧霓虹,抽帧质感', hue: 280 },
-    { name: '韦斯·安德森', kw: '对称构图,马卡龙色', hue: 45 },
-    { name: '邵氏武侠', kw: '复古胶片,武侠片厂', hue: 15 },
-    { name: '银翼杀手', kw: '赛博废墟,蓝橙霓虹', hue: 190 },
-    /* 海外本土剧向预设 */
-    { name: '欧美竖屏剧', kw: '竖屏网剧质感,Lifetime频道感,自然光', hue: 20 },
-    { name: '韩剧风尚', kw: '清新唯美,柔光,韩剧色调', hue: 350 },
-    { name: '东南亚热剧', kw: '高饱和,热烈明快,热带光影', hue: 160 },
-    { name: '暗黑狼人', kw: '暗黑哥特,月光冷调,神秘氛围', hue: 260 },
-  ];
+  /* 画风库/影调/风格串/负面约束:单一来源已下沉 js/domain.js(双端共享,CLI 同口径),此处仅回挂 */
+  const STYLE_LIB = Domain.STYLE_LIB;
   window.STYLE_LIB = STYLE_LIB;
-  /* 影调风格(第二轴:画面风格 × 影调风格) */
-  const TONE_PRESETS = ['无', '电影级逆光', '怀旧香港', '悬疑电影', '纪实主义', '赛博朋克', '青橙电影感'];
+  const TONE_PRESETS = Domain.TONE_PRESETS;
   window.TONE_PRESETS = TONE_PRESETS;
-  /* 画风+影调合成显示/prompt 用风格串(在库画风追加关键词包 kw;老项目自定义风格不在库时 kw 为空,行为不变) */
-  window.styleOf = p => {
-    const base = (p.style || '漫剧') + (p.tone && p.tone !== '无' ? '·' + p.tone : '');
-    const it = STYLE_LIB.find(x => x.name === p.style);
-    return it ? base + ',' + it.kw : base;
-  };
+  window.styleOf = Domain.styleOf;
+  window.negOf = Domain.negOf;
   /* 目标市场/语言(项目级,海外本土剧):zh 为国内默认,其余为出海市场 */
   const LOCALES = [
     { id: 'zh', name: '国内中文', tag: '🇨🇳 国内' },
@@ -45,8 +22,6 @@
   window.langOf = p => ({ zh: '', en: ',台词与旁白使用口语化美式英语', sea: ',台词与旁白使用简单地道的英语口语(东南亚受众)', jp: ',台词与旁白使用日语' }[(p && p.locale) || 'zh'] || '');
   /* 人物脸型 prompt 片段(出海剧选非亚洲;faceStyle 未设置时按目标市场 locale 推导) */
   window.faceOf = p => p.faceStyle === '非亚洲' ? ',欧美面孔' : p.faceStyle === '混合' ? '' : p.faceStyle ? ',亚洲面孔' : ({ en: ',欧美面孔', sea: ',东南亚面孔', jp: ',东亚面孔' }[p.locale] || ',亚洲面孔');
-  /* 反向提示词后缀(负面约束) */
-  window.negOf = p => p.negPrompt ? '。负面约束:' + p.negPrompt : '';
   window.MODELS = {
     script: ['虎鲸·剧本大模型 v2', 'DeepScript-Pro', 'GLM-Screenplay'],
     image: ['Volcengine,豆包 Seedream 5.0 Pro,doubao-seedream-5-0-pro-260628',

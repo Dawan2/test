@@ -92,5 +92,34 @@
     }
   }
 
-  window.Persona = { DIMS, blankPersona, openEditor, rewritePrompt, recommendVoice };
+  /* 批量按人设推荐音色:全部角色一次 LLM 调用(与单个推荐同为免费辅助,不计费);
+   * 返回 {角色名:{voice,reason}},LLM 未覆盖/不可用的角色回退随机,保证每角色都有值 */
+  async function recommendVoicesBatch(p, chars, voices) {
+    const brief = chars.map(s => {
+      const ps = s.persona || {};
+      return { name: s.name, persona: [ps.性格, ps.语气].filter(Boolean).join(';') || s.name };
+    });
+    const fallback = reason => {
+      const map = {};
+      chars.forEach(s => map[s.name] = { voice: voices[Math.floor(Math.random() * voices.length)], reason });
+      return map;
+    };
+    try {
+      if (!API.isReady()) throw new Error('LLM 未配置');
+      const out = await API.chatJSON({
+        system: '你是配音导演。',
+        messages: [{ role: 'user', content: `根据以下角色人设为每个角色推荐最合适的音色,项目风格:${styleOf(p)}。音色库:${JSON.stringify(voices)}。返回 JSON 数组,每个元素 {"name":"角色名(必须与输入完全一致)","voice":"必须是音色库中的一项","reason":"一句话理由"}:\n${JSON.stringify(brief)}` }],
+        temperature: 0.4, max_tokens: 1200,
+      });
+      if (!Array.isArray(out)) throw new Error('LLM 返回无效');
+      const map = {};
+      out.forEach(o => { if (o && o.name && voices.includes(o.voice)) map[o.name] = { voice: o.voice, reason: String(o.reason || '') }; });
+      chars.forEach(s => { if (!map[s.name]) map[s.name] = { voice: voices[Math.floor(Math.random() * voices.length)], reason: 'LLM 未覆盖,随机推荐' }; });
+      return map;
+    } catch (e) {
+      return fallback('LLM 不可用,随机推荐');
+    }
+  }
+
+  window.Persona = { DIMS, blankPersona, openEditor, rewritePrompt, recommendVoice, recommendVoicesBatch };
 })();

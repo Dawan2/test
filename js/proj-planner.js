@@ -163,7 +163,7 @@
             Tasks.done(tk);
             U.toast('译制完成,请预览后应用', 'success');
           } catch (e) {
-            U.refund(2, '剧本译制失败');
+            U.refund(2, '剧本译制失败', (e && e.__opId) || tk.id); // 十七轮:镜像关联原 operation(服务端按原账单退)
             Tasks.fail(tk, e.message);
             U.toast('译制失败:' + e.message, 'error', 3000);
           }

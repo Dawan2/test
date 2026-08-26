@@ -101,6 +101,52 @@
     done && done();
   }
 
+  /* ---- 批量推荐音色:全部角色一次 LLM 调用,试听确认后批量绑定 ---- */
+  async function batchRecommendVoices(p, done) {
+    const chars = p.subjects.filter(s => s.kind === 'character');
+    if (!chars.length) return U.toast('项目暂无角色主体', 'info');
+    const voices = Voice.LIB.map(v => v.name);
+    U.toast('AI 配音导演正在为全部角色推荐音色…', 'info', 2200);
+    const rec = await Persona.recommendVoicesBatch(p, chars, voices);
+    U.openModal({
+      title: `🎙 批量配音色(${chars.length} 个角色)`,
+      wide: true,
+      body: `
+      <div class="hint" style="margin-bottom:10px">AI 按人设(性格/语气)推荐的音色,可逐角色改选与试听;确认后批量绑定(语速/语调等细项之后仍可在卡片「🎙」中单独调整)。</div>
+      <div style="max-height:52vh;overflow:auto;display:flex;flex-direction:column;gap:8px">
+        ${chars.map((s, i) => `
+        <div class="card row" style="padding:8px 12px;gap:8px;align-items:center;flex-wrap:wrap">
+          <b style="min-width:80px">${U.esc(s.name)}</b>
+          <select class="input small" data-bv="${i}" style="min-width:150px">
+            ${voices.map(v => `<option value="${U.esc(v)}" ${rec[s.name].voice === v ? 'selected' : ''}>${U.esc(v)}</option>`).join('')}
+          </select>
+          <button class="btn sm" data-try="${i}" title="试听所选音色(浏览器语音合成预览)">▶ 试听</button>
+          <span class="small muted grow">${U.esc(rec[s.name].reason || '')}</span>
+        </div>`).join('')}
+      </div>`,
+      footer: `<button class="btn" data-x="cancel">取消</button><button class="btn primary" data-x="ok">✓ 绑定全部音色</button>`,
+      onMount(m, close) {
+        m.querySelectorAll('[data-try]').forEach(btn => btn.onclick = () => {
+          const i = +btn.dataset.try;
+          const v = m.querySelector(`[data-bv="${i}"]`).value;
+          const meta = Voice.byName(v) || {};
+          Voice.speak(`你好,我是${chars[i].name}`, { voice: v, rate: 1, volume: 7, pitch: meta.gender === '女' ? 1.2 : meta.age === '老年' ? 0.8 : 1 });
+        });
+        m.querySelector('[data-x=cancel]').onclick = close;
+        m.querySelector('[data-x=ok]').onclick = () => {
+          chars.forEach((s, i) => {
+            const v = m.querySelector(`[data-bv="${i}"]`).value;
+            s.voiceCfg = Object.assign(Voice.norm(s.voiceCfg || s.voice), { voice: v });
+            s.voice = v; // 兼容旧字符串字段
+          });
+          Store.save(); close();
+          U.toast(`已为 ${chars.length} 个角色批量绑定音色`, 'success', 3000);
+          done && done();
+        };
+      },
+    });
+  }
+
   /* ---- 音色参考音频绑定(音频与角色资产绑定,生成时随资产注入) ---- */
   function bindRefAudio(p, s, done) {
     U.openModal({
@@ -245,6 +291,7 @@
       const needGen = p.subjects.filter(s => !s.image); // 缺权威参考图的主体(此前流程未跑完的)
       const genAllBtn = needGen.length ? `<button class="btn sm primary" data-x="genall" title="为全部缺图主体一键 AI 生图(每张 -${COST.image} 积分,逐张扣费,余额不足即停)">✨ 补齐主体图(${needGen.length})</button>` : '';
       const newSubjBtn = `<button class="btn sm" data-x="newsubj" title="手动新建主体(角色/场景/道具),不经剧本解析">＋ 新建主体</button>`;
+      const batchVoiceBtn = p.subjects.some(s => s.kind === 'character') ? `<button class="btn sm" data-x="bvoice" title="AI 按人设为全部角色推荐音色,试听确认后批量绑定">✨ 批量配音色</button>` : '';
       main.innerHTML = `
       <div class="page">
         ${embedded ? '' : `
@@ -257,6 +304,7 @@
           </div>
           <div class="row">
             ${newSubjBtn}
+            ${batchVoiceBtn}
             ${genAllBtn}
             <button class="btn sm" data-x="importlib" title="把资产库里的主体导入本项目复用">📥 从资产库导入</button>
             ${p.narration ? `<span class="tag cyan">旁白:${U.esc(Voice.label(p.narration))}</span>` : '<span class="tag">旁白:未设置</span>'}
@@ -264,6 +312,7 @@
         </div>`}
         ${embedded ? `<div class="row" style="justify-content:flex-end;margin-bottom:8px">
           ${newSubjBtn}
+          ${batchVoiceBtn}
           ${genAllBtn}
           <button class="btn sm" data-x="importlib" title="把资产库里的主体导入本项目复用">📥 从资产库导入</button>
           ${p.narration ? `<span class="tag cyan">旁白:${U.esc(Voice.label(p.narration))}</span>` : '<span class="tag">旁白:未设置</span>'}
@@ -416,6 +465,8 @@
         render();
       };
       /* ---- 卡片级音色绑定(角色):音色设置弹窗 / 音色参考音频 ---- */
+      const bVoice = main.querySelector('[data-x=bvoice]');
+      if (bVoice) bVoice.onclick = () => batchRecommendVoices(p, render);
       main.querySelectorAll('[data-voice]').forEach(b => b.onclick = () => {
         const s = p.subjects.find(x => x.id === b.dataset.voice);
         if (s) setVoice(p, s, render);

@@ -202,8 +202,9 @@
       return `<span class="tag ${AC.gBoard && AC.gBoard.key === b.key ? 'cyan' : ''}" data-g-board="${U.esc(b.key)}" title="${U.esc(b.key)}板块职责:${U.esc(b.focus)}">${b.ico} ${b.key} · ${U.esc(ex ? ex.name : '未雇佣')}</span>`;
     }).join('')}</div>
     <div class="pipe-body" style="display:flex;flex-direction:column;overflow:hidden">
-      <div class="agent-chips" style="flex:none">${QUICK_G.map(q => `<span class="tag" data-g-chip="${q}">${q}</span>`).join('')}${expAct ? `<span class="tag yellow" data-g-expact="${expAct[1]}">${expAct[0]}</span>` : ''}</div>
+      <div class="agent-chips" data-g-chips style="flex:none"></div>
       <div class="agent-msgs" data-g-msgs style="flex:1;overflow-y:auto"></div>
+      <div class="row" data-arefs="g" style="gap:4px;margin:4px 0 0;align-items:center;flex-wrap:wrap;display:none;flex:none"></div>
       <div class="agent-input" style="flex:none">
         ${AC.personaSelectHTML('g', AC.gPersonaId)}
         <textarea class="input small" data-g-in rows="2" placeholder="${ep ? '如:把镜头3改成夜景' : p ? '如:把第二集结尾改成反转;润色卖点' : '先进项目,或直接问我怎么规划'}"></textarea>
@@ -212,9 +213,34 @@
     </div>`;
     const msgsEl = gDrawer.querySelector('[data-g-msgs]');
 
+    /* 动态情境 chips(与集级面板同源 AO.dynamicChips,renderMsgs 时重算保持新鲜):text 发助手,gotoEp 跳集,ep 上下文 run/goto 走集级注册表,否则走全局注册表 */
+    function paintGChips() {
+      const el = gDrawer.querySelector('[data-g-chips]');
+      if (!el) return;
+      const dyn = (p || ep) ? AO.dynamicChips(p, ep) : [];
+      el.innerHTML = dyn.map((c, i) => `<span class="tag cyan" data-g-dchip="${i}" title="${U.esc(c.d || '')}" style="cursor:pointer">${c.run ? '▶ ' : (c.goto || c.gotoEp) ? '→ ' : '💬 '}${U.esc(c.t)}</span>`).join('')
+        + QUICK_G.map(q => `<span class="tag" data-g-chip="${q}">${q}</span>`).join('')
+        + (expAct ? `<span class="tag yellow" data-g-expact="${expAct[1]}">${expAct[0]}</span>` : '');
+      el.querySelectorAll('[data-g-dchip]').forEach(c2 => c2.onclick = async () => {
+        const c = dyn[+c2.dataset.gDchip];
+        if (!c) return;
+        if (c.text) sendG(c.text);
+        else if (c.gotoEp) location.hash = '#/project/' + p.id + '/episode/' + c.gotoEp; // 跳集:hashchange 触发 renderGlobal 重算
+        else if (ep) await AO.runEpisodeActions(p, ep, [c.run ? { op: 'run', action: c.run } : { op: 'goto', target: c.goto }], document.getElementById('main'));
+        else AO.runGlobalActions(ctx, [{ op: 'goto', target: c.goto }]);
+      });
+      el.querySelectorAll('[data-g-chip]').forEach(c2 => c2.onclick = () => sendG(c2.dataset.gChip));
+      const expB = el.querySelector('[data-g-expact]');
+      if (expB) expB.onclick = () => { // 功能专家快捷动作:调用其完整工作流(AI策划/剧本译制)
+        if (!p) return U.toast('请先进入一个项目', 'error');
+        if (window.EpisodeLab && EpisodeLab[expB.dataset.gExpact]) EpisodeLab[expB.dataset.gExpact](p, document.getElementById('main'));
+      };
+    }
+
     function renderMsgs() {
+      paintGChips();
       msgsEl.innerHTML = chat.length ? chat.map((m2, i) => m2.role === 'user'
-        ? `<div class="agent-msg user"><div class="agent-bubble">${U.esc(m2.text)}</div></div>`
+        ? `<div class="agent-msg user">${(m2.refs && m2.refs.length) ? `<div style="text-align:right;margin-bottom:2px">${m2.refs.map(l => `<span class="tag cyan" style="font-size:10px">📎 ${U.esc(l)}</span>`).join(' ')}</div>` : ''}<div class="agent-bubble">${U.esc(m2.text)}</div></div>`
         : `<div class="agent-msg">
             ${m2.route ? `<div class="small muted" style="font-size:10px;margin:0 0 2px 2px">🐋 虎鲸 → 转交「${U.esc(m2.route.board)}」板块 · ${U.esc(m2.route.expert)}</div>` : ''}
             ${m2.thinking ? `<div class="agent-think" data-g-th="${i}">💭 思考过程 ▾<div class="agent-think-body">${U.esc(m2.thinking)}</div></div>` : ''}
@@ -230,9 +256,11 @@
             </div>` : ''}
             ${m2.prearr ? AO.prearrCardHTML(m2.prearr, i, 'g') : ''}
             ${m2.choices ? AO.choiceCardHTML(m2, i, 'g') : ''}
+            ${m2.event ? AO.eventCardHTML(m2, i, 'g') : ''}
           </div>`).join('')
         : AC.gBoard
           ? `<div class="hint" style="text-align:center;padding:20px 8px">我是${U.esc(AC.gBoard.agent)} 🐋(板块:${U.esc(AC.gBoard.key)})<br>当前上下文:${U.esc(ctxLabel)}。<br>可以用对话方式推进本板块工作,也可以只是聊聊怎么拍。</div>`
+          : p ? `<div class="hint" style="text-align:center;padding:20px 8px">🐋 ${U.esc(AO.openingLine(p, ep))}<br><span class="muted">直接跟我说要做什么,或点上方情境建议一键推进;也可以点上方板块专家对话。</span></div>`
           : `<div class="hint" style="text-align:center;padding:20px 8px">我是虎鲸🐋,全流程总调度。<br>告诉我你要做什么(如「把第3集的反派写得更狠」或「现在进度到哪了」),我会安排对应板块的专家来处理;<br>也可以直接点上方板块专家对话。</div>`;
       msgsEl.scrollTop = msgsEl.scrollHeight;
       msgsEl.querySelectorAll('[data-g-th]').forEach(t => t.onclick = () => t.classList.toggle('open'));
@@ -252,31 +280,57 @@
         getChat: i => chat[i],
         submit: (m2, o) => { m2.choiceDone = o.t; Store.save(); sendG('我选择:' + o.t); },
       });
+      AO.bindEvents(msgsEl, 'g', { // 事件续谈卡:选项直执真实工作流(目标按钮自带确认与计费)
+        getChat: i => chat[i],
+        exec: async (m2, o) => {
+          m2.eventDone = o.t; Store.save();
+          await AO.runEpisodeActions(ctx.p, ctx.ep, [o.run ? { op: 'run', action: o.run } : { op: 'goto', target: o.goto }], document.getElementById('main'));
+          if (window.__reroute) window.__reroute();
+          renderGlobal();
+        },
+      });
     }
 
     function applyPendingG(msgIdx) {
       const m2 = chat[msgIdx];
       if (!m2 || !m2.pending) return;
-      const tk = Tasks.start({ type: '导演助手', model: '应用修改(全局)', target: ctxLabel, cost: 1, projectId: p && p.id, episodeId: ep && ep.id });
-      if (!U.charge(1, '导演助手应用修改')) { Tasks.fail(tk, '积分不足'); return; }
-      // 撤销快照
-      if (ep) ep.agentUndo = { shots: JSON.parse(JSON.stringify(ep.shots)), composed: ep.composed, time: Store.now() };
-      if (p) p.__agentUndo = JSON.stringify({ name: p.name, style: p.style, tone: p.tone, globalSetting: p.globalSetting, locale: p.locale, scriptMeta: p.scriptMeta, epOutline: p.epOutline, subjects: p.subjects, episodes: ep ? null : p.episodes });
-      const g = AO.splitOps(m2.pending.ops);
-      if (g.data.length) applyGlobalOps(ctx, g.data, true);
-      const vf = ep && g.data.length ? AO.verifyOps(ep, g.data) : null; // 执行闭环验证:分镜类 ops 落数后回读校验
-      const actDone = AO.runGlobalActions(ctx, g.acts); // 动作类 ops:真实跳转/调起工作流
-      AC.activeStepKey = AC.opBoardKey(m2.pending.ops); // 顶栏步骤高亮 Agent 正在操作的板块
-      // 写入持久化记忆:用户指令 + 已应用的修改摘要
-      const userMsgG = chat.slice(0, msgIdx).reverse().find(x => x.role === 'user');
-      if (userMsgG) AC.memRemember(`「${ctxLabel}」${userMsgG.text.slice(0, 60)} → 已应用:${m2.pending.changes.slice(0, 3).join(';').slice(0, 80)}`, AC.gBoard && AC.gBoard.key);
-      Tasks.done(tk);
-      m2.text += `\n(已应用 ${m2.pending.changes.length} 项修改)${vf ? ' ' + AO.verifyNote(vf) : ''}`;
-      m2.pending = null;
-      Store.save();
-      U.toast('修改已应用,可点「↩」回滚', 'success');
-      if (window.__reroute) window.__reroute(); // 刷新当前页面呈现修改
-      renderGlobal();
+      const exec = ops => {
+        const g = AO.splitOps(ops);
+        if (!g.data.length && !g.acts.length) { // 冲突项全部「保留我的」:无可应用项,不扣费
+          m2.text += '\n(冲突项已全部保留你的修改,助手方案无可应用项)';
+          m2.pending = null;
+          Store.save(); renderMsgs();
+          return;
+        }
+        const tk = Tasks.start({ type: '导演助手', model: '应用修改(全局)', target: ctxLabel, cost: 1, projectId: p && p.id, episodeId: ep && ep.id });
+        if (!U.charge(1, '导演助手应用修改')) { Tasks.fail(tk, '积分不足'); return; }
+        // 撤销快照
+        if (ep) ep.agentUndo = { shots: JSON.parse(JSON.stringify(ep.shots)), composed: ep.composed, time: Store.now() };
+        if (p) p.__agentUndo = JSON.stringify({ name: p.name, style: p.style, tone: p.tone, globalSetting: p.globalSetting, locale: p.locale, scriptMeta: p.scriptMeta, epOutline: p.epOutline, subjects: p.subjects, episodes: ep ? null : p.episodes });
+        const applied = g.data.length ? applyGlobalOps(ctx, g.data, true) : [];
+        const vf = ep && g.data.length ? AO.verifyOps(ep, g.data) : null; // 执行闭环验证:分镜类 ops 落数后回读校验
+        const actDone = AO.runGlobalActions(ctx, g.acts); // 动作类 ops:真实跳转/调起工作流
+        AC.activeStepKey = AC.opBoardKey(ops); // 顶栏步骤高亮 Agent 正在操作的板块
+        // 写入持久化记忆:用户指令 + 已应用的修改摘要
+        const userMsgG = chat.slice(0, msgIdx).reverse().find(x => x.role === 'user');
+        if (userMsgG) AC.memRemember(`「${ctxLabel}」${userMsgG.text.slice(0, 60)} → 已应用:${(applied.length ? applied : m2.pending.changes).slice(0, 3).join(';').slice(0, 80)}`, AC.gBoard && AC.gBoard.key);
+        Tasks.done(tk);
+        m2.text += `\n(已应用 ${applied.length + actDone.length} 项修改)${vf ? ' ' + AO.verifyNote(vf) : ''}`;
+        m2.pending = null;
+        Store.save();
+        U.toast('修改已应用,可点「↩」回滚', 'success');
+        if (window.__reroute) window.__reroute(); // 刷新当前页面呈现修改
+        renderGlobal();
+      };
+      // ⚠ 并行编辑冲突闸:应用前比对发送时指纹基线;命中则逐项版本选择(取消不扣费,预览卡保留)
+      const base = AO.getPendingBase(m2);
+      const conf = base ? AO.detectConflicts(AO.splitOps(m2.pending.ops).data, base, ctx) : [];
+      if (!conf.length) return exec(m2.pending.ops);
+      AO.openConflictPanel(conf, decisions => {
+        if (!decisions) return; // 取消:暂不应用,预览卡保留待决
+        const g0 = AO.splitOps(m2.pending.ops);
+        exec(AO.resolveOps(g0.data, conf, decisions, ctx).concat(g0.acts));
+      });
     }
 
     async function sendG(text) {
@@ -290,7 +344,7 @@
       if (/^(记住|请记住|记一下)[,:：,，]?\s*/.test(text)) { AC.memRemember(text.replace(/^(记住|请记住|记一下)[,:：,，]?\s*/, '用户要求记住:'), AC.gBoard && AC.gBoard.key); } // 主动记忆(带板块 scope)
       if (AC.prearrOn) { // 🎛 预排模式:创作意图 → 参数预排方案卡片,不直接执行
         if (!API.isReady()) { U.toast('🎛 预排模式需要真实 LLM(未配置或未登录后端),本次已忽略', 'error'); return; }
-        chat.push({ role: 'user', text, time: Store.now() });
+        chat.push({ role: 'user', text, refs: window.AgentRefs ? AgentRefs.labels(p, ep, 'g') : [], time: Store.now() });
         Store.save();
         renderMsgs();
         AO.prearrSend({
@@ -301,9 +355,10 @@
         });
         return;
       }
-      chat.push({ role: 'user', text, time: Store.now() });
+      chat.push({ role: 'user', text, refs: window.AgentRefs ? AgentRefs.labels(p, ep, 'g') : [], time: Store.now() });
       Store.save();
       renderMsgs();
+      const baseG = AO.fingerprint(ctx); // ⚠ 并行编辑冲突基线:助手思考期间的手动改动据此检测
       // 上下文压缩:旧消息(除最近 12 条)后台蒸馏为「会话纪要」存 settings.agentSummaryG;压缩中用旧摘要,不阻塞发送
       Store.state.settings = Store.state.settings || {};
       // 七轮:虎鲸对话计费对齐服务端(llm.agent=1/条)——本地同扣 1,路由+回复+纪要蒸馏共用同一 operationId 幂等(只扣一次)
@@ -327,13 +382,24 @@
       let out;
       try {
         if (!API.isReady()) throw new Error('LLM 未配置或未登录后端');
-        out = await Understanding.chatJSONRobust({
+        // 按需查询循环(第三阶段):LLM 首轮可返回 {"query":[...]} 要数据,本地补齐后自动续问(≤2 轮,
+        // 共用同 opId 的 q1/q2 步骤槽位,与路由/纪要蒸馏同一条消息只扣一次)
+        const llmOptG = {
           model,
-          system: buildGlobalPrompt(ctx) + (AC.gBoard ? `\n你当前作为「${AC.gBoard.key}」板块的${AC.gBoard.agent}与用户协作,聚焦:${AC.gBoard.focus}。本板块的生成/审核/定稿节奏由你引导。${AC.upstreamFinal(ctx.p, AC.gBoard.key)}` : orcaGlobalCtx(ctx.p)) + AC.gPersonaBlock() + AC.memBlock(text, AC.gBoard && AC.gBoard.key),
+          system: buildGlobalPrompt(ctx) + (AC.gBoard ? `\n你当前作为「${AC.gBoard.key}」板块的${AC.gBoard.agent}与用户协作,聚焦:${AC.gBoard.focus}。本板块的生成/审核/定稿节奏由你引导。${AC.upstreamFinal(ctx.p, AC.gBoard.key)}` : orcaGlobalCtx(ctx.p)) + AC.gPersonaBlock() + AC.memBlock(text, AC.gBoard && AC.gBoard.key) + AO.queryProtocol(),
           user: histBlockG + buildGlobalUser(ctx, text),
           temperature: 0.4, max_tokens: 6000,
-          billingAction: 'llm.agent', operationId: agOpId, // 与路由共用同 opId:一条消息(路由+回复)只扣一次
-        });
+        };
+        let qExtraG = '';
+        for (let round = 0; ; round++) {
+          out = await Understanding.chatJSONRobust(Object.assign({}, llmOptG, {
+            user: llmOptG.user + qExtraG,
+            billingAction: 'llm.agent', operationId: agOpId, step: round ? 'q' + round : undefined, // 与路由共用同 opId:一条消息(路由+回复+续问)只扣一次
+          }));
+          const qsG = out && Array.isArray(out.query) ? out.query : null;
+          if (!qsG || !qsG.length || round >= 2) break;
+          qExtraG += AO.answerQueries(ctx.p, ctx.ep, 'g', qsG);
+        }
         Tasks.done(tk);
       } catch (e) {
         if (llmPaid) U.refund(1, '虎鲸对话失败退费', agOpId); // 七轮:失败退回本条对话积分
@@ -358,7 +424,9 @@
         if (ep && cloneCtx.p) cloneCtx.ep = cloneCtx.p.episodes.find(e => e.id === ep.id);
         const changes = (g.data.length ? applyGlobalOps(cloneCtx, g.data, false) : []).concat(actDescs);
         if (changes.length) {
-          if ((Store.state.settings || {}).agentAuto) {
+          // ⚠ 并行编辑冲突(手动修改 vs 助手方案):发送时基线 vs 当前指纹,命中则转预览确认逐项选择版本
+          const confG = AO.detectConflicts(g.data, baseG, ctx);
+          if ((Store.state.settings || {}).agentAuto && !confG.length) {
             // ⚡ 自动执行:read/edit 类免确认直执行(可撤销);exec(run)与 edit-hi(delep 删分集,十轮)
             // 按注册表分级审批,先 U.confirm 确认才执行——删除不可逆,自动模式下也始终确认
             const runOpsG = g.acts.filter(o => AO.opRisk(o) === 'exec');
@@ -396,6 +464,7 @@
                 }, '▶ 确认执行');
                 msg.text += `\n(⚠ ${runOpsG.length} 个执行类动作待确认)`;
               }
+              chat.push(msg); // 自动执行成功同样留存助手回复(原漏推,会话历史丢失本条)
               Store.save();
               U.toast('导演助手已自动执行', 'success');
               if (window.__reroute) window.__reroute();
@@ -405,7 +474,9 @@
             Tasks.fail(tk2, '积分不足');
             msg.text += '\n(自动执行失败:积分不足,未改动)';
           } else {
+            if (confG.length) msg.text += `\n(⚠ 你在助手思考期间手动改过 ${confG.length} 处,点「应用修改」逐项选择版本)`;
             msg.pending = { ops, changes };
+            AO.setPendingBase(msg, baseG); // 基线随消息存(会话内有效;刷新后应用退化为直接应用)
           }
         }
       }
@@ -450,7 +521,7 @@
       if (window.__reroute) window.__reroute();
       renderGlobal();
     };
-    gDrawer.querySelectorAll('[data-g-chip]').forEach(c2 => c2.onclick = () => sendG(c2.dataset.gChip));
+    // chips 绑定统一在 paintGChips(renderMsgs 每次重算时重建并绑定,此处不再重复)
     // 板块专家阵容 chip:点击直接对该板块子Agent说话(与制片页「智能体分工」入口同语义)
     gDrawer.querySelectorAll('[data-g-board]').forEach(c2 => c2.onclick = () => openBoard(c2.dataset.gBoard));
     // Agent 身份下拉:本会话以所选专家人设工作(仅会话内记忆;''=明确选择默认助手)
@@ -459,12 +530,6 @@
       AC.gPersonaId = gPersona.value;
       const ex = AC.findExpert(AC.gPersonaId);
       U.toast('已切换为 ' + (ex ? ex.name : '默认助手'), 'success', 1800);
-    };
-    const expBtn = gDrawer.querySelector('[data-g-expact]');
-    if (expBtn) expBtn.onclick = () => { // 功能专家快捷动作:调用其完整工作流(AI策划/剧本译制)
-      const p2 = ctx.p;
-      if (!p2) return U.toast('请先进入一个项目', 'error');
-      if (window.EpisodeLab && EpisodeLab[expBtn.dataset.gExpact]) EpisodeLab[expBtn.dataset.gExpact](p2, document.getElementById('main'));
     };
     gDrawer.querySelector('[data-g=send]').onclick = () => {
       const inp = gDrawer.querySelector('[data-g-in]');
@@ -475,6 +540,7 @@
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); gDrawer.querySelector('[data-g=send]').click(); }
     };
     renderMsgs();
+    if (window.AgentRefs) AgentRefs.paint(); // 📎 引用 chips 行(容器随抽屉重渲为空,此处重填并接线)
   }
 
   function buildGlobalPrompt(ctx) {
@@ -511,8 +577,10 @@
       if (p.script) info += `剧本摘要:${p.script.slice(0, 600)}\n`;
     }
     if (ep) info += `本集剧本摘要:${(ep.content || '').slice(0, 400)}\n当前分镜表:\n${AO.compactShots(ep)}\n`;
+    info += AO.stateBlock(p, ep); // ★ 实时状态摘要(分镜出片/确认/审片/合成/在飞任务;无 ep 时给各集进度)
+    if (window.AgentRefs) info += AgentRefs.block(p, ep, 'g'); // 📎 用户引用对象(添加到对话):活对象内容 + 精确 ops 指引
     return info + `\n用户指令:${text}`;
   }
 
-  window.AgentG = { toggleGlobal, closeGlobal, refreshGlobal, openBoard, applyGlobalOps };
+  window.AgentG = { toggleGlobal, closeGlobal, refreshGlobal, openBoard, applyGlobalOps, isOpen: () => !!gDrawer };
 })();

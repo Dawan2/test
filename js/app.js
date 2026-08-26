@@ -115,6 +115,9 @@
     const pr = hash.match(/^#\/project\/([^/]+)\/roles$/);
     const pp = hash.match(/^#\/project\/([^/]+)\/produce$/);
     const pd = hash.match(/^#\/project\/([^/]+)$/);
+    // 计费项目上下文:项目页内发起的生成调用在请求体落 _projectId 标签(服务端按项目聚合成本);
+    // 离开项目路由即清空,百宝箱等全局工具的消耗归入未标记
+    window.__billPid = (pm || pr || pp || pd) ? (pm || pr || pp || pd)[1] : null;
 
     let active = hash, title = '', content = document.createElement('div');
     // 先渲染外壳占位，再由各视图填充 main
@@ -150,6 +153,8 @@
       // 两阶段提交收尾(持久回调):每当一批新写入在 IDB 确认完成即重写本地快照,
       // 把已确认键替换为标记(配额释放;首存配额失败窗口内刷新不再丢对象)
       if (window.IDB && IDB.onIdle) { try { IDB.onIdle(() => Store.flushNow()); } catch (_) { } }
+      // R18:启动后后台回收 IDB 孤儿 blob(已删项目/镜头残留;24h 节流,失败静默)
+      if (window.Store && Store.gcIdb) { try { Store.gcIdb(); } catch (_) { } }
     };
     if (window.IDB) IDB.hydrate(Store.state).then(boot).catch(boot);
     else boot();

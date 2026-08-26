@@ -161,12 +161,13 @@
     if (types.scene) want.push('scenes(场景)');
     if (types.prop) want.push('items(物品)');
     const user = `分析以下短剧剧本,提取其中出现的${want.join('、')}主体,返回 JSON,格式:
-{"characters":[{"name":"角色名","description":"一句话角色设定","prompt":"文生图中文画面提示词","persona":{"五官":"","发型":"","身材":"","服饰":"","性格":"","特技":"","弱点":"","语气":""}}],"scenes":[{"name":"场景名","description":"一句话描述","prompt":"文生图中文画面提示词"}],"items":[{"name":"物品名","description":"一句话描述","prompt":"文生图中文画面提示词"}]}
+{"characters":[{"name":"角色名","aliases":["其他称谓"],"description":"一句话角色设定","prompt":"文生图中文画面提示词","persona":{"五官":"","发型":"","身材":"","服饰":"","性格":"","特技":"","弱点":"","语气":""}}],"scenes":[{"name":"场景名","aliases":["其他称谓"],"description":"一句话描述","prompt":"文生图中文画面提示词"}],"items":[{"name":"物品名","aliases":["其他称谓"],"description":"一句话描述","prompt":"文生图中文画面提示词"}]}
 要求:
 - 人物的 persona 为八维度人设:外形(五官/发型/身材/服饰)+ 内在(性格/特技/弱点/语气),每维一句话;人物的 prompt 以外形维度为主撰写
 - ${mode === 'fine' ? '精细模式:prompt 与 persona 必须详尽,包含外貌/服装/神态/风格限定词' : '普通模式:prompt 简洁,persona 每维简短即可'}
 - 只提取剧本中真实出现的主体,不要编造;未要求的类别返回空数组
 - 名字必须是真正的名称:人物为真实人名或稳定称谓(如 林晚晴、王管家、大小姐),严禁把台词碎片、动词短语、叙述片段当作名字(如「答这个」「说一遍」「喊大」均为反面例子);场景/物品也须为具体专名,不要泛化词
+- 去重合并:同一主体的不同称谓必须合并为一个主体(如 林晚晴/晚晴/大小姐 是同一人时只输出一个),name 用最稳定正式的全称,其余称谓列入 aliases;场景/物品同理
 - 每类最多 12 个主体
 剧本${trunc ? '(原文过长,已截取前 15000 字)' : ''}:
 ${t}`;
@@ -187,11 +188,24 @@ ${t}`;
         prompt: String(o.prompt || '').trim(),
         description: String(o.description || ''),
         persona: kind === 'character' && o.persona && typeof o.persona === 'object' ? o.persona : undefined,
+        aliases: Array.isArray(o.aliases) ? o.aliases.map(a => String(a || '').trim().slice(0, 12)).filter(a => a && a !== name).slice(0, 5) : undefined,
       }));
+    /* 别名合并:LLM 偶发把同一主体拆成多条(name/aliases 交叉命中即并入先出者,被并者名字转入 aliases) */
+    const dedupeAlias = list => {
+      const out = [];
+      list.forEach(s => {
+        const hit = out.find(x => x.name === s.name || (x.aliases || []).includes(s.name) || (s.aliases || []).includes(x.name));
+        if (!hit) { out.push(s); return; }
+        hit.aliases = [...new Set([...(hit.aliases || []), s.name, ...(s.aliases || [])])].filter(a => a !== hit.name);
+        if (!hit.prompt && s.prompt) hit.prompt = s.prompt;
+        if (!hit.persona && s.persona) hit.persona = s.persona;
+      });
+      return out;
+    };
     return {
-      character: norm(out.characters, 'LLM 语义提取', 'character'),
-      scene: norm(out.scenes, 'LLM 语义提取', 'scene'),
-      prop: norm(out.items, 'LLM 语义提取', 'prop'),
+      character: dedupeAlias(norm(out.characters, 'LLM 语义提取', 'character')),
+      scene: dedupeAlias(norm(out.scenes, 'LLM 语义提取', 'scene')),
+      prop: dedupeAlias(norm(out.items, 'LLM 语义提取', 'prop')),
       truncated: trunc,
     };
   }

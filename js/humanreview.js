@@ -156,6 +156,20 @@
     proceed();
   };
 
+  /* guard 的 Promise 化变体(统一命令层 UI 模式用):放行 resolve(true);驳回弹窗/审核中取消 resolve(false) */
+  HumanReview.guardAsync = function (urls) {
+    const uniq = [...new Set((urls || []).filter(Boolean))];
+    if (uniq.some(u => { const r = recordOf(u); return r && r.status === 'rejected'; })) {
+      HumanReview.guard(urls, () => {}); // 复用 guard 的驳回弹窗(proceed 不会触发),如实回报未放行
+      return Promise.resolve(false);
+    }
+    const pending = uniq.map(u => recordOf(u)).filter(r => r && r.status === 'pending');
+    if (!pending.length) return Promise.resolve(true);
+    return new Promise(res => U.confirm(
+      `有 ${pending.length} 个真人素材正在本地可用性检查中(${pending.map(r => r.name).join('、')})。仍要继续生成吗?`,
+      () => res(true), '仍要生成', () => res(false)));
+  };
+
   /* 收集一个分镜实际引用的图片(分镜图/首尾帧/出场角色主体图,支持多形态全称;主体取图优先级与 shotRefImages 一致:形态图 > 视频参考大头照 > 权威参考图) */
   HumanReview.shotImageUrls = function (p, s) {
     const urls = [s.image, s.firstFrame, s.lastFrame];

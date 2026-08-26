@@ -371,7 +371,7 @@
           show(0); playing = true; playBtn.textContent = '⏸ 暂停';
           if (!curVideo()) tick(); // 静帧起步;视频在 show() 里已自动播
         };
-        m.querySelector('[data-x=compose2]').onclick = () => { close(); composeVideo(p, ep, document.getElementById('main')); };
+        m.querySelector('[data-x=compose2]').onclick = () => { close(); Commands.execute('episode.compose', { pid: p.id, epid: ep.id, main: document.getElementById('main'), ui: true }).then(r => Commands.digest(r)); }; // 统一命令层(ui 模式)
         show(0);
         if (autoplay) { playing = true; playBtn.textContent = '⏸ 暂停'; if (!curVideo()) tick(); }
       },
@@ -411,6 +411,27 @@
     return false;
   }
 
+  /* ================= SRT 软字幕(P1-6:合成时按时间轴同步产出,导出菜单另存) =================
+   * 与 doCompose items 同源:每段时长 = 时间线裁剪出入点差(视频) / it.dur(图片段) / 分镜预估时长(兜底);
+   * 转场 xfade 重叠由服务端定,客户端字幕按硬切时间轴近似(逐段对齐,误差 ≤ 转场时长);空文本段占时长但不出条目 */
+  function srtTime(sec) {
+    const ms = Math.max(0, Math.round(sec * 1000));
+    const h = String(Math.floor(ms / 3600000)).padStart(2, '0');
+    const m = String(Math.floor((ms % 3600000) / 60000)).padStart(2, '0');
+    const s = String(Math.floor((ms % 60000) / 1000)).padStart(2, '0');
+    return `${h}:${m}:${s},${String(ms % 1000).padStart(3, '0')}`;
+  }
+  function buildSrt(segs) { // segs:[{text,dur}] 全量时间轴段(与合成 items 同序)
+    let t = 0, n = 0; const out = [];
+    (segs || []).forEach(sg => {
+      const start = t; t += Math.max(0, sg.dur || 0);
+      const txt = String(sg.text || '').trim();
+      if (!txt) return;
+      out.push(`${++n}\n${srtTime(start)} --> ${srtTime(t)}\n${txt}\n`);
+    });
+    return out.join('\n');
+  }
+
   function composeVideo(p, ep, main, opts) {
     if (!ep.shots.length) return U.toast('暂无分镜', 'error');
     const quiet = opts && opts.quiet;
@@ -443,15 +464,17 @@
       // 后台任务侧边栏:合成期间页面可操作,可最小化
       const dock = U.bgDock({ title: `🎞 合成成片 · ${ep.title}` });
       dock.say('⏳ 收集分镜素材(占位图上传服务端)…');
-      if (window.Agent && Agent.notify) Agent.notify(p, ep, main, `🎞 开始合成「${ep.title}」成片(规格化+拼接${ep.sbConfig.subtitle ? '+字幕烧录' : ''},数分钟)。可继续操作页面。`);
+      if (window.Bus) Bus.emit('compose.start', { p, ep, main, subtitle: !!ep.sbConfig.subtitle, brief: `开始合成「${ep.title}」成片` }); // 事件总线:Agent 对话流订阅转译
       try {
         const items = [];
+        const srtSegs = []; // SRT 软字幕时间轴(与 items 同序同段;文本取旁白+台词,与字幕烧录开关无关)
         // 八轮:合成序列与就绪指纹同源——缺省走 Store.composeSeqOf(canonical 时间线快照:tlOrder 定序/
         // tlTrims 剔除裁剪),时间线编辑器不再自拼 shotsOverride,消除"合成序列与指纹口径分裂"
         const shotList = (opts && opts.shotsOverride) || Store.composeSeqOf(ep);
         let itemIdx = 0;
         for (const s of shotList) {
           const it = { text: ep.sbConfig.subtitle ? String(s.dialogue || s.narration || '').slice(0, 120) : '' };
+          let segDur = 0; // 该段在成片时间轴上的时长(SRT 用)
           if (s.audioUrl) it.audio = s.audioUrl; // 逐镜 TTS 配音混入成片音轨
           // 真实转场(2026-08 六轮):转场记在后一镜 s.transition(该镜与前一镜之间),随段传给服务端 xfade/acrossfade
           if (itemIdx > 0 && s.transition) it.transition = { type: String(s.transition).slice(0, 12) };
@@ -459,6 +482,7 @@
             it.video = s.video.url;
             if (typeof s._tlStart === 'number') it.start = s._tlStart; // 时间线裁剪:入点
             if (typeof s._tlEnd === 'number') it.end = s._tlEnd;       // 时间线裁剪:出点
+            segDur = (typeof s._tlStart === 'number' && typeof s._tlEnd === 'number') ? Math.max(0.5, s._tlEnd - s._tlStart) : (window.SB && SB.estShotDuration ? SB.estShotDuration(s) : s.duration || 3);
           }
           else if (s.image) {
             let img = s.image;
@@ -469,8 +493,10 @@
             if (!img) continue;
             it.image = img;
             it.dur = Math.max(2, Math.min(15, (window.SB && SB.estShotDuration ? SB.estShotDuration(s) : s.duration || 3)));
+            segDur = it.dur;
           } else continue; // 该镜无任何素材,跳过
           items.push(it);
+          srtSegs.push({ text: String(s.dialogue || s.narration || '').trim(), dur: segDur });
           itemIdx++;
         }
         if (!items.length) throw new Error('没有可合成的素材(分镜图/视频需先生成)');
@@ -481,12 +507,13 @@
           U.toast(`以下转场暂不支持真实渲染,已降级为硬切:${r.transitions.degraded.map(d => '镜头' + (d.index + 1) + '·' + d.type).join('、')}`, 'info', 5000);
         }
         if (dock.cancelled) { /* 用户关闭了面板:任务已完成,照常落库 */ }
-        dock.finish(`<b style="color:var(--green)">✓ 合成完成(${r.count} 段)</b>`);
-        if (window.Agent && Agent.notify) Agent.notify(p, ep, main, `✅ 「${ep.title}」成片合成完成(${r.count} 镜)!可以预览/导出,或继续调整某一镜后重新合成。`);
+        dock.finish(`<b style="color:var(--green)">✓ 合成完成(${r.count} 段)${buildSrt(srtSegs) ? ' · 字幕 SRT 已同步产出' : ''}</b>`);
+        if (window.Bus) Bus.emit('compose.done', { p, ep, main, count: r.count || 0, brief: `「${ep.title}」合成完成(${r.count} 镜)` }); // 事件总线:Agent 对话流事件续谈卡(未审片优先审片)
         ep.composed = true;
         delete ep.composedSimulated; // 真实合成成功:显式清除旧离线模拟标记,避免永久被判为模拟
         ep.composedAt = Store.now();
         ep.composedUrl = r.url; // 真实成片(服务端 mp4)
+        ep.composedSrt = buildSrt(srtSegs) || null; // SRT 软字幕与成片同时间轴同步产出(导出▾「导出字幕 SRT」;无对白/旁白则为 null)
         ep.composedVia = 'shots'; // 来源轨:分镜合成(成片库据此标「分镜表」)
         ep.composedInputHash = Store.composedInputHash(ep); // 七轮:记录合成输入指纹,之后调序/裁剪/换素材/改转场 → 自动失效
         ep.composedSourceRev = ep.contentRev || 0; // 十轮:记录合成时的剧本版本(剧本修改后提示重合成)
@@ -511,11 +538,16 @@
         Views.episode(main, p.id, ep.id);
         return;
       } catch (e) {
-        dock.finish(`<b style="color:var(--red)">✕ 合成失败:${U.esc(e.message)}(积分已返还)</b>`);
-        if (window.Agent && Agent.notify) Agent.notify(p, ep, main, `⚠ 「${ep.title}」合成失败:${e.message}(积分已返还)。可以检查素材后重试。`);
+        /* 十六轮 合成超时语义:前端 600s 超时但服务端可能仍在合成(结果已落服务端日志,7 天可领取)——
+         * 与真实失败区分提示:退费镜像照常发起(服务端已交付会拒退并按服务端余额回写本地),
+         * 任务保留计费键(tk.id),用户可稍后在「任务中心」⇩ 领取结果 */
+        const recoverable = !!(e && e.__recoverable);
+        const tail = recoverable ? '服务端可能仍在合成:若未交付将自动退费,若已交付可到「任务中心」⇩ 领取结果' : '积分已自动返还';
+        dock.finish(`<b style="color:var(--red)">✕ 合成失败:${U.esc(e.message)}(${tail})</b>`);
+        if (window.Bus) Bus.emit('compose.failed', { p, ep, main, error: `${e.message}(${tail})`, brief: `「${ep.title}」合成失败` }); // 事件总线:Agent 对话流订阅转译
         U.refund(COST.compose, '合成成片失败', tk.id);
         Tasks.fail(tk, e.message);
-        U.toast('合成失败,积分已自动返还:' + e.message, 'error', 4000);
+        U.toast('合成失败:' + e.message + '(' + tail + ')', 'error', 4500);
         return;
       }
     }
@@ -565,5 +597,5 @@
   }
 
   /* 对外出口保持挂在 window.SB 上(exporter.js / 任务中心重下等引用不变) */
-  Object.assign(window.SB, { exportJianYing, shotToCSVRow, CSV_HEADERS, exportShotCSV, openImportCSV, openImportLocal, openImportAssets, openPlayer, composeVideo, doCompose });
+  Object.assign(window.SB, { exportJianYing, shotToCSVRow, CSV_HEADERS, exportShotCSV, openImportCSV, openImportLocal, openImportAssets, openPlayer, composeVideo, doCompose, buildSrt });
 })();

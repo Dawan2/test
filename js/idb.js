@@ -72,6 +72,8 @@
 
   const pending = {};          // 在途写入
   const failed = {};           // 写入失败待重试(两阶段:失败键不落标记,原值留 localStorage)
+  const FAILED_MAX = 50;       // R18:失败队列上限——IDB 持续不可写(配额/隐私模式)时不再无限囤积 dataURL 撑内存;
+                               // 被挤出的键原值仍在 localStorage,下次 persist 的 markerReplacer 会自然重新调度,不丢数据
   const confirmed = new Set(); // 已确认写入 IDB 的键(仅确认键才允许替换为标记)
   let onIdleCb = null;         // "在途清零且又有新确认"时的持久回调(store 注册,重写标记版快照)
   let confirmedDirty = false;  // 上次回调后又有新确认键(无新增不空转重写)
@@ -89,7 +91,12 @@
     pending[key] = 1;
     put(key, val)
       .then(() => { delete pending[key]; confirmed.add(key); confirmedDirty = true; settle(); })
-      .catch(() => { delete pending[key]; failed[key] = val; }); // 失败进重试队列,下一轮 persist 再试
+      .catch(() => {
+        delete pending[key];
+        const ks = Object.keys(failed);
+        if (ks.length >= FAILED_MAX) delete failed[ks[0]]; // R18:挤出最旧一条(其原值仍在 localStorage,下轮 persist 重调度)
+        failed[key] = val; // 失败进重试队列,下一轮 persist 再试
+      });
   }
   /* 重试失败写入(每次持久化开始时调用一次) */
   function beginPersist() {
@@ -144,8 +151,45 @@
     return n;
   }
 
+  /* R18 引用清扫(标记-清扫):内容寻址键同值同键,store 侧收集当前仍被引用的键集,
+   * 删项目/镜头/清空回收站后遗留在 IDB 的孤儿 blob 在此回收。keep 之外的键一律删除;
+   * 全程失败静默(GC 是后台优化,绝不影响主流程),返回删除条数 */
+  function listKeys() {
+    return open().then(db => new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readonly');
+      const os = tx.objectStore(STORE);
+      const rq = os.getAllKeys ? os.getAllKeys() : null;
+      if (!rq) { // 老浏览器无 getAllKeys:游标兜底
+        const keys = [];
+        const cur = os.openKeyCursor();
+        cur.onsuccess = () => { if (cur.result) { keys.push(cur.result.key); cur.result.continue(); } else resolve(keys); };
+        cur.onerror = () => reject(cur.error);
+        return;
+      }
+      rq.onsuccess = () => resolve(rq.result || []);
+      rq.onerror = () => reject(rq.error);
+    })).catch(() => []);
+  }
+  async function gc(keep) {
+    if (!ok) return 0;
+    const keepSet = keep instanceof Set ? keep : new Set(keep || []);
+    const keys = await listKeys();
+    let n = 0;
+    for (const k of keys) {
+      if (keepSet.has(k)) continue;
+      await del(k);
+      confirmed.delete(k); // 确认集同步剔除:同值再次离线时会重新写入(键还在 confirmed 会被误认为已在库)
+      n++;
+    }
+    return n;
+  }
+
   /* 初始化探测:受限环境保持 ok=false,全程退化纯 localStorage */
   open().then(() => { ok = true; openPending = false; settle(); }).catch(() => { ok = false; openPending = false; settle(); });
 
-  window.IDB = { get, put, del, hydrate, markerReplacer, beginPersist, onIdle, MARK, isBig, get ok() { return ok; } };
+  /* R18:申请持久化存储权限——浏览器在空间压力下不再自动清除本应用的 IDB(作品素材不是缓存);
+   * 结果 true/false 不影响功能(仅降低被驱逐概率),拒绝/不支持均静默 */
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); } catch (_) {}
+
+  window.IDB = { get, put, del, gc, listKeys, hydrate, markerReplacer, beginPersist, onIdle, keyOf, MARK, isBig, get ok() { return ok; } };
 })();

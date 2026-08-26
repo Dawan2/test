@@ -183,6 +183,13 @@ show(0);tick();
     }
   }
 
+  /* ================= 字幕 SRT(合成时按时间轴产出,导出免费) ================= */
+  function exportSrt(p, ep) {
+    if (!ep.composedSrt) return U.toast('暂无字幕文件:字幕 SRT 在合成成片时按时间轴同步产出(此前合成的旧成片需重新合成)', 'info', 3600);
+    U.downloadText(`${p.name}_${ep.title}_字幕.srt`, ep.composedSrt);
+    U.toast('字幕 SRT 已导出(旁白+台词,与成片同时间轴)', 'success', 3000);
+  }
+
   /* ================= 下拉组件 ================= */
   function dropdown(btn, { p, ep }) {
     document.querySelectorAll('.exp-menu').forEach(x => x.remove());
@@ -191,6 +198,7 @@ show(0);tick();
     const items = [
       { ico: '🎬', name: '导出成片', sub: '智能成片并下载到本地(HTML 播放器)', tag: '免费', cls: 'green', run: () => exportFilm(p, ep) },
       { ico: '✂', name: '导出剪映草稿', sub: '智能剪辑成片并导出到剪映', tag: COST.jianying + ' 积分', cls: 'yellow', run: () => exportJianYing(p, ep) },
+      { ico: '💬', name: '导出字幕 SRT', sub: '软字幕文件(合成时按时间轴产出,多平台分发/二创/翻译复用)', tag: '免费', cls: 'green', run: () => exportSrt(p, ep) },
       { ico: '📦', name: '批量导出素材', sub: '导出全部分镜素材到本地(ZIP)', tag: '2 积分', cls: 'yellow', run: () => exportMaterials(p, ep) },
     ];
     menu.innerHTML = items.map((it, i) => `

@@ -15,6 +15,13 @@
     async _req(path, opts, timeoutMs) {
       const token = window.Store && Store.getToken();
       if (!token) throw new Error('未登录后端,无法调用生图/生视频代理');
+      // 成本归集标签:项目页内发起的计费调用注入 _projectId(服务端 operation 台账按项目聚合;指纹不参与)
+      if (opts && opts.body && window.__billPid) {
+        try {
+          const b = JSON.parse(opts.body);
+          if (b && typeof b === 'object' && !b._projectId) opts = Object.assign({}, opts, { body: JSON.stringify(Object.assign(b, { _projectId: window.__billPid })) });
+        } catch (_) { /* 非 JSON body 原样透传 */ }
+      }
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), timeoutMs);
       let res;
@@ -47,6 +54,33 @@
     /* 审核类错误判定(与 friendlyError 的合规正则同源):命中则切线路无意义,直接抛 */
     _isAuditError(e) {
       return /违禁|敏感|审核|不合规|risk|moderat|nsfw|policy|illegal|violat/i.test(String((e && e.message) || e || ''));
+    },
+
+    /* ---------- 结果认领(R15 断点闭环) ----------
+     * 同步生成端点(TTS/FFmpeg)客户端超时后,服务端可能已交付:结果落服务端 results.json(保留 7 天)。
+     * recoverResult 按 opId 主动领取(幂等,服务端标 claimed);_withRecover 在超时错误时先即时领取
+     * 一次(覆盖"服务端恰好已完成"窗口),命中返回结果(附 __recovered:true);未命中原样抛出并附
+     * __opId + __recoverable——任务中心「领取结果」按钮可稍后按 opId 再次找回。 */
+    async recoverResult(operationId) {
+      if (!operationId) return null;
+      try {
+        const d = await this._req('/api/operations/' + encodeURIComponent(String(operationId)) + '/result', null, 15000);
+        return d && d.found && d.payload ? d : null;
+      } catch (_) { return null; }
+    },
+    async _withRecover(operationId, fn) {
+      try { return await fn(); }
+      catch (e) {
+        if (e && typeof e === 'object') {
+          if (!e.__opId && operationId) e.__opId = operationId;
+          if (/^请求超时/.test(String(e.message || '')) && operationId) {
+            const rec = await this.recoverResult(operationId);
+            if (rec) { rec.payload.__recovered = true; return rec.payload; }
+            e.__recoverable = true; // 服务端可能仍在执行:结果稍后可从任务中心领取
+          }
+        }
+        throw e;
+      }
     },
 
     /* 备用线路标签(双线路冗余):优先全局配置
@@ -191,6 +225,13 @@
     async checkVideo(id) {
       if (!id) throw new Error('缺少任务 id');
       return this._req('/api/volc/video/' + encodeURIComponent(String(id)), null, 30000);
+    },
+
+    /* 取消在途任务(R19):服务端转 cancelled 终态并按原账单退款(幂等);晚到的上游成功不再交付。
+     * 返回 {cancelled, refunded, already};终态任务 409、他人任务 403,调用方按错误如实提示。 */
+    async cancelVideo(id) {
+      if (!id) throw new Error('缺少任务 id');
+      return this._req('/api/volc/video/' + encodeURIComponent(String(id)) + '/cancel', { method: 'POST', body: '{}' }, 20000);
     },
 
     /* 登录自动对账:拉取服务端任务中心,按 shotId/upstreamId 对账本机中断的生成任务(免刷新恢复)。
@@ -339,23 +380,26 @@
 
     /* ---------- FFmpeg 本地视频处理(服务端 bin/ffmpeg,输入须为本站 /uploads/ 路径) ----------
      * billingAction/operationId(可选):服务端白名单计费(同族端点不同用途价不同,如智能修片 ff.hdStd/ff.hdPro;
-     * 缺省回退端点默认动作)。opts 统一为末位可选对象,兼容旧位置参数调用 */
-    ffFrames(video, count, billingAction, operationId) { return this._req('/api/ffmpeg/frames', { method: 'POST', body: JSON.stringify({ video, count, billingAction, operationId }) }, 180000); },
+     * 缺省回退端点默认动作)。opts 统一为末位可选对象,兼容旧位置参数调用。
+     * 全部经 _withRecover 包装(R15):超时先即时认领一次服务端结果;失败统一附 err.__opId(同 genImage/genVideo 约定) */
+    /* 抽帧:count 数字=均匀抽帧;或传对象 {times:[秒]} 定点抽帧(拉片场景段中点) */
+    ffFrames(video, count, billingAction, operationId) { const o = (count && typeof count === 'object') ? count : { count }; return this._withRecover(operationId, () => this._req('/api/ffmpeg/frames', { method: 'POST', body: JSON.stringify(Object.assign({ video, billingAction, operationId }, o)) }, 180000)); },
     /* 字幕擦除(mode: 对白字幕擦除/全局字幕擦除) → {url} */
-    ffSuberase(video, mode, billingAction, operationId) { return this._req('/api/ffmpeg/suberase', { method: 'POST', body: JSON.stringify({ video, mode, billingAction, operationId }) }, 600000); },
+    ffSuberase(video, mode, billingAction, operationId) { return this._withRecover(operationId, () => this._req('/api/ffmpeg/suberase', { method: 'POST', body: JSON.stringify({ video, mode, billingAction, operationId }) }, 600000)); },
     /* 视频超清(res: 720P/1080P/2K/4K;quality: 'pro'=高码率慢压强锐化) → {url,res} */
-    ffUpscale(video, res, quality, billingAction, operationId) { return this._req('/api/ffmpeg/upscale', { method: 'POST', body: JSON.stringify({ video, res, quality, billingAction, operationId }) }, 600000); },
+    ffUpscale(video, res, quality, billingAction, operationId) { return this._withRecover(operationId, () => this._req('/api/ffmpeg/upscale', { method: 'POST', body: JSON.stringify({ video, res, quality, billingAction, operationId }) }, 600000)); },
     /* 高光智剪 → {url,segments,scenes,duration} */
-    ffHighlight(video, opts, billingAction, operationId) { return this._req('/api/ffmpeg/highlight', { method: 'POST', body: JSON.stringify(Object.assign({ video, billingAction, operationId }, opts || {})) }, 600000); },
+    ffHighlight(video, opts, billingAction, operationId) { return this._withRecover(operationId, () => this._req('/api/ffmpeg/highlight', { method: 'POST', body: JSON.stringify(Object.assign({ video, billingAction, operationId }, opts || {})) }, 600000)); },
     /* 合成成片 items:[{video?|image?,dur?,text?,transition?}] → {url,count,transitions}(每段规格化+拼接+可选字幕烧录+真实转场) */
-    ffCompose(items, ratio, subtitle, billingAction, operationId) { return this._req('/api/ffmpeg/compose', { method: 'POST', body: JSON.stringify({ items, ratio, subtitle, billingAction, operationId }) }, 600000); },
+    ffCompose(items, ratio, subtitle, billingAction, operationId) { return this._withRecover(operationId, () => this._req('/api/ffmpeg/compose', { method: 'POST', body: JSON.stringify({ items, ratio, subtitle, billingAction, operationId }) }, 600000)); },
     /* 音视频合并 → {url} */
-    ffMerge(video, audio, billingAction, operationId) { return this._req('/api/ffmpeg/merge', { method: 'POST', body: JSON.stringify({ video, audio, billingAction, operationId }) }, 300000); },
+    ffMerge(video, audio, billingAction, operationId) { return this._withRecover(operationId, () => this._req('/api/ffmpeg/merge', { method: 'POST', body: JSON.stringify({ video, audio, billingAction, operationId }) }, 300000)); },
     /* 视频剪辑:保留 segments[{start,end}] 并拼接 → {url,segments} */
-    ffCut(video, segments, billingAction, operationId) { return this._req('/api/ffmpeg/cut', { method: 'POST', body: JSON.stringify({ video, segments, billingAction, operationId }) }, 600000); },
+    ffCut(video, segments, billingAction, operationId) { return this._withRecover(operationId, () => this._req('/api/ffmpeg/cut', { method: 'POST', body: JSON.stringify({ video, segments, billingAction, operationId }) }, 600000)); },
 
-    /* 豆包语音合成 TTS:{text,voice(voice_type),speed?,volume?,emotion?,emotionScale?,billingAction?,operationId?} → {url,duration} */
-    genTTS(opt) { return this._req('/api/volc/tts', { method: 'POST', body: JSON.stringify(opt) }, 130000); },
+    /* 豆包语音合成 TTS:{text,voice(voice_type),speed?,volume?,emotion?,emotionScale?,billingAction?,operationId?} → {url,duration}
+     * 经 _withRecover 包装(R15):超时先即时认领;失败统一附 err.__opId */
+    genTTS(opt) { opt = opt || {}; return this._withRecover(opt.operationId, () => this._req('/api/volc/tts', { method: 'POST', body: JSON.stringify(opt) }, 130000)); },
 
     /* 截帧并上传服务端(返回 /uploads/ 短路径,避免 base64 撑爆 localStorage);失败回退 dataURL/null */
     async captureFrameUp(videoUrl, tSec, name) {

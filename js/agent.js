@@ -182,6 +182,95 @@
     });
   }
 
+  /* ---- 添加到对话(对象级精准引用):工作台任意对象挂为「📎 引用」,发送时把活对象内容注入 LLM 上下文 ----
+   * 引用是会话级指针(kind+pid+eid+id,sessionStorage 持久,上限 6 个);对象被删则芯片置灰、注入时标注失效。
+   * 镜头/节拍/场次引用对应 update/beatupdate/sceneupdate ops(集级面板);主体引用对应 subject ops(全局抽屉)。 */
+  const AgentRefs = window.AgentRefs = {
+    list: (() => { try { return JSON.parse(sessionStorage.getItem('agentRefs') || '[]'); } catch (e) { return []; } })(),
+    save() { try { sessionStorage.setItem('agentRefs', JSON.stringify(AgentRefs.list.slice(-12))); } catch (e) { /* 隐私模式等忽略 */ } },
+    keyOf: r => [r.kind, r.pid, r.eid || '', r.id].join('|'),
+    add(ref) {
+      const k = AgentRefs.keyOf(ref);
+      if (AgentRefs.list.some(r => AgentRefs.keyOf(r) === k)) { U.toast('该对象已在对话引用中', 'info', 1600); return false; }
+      if (AgentRefs.list.length >= 6) { U.toast('引用最多 6 个,请先在助手面板移除一些', 'error'); return false; }
+      AgentRefs.list.push(ref); AgentRefs.save(); AgentRefs.paint();
+      U.toast('已加入对话引用 📎 ' + ref.label, 'success', 1800);
+      return true;
+    },
+    remove(key) { AgentRefs.list = AgentRefs.list.filter(r => AgentRefs.keyOf(r) !== key); AgentRefs.save(); AgentRefs.paint(); },
+    /* 当前上下文可见的引用:集级面板(scope='ep')只看本集(镜头/节拍/场次);全局抽屉(scope='g')看本项目全部(含主体) */
+    forCtx(p, ep, scope) {
+      if (!p) return [];
+      return AgentRefs.list.filter(r => r.pid === p.id && (scope === 'g' || (ep && r.eid === ep.id)));
+    },
+    /* 解析活对象(对象被删返回 null) */
+    resolve(r, p) {
+      if (!p) return null;
+      if (r.kind === 'subject') { const s = (p.subjects || []).find(x => x.id === r.id); return s ? { s } : null; }
+      const ep = (p.episodes || []).find(e => e.id === r.eid);
+      if (!ep) return null;
+      if (r.kind === 'shot') { const i = (ep.shots || []).findIndex(x => x.id === r.id); return i >= 0 ? { ep, s: ep.shots[i], i } : null; }
+      const bd = ep.scriptBoard;
+      if (!bd || !bd.scenes) return null;
+      if (r.kind === 'scene') { const sc = bd.scenes[+r.id]; return sc ? { ep, sc, si: +r.id } : null; }
+      if (r.kind === 'beat') { const [si, bi] = String(r.id).split('_').map(Number); const sc = bd.scenes[si]; const bt = sc && sc.beats[bi]; return bt ? { ep, sc, bt, si, bi } : null; }
+      return null;
+    },
+    /* 活标签:镜头调序/主体改名后引用芯片仍显示当前编号与名称 */
+    liveLabel(r, p) {
+      const o = AgentRefs.resolve(r, p);
+      if (!o) return r.label;
+      if (r.kind === 'shot') return `@镜头${o.i + 1}${o.s.name ? '·' + String(o.s.name).slice(0, 8) : ''}`;
+      if (r.kind === 'subject') return `@${o.s.name}`;
+      if (r.kind === 'scene') return `@场次${o.si + 1}${o.sc.title ? '·' + String(o.sc.title).slice(0, 8) : ''}`;
+      return r.label; // beat:id 即场次_节拍索引,原 label 即准
+    },
+    /* chips 行 HTML(scope 'ep'|'g');空则返回 ''(容器自行隐藏) */
+    chipsHTML(p, ep, scope) {
+      const rs = AgentRefs.forCtx(p, ep, scope);
+      if (!rs.length) return '';
+      return `<span class="small muted" style="flex:none">📎 引用:</span>` + rs.map(r => {
+        const alive = !!AgentRefs.resolve(r, p);
+        const lb = alive ? AgentRefs.liveLabel(r, p) : r.label;
+        return `<span class="tag ${alive ? 'cyan' : ''}" style="font-size:11px;${alive ? '' : 'opacity:.55;text-decoration:line-through'}" title="${alive ? '发送消息时,该对象的当前内容会一并带给助手' : '对象已删除,引用失效(点 ✕ 移除)'}">${U.esc(lb)}<b data-aref-del="${U.esc(AgentRefs.keyOf(r))}" style="cursor:pointer;margin-left:4px;font-weight:700">✕</b></span>`;
+      }).join('');
+    },
+    /* 引用 → 注入 LLM 的上下文文本(发送时快照活对象内容;按面板域给出对应 ops 用法指引) */
+    block(p, ep, scope) {
+      const rs = AgentRefs.forCtx(p, ep, scope);
+      if (!rs.length) return '';
+      const lines = [], hints = [];
+      rs.forEach(r => {
+        const o = AgentRefs.resolve(r, p);
+        if (!o) { lines.push(`- ${r.label}(已失效:对象已删除,忽略此引用)`); return; }
+        if (r.kind === 'shot') {
+          lines.push(`- 引用镜头${o.i + 1}${o.s.name ? '「' + o.s.name + '」' : ''}:剧情「${(o.s.plot || '').slice(0, 60)}」 提示词「${(o.s.prompt || '').slice(0, 90)}」 台词「${(o.s.dialogue || '').slice(0, 30)}」 旁白「${(o.s.narration || '').slice(0, 30)}」`);
+          hints.push(`改被引用镜头用 {"op":"update","shot":${o.i + 1},...}(镜头号以当前分镜表为准)`);
+        } else if (r.kind === 'beat') {
+          lines.push(`- 引用场次${o.si + 1}·节拍${o.bi + 1}:情绪[${o.bt.emotion || '平'}] 剧情「${(o.bt.plot || '').slice(0, 80)}」 分镜文字「${(o.bt.shot || '').slice(0, 120)}」`);
+          hints.push(`改该节拍用 {"op":"beatupdate","scene":${o.si + 1},"beat":${o.bi + 1},...}`);
+        } else if (r.kind === 'scene') {
+          lines.push(`- 引用场次${o.si + 1}「${(o.sc.title || '').slice(0, 30)}」:场次剧情「${(o.sc.text || '').slice(0, 120)}」`);
+          hints.push(`改该场次用 {"op":"sceneupdate","scene":${o.si + 1},...}`);
+        } else if (r.kind === 'subject') {
+          lines.push(`- 引用主体「${o.s.name}」(${{ character: '角色', scene: '场景', prop: '道具' }[o.s.kind] || o.s.kind}):设定提示词「${(o.s.prompt || '').slice(0, 120)}」 描述「${(o.s.description || '').slice(0, 60)}」`);
+          if (scope === 'g') hints.push(`改该主体用 {"op":"subject","name":"${o.s.name}",...}`);
+        }
+      });
+      return `\n★ 用户引用对象(${rs.length} 个):用户说的「这个/这些」默认指它们;修改类指令请精确作用于引用对象,不要波及未引用对象。\n${lines.join('\n')}${hints.length ? '\n' + [...new Set(hints)].join('\n') : ''}\n`;
+    },
+    labels(p, ep, scope) { return AgentRefs.forCtx(p, ep, scope).map(r => AgentRefs.liveLabel(r, p)); },
+    /* 面板引用行实时刷新(添加/移除后由各处调用;只刷 chips 容器不重渲整个面板,避免打断输入) */
+    paint() {
+      const { p, ep } = AC.ctxOf ? AC.ctxOf() : {};
+      document.querySelectorAll('[data-arefs]').forEach(box => {
+        box.innerHTML = AgentRefs.chipsHTML(p, ep, box.dataset.arefs);
+        box.style.display = box.innerHTML ? '' : 'none';
+        box.querySelectorAll('[data-aref-del]').forEach(x => x.onclick = () => AgentRefs.remove(x.dataset.arefDel));
+      });
+    },
+  };
+
   /* ops 执行域(动作执行器/预排模式族/上下文与分镜压缩/focusOf·focusBlock/ops 应用器/执行闭环验证)
    * 已整体拆至 agent-ops.js(window.AgentOps,本文件之后加载;render 等运行时入口经 AO 取用) */
 
@@ -221,29 +310,47 @@
       <button class="btn ghost sm" data-a="close" title="收起">✕</button>
     </div>
     ${guideBarHTML({ p, ep })}
-    <div class="agent-chips">${QUICK.map(q => `<span class="tag" data-a-chip="${q}">${q}</span>`).join('')}</div>
+    <div class="agent-chips" data-a-chips></div>
     <div class="agent-msgs" data-a-msgs></div>
     <div class="row" style="gap:6px;margin:6px 0 0;align-items:center">
       <span class="tag cyan" data-a-focus ${(() => { const fc = AO.focusOf(p, ep); return fc ? `data-focus-label="${U.esc(fc.label)}"` : ''; })()} style="cursor:pointer;font-size:11px" title="当前工作台定位:助手思考与修改默认针对此处;点击可把定位插入输入框">${(() => { const fc = AO.focusOf(p, ep); return fc ? '📍 ' + U.esc(fc.label) : '📍 未定位(点击工作台内容自动关联)'; })()}</span>
     </div>
+    <div class="row" data-arefs="ep" style="gap:4px;margin:4px 0 0;align-items:center;flex-wrap:wrap;display:none"></div>
     <div class="agent-input">
       ${personaSelectHTML('a', ep.agentPersonaId)}
       <textarea class="input small" data-a-in rows="2" placeholder="描述你想修改的内容,如:把镜头3改成夜景"></textarea>
       <button class="btn primary sm" data-a="send">发送</button>
     </div>`;
     const msgsEl = col.querySelector('[data-a-msgs]');
+    const chipsEl = col.querySelector('[data-a-chips]');
+
+    /* 动态情境 chips(纯本地推导,renderMsgs 时重算保持新鲜):run/goto 直执真实工作流,text 发助手;后跟静态快捷指令 */
+    function paintChips() {
+      const dyn = AO.dynamicChips(p, ep);
+      chipsEl.innerHTML = dyn.map((c, i) => `<span class="tag cyan" data-a-dchip="${i}" title="${U.esc(c.d || '')}" style="cursor:pointer">${c.run ? '▶ ' : c.goto ? '→ ' : '💬 '}${U.esc(c.t)}</span>`).join('')
+        + QUICK.map(q => `<span class="tag" data-a-chip="${q}">${q}</span>`).join('');
+      chipsEl.querySelectorAll('[data-a-dchip]').forEach(el => el.onclick = async () => {
+        const c = dyn[+el.dataset.aDchip];
+        if (!c) return;
+        if (c.text) send(c.text);
+        else { await AO.runEpisodeActions(p, ep, [c.run ? { op: 'run', action: c.run } : { op: 'goto', target: c.goto }], main); Views.episode(main, p.id, ep.id); }
+      });
+      chipsEl.querySelectorAll('[data-a-chip]').forEach(c2 => c2.onclick = () => send(c2.dataset.aChip));
+    }
 
     function renderMsgs() {
+      paintChips();
       msgsEl.innerHTML = ep.agentChat.length ? ep.agentChat.map((m2, i) => m2.role === 'user'
-        ? `<div class="agent-msg user">${m2.focus ? `<div style="text-align:right;margin-bottom:2px"><span class="tag cyan" style="font-size:10px">📍 ${U.esc(m2.focus)}</span></div>` : ''}<div class="agent-bubble">${U.esc(m2.text)}</div></div>`
+        ? `<div class="agent-msg user">${(m2.focus || (m2.refs && m2.refs.length)) ? `<div style="text-align:right;margin-bottom:2px">${m2.focus ? `<span class="tag cyan" style="font-size:10px">📍 ${U.esc(m2.focus)}</span> ` : ''}${(m2.refs || []).map(l => `<span class="tag cyan" style="font-size:10px">📎 ${U.esc(l)}</span>`).join(' ')}</div>` : ''}<div class="agent-bubble">${U.esc(m2.text)}</div></div>`
         : `<div class="agent-msg">
             ${m2.thinking ? `<div class="agent-think" data-th="${i}">💭 思考过程 ▾<div class="agent-think-body">${U.esc(m2.thinking)}</div></div>` : ''}
             <div class="agent-bubble asst">${U.esc(m2.text)}</div>
             ${m2.pending ? previewCard(m2.pending, i) : ''}
             ${m2.prearr ? AO.prearrCardHTML(m2.prearr, i, 'a') : ''}
             ${m2.choices ? AO.choiceCardHTML(m2, i, 'a') : ''}
+            ${m2.event ? AO.eventCardHTML(m2, i, 'a') : ''}
           </div>`).join('')
-        : `<div class="hint" style="text-align:center;padding:20px 8px">我是虎鲸导演助手 🐋<br>可以让我改镜头、插入/删除/移动分镜、批量调整,或只是聊聊这集怎么拍更好。</div>`;
+        : `<div class="hint" style="text-align:center;padding:20px 8px">🐋 ${U.esc(AO.openingLine(p, ep))}<br><span class="muted">可以让我改镜头、插入/删除/移动分镜、批量调整,或只是聊聊这集怎么拍更好。</span></div>`;
       msgsEl.scrollTop = msgsEl.scrollHeight;
       msgsEl.querySelectorAll('[data-th]').forEach(t => t.onclick = () => t.classList.toggle('open'));
       msgsEl.querySelectorAll('[data-a-apply]').forEach(b => b.onclick = () => applyPending(+b.dataset.aApply));
@@ -258,6 +365,14 @@
       AO.bindChoices(msgsEl, 'a', { // 关键决策选项卡:提交后置灰,并以「我选择:xxx」走原发送流程继续
         getChat: i => ep.agentChat[i],
         submit: (m2, o) => { m2.choiceDone = o.t; Store.save(); send('我选择:' + o.t); },
+      });
+      AO.bindEvents(msgsEl, 'a', { // 事件续谈卡:选项直执真实工作流(run/goto 复用注册表,目标按钮自带确认与计费)
+        getChat: i => ep.agentChat[i],
+        exec: async (m2, o) => {
+          m2.eventDone = o.t; Store.save();
+          await AO.runEpisodeActions(p, ep, [o.run ? { op: 'run', action: o.run } : { op: 'goto', target: o.goto }], main);
+          Views.episode(main, p.id, ep.id);
+        },
       });
     }
 
@@ -276,25 +391,52 @@
     function applyPending(msgIdx) {
       const m2 = ep.agentChat[msgIdx];
       if (!m2 || !m2.pending) return;
-      const tk = Tasks.start({ type: '导演助手', model: '应用修改', target: ep.title, cost: 1, projectId: p.id, episodeId: ep.id });
-      if (!U.charge(1, '导演助手应用修改(' + ep.title + ')')) { Tasks.fail(tk, '积分不足'); return; }
-      // 快照供撤销(含 composed:applyOps 会置 false,撤销需一并还原;含 scriptBoard:脚本层修改可回滚)
-      ep.agentUndo = { shots: JSON.parse(JSON.stringify(ep.shots)), composed: ep.composed, board: JSON.parse(JSON.stringify(ep.scriptBoard || null)), time: Store.now() };
-      const { data: dataOps, acts: actOps } = AO.splitOps(m2.pending.ops);
-      if (dataOps.length) AO.applyOps(ep, dataOps, true);
-      const vf = dataOps.length ? AO.verifyOps(ep, dataOps) : null; // 执行闭环验证:落数后回读校验
-      const actDone = AO.runEpisodeActions(p, ep, actOps, main); // 动作类 ops:真实驱动工作台
-      AC.activeStepKey = opBoardKey(m2.pending.ops); // 顶栏步骤高亮 Agent 正在操作的板块
-      // 写入持久化记忆:用户指令 + 已应用的修改摘要
-      const userMsg = ep.agentChat.slice(0, msgIdx).reverse().find(x => x.role === 'user');
-      if (userMsg) memRemember(`「${p.name}/${ep.title}」${userMsg.text.slice(0, 60)} → 已应用:${m2.pending.changes.slice(0, 3).join(';').slice(0, 80)}`, '分镜');
-      Tasks.done(tk);
-      m2.text += `\n(已应用 ${m2.pending.changes.length} 项修改)${vf ? ' ' + AO.verifyNote(vf) : ''}`;
-      m2.pending = null;
-      ep.agentChat = ep.agentChat.slice(-50);
-      Store.save();
-      U.toast('修改已应用,可点「↩ 撤销」回滚', 'success');
-      Views.episode(main, p.id, ep.id);
+      const exec = async ops => {
+        const { data: dataOps, acts: actOps } = AO.splitOps(ops);
+        if (!dataOps.length && !actOps.length) { // 冲突项全部「保留我的」:无可应用项,不扣费
+          m2.text += '\n(冲突项已全部保留你的修改,助手方案无可应用项)';
+          m2.pending = null;
+          Store.save(); renderMsgs();
+          return;
+        }
+        const tk = Tasks.start({ type: '导演助手', model: '应用修改', target: ep.title, cost: 1, projectId: p.id, episodeId: ep.id });
+        if (!U.charge(1, '导演助手应用修改(' + ep.title + ')')) { Tasks.fail(tk, '积分不足'); return; }
+        // 快照供撤销(含 composed:applyOps 会置 false,撤销需一并还原;含 scriptBoard:脚本层修改可回滚)
+        ep.agentUndo = { shots: JSON.parse(JSON.stringify(ep.shots)), composed: ep.composed, board: JSON.parse(JSON.stringify(ep.scriptBoard || null)), time: Store.now() };
+        let vf = null, actDone = [], applied = [];
+        try { // R17:LLM 给的脏 ops 可能抛异常——回滚快照+退费+任务标败,不再吞积分留悬挂任务
+          if (dataOps.length) applied = AO.applyOps(ep, dataOps, true);
+          vf = dataOps.length ? AO.verifyOps(ep, dataOps) : null; // 执行闭环验证:落数后回读校验
+          actDone = await AO.runEpisodeActions(p, ep, actOps, main); // 动作类 ops:统一命令真实执行(结构化回执)
+        } catch (e) {
+          ep.shots = ep.agentUndo.shots; ep.composed = ep.agentUndo.composed; ep.scriptBoard = ep.agentUndo.board;
+          U.refund(1, '导演助手应用修改异常退费');
+          Tasks.fail(tk, e.message || '应用修改异常');
+          m2.text += '\n(应用修改异常(' + (e.message || '未知') + '),已回滚未做改动,积分已退还)';
+          Store.save(); renderMsgs();
+          return;
+        }
+        AC.activeStepKey = opBoardKey(ops); // 顶栏步骤高亮 Agent 正在操作的板块
+        // 写入持久化记忆:用户指令 + 已应用的修改摘要
+        const userMsg = ep.agentChat.slice(0, msgIdx).reverse().find(x => x.role === 'user');
+        if (userMsg) memRemember(`「${p.name}/${ep.title}」${userMsg.text.slice(0, 60)} → 已应用:${(applied.length ? applied : m2.pending.changes).slice(0, 3).join(';').slice(0, 80)}`, '分镜');
+        Tasks.done(tk);
+        m2.text += `\n(已应用 ${applied.length + actDone.length} 项修改)${vf ? ' ' + AO.verifyNote(vf) : ''}`;
+        m2.pending = null;
+        ep.agentChat = ep.agentChat.slice(-50);
+        Store.save();
+        U.toast('修改已应用,可点「↩ 撤销」回滚', 'success');
+        Views.episode(main, p.id, ep.id);
+      };
+      // ⚠ 并行编辑冲突闸:应用前比对发送时指纹基线;命中则逐项版本选择(取消不扣费,预览卡保留)
+      const base = AO.getPendingBase(m2);
+      const conf = base ? AO.detectConflicts(AO.splitOps(m2.pending.ops).data, base, { p, ep }) : [];
+      if (!conf.length) return exec(m2.pending.ops);
+      AO.openConflictPanel(conf, decisions => {
+        if (!decisions) return; // 取消:暂不应用,预览卡保留待决
+        const g0 = AO.splitOps(m2.pending.ops);
+        exec(AO.resolveOps(g0.data, conf, decisions, { p, ep }).concat(g0.acts));
+      });
     }
     function cancelPending(msgIdx) {
       const m2 = ep.agentChat[msgIdx];
@@ -314,16 +456,17 @@
       if (AC.prearrOn) { // 🎛 预排模式:创作意图 → 参数预排方案卡片,不直接执行
         if (!API.isReady()) { U.toast('🎛 预排模式需要真实 LLM(未配置或未登录后端),本次已忽略', 'error'); return; }
         const fcP = AO.focusOf(p, ep);
-        ep.agentChat.push({ role: 'user', text, focus: fcP ? fcP.label : '', time: Store.now() });
+        ep.agentChat.push({ role: 'user', text, focus: fcP ? fcP.label : '', refs: AgentRefs.labels(p, ep, 'ep'), time: Store.now() });
         ep.agentChat = ep.agentChat.slice(-50);
         renderMsgs();
-        AO.prearrSend({ p, ep, chat: ep.agentChat, text, model, renderMsgs, sysExtra: aPersonaBlock(ep) + memBlock(text, '分镜') });
+        AO.prearrSend({ p, ep, chat: ep.agentChat, text, model, renderMsgs, sysExtra: aPersonaBlock(ep) + memBlock(text, '分镜') + AO.stateBlock(p, ep) }); // 状态摘要同步注入(预排路径)
         return;
       }
       const fcNow = AO.focusOf(p, ep); // 索引关联:发送时快照当前定位,随消息留存并注入 LLM
-      ep.agentChat.push({ role: 'user', text, focus: fcNow ? fcNow.label : '', time: Store.now() });
+      ep.agentChat.push({ role: 'user', text, focus: fcNow ? fcNow.label : '', refs: AgentRefs.labels(p, ep, 'ep'), time: Store.now() });
       ep.agentChat = ep.agentChat.slice(-50);
       renderMsgs();
+      const baseFP = AO.fingerprint({ p, ep }); // ⚠ 并行编辑冲突基线:助手思考期间的手动改动据此检测
       // 七轮计费贯通:导演助手对话对齐服务端(llm.agent=1/条,失败退费);纪要蒸馏共用同 opId(attemptBudget 内不另扣)
       const agOpId = 'ag_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
       const llmPaid = API.isReady() ? U.charge(1, '导演助手对话') : false;
@@ -339,7 +482,9 @@
       let out;
       try {
         if (!API.isReady()) throw new Error('LLM 未配置或未登录后端');
-        out = await Understanding.chatJSONRobust({
+        // 按需查询循环(第三阶段):LLM 首轮可返回 {"query":[...]} 要数据,本地补齐后自动续问(≤2 轮,
+        // 共用同 opId 的 q1/q2 步骤槽位,一条消息仍只扣 1 积分);拿到补齐数据即正常作答
+        const llmOpt = {
           model,
           system: `你是「虎鲸导演助手」,短剧分镜编辑智能体。${window.KB ? KB.block() : ''}${aPersonaBlock(ep)}${memBlock(text, '分镜')}
 用户给自然语言指令,你要么给建议,要么输出对分镜表的结构化修改。
@@ -356,11 +501,20 @@ ops 支持:
 {"op":"goto","target":"分镜脚本|分镜视频|剪辑|节拍板|镜头组"}(切换工作区视图)
 {"op":"select","shot":镜头号}(选中某镜头到右栏编辑)
 纯咨询/建议类问题 ops 返回 []。运镜限:固定镜头/推镜头/拉镜头/摇镜头/移镜头/跟镜头/环绕镜头/俯拍/仰拍/特写;视角:正面/侧面/背面;角度:仰拍/平视/俯拍/高角度;景别:特写/近景/中景/全景;光圈:ƒ/1.4~ƒ/11。项目风格:${styleOf(p)}。
-★ 关键决策点选项卡:当对话处于创作方向/风格/方案等关键决策点、适合让用户拍板时,额外返回可选键 "choices":{"title":"选择主题(如:复仇方向选择)","options":[{"t":"方向一:标题","d":"一句话描述"}]}(2-4 个);返回 choices 的本轮 ops 返回 [],等用户提交选择后再据此继续。`,
-          user: `${histBlock}本集剧本摘要:${(ep.content || '').slice(0, 500)}\n当前分镜表:\n${AO.compactShots(ep)}${AO.focusBlock(p, ep)}\n\n用户指令:${text}`,
+★ 关键决策点选项卡:当对话处于创作方向/风格/方案等关键决策点、适合让用户拍板时,额外返回可选键 "choices":{"title":"选择主题(如:复仇方向选择)","options":[{"t":"方向一:标题","d":"一句话描述"}]}(2-4 个);返回 choices 的本轮 ops 返回 [],等用户提交选择后再据此继续。${AO.queryProtocol()}`,
+          user: `${histBlock}本集剧本摘要:${(ep.content || '').slice(0, 500)}\n当前分镜表:\n${AO.compactShots(ep)}${AO.focusBlock(p, ep)}${AgentRefs.block(p, ep, 'ep')}${AO.stateBlock(p, ep)}\n\n用户指令:${text}`,
           temperature: 0.4, max_tokens: 6000,
-          billingAction: 'llm.agent', operationId: agOpId, // 解析重试/纪要蒸馏共用同 opId:一条消息只扣一次
-        });
+        };
+        let qExtra = '';
+        for (let round = 0; ; round++) {
+          out = await Understanding.chatJSONRobust(Object.assign({}, llmOpt, {
+            user: llmOpt.user + qExtra,
+            billingAction: 'llm.agent', operationId: agOpId, step: round ? 'q' + round : undefined, // 解析重试/纪要蒸馏/查询续问共用同 opId:一条消息只扣一次
+          }));
+          const qs = out && Array.isArray(out.query) ? out.query : null;
+          if (!qs || !qs.length || round >= 2) break;
+          qExtra += AO.answerQueries(p, ep, 'ep', qs);
+        }
         Tasks.done(tk);
       } catch (e) {
         if (llmPaid) U.refund(1, '导演助手对话失败退费', agOpId); // 七轮:失败退回本条对话积分
@@ -380,7 +534,9 @@ ops 支持:
         const clone = { shots: JSON.parse(JSON.stringify(ep.shots)), sbConfig: ep.sbConfig, uiSel: ep.uiSel, scriptBoard: JSON.parse(JSON.stringify(ep.scriptBoard || { scenes: [] })) };
         const changes = (dataOps.length ? AO.applyOps(clone, dataOps, false) : []).concat(actDescs);
         if (changes.length) {
-          if ((Store.state.settings || {}).agentAuto) {
+          // ⚠ 并行编辑冲突(手动修改 vs 助手方案):发送时基线 vs 当前指纹,命中则转预览确认逐项选择版本
+          const confA = AO.detectConflicts(dataOps, baseFP, { p, ep });
+          if ((Store.state.settings || {}).agentAuto && !confA.length) {
             // ⚡ 自动执行:read/edit 类免确认直执行(可撤销);exec(run)与 edit-hi(delete 删除类,十轮)
             // 按注册表分级审批,先 U.confirm 确认才执行——删除不可逆,自动模式下也始终确认
             const runOps = actOps.filter(o => AO.opRisk(o) === 'exec');
@@ -390,9 +546,21 @@ ops 支持:
             const tk2 = Tasks.start({ type: '导演助手', model: '自动执行', target: ep.title, cost: 1, projectId: p.id, episodeId: ep.id });
             if (U.charge(1, '导演助手自动执行(' + ep.title + ')')) {
               ep.agentUndo = { shots: JSON.parse(JSON.stringify(ep.shots)), composed: ep.composed, board: JSON.parse(JSON.stringify(ep.scriptBoard || null)), time: Store.now() };
-              if (loData.length) AO.applyOps(ep, loData, true);
-              const vf = loData.length ? AO.verifyOps(ep, loData) : null; // 执行闭环验证:落数后回读校验
-              const actDone = AO.runEpisodeActions(p, ep, safeActs, main);
+              let vf = null;
+              try { // R17:脏 ops 异常兜底——回滚+退费+标败,自动执行不再吞积分留悬挂任务
+                if (loData.length) AO.applyOps(ep, loData, true);
+                vf = loData.length ? AO.verifyOps(ep, loData) : null; // 执行闭环验证:落数后回读校验
+                await AO.runEpisodeActions(p, ep, safeActs, main);
+              } catch (e) {
+                ep.shots = ep.agentUndo.shots; ep.composed = ep.agentUndo.composed; ep.scriptBoard = ep.agentUndo.board;
+                U.refund(1, '导演助手自动执行异常退费');
+                Tasks.fail(tk2, e.message || '自动执行异常');
+                msg.text += '\n(自动执行异常(' + (e.message || '未知') + '),已回滚未做改动,积分已退还)';
+                ep.agentChat.push(msg);
+                ep.agentChat = ep.agentChat.slice(-50);
+                Store.save(); renderMsgs();
+                return;
+              }
               AC.activeStepKey = opBoardKey(ops); // 顶栏高亮正在操作的板块
               Tasks.done(tk2);
               memRemember(`「${p.name}/${ep.title}」${text.slice(0, 60)} → 自动执行:${changes.slice(0, 3).join(';').slice(0, 80)}`, '分镜');
@@ -408,13 +576,15 @@ ops 支持:
               }
               if (runOps.length) {
                 // 分级审批:exec 类动作按各功能规则另行扣费,自动模式下也需用户确认
-                U.confirm(`虎鲸导演助手请求执行以下动作(将按各功能规则扣费):${runOps.map(o => '▶ ' + o.action).join(';')}`, () => {
-                  AO.runEpisodeActions(p, ep, runOps, main);
+                U.confirm(`虎鲸导演助手请求执行以下动作(将按各功能规则扣费):${runOps.map(o => '▶ ' + o.action).join(';')}`, async () => {
+                  await AO.runEpisodeActions(p, ep, runOps, main);
                   U.toast('已执行:' + runOps.map(o => o.action).join('、'), 'success', 2500);
                   Views.episode(main, p.id, ep.id);
                 }, '▶ 确认执行');
                 msg.text += `\n(⚠ ${runOps.length} 个执行类动作待确认)`;
               }
+              ep.agentChat.push(msg); // 自动执行成功同样留存助手回复(原漏推,会话历史丢失本条)
+              ep.agentChat = ep.agentChat.slice(-50);
               Store.save();
               U.toast('导演助手已自动执行', 'success');
               Views.episode(main, p.id, ep.id);
@@ -423,7 +593,9 @@ ops 支持:
             Tasks.fail(tk2, '积分不足');
             msg.text += '\n(自动执行失败:积分不足,未改动)';
           } else {
+            if (confA.length) msg.text += `\n(⚠ 你在助手思考期间手动改过 ${confA.length} 处,点「应用修改」逐项选择版本)`;
             msg.pending = { ops, changes };
+            AO.setPendingBase(msg, baseFP); // 基线随消息存(会话内有效;刷新后应用退化为直接应用)
           }
         }
       }
@@ -458,7 +630,7 @@ ops 支持:
       U.toast('已撤销上次导演助手修改', 'success');
       Views.episode(main, p.id, ep.id);
     };
-    col.querySelectorAll('[data-a-chip]').forEach(c2 => c2.onclick = () => send(c2.dataset.aChip));
+    // chips 绑定统一在 paintChips(renderMsgs 每次重算时重建并绑定,此处不再重复)
     // Agent 身份下拉:本会话以所选专家人设工作(持久化在 ep.agentPersonaId;''=明确选择默认助手)
     const aPersona = col.querySelector('[data-a-persona]');
     if (aPersona) aPersona.onchange = () => {
@@ -485,6 +657,7 @@ ops 支持:
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); col.querySelector('[data-a=send]').click(); }
     };
     renderMsgs();
+    AgentRefs.paint(); // 📎 引用 chips 行(容器随面板重渲为空,此处重填并接线)
   }
 
   /* ---- 管线/系统事件推送到对话流(面板开着则即时渲染,关着则留存待看) ---- */

@@ -58,14 +58,9 @@
     return `Shot on ${spec.body || CAM.BODIES[0]} with ${spec.lens || CAM.LENSES[0]} lens, ${spec.focal || 35}mm, ${String(spec.aperture || 'ƒ/4').replace('ƒ', 'f')}`;
   };
 
-  /* ---- 中文机位描述(写进分镜提示词) ---- */
+  /* ---- 中文机位描述(写进分镜提示词;单一实现在 domain.js,双端同口径) ---- */
   CAM.describe = function (cs) {
-    if (!cs) return '';
-    const parts = [];
-    if (cs.view) parts.push(cs.view + '视角');
-    if (cs.angle) parts.push(cs.angle);
-    if (cs.shotSize) parts.push(cs.shotSize);
-    return parts.join('·');
+    return Domain.cameraDescribe(cs);
   };
 
   /* ---- 机位选择器弹窗(视角×角度×景别 + 光圈 + 运镜八方向) ----

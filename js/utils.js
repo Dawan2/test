@@ -38,15 +38,17 @@
     return close;
   };
 
-  U.confirm = function (msg, onOk, okText) {
+  U.confirm = function (msg, onOk, okText, onCancel) {
+    let okHit = false;
     U.openModal({
       title: '确认操作',
       body: `<p style="line-height:1.8">${U.esc(msg)}</p>`,
       footer: `<button class="btn" data-x="no">取消</button><button class="btn primary" data-x="ok">${okText || '确定'}</button>`,
       onMount(m, close) {
         m.querySelector('[data-x=no]').onclick = close;
-        m.querySelector('[data-x=ok]').onclick = () => { close(); onOk && onOk(); };
+        m.querySelector('[data-x=ok]').onclick = () => { okHit = true; close(); onOk && onOk(); };
       },
+      onClose() { if (!okHit && onCancel) onCancel(); }, // 取消/✕/遮罩关闭统一回执(命令层 guardAsync 用)
     });
   };
 
@@ -409,6 +411,27 @@
     finally { clearTimeout(timer); }
   };
 
+  /* ---- 宫格图客户端切分:整张宫格图按 cols×cols 均分裁成单元格 dataURL(失败回退 []) ---- */
+  U.cropGridCells = function (imgUrl, cols) {
+    return new Promise(resolve => {
+      const im = new Image();
+      im.crossOrigin = 'anonymous';
+      im.onload = () => {
+        const cw = Math.floor(im.width / cols), ch = Math.floor(im.height / cols);
+        const out = [];
+        for (let r = 0; r < cols; r++) for (let c = 0; c < cols; c++) {
+          const cv = document.createElement('canvas');
+          cv.width = cw; cv.height = ch;
+          cv.getContext('2d').drawImage(im, c * cw, r * ch, cw, ch, 0, 0, cw, ch);
+          out.push(cv.toDataURL('image/png'));
+        }
+        resolve(out);
+      };
+      im.onerror = () => resolve([]);
+      im.src = imgUrl;
+    });
+  };
+
   /* ---- 选文件并上传九件套收敛(C 批):读文件 → 可选大小校验 → 上传服务端/回退 base64,统一 toast
    * 返回 {name, size, url} | null(取消或超限);url 为服务端地址或离线 base64 */
   U.readAndUpload = async function (accept, { maxMB } = {}) {
@@ -445,6 +468,7 @@
       })
       .catch(() => { /* 离线静默 */ });
   }
+  U.syncCreditsFromServer = syncCreditsFromServer; // R19:服务端权威余额回写(取消任务等不退本地镜像的路径用)
   function refundMirror(operationId, reason) {
     const t = Store.getToken();
     if (!t || !operationId) return;

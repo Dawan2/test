@@ -122,13 +122,18 @@
       const subjects = [];
       ['character', 'scene', 'prop'].forEach(kind => {
         if (!types[kind]) return;
-        found[kind].forEach(s => subjects.push({
-          id: Store.uid('sub'), kind, name: s.name, evidence: s.evidence,
-          prompt: s.prompt || EpisodeUtil.genPrompt(kind, s.name, styleOf(p)),
-          persona: s.persona,
-          model: (window.getSettings ? getSettings().defImageModel : '') || MODELS.image[0],
-          image: null, status: 'pending',
-        }));
+        found[kind].forEach(s => {
+          if (subjects.some(x => x.kind === kind && x.name === s.name)) return; // 同名同类去重兜底
+          subjects.push({
+            id: Store.uid('sub'), kind, name: s.name, evidence: s.evidence,
+            prompt: s.prompt || EpisodeUtil.genPrompt(kind, s.name, styleOf(p)),
+            persona: s.persona,
+            // 别名入 formerNames:分镜按别名引用时 findSubject 仍能解析到本主体(参考图/音色不失联)
+            formerNames: (s.aliases || []).slice(0, 10),
+            model: (window.getSettings ? getSettings().defImageModel : '') || MODELS.image[0],
+            image: null, status: 'pending',
+          });
+        });
       });
       st.subjects = subjects;
       st.genTotal = subjects.length;

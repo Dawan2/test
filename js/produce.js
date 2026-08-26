@@ -1,7 +1,8 @@
 /* ============ produce.js 量产跑批中心(工业化量产轨) ============
  * 设计精神:量产不给选择,只给默认值。用户只做三个决策——选哪几集、用什么模板、点开始。
- * 引擎全部复用现有函数编排:SB.batchGenVideos → SB.autoSmartReview(quiet) → SB.doCompose(quiet)。
- * 渲染汇流排用 detached sink,避免 batchGenVideos 内部的 renderShots 把跑批页替换掉。
+ * 引擎走统一领域命令(第二阶段):Commands.execute('episode.produce') 逐集编排
+ *   就绪检查 → 批量生成 → 智能审片(质量闸门) → 合成,与 Agent「一键成片」/CLI 同口径。
+ * 渲染汇流排用 detached sink,避免生成链路内部的 renderShots 把跑批页替换掉。
  */
 (function () {
   window.Views = window.Views || {};
@@ -11,7 +12,7 @@
     if (!p) { location.hash = '#/projects'; return; }
     const sink = document.createElement('div'); // 渲染汇流排(不上屏)
     // 跑批配置模板(页内存量,跑批时写入各集 sbConfig)
-    const cfg = { smartReview: true, maxRetry: 2, skipComposed: true };
+    const cfg = { smartReview: true, maxRetry: 2, skipComposed: true, riskyCompose: false };
     let running = false;
     const runState = {}; // epId -> {status:'idle'|'running'|'done'|'failed'|'skipped', note}
 
@@ -22,12 +23,16 @@
     };
     const selected = () => (p.episodes || []).filter(e => e.__sel);
 
-    /* 全链路预估(逐镜时长计价):视频(长镜头按 2 镜)+ 配音(开启同步语音的集)+ 审片(N+2 步,重抽另计)+ 合成 */
+    /* 全链路预估(逐镜时长计价):视频(长镜头按 2 镜)+ 配音(开启同步语音的集)+ 审片(N+2 步,重抽另计)+ 合成
+     * 十六轮口径统一:视频预估走 SBGen.shotVideoBilling(预估时长 estShotDuration>10s 判长镜头),
+     * 与实际扣费同一推导(此前用遗留字段 s.duration 判长镜,与 estShotDuration 口径分叉会少估) */
+    const vCostOf = s => (window.SBGen && SBGen.shotVideoBilling ? SBGen.shotVideoBilling(s).cost : (estDur(s) > 10 ? COST.video * 2 : COST.video));
+    const estDur = s => (window.SBGen && SBGen.estShotDuration ? SBGen.estShotDuration(s) : (s.duration || 3));
     function estimate() {
       let video = 0, audio = 0, review = 0, compose = 0;
       selected().forEach(ep => {
         (ep.shots || []).forEach(s => {
-          if (!s.final && !Store.shotVideoReady(s)) video += s.duration > 10 ? COST.video * 2 : COST.video;
+          if (!s.final && !Store.shotVideoReady(s)) video += vCostOf(s);
         });
         if (ep.sbConfig && ep.sbConfig.syncVoice) audio += (ep.shots || []).filter(s => !s.audio).length * COST.audio;
         if (cfg.smartReview) review += ((ep.shots || []).length + 2) * COST.review; // N 镜 + 共性汇总 + 四维评审,重抽另计
@@ -63,7 +68,8 @@
               ${[1, 2, 3].map(n => `<span class="tag ${cfg.maxRetry === n ? 'cyan' : ''}" style="cursor:pointer" data-mr="${n}">${n} 次</span>`).join('')}
             </span>
             <span class="check-line" data-cfg="skipComposed" style="margin:0"><span class="switch ${cfg.skipComposed ? 'on' : ''}"></span><span class="small">跳过已合成集</span></span>
-            <span class="small muted" style="margin-left:auto" title="逐镜时长计价(长镜头按 2 镜);审片重抽另计">预估:视频 ${est.video} + 配音 ${est.audio} + 审片 ${est.review} + 合成 ${est.compose} = <b style="color:var(--yellow)">${est.total}</b> 积分</span>
+            <span class="check-line" data-cfg="riskyCompose" style="margin:0" title="默认:存在待人工镜头的集阻断合成,防止带病成片;开启后放行"><span class="switch ${cfg.riskyCompose ? 'on' : ''}"></span><span class="small">带风险合成(待人工不阻断)</span></span>
+            <span class="small muted" style="margin-left:auto" title="逐镜时长计价(长镜头按 2 镜);审片重抽与提示词优化另计">预估:视频 ${est.video} + 配音 ${est.audio} + 审片 ${est.review} + 合成 ${est.compose} = <b style="color:var(--yellow)">${est.total}</b> 积分</span>
           </div>
         </div>
 
@@ -93,7 +99,7 @@
             </tbody>
           </table>
         </div>`}
-        <div class="hint" style="margin-top:10px">流水线:逐集串行执行 批量生成 → 智能审片(可选)→ 合成成片;逐镜逐条扣费,失败自动返还;跑批中断后再点开始即为断点续跑(已完成环节自动跳过)。审片不达标超限的集会标"待人工",点进分集精修即可。</div>
+        <div class="hint" style="margin-top:10px">流水线:就绪检查 → 逐集串行 批量生成 → 智能审片(不达标先修订提示词再重抽)→ 合成成片;逐镜逐条扣费,失败自动返还;跑批中断后再点开始即为断点续跑(已完成环节自动跳过)。审片超限转"待人工"的集默认阻断合成(可开"带风险合成"放行),点进分集精修即可。</div>
       </div>`;
 
       main.querySelectorAll('[data-sel]').forEach(c => c.onchange = () => {
@@ -125,9 +131,45 @@
       }
     }
 
+    /* 生产就绪检查(preflight):Domain.episodeState 统一推导,与流程条/下一步/CLI 同一口径;
+     * 硬阻塞(缺剧本/分镜过期/失败镜)的集列出阻塞项、可一键前往处理,继续跑批则自动剔除 */
+    function preflight(list, onPass) {
+      const online = !!(window.Media && Media.isReady && Media.isReady());
+      const hard = list.map(ep => ({ ep, st: Domain.episodeState(p, ep, online) }))
+        .filter(x => x.st.status === 'blocked' || x.st.shotsStale);
+      if (!hard.length) return onPass(list, []);
+      const rest = list.filter(ep => !hard.some(x => x.ep.id === ep.id));
+      U.openModal({
+        title: '🛡 生产就绪检查',
+        wide: true,
+        body: `<p style="line-height:1.8">以下 <b>${hard.length}</b> 集存在硬阻塞,直接跑批只会浪费生成费。可逐项前往处理,或跳过这些集继续:</p>
+        <table class="tbl" style="margin-top:6px"><thead><tr><th>分集</th><th>阻塞项</th><th style="width:110px"></th></tr></thead>
+        <tbody>${hard.map(x => `<tr><td class="small"><b>${U.esc(x.ep.title)}</b></td>
+          <td class="small">${x.st.blockers.length ? x.st.blockers.map(b => `<span class="tag red" style="margin:0 4px 4px 0">${U.esc(b.label)}</span>`).join('') : '<span class="muted">—</span>'}</td>
+          <td><button class="btn sm" data-fix="${x.ep.id}">前往处理 ›</button></td></tr>`).join('')}</tbody></table>`,
+        footer: `<button class="btn" data-x="cancel">取消跑批</button>${rest.length ? `<button class="btn primary" data-x="go">跳过 ${hard.length} 集,继续跑批</button>` : ''}`,
+        onMount(m, close) {
+          m.querySelectorAll('[data-fix]').forEach(b => b.onclick = () => {
+            close();
+            window.__epView = 'shots';
+            location.hash = `#/project/${p.id}/episode/${b.dataset.fix}`;
+          });
+          m.querySelector('[data-x=cancel]').onclick = close;
+          const go = m.querySelector('[data-x=go]');
+          if (go) go.onclick = () => { close(); onPass(rest, hard.map(x => x.ep)); };
+        },
+      });
+    }
+
     async function startRun() {
       const list = selected().filter(ep => !(cfg.skipComposed && Store.epComposedReady(ep)));
       if (!list.length) return U.toast('请先勾选要跑批的分集', 'error');
+      preflight(list, reallyRun);
+    }
+
+    async function reallyRun(list, blockedEps) {
+      (blockedEps || []).forEach(ep => { runState[ep.id] = { status: 'skipped', note: '就绪检查拦截' }; });
+      if (!list.length) { render(); return U.toast('勾选集均未通过就绪检查,请先处理阻塞项', 'error'); }
       const noShots = list.filter(ep => !(ep.shots || []).length);
       const est = estimate();
       U.confirm(`将对 ${list.length} 集依次执行流水线(预计消耗约 ${est.total} 积分,逐条扣减、失败返还)。${noShots.length ? `\n注意:${noShots.length} 集未分镜将跳过。` : ''}开始跑批吗?`, async () => {
@@ -146,43 +188,25 @@
               summary.push({ ep, note: '跳过(未分镜)' });
               continue;
             }
-            // 1. 批量生成(就绪判定:离线模拟在线时不算完成,会重新生成)
-            const pend = ep.shots.filter(s => !s.final && !Store.shotVideoReady(s));
-            if (pend.length) {
-              runState[ep.id] = { status: 'running', note: `生成视频 ${pend.length} 镜` };
-              render();
-              await SB.batchGenVideos(p, ep, sink, pend, { skipSmartReview: true });
-            }
-            // 2. 智能审片
-            let reviewNote = '未开启';
-            if (cfg.smartReview && window.Review) {
-              runState[ep.id] = { status: 'running', note: '智能审片' };
-              render();
-              const r = await autoSmartReview(p, ep, sink, ep.shots, true);
-              reviewNote = r ? `达标${r.pass}·重抽${r.retry}·待人工${r.manual}` : '—';
-            }
-            // 3. 合成(quiet:不弹确认/成功窗);失败镜头先如实记录,不进合成流程
-            const failedCnt = ep.shots.filter(s => s.video && s.video.status === 'failed').length;
-            if (failedCnt) {
-              runState[ep.id] = { status: 'failed', note: `${failedCnt} 个失败镜头阻塞合成` };
-              summary.push({ ep, note: runState[ep.id].note, sec: Math.round((Date.now() - et0) / 1000) });
-              continue;
-            }
-            runState[ep.id] = { status: 'running', note: '合成成片' };
-            render();
-            // onTask 拿到本次合成任务句柄(守卫拦截/积分不足时不创建任务则句柄为 null),
-            // 据此轮询等待脱离 running(真实 FFmpeg 合成需数分钟),上限 10 分钟,每 3s 一次——
-            // 不再按 episodeId 搜旧任务,避免抓到上一次已完成任务立即误判
-            let ct = null;
-            SB.composeVideo(p, ep, sink, { quiet: true, onTask: tk => { ct = tk; } });
-            if (ct) {
-              for (let i = 0; i < 200 && ct.status === 'running'; i++) await U.delay(3000);
-            }
-            const ok = !!ct && ct.status === 'done';
+            /* 统一领域命令(第二阶段):episode.produce 编排 就绪检查→批量生成→智能审片(质量闸门)→合成,
+             * 与 Agent「一键成片」/CLI 同口径;headless:未确认镜跳过,失败镜合成前统一拦截,onStep 回报行内状态 */
+            const r = await Commands.execute('episode.produce', {
+              pid: p.id, epid: ep.id, main: sink,
+              smartReview: cfg.smartReview, maxRetry: cfg.maxRetry, riskyCompose: cfg.riskyCompose,
+              onStep: key => { runState[ep.id] = { status: 'running', note: key }; render(); },
+            });
             const sec = Math.round((Date.now() - et0) / 1000);
-            runState[ep.id] = ok
-              ? { status: 'done', note: `${sec}s · ${reviewNote}` }
-              : { status: 'failed', note: !ct ? '合成被拦截(积分不足/无素材)' : (ct.status === 'failed' && ct.reason ? '合成失败:' + String(ct.reason).slice(0, 20) : '合成未完成(超时)') };
+            const rv = ((r.result && r.result.steps) || []).find(x => x.step === 'smartReview');
+            const rvR = rv && rv.result;
+            let reviewNote = cfg.smartReview ? (rvR ? `达标${rvR.pass}·重抽${rvR.retry}·待人工${rvR.manual}` : '—') : '未开启';
+            if (rvR && rvR.manual > 0 && cfg.riskyCompose) reviewNote += '·带风险合成';
+            if (r.ok) {
+              runState[ep.id] = { status: 'done', note: `${sec}s · ${reviewNote}` };
+            } else if (r.status === 'needs_human') {
+              runState[ep.id] = { status: 'failed', note: `待人工 ${rvR ? rvR.manual : 0} 镜,已阻断合成(开"带风险合成"可放行)` };
+            } else {
+              runState[ep.id] = { status: 'failed', note: ((r.error && r.error.message) || '失败').slice(0, 30) };
+            }
             summary.push({ ep, note: runState[ep.id].note, sec });
           } catch (err) {
             runState[ep.id] = { status: 'failed', note: String(err.message || err).slice(0, 30) };
@@ -228,8 +252,8 @@
     if (!targets.length) return { pass: 0, retry: 0, manual: 0 };
     const dock = quiet ? null : U.bgDock({ title: `🧠 智能审片 · ${ep.title}(${targets.length} 镜)` });
     if (dock) {
-      dock.say(`达标线 7.0 分 · 每镜最多重生成 ${maxRetry} 次 · 超限转人工处理 · 评审期间可正常操作页面`);
-      if (window.Agent && Agent.notify) Agent.notify(p, ep, main, `🧠 智能审片开始(${targets.length} 镜,达标线 7.0):逐镜评审,不达标自动重生成。进度在右侧面板,你可以继续干活。`);
+      dock.say(`达标线 7.0 分 · 不达标先按问题修订提示词再重生成(每镜最多 ${maxRetry} 次)· 超限转人工处理 · 评审期间可正常操作页面`);
+      if (window.Bus) Bus.emit('review.smartStart', { p, ep, main, total: targets.length, maxRetry, brief: `智能审片开始(${targets.length} 镜)` }); // 事件总线:Agent 对话流订阅转译(quiet/headless 不发,与原 notify 条件一致)
     }
     const say = h => { if (dock) dock.say(h); };
     let passCnt = 0, retryCnt = 0, manualCnt = 0;
@@ -243,8 +267,17 @@
         if (!r) { say('&nbsp;&nbsp;积分不足,审片中止'); manualCnt++; break; }
         if (r.score >= 7) { pass = true; passCnt++; s.confirm = true; say(`&nbsp;&nbsp;✅ <b style="color:var(--green)">${r.score.toFixed(1)}</b> 分,达标(已自动确认)`); } // 审片达标 = 系统替你确认(镜头确认闸联动)
         else if (attempt < maxRetry) {
-          say(`&nbsp;&nbsp;⚠️ <b style="color:var(--yellow)">${r.score.toFixed(1)}</b> 分不达标,自动重生成…`);
           retryCnt++;
+          // 先消费审片 issues 修订提示词再重抽(避免同一问题反复付费重生成);
+          // optimizeShot(autoApply)内部扣 COST.optimize 并写入提示词,失败/积分不足则沿用原提示词
+          const issueCnt = (r.issues || []).length;
+          if (issueCnt && window.Review && Review.optimizeShot) {
+            say(`&nbsp;&nbsp;⚠️ <b style="color:var(--yellow)">${r.score.toFixed(1)}</b> 分不达标,先按 ${issueCnt} 条问题修订提示词…`);
+            const okOpt = await Review.optimizeShot(p, ep, s, r, main, true);
+            say(okOpt ? '&nbsp;&nbsp;✏️ 提示词已按审片意见修订,重新生成…' : `&nbsp;&nbsp;⚠️ <b style="color:var(--yellow)">${r.score.toFixed(1)}</b> 分不达标(优化未执行),沿用原提示词重生成…`);
+          } else {
+            say(`&nbsp;&nbsp;⚠️ <b style="color:var(--yellow)">${r.score.toFixed(1)}</b> 分不达标,自动重生成…`);
+          }
           s.video = { status: 'none' };
           await SBGen.createShotVideo(p, ep, s, main, true);
           if (!s.video || !Store.shotVideoReady(s)) { say('&nbsp;&nbsp;重生成失败,转人工处理'); manualCnt++; break; }
@@ -258,7 +291,7 @@
     say(`<span class="hi">━━ ${summary} ━━</span>`);
     if (dock) dock.finish(`<b style="color:${manualCnt ? 'var(--yellow)' : 'var(--green)'}">━━ ${summary} ━━</b>`);
     if (quiet) U.toast(`智能审片完成(${ep.title}):达标 ${passCnt} · 重抽 ${retryCnt} 次 · 待人工 ${manualCnt}`, manualCnt ? 'info' : 'success', 3500);
-    if (window.Agent && Agent.notify && !quiet) Agent.notify(p, ep, main, `🧠 智能审片${summary}${manualCnt ? '。待人工的镜头跟我说,我帮你改提示词重抽。' : '。全部达标,可以合成成片了。'}`);
+    if (window.Bus) Bus.emit('review.smartDone', { p, ep, main, pass: passCnt, retry: retryCnt, manual: manualCnt, quiet: !!quiet, brief: `智能审片完成:达标 ${passCnt} · 重抽 ${retryCnt} · 待人工 ${manualCnt}` }); // 事件总线:Agent 订阅转译(quiet/headless 由订阅侧静默)
     Store.save(); // 达标镜头的 confirm=true 落库
     if (main && main.isConnected) window.SB.renderShots(main, p, ep);
     return { pass: passCnt, retry: retryCnt, manual: manualCnt };
@@ -268,17 +301,20 @@
   async function oneClickProduce(p, ep, main) {
     if (!ep.shots.length) return U.toast('该集还没有分镜,请先生成分镜', 'error');
     const pend = ep.shots.filter(s => !s.final && (!s.video || !Store.shotVideoReady(s)));
-    /* 全链路预估明细(与跑批中心同口径):视频逐镜时长计价 + 配音(未出音频镜)+ 审片(N+2 步,重抽另计)+ 合成 */
-    const vCost = pend.reduce((n, s) => n + (s.duration > 10 ? COST.video * 2 : COST.video), 0);
+    /* 全链路预估明细(与跑批中心同口径):视频逐镜时长计价 + 配音(未出音频镜)+ 审片(N+2 步,重抽另计)+ 合成
+     * 十六轮:视频预估与实际扣费同一推导(SBGen.shotVideoBilling,预估时长判长镜头) */
+    const billOf = s => (window.SBGen && SBGen.shotVideoBilling ? SBGen.shotVideoBilling(s).cost : ((window.SBGen && SBGen.estShotDuration ? SBGen.estShotDuration(s) : (s.duration || 3)) > 10 ? COST.video * 2 : COST.video));
+    const vCost = pend.reduce((n, s) => n + billOf(s), 0);
     const audioPend = ep.sbConfig && ep.sbConfig.syncVoice ? ep.shots.filter(s => !s.audio).length : 0;
     const rCost = (ep.shots.length + 2) * COST.review;
     const cCost = Store.epComposedReady(ep) ? 0 : COST.compose;
     const estLine = [pend.length ? `视频 ${vCost}` : '', audioPend ? `配音 ${audioPend * COST.audio}` : '', `审片 ${rCost}`, cCost ? `合成 ${cCost}` : '']
       .filter(Boolean).join(' + ');
+    // 统一领域命令(第二阶段):与跑批/Agent「一键成片」同走 episode.produce;quiet=false 保留审片后台面板
     const run = async () => {
-      if (pend.length) await SBGen.batchGenVideos(p, ep, main, pend, { skipSmartReview: true });
-      if (window.Review) await autoSmartReview(p, ep, main, ep.shots);
-      window.SB.composeVideo(p, ep, main);
+      const r = await Commands.execute('episode.produce', { pid: p.id, epid: ep.id, main, quiet: false });
+      if (r.ok) U.toast('一键成片完成,成片已归档可预览导出', 'success', 3500);
+      else if (r.error) U.toast('一键成片中断:' + r.error.message, r.status === 'needs_human' ? 'info' : 'error', 4000);
     };
     U.confirm(`一键成片将依次执行:${pend.length ? `批量生成 ${pend.length} 镜 → ` : ''}智能审片(不达标自动重生成)→ 合成成片。\n预计消耗:${estLine} = ${vCost + audioPend * COST.audio + rCost + cCost} 积分(逐条扣减、失败返还;审片重抽另计)。开始吗?`, () => {
       if (pend.length && window.HumanReview) {
