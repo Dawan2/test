@@ -44,14 +44,14 @@
   }
 
   /* 生产就绪检查(read):Domain.episodeState 单源推导,流程条/下一步/CLI 同口径;
-   * result.checks 附剧本面/主体面/分集面/分镜面/成片字幕面校验项结论(Skills.check,纯本地零 LLM 零计费),按主线步序排列——只报不拦:
+   * result.checks 附各校验面结论(Skills.check,纯本地零 LLM 零计费),面清单与步序一律读双端单源表
+   * Skills.preflightStages()(现为 script → subjects → eps → shots → film),本层不写第二份面清单——只报不拦:
    * 不进 blockers、不改 ok/status,与 CLI exec 同一份结论 */
   reg('episode.preflight', { risk: 'read', meter: false, label: '生产就绪检查' }, async ({ p, ep }) => {
     const st = Domain.episodeState(p, ep, online());
     const ck = { online: online() };
     const checks = window.Skills
-      ? Skills.check('script', { p, ep }, ck).concat(Skills.check('subjects', { p, ep }, ck), Skills.check('eps', { p, ep }, ck),
-        Skills.check('shots', { p, ep }, ck), Skills.check('film', { p, ep }, ck))
+      ? Skills.preflightStages().reduce((all, stage) => all.concat(Skills.check(stage, { p, ep }, ck)), [])
       : [];
     return { ok: st.status !== 'blocked' && !st.shotsStale, status: st.status, result: Object.assign({}, st, { checks }) };
   });

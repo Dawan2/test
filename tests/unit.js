@@ -3976,6 +3976,39 @@ const epsP = list => ({ id: 'p1', episodes: list.map((c, i) => ({ id: 'ep' + (i 
 const sixEps = (over) => epsP(Array.from({ length: 6 }, (_, i) => ((over || {})[i + 1] === undefined ? EP_OK : over[i + 1])));
 const arcOf = p => Skills.check('eps', { p }).find(x => x.skill === 'eps.structureStage');
 const payoffOf = (p, ep) => Skills.check('eps', { p, ep }).find(x => x.skill === 'eps.payoffPoint');
+/* 就绪检查的校验面清单已收成双端单源表 Skills.preflightStages();两端 preflight 段只读该表 concat,
+ * 不再各写一份面字面量。故逐面消费点断言的形态从"文件里出现过 Skills.check('<面>'"
+ * 改成"该面在单源表里 + 两端确实读该表 + 表按主线步序"——判据只增不减,面表本身由注册表登记推出,
+ * 表的推导规则与两端只读该表这两件事由本套件的「就绪检查校验面表(源级)」用例锁死。 */
+const PREFLIGHT_ENDS = [['js/commands.js', "reg('episode.preflight'", "reg('episode.generateStoryboard'"],
+  ['cli.js', "EXEC['episode.preflight']", "EXEC['episode.generateVideos']"]];
+/* 两端 preflight 实现段(定位失败即红,防断言被改名静默跳过) */
+const preflightSeg = f => {
+  const [, from, to] = PREFLIGHT_ENDS.find(x => x[0] === f);
+  const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+  const a = src.indexOf(from), b = src.indexOf(to);
+  assert(a >= 0 && b > a, f + ' 应能定位到就绪检查实现段');
+  return src.slice(a, b);
+};
+/* 段内那一条 checks 汇总表达式(表达式中间不得出现分号,否则这里截不全) */
+const preflightExpr = f => {
+  const seg = preflightSeg(f);
+  const i = seg.indexOf('const checks =');
+  assert(i >= 0, f + ' 就绪检查段内应有 checks 汇总表达式');
+  return seg.slice(i, seg.indexOf(';', i) + 1);
+};
+/* 某一面确实经就绪检查消费:在单源表里,且两端都是读表跑(而非某端写死这一面) */
+const assertPreflightFace = (stage, label) => {
+  assert(Skills.preflightStages().includes(stage), '单源面表 Skills.preflightStages() 应含' + label);
+  PREFLIGHT_ENDS.forEach(([f]) => assert(/Skills\.preflightStages\(\)/.test(preflightExpr(f)),
+    f + ' 就绪检查应读单源面表跑校验项(含' + label + ')'));
+};
+/* 单源表里 a 面排在 b 面之前(步序判据从两端源码位置移到表上,面表是唯一口径) */
+const assertPreflightOrder = (a, b, why) => {
+  const stages = Skills.preflightStages();
+  assert(stages.indexOf(a) >= 0 && stages.indexOf(b) >= 0, '单源面表应含 ' + a + '/' + b + ' 两面');
+  assert(stages.indexOf(a) < stages.indexOf(b), '单源面表应按主线步序排列(' + why + ')');
+};
 
 const skillsTests = [
   { name: 'hookAnchor:开篇直接进台词/冲突信号 → info;背景铺陈过长 → late-hook(带首个信号位置)', fn() {
@@ -4044,10 +4077,8 @@ const skillsTests = [
     const conc = Skills.check('script', { p: { id: 'p1' }, ep: scriptEp(BG) });
     assertEq(conc.map(x => x.skill).join(','), 'script.hookStrength,script.faceslapFour,script.dialogueRule', '剧本面三条已落地校验项');
     assertEq(conc.map(x => x.id).join(','), 'script.openingHookAnchor,script.faceslapStepOrder,script.dialogueLineLength', '结论应同时给实现 id 与能力 id');
-    [['js/commands.js', fs.readFileSync(path.join(ROOT, 'js', 'commands.js'), 'utf8')], ['cli.js', fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8')]].forEach(([f, src]) => {
-      assert(/Skills\.check\('script'/.test(src), f + ' 就绪检查应跑剧本面校验项');
-      assert(src.indexOf("Skills.check('script'") < src.indexOf("Skills.check('subjects'"), f + ' 结论应按主线步序排列(剧本在主体之前)');
-    });
+    assertPreflightFace('script', '剧本面');
+    assertPreflightOrder('script', 'subjects', '剧本在主体之前');
     const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
     assert(/Skills\.check\('script'/.test(isrc), '问题中心应复用同一校验项,不写第二份判定');
     assert(isrc.includes("kind: 'script-craft', sev: 'low'"), '剧本方法论提醒须挂低危(发布门 G2 只数高/中危)');
@@ -4113,8 +4144,8 @@ const skillsTests = [
   { name: 'refIntegrity:双端消费点同口径——就绪检查附 result.checks,不进 blockers/不计费', fn() {
     const cmdSrc = fs.readFileSync(path.join(ROOT, 'js', 'commands.js'), 'utf8');
     const cliSrc = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    assertPreflightFace('subjects', '主体面');
     [['js/commands.js', cmdSrc], ['cli.js', cliSrc]].forEach(([f, src]) => {
-      assert(/Skills\.check\('subjects'/.test(src), f + ' 就绪检查应跑主体面校验项');
       assert(/result: Object\.assign\(\{\}, st, \{ checks \}\)/.test(src), f + ' 校验结论应附在 result.checks(不并入 Domain 推导结果)');
     });
     // 就绪检查是 read 类零计费命令(校验项不新增计费动作与标签)
@@ -4238,11 +4269,9 @@ const skillsTests = [
     assertEq(JSON.stringify(shots), snap, '校验项不得改动领域对象');
   } },
   { name: 'sizeLinkage:消费点——就绪检查双端按步序附结论 + 问题中心低危(不改门禁、不新增计费)', fn() {
-    [['js/commands.js', fs.readFileSync(path.join(ROOT, 'js', 'commands.js'), 'utf8')], ['cli.js', fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8')]].forEach(([f, src]) => {
-      assert(/Skills\.check\('shots'/.test(src), f + ' 就绪检查应跑分镜面校验项');
-      assert(src.indexOf("Skills.check('subjects'") < src.indexOf("Skills.check('shots'"), f + ' 结论应按主线步序排列(主体在分镜之前)');
-      assert(src.indexOf("Skills.check('shots'") < src.indexOf("Skills.check('film'"), f + ' 结论应按主线步序排列(分镜在成片之前)');
-    });
+    assertPreflightFace('shots', '分镜面');
+    assertPreflightOrder('subjects', 'shots', '主体在分镜之前');
+    assertPreflightOrder('shots', 'film', '分镜在成片之前');
     const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
     assert(/Skills\.check\('shots'/.test(isrc), '问题中心应复用同一校验项,不写第二份判定');
     assert(isrc.includes("kind: 'shot-size-linkage', sev: 'low'"), '景别衔接提醒须挂低危(发布门 G2 只数高/中危)');
@@ -4314,10 +4343,7 @@ const skillsTests = [
     assert(dsrc.includes('D.subtitleSegs = ') && dsrc.includes('D.composeSeqOf(ep, online)'), '字幕段应由 composeSeqOf 在列镜头推导');
   } },
   { name: 'subtitleTiming:消费点——就绪检查双端附结论 + 问题中心低危(不改门禁、不新增计费)', fn() {
-    [['js/commands.js', 'js'], ['cli.js', '']].forEach(([f]) => {
-      const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
-      assert(/Skills\.check\('film'/.test(src), f + ' 就绪检查应跑成片字幕面校验项');
-    });
+    assertPreflightFace('film', '成片字幕面');
     const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
     assert(/Skills\.check\('film'/.test(isrc), '问题中心应复用同一校验项,不写第二份判定');
     assert(isrc.includes("kind: 'caption-unreadable', sev: 'low'"), '字幕提醒须挂低危');
@@ -4329,30 +4355,58 @@ const skillsTests = [
     assertEq(sk.checks.join(','), 'film.subtitleTiming');
     assertEq(Skills.check('film', { p: { id: 'p1' }, ep: capEp([capShot(0, { dialogue: '走' })]) }).length, 1, '成片步现有一条已落地校验项');
   } },
-  { name: '就绪检查校验面并集(源级):双端 preflight 段内 script/subjects/eps/shots/film 同在一条 checks 表达式,登记面无漏消费', fn() {
-    /* 只断"文件里出现过 Skills.check('film'" 是有盲区的:算出来却不并进 result.checks 时照样通过。
-     * 这里把断言收到 preflight 实现段内的那一条 checks 表达式上,并按登记侧反查有无漏消费的面。 */
+  { name: '就绪检查校验面表(源级):面清单双端单源 Skills.preflightStages(),两端只读该表 concat、不各写一份面字面量', fn() {
+    /* 这段曾是并行分支反复撞车的热点(两端各写五个 Skills.check 字面量,任一侧胜出就静默摘掉别人那一面)。
+     * 面清单现收成一张由注册表推出的单源表:新增一面只在条目上登记 checks 实现 + cmds 消费点,两端自动跟上。
+     * 断言分三层:表的推导规则(与登记侧双向对齐)、表的内容与步序、两端只读该表(段内不得再出现面字面量)。 */
+    const stages = Skills.preflightStages();
+    assertEq(stages.join(' → '), 'script → subjects → eps → shots → film', '面表现为五面,按 Skills.STAGES 主线步序');
+    // 表 ⟷ 登记侧双向对齐:登记了 episode.preflight 的已落地校验面必在表里,表里的面也必有这样的登记条目
     const consumers = Skills.list().filter(s => !s.pending.includes('check') && s.checks.length && s.cmds.includes('episode.preflight'));
-    assert(consumers.some(s => s.stage === 'film'), '字幕面应登记 episode.preflight 为消费点');
-    assert(consumers.some(s => s.stage === 'eps'), '分集面应登记 episode.preflight 为消费点');
-    assert(consumers.some(s => s.stage === 'shots'), '分镜面应登记 episode.preflight 为消费点');
-    [['js/commands.js', "reg('episode.preflight'", "reg('episode.generateStoryboard'"],
-      ['cli.js', "EXEC['episode.preflight']", "EXEC['episode.generateVideos']"]].forEach(([f, from, to]) => {
-      const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
-      const a = src.indexOf(from), b = src.indexOf(to);
-      assert(a >= 0 && b > a, f + ' 应能定位到就绪检查实现段');
-      const seg = src.slice(a, b);
-      const i = seg.indexOf('const checks =');
-      assert(i >= 0, f + ' 就绪检查段内应有 checks 汇总表达式');
-      const expr = seg.slice(i, seg.indexOf(';', i) + 1);
-      const at = st => expr.indexOf("Skills.check('" + st + "'");
-      const order = ['script', 'subjects', 'eps', 'shots', 'film'];
-      order.forEach(st => assert(at(st) > 0, f + ' checks 表达式应并入 ' + st + ' 面(只在段外调用不算消费)'));
-      order.slice(1).forEach((st, k) => assert(at(order[k]) < at(st), f + ' 五面应按主线步序 ' + order.join(' → ') + ' 排列'));
-      // 登记侧反查:凡登记了 episode.preflight 消费点的已落地校验条目,其所属面必须在这条表达式里(将来新增面漏接先红)
-      consumers.forEach(s => assert(at(s.stage) > 0, f + ' 就绪检查漏消费已登记面:' + s.id + '(' + s.stage + ')'));
-      assert(seg.includes('result: Object.assign({}, st, { checks })'), f + ' 五面并集应附在 result.checks(不并入 Domain 推导结果)');
+    ['film', 'eps', 'shots'].forEach(st => assert(consumers.some(s => s.stage === st), st + ' 面应登记 episode.preflight 为消费点'));
+    consumers.forEach(s => assert(stages.includes(s.stage), '单源面表漏收已登记面:' + s.id + '(' + s.stage + ')'));
+    stages.forEach(st => assert(consumers.some(s => s.stage === st), '单源面表含无人登记的面:' + st));
+    // 表的顺序就是 STAGES 步序(不是登记顺序/字母序):按 STAGES 过滤后逐字节一致
+    assertEq(stages.join(','), Skills.stages().filter(k => stages.includes(k)).join(','), '面表应按 Skills.STAGES 步序,不按条目登记序');
+    // 未落地(pending 含 check)的面即便登记了消费点也不进表 —— 进表只会得到空数组
+    Skills.list().filter(s => s.pending.includes('check') && s.cmds.includes('episode.preflight'))
+      .forEach(s => assert(!stages.includes(s.stage) || consumers.some(x => x.stage === s.stage),
+        '校验面未落地的条目不应把 ' + s.stage + ' 面单独带进表:' + s.id));
+    // 表现在跑出来就是九条结论(面表 + 各面已落地校验项数,与行为断言的期望串同一口径)
+    assertEq(stages.reduce((n, st) => n + Skills.check(st, {}).length, 0), 9, '五面共九条已落地校验项');
+    /* 两端只读该表:段内那条 checks 表达式必须取表,且不得再出现任何面字面量;
+     * 取表 + concat 的写法两端逐字节相同(同表同口径,一端改写法即红)。 */
+    const FRAG = 'Skills.preflightStages().reduce((all, stage) => all.concat(Skills.check(stage, { p, ep }, ck)), [])';
+    PREFLIGHT_ENDS.forEach(([f]) => {
+      const seg = preflightSeg(f), expr = preflightExpr(f);
+      assert(expr.includes(FRAG), f + ' 就绪检查应按单源面表 concat(两端同一写法):' + FRAG);
+      Skills.stages().concat(Skills.CROSS).forEach(st => assert(expr.indexOf("Skills.check('" + st + "'") < 0,
+        f + ' 就绪检查不得再写死面字面量(新增一面就要改两处的老形态):' + st));
+      assert(!/Skills\.check\('/.test(seg), f + ' 就绪检查段内不得出现写死面名的 Skills.check 调用');
+      assert(seg.includes('result: Object.assign({}, st, { checks })'), f + ' 按表跑出的结论应附在 result.checks(不并入 Domain 推导结果)');
     });
+  } },
+  { name: '就绪检查校验面表:与五面写死并集逐字节等价(表收口不改行为),新增/摘掉一面即改一处', fn() {
+    /* 收表前两端各写的是 script→subjects→eps→shots→film 五面写死并集。这里用那份写死表达式做独立对照,
+     * 证明"读表 concat"与它逐字节同结果——收口只动取面清单的地方,不动任何一条校验项的结论。 */
+    const p = refP();
+    const ep = capEp([capShot(0, { dialogue: '我'.repeat(130) }), capShot(1, { dialogue: '好'.repeat(31) })], {
+      content: BG + '她被人嘲笑,却默默忍住。',
+    });
+    p.episodes = sixEps().episodes;
+    [{ online: true }, { online: false }].forEach(ck => {
+      const legacy = Skills.check('script', { p, ep }, ck)
+        .concat(Skills.check('subjects', { p, ep }, ck), Skills.check('eps', { p, ep }, ck),
+          Skills.check('shots', { p, ep }, ck), Skills.check('film', { p, ep }, ck));
+      const byTable = Skills.preflightStages().reduce((all, stage) => all.concat(Skills.check(stage, { p, ep }, ck)), []);
+      assertEq(JSON.stringify(byTable), JSON.stringify(legacy), '读表 concat 应逐字节等于五面写死并集(online=' + ck.online + ')');
+      assertEq(byTable.length, 9, '并集仍是九条结论');
+    });
+    // 表是纯函数:同输入同表,且调用方拿到的是副本(改返回值不污染下次取表)
+    assertEq(Skills.preflightStages().join(','), Skills.preflightStages().join(','), '同输入应给同表');
+    const got = Skills.preflightStages();
+    got.push('review');
+    assert(!Skills.preflightStages().includes('review'), '取表应给副本,调用方改动不得回写单源表');
   } },
   { name: 'stageCoverage:六段段名与集号区间取自 KB 条目正文,按比例摊到当前集数;干净分集表 → info', fn() {
     const KB = require('../js/knowledge.js');
@@ -4422,10 +4476,9 @@ const skillsTests = [
     const conc = Skills.check('eps', { p: sixEps() });
     assertEq(conc.map(x => x.skill).join(','), 'eps.structureStage,eps.payoffPoint', '分集面两条已落地校验项');
     assertEq(conc.map(x => x.id).join(','), 'eps.stageCoverage,eps.payoffPlacement', '结论应同时给实现 id 与能力 id');
-    [['js/commands.js', fs.readFileSync(path.join(ROOT, 'js', 'commands.js'), 'utf8')], ['cli.js', fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8')]].forEach(([f, src]) => {
-      assert(/Skills\.check\('eps'/.test(src), f + ' 就绪检查应跑分集面校验项');
-      assert(src.indexOf("Skills.check('subjects'") < src.indexOf("Skills.check('eps'"), f + ' 结论应按主线步序排列(分集在主体之后)');
-    });
+    assertPreflightFace('eps', '分集面');
+    assertPreflightOrder('subjects', 'eps', '分集在主体之后');
+    assertPreflightOrder('eps', 'shots', '分集在分镜之前');
     const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
     assert(/Skills\.check\('eps'/.test(isrc), '问题中心应复用同一校验项,不写第二份判定');
     assert(isrc.includes("kind: 'eps-structure', sev: 'low'") && isrc.includes("kind: 'eps-payoff', sev: 'low'"), '分集面提醒须挂低危(发布门 G2 只数高/中危)');
