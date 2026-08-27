@@ -237,7 +237,7 @@
     if (window.API && API.isReady()) {
       const model = (Store.state.settings || {}).defLLM || API.getConfig().model;
       const tk = Tasks.start({ type: '剧本解析', model, target: p.name, projectId: p.id });
-      try { found = await EpisodeUtil.llmExtractSubjects(text, mode, types, model, tk.id); usedLLM = true; Tasks.done(tk); }
+      try { found = await EpisodeUtil.llmExtractSubjects(text, mode, types, model, tk.id, p); usedLLM = true; Tasks.done(tk); }
       catch (e) { Tasks.fail(tk, 'LLM 提取失败:' + e.message); return fail('extract', 'LLM 提取失败(已退费):' + e.message); }
     } else {
       found = EpisodeUtil.extractSubjects(text, mode, types);
