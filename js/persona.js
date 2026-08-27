@@ -80,7 +80,7 @@
     try {
       if (!API.isReady()) throw new Error('LLM 未配置');
       const out = await API.chatJSON({
-        system: '你是配音导演。',
+        system: Prompts.get('voice.recommendSystem'),
         messages: [{ role: 'user', content: `根据角色人设「${hint}」(角色:${s.name},项目风格:${styleOf(p)}),从音色库 ${JSON.stringify(voices)} 中推荐最合适的 1 个,返回 {"voice":"必须是音色库中的一项","reason":"一句话理由"}` }],
         temperature: 0.4, max_tokens: 300,
       });
@@ -107,7 +107,7 @@
     try {
       if (!API.isReady()) throw new Error('LLM 未配置');
       const out = await API.chatJSON({
-        system: '你是配音导演。',
+        system: Prompts.get('voice.recommendBatchSystem'),
         messages: [{ role: 'user', content: `根据以下角色人设为每个角色推荐最合适的音色,项目风格:${styleOf(p)}。音色库:${JSON.stringify(voices)}。返回 JSON 数组,每个元素 {"name":"角色名(必须与输入完全一致)","voice":"必须是音色库中的一项","reason":"一句话理由"}:\n${JSON.stringify(brief)}` }],
         temperature: 0.4, max_tokens: 1200,
       });
