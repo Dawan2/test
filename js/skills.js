@@ -1035,11 +1035,16 @@
     /* ---- 分集 ---- */
     {
       id: 'eps.structureStage', sk: 'SK-14', name: '六阶段结构注入与分集覆盖校验', stage: 'eps', wave: 'W2',
-      kinds: ['inject', 'check'], kb: ['六阶段结构'], checks: ['eps.stageCoverage'],
+      kinds: ['inject', 'check'], kb: ['六阶段结构'], prompts: ['beat.system'], checks: ['eps.stageCoverage'],
       cmds: ['episode.preflight'], experts: ['ex_structure'], gaps: ['G-13', 'G-04', 'S-01'],
       note: 'kb 顺序与节拍板拆解注入点一致;拆集补服务端属 W3,覆盖校验属 W4。'
+        + '该注入点的人设句已收进注册表独立键 beat.system(浏览器隐式读全局默认值页的覆盖表),'
+        + '与本条目正文同为该步 system 半的两半、用户都改得到——注入面至此单源;'
+        + '仍不开放覆盖的是该步 user 半的 5 段式返回 JSON 约定(段名/宫格数/衔接词表/节拍帧结构),'
+        + '那半是解析契约,改坏即整步拆不出节拍板;该步只在浏览器,没有服务端对端。'
         + '校验面按条目区间比例摊到当前集数,判每段有无判得动的正文与开篇期有无反转信号;'
-        + '各段该写什么戏(核心冲突爆发/线索汇聚)是语义面,待 G-10',
+        + '各段该写什么戏(核心冲突爆发/线索汇聚)是语义面,待 G-10。'
+        + 'G-13 标记按关联索引口径保留:全仓其余模块的内联人设仍是大头,不因本处落地而摘',
     },
     {
       id: 'eps.payoffPoint', sk: 'SK-15', name: '付费卡点位置校验', stage: 'eps', wave: 'W4',

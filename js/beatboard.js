@@ -199,7 +199,7 @@ ${frames}${b.styleParam ? '\n本段生成参数:' + b.styleParam : ''}${p.global
         try {
           const out = await Understanding.chatJSONRobust({
             model: (ep.sbConfig || {}).sbModel,
-            system: '你是短剧节拍拆解专家,精通 5 段式黄金结构(开篇钩子→矛盾建立→打压升级→反转蓄力→断集留客)。' + (window.KB ? KB.pick('六阶段结构', '打脸四步') : ''),
+            system: Prompts.get('beat.system') + (window.KB ? KB.pick('六阶段结构', '打脸四步') : ''), // 人设句经注册表(浏览器隐式读覆盖表),方法论段按键接在其后
             user: `把本集剧本拆解到 5 段式节拍板,返回严格 JSON:\n{"beats":[{"emotion":"本段核心情绪(≤8字)","styleParam":"本段 AI 风格参数(≤20字,可空)","frames":["节拍帧画面描述(一句,含人物动作/表情/关键道具)",...],"transition":"到下一组的衔接规则"}×5]}\n要求:5 段依次为 开篇钩子/矛盾建立/打压升级/反转蓄力/断集留客;各段 frames 数量固定为 ${gridsStr}(宫格时序即播放时序);transition 从 ${TRANSITION_LIB.join('/')} 中选;节拍帧描述要可直接用于文生视频。\n本集理解:${underst.slice(0, 600) || '(未生成)'}\n剧本:\n${content.slice(0, 6000)}`,
             temperature: 0.5, max_tokens: 4000,
             billingAction: 'llm.smartSB', operationId: tk.id, // 七轮:与任务同 opId(服务端 llm.smartSB 与本地 COST.smartSB 同价,解析重试不重复扣)
