@@ -25,6 +25,7 @@
 | [w4-subject-ref-check.md](./w4-subject-ref-check.md) | SK-12 分镜↔主体引用完备性校验(`Skills.CHECKS` 首条实现,只报不拦) | 加校验项前 |
 | [w4-sk13-consistency.md](./w4-sk13-consistency.md) | SK-13 跨镜头主体一致性校验,与 SK-12 成对闭合 S-03 | 同上 |
 | [w8-script-check.md](./w8-script-check.md) | SK-07/08/09 剧本段三条校验项,闭合 S-01 的剧本半(分集半仍开着) | 同上;或想知道剧本正文怎么被判定 |
+| [w9-eps-structure-check.md](./w9-eps-structure-check.md) | SK-14/SK-15 分集段两条校验项,与 W8 成对闭合 S-01(六阶段覆盖 + 付费卡点位置) | 同上;或想知道分集表与集序怎么被判定 |
 | [w5-cycle1-audit.md](./w5-cycle1-audit.md) | 周期 1 逐项目独立核验报告:成熟度分档、分叉风险实测、合入次序建议 | 想知道每项做到哪一步、分叉在哪 |
 | [w6-integration-log.md](./w6-integration-log.md) | 周期 1 成果收敛到集成分支的记录:冲突解法、合并后测试数字、剩余分叉 | 想知道主干现在是什么状态 |
 
