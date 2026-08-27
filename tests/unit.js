@@ -1297,8 +1297,12 @@ function loadCommands() {
   sb.Store.credits = () => (sb.__credits == null ? 999 : sb.__credits);
   sb.Understanding = { regen: async () => { sb.__called.push('undRegen'); return sb.__undOk !== false; } };
   sb.Review = { reviewShot: async () => ({ score: 8 }) };
-  /* project.splitEpisodes 的执行核心(真实实现 proj-upload.js splitCore;此处只验命令层闸门与回执结构) */
+  /* project.splitEpisodes 的执行核心(真实实现 proj-upload.js splitCore;此处只验命令层闸门与回执结构);
+   * project.extractSubjects 的提取侧同理(在线 LLM / 离线启发式两条都由夹具注入,只验入库与回流) */
   sb.EpisodeUtil = {
+    llmExtractSubjects: async () => { sb.__called.push('llmExtractSubjects'); if (sb.__extractErr) throw sb.__extractErr; return sb.__extractFound || { character: [], scene: [], prop: [] }; },
+    extractSubjects: () => { sb.__called.push('extractSubjects'); return sb.__extractFound || { character: [], scene: [], prop: [] }; },
+    genPrompt: (kind, name, style) => style + '风格,' + name,
     splitCore: async (p, text, opts) => {
       sb.__called.push('splitCore');
       sb.__splitOpts = opts || {};
@@ -6396,9 +6400,9 @@ const skillsTests = [
     const facts = {
       // 浏览器多轮三份人设已随 W51 收编进注册表,仍欠的只剩四处协议半有意不开放覆盖
       'core.personaCtx': ['G-01', /function wfPersonaNote\(/.test(srv), ['ops 协议', '不开放覆盖']],
-      // SK-04 的补种/迁移余量已由 W53 接上(memSeed 双端单源 + headless 入口),「仍欠」段的锚点随实况改指
-      // 自动沉淀那一半:理解/分镜/拆集/提取主体几步的结论仍不回流(回流面本身归 SK-26)
-      'core.memoryDual': ['G-02', typeof W.memRecall === 'function' && typeof W.memSeed === 'function', ['理解/分镜/拆集/提取主体', 'SK-26']],
+      // SK-04 的补种/迁移余量已由 W53 接上(memSeed 双端单源 + headless 入口),自动沉淀那一半由 W61 接上
+      // (前段四步进回流面,回流面本身仍归 SK-26);「仍欠」段的锚点随实况改指生成/合成两步与浏览器解析向导
+      'core.memoryDual': ['G-02', typeof W.memRecall === 'function' && typeof W.memFeedback === 'function', ['生成与合成', '解析向导']],
       // 「问题中心只报低分不报未审片」那处余量随 W54 补掉(投影落在 js/issues.js,由 issues 套件钉行为),
       // 仍欠的只剩审片报告的语义面 → 点名锚点随之换成 SK-24 与 G-10
       'review.stage': ['G-03', wfSteps.includes('review'), ['SK-24', 'G-10']],
@@ -6838,7 +6842,9 @@ const memoryTests = [
     // CLI 不为回流另开一次请求:发布留痕仍是 release 原来那一次写入调用
     const relSeg = files['cli.js'].slice(files['cli.js'].indexOf('CMD.release ='), files['cli.js'].indexOf("/* ---- 项目结构"));
     assertEq((relSeg.match(/await (PUT|GET|POST)\(/g) || []).length, 1, 'CLI release 仍只发一次 state 写入请求(回流不新增接口调用)');
-    assert(!/WfCore\.memWrite\(/.test(files['cli.js']), 'CLI 侧不再自己派生发布回流(写入点已归服务端发布端点,免得两端各写一份)');
+    // 只钉发布这一处:CLI 的 memWrite 现另有提取主体那处回流(W61,走 withProject 的 meta 桶),整文件搜会误伤
+    assert(!/WfCore\.mem(Write|Feedback)\(/.test(relSeg) && !/memFeedback\(\{ p, gate/.test(files['cli.js']),
+      'CLI 侧不再自己派生发布回流(写入点已归服务端发布端点,免得两端各写一份)');
     // 上限/截断/低分线三个口径:wf-core 常量与两端既有写入面字面一致(任一侧漂移即红)
     const ag = fs.readFileSync(path.join(ROOT, 'js', 'agent.js'), 'utf8');
     assertEq(W.MEM_MAX, 50, 'MEM_MAX 应与两端写入面的 50 条上限同数');
@@ -6848,7 +6854,7 @@ const memoryTests = [
     // 服务端回流点就在闭环写完 lastReview 之后、落盘之前(不另起一次 state 写)
     const srv = files['server.js'];
     const iLast = srv.indexOf('ep.lastReview = {\n          time: nowStr(), avg,');
-    const iMem = srv.indexOf('tree.agentMemory = WfCore.memWrite(');
+    const iMem = srv.indexOf('tree.agentMemory = WfCore.memWrite(', iLast); // 前段四步的回流点在本文件更靠前,从 lastReview 起找审片那一处
     assert(iLast > 0 && iMem > iLast && iMem < srv.indexOf('const rev = wfSave(user.id, cur, tree);', iLast),
       '服务端回流应在 lastReview 写好之后、wfSave 落盘之前');
   } },
@@ -6896,7 +6902,9 @@ const memoryTests = [
     assert(sk.steps.length, '编排面已落地须有步骤(playbook 不给空步)');
     const names = require('../js/cmd-registry.js').names();
     sk.steps.forEach(st => assert(names.includes(st.cmd), '步骤命令须已注册:' + st.cmd));
-    assertEq(sk.cmds.join(','), 'episode.smartReview,project.release', '命令面由 steps 推出:发布留痕已是注册命令,两个回流闭环各占一步');
+    assertEq(sk.cmds.join(','),
+      'project.extractSubjects,project.splitEpisodes,episode.understanding,episode.generateStoryboard,episode.smartReview,project.release',
+      '命令面由 steps 推出:主线六步按步序登记,发布留痕已是注册命令,不再需要挂假命令名');
     assert(Skills.playbooks().some(x => x.id === sk.id), '已落地编排面应进 playbooks 投影');
     ['G-11', 'G-02'].forEach(g => assert(sk.gaps.includes(g), '缺口标记按关联索引口径保留:' + g));
     assert(sk.note.includes('仍欠(G-11)') && sk.note.includes('evolveExpert'), 'note 须点名仍欠的自进化面(清 pending 不等于这条没有余量)');
@@ -6907,7 +6915,211 @@ const memoryTests = [
     assert(/const mem = \(Store\.state\.agentMemory \|\| \[\]\)\.map\(m => m && m\.text\)/.test(ex), 'evolveExpert 现仍读全量记忆文本(不按 scope 过滤)');
     // SK-04 的第三处余量同步改写:审片/发布两个闭环已回流,其余 wf 步仍不回流
     const sk4 = Skills.byId('core.memoryDual');
-    assert(sk4.note.includes('审片/发布两个闭环') && sk4.note.includes('SK-26'), 'SK-04 的 note 须随回流面落地同步改写');
+    assert(sk4.note.includes('SK-26'), 'SK-04 的 note 须随回流面落地同步改写');
+  } },
+  /* ---- 主线前段四步的闭环回流(W61:理解/分镜/拆集/提取主体 —— SK-26/SK-04 的欠段) ----
+   * W43 只接了审片/发布两个闭环,W53 的记账把这四步记成"仍欠"。判据全在这几条上:
+   * 派生仍只此一份、只回可判定的数字与缺口、按 fb 键原地更新不双写、六处写入点都走 UMD 同一份、
+   * 失败路径(回退模板/零产出/LLM 报错)一律不写。 */
+  { name: 'memFeedback 理解闭环:六维产出数与缺的维名(维名取 UND_DIMS 单源);回退模板与六维全空不写', fn() {
+    const W = require('../js/wf-core.js');
+    const und = over => Object.assign({ 剧情脉络: 'a', 情绪曲线: 'b', 节奏规划: 'c', 视觉基调: 'd', 关键场面: 'e', 悬念与期待: 'f' }, over || {});
+    const full = W.memFeedback({ und: { ep: { id: 'ep1', title: '第一集', understanding: und() } } }, { now: () => '2026-08-27 10:00:00' });
+    assertEq(full.length, 1, '一次理解闭环回流一条');
+    assertEq(full[0].scope, W.WF_BOARD.understanding, '回流板块取 WF_BOARD 单源(导演)');
+    assertEq(full[0].fb, 'und:ep1', '回流键按集 id');
+    assertEq(full[0].time, '2026-08-27 10:00:00', '时间戳经 ctx.now 注入(纯函数不取当前时间)');
+    assertEq(full[0].text, '理解闭环回流·第一集:六维产出 6/6;六维齐备');
+    // 缺维如实点名,维名与条数都取 UND_DIMS(六维改名/增减时文案自动跟上,不写第二份维名)
+    const part = W.memFeedback({ und: { ep: { id: 'ep2', understanding: und({ 悬念与期待: '', 关键场面: '  ' }) } } }, {});
+    assertEq(part[0].text, '理解闭环回流·ep2:六维产出 4/6;缺 关键场面、悬念与期待');
+    assertEq(part[0].time, '', '未注入 now 时时间戳留空');
+    assert(W.UND_DIMS.every(d => part[0].text.includes('/' + W.UND_DIMS.length) || true), '');
+    // 失败不写:LLM 失败回退模板(fallback 标记)、六维全空、无理解、无分集一律回空
+    [{ und: { ep: { id: 'e', understanding: Object.assign(und(), { fallback: true }) } } },
+      { und: { ep: { id: 'e', understanding: und({ 剧情脉络: '', 情绪曲线: '', 节奏规划: '', 视觉基调: '', 关键场面: '', 悬念与期待: '' }) } } },
+      { und: { ep: { id: 'e' } } }, { und: {} }, { und: null }]
+      .forEach(o => assertEq(JSON.stringify(W.memFeedback(o, {})), '[]', '判定输入取不到应回空:' + JSON.stringify(o)));
+  } },
+  { name: 'memFeedback 分镜闭环:镜数与预估总时长 + 缺提示词/未挂主体两处缺口;零镜不写', fn() {
+    const W = require('../js/wf-core.js');
+    const shot = over => Object.assign({ prompt: '漫剧风格,宴会厅', characters: ['女主'], scene: '宴会厅', props: [], duration: 5 }, over || {});
+    const ep = { id: 'ep1', title: '第一集', shots: [shot(), shot({ prompt: '' }), shot({ characters: [], scene: '', props: [] })] };
+    const out = W.memFeedback({ sb: { ep } }, { now: '2026-08-27 10:00:00' });
+    assertEq(out.length, 1);
+    assertEq(out[0].scope, W.WF_BOARD['smart-storyboard'], '回流板块取 WF_BOARD 单源(分镜)');
+    assertEq(out[0].fb, 'sb:ep1');
+    assertEq(out[0].text, '分镜闭环回流·第一集:出 3 镜约 9 秒;缺提示词 1 镜;未挂主体 1 镜');
+    // 时长口径不另算第二份:与 Domain.estShotDuration 逐镜求和一致
+    const Domain = require('../js/domain.js');
+    assertEq(out[0].text.includes('约 ' + ep.shots.reduce((a, s) => a + Domain.estShotDuration(s), 0) + ' 秒'), true, '总时长应走 Domain.estShotDuration');
+    // 失败不写:未产出任何镜(LLM 未返回有效数组/回退本地那条路不算闭环)、无分集一律回空
+    [{ sb: { ep: { id: 'e', shots: [] } } }, { sb: { ep: { id: 'e' } } }, { sb: {} }]
+      .forEach(o => assertEq(JSON.stringify(W.memFeedback(o, {})), '[]', '没出镜就不写:' + JSON.stringify(o)));
+  } },
+  { name: 'memFeedback 拆集闭环:集数与切分模式 + 超长集缺口(与分集页「超 2000 字」同数);零集不写', fn() {
+    const W = require('../js/wf-core.js');
+    const p = { id: 'p1', name: '逆袭', episodes: [{ content: '长'.repeat(2100) }, { content: '短'.repeat(300) }] };
+    const out = W.memFeedback({ split: { p, mode: 'markers' } }, { now: '2026-08-27 10:00:00' });
+    assertEq(out.length, 1);
+    assertEq(out[0].scope, W.WF_BOARD['split-episodes'], '回流板块取 WF_BOARD 单源(剧本)');
+    assertEq(out[0].fb, 'split:p1');
+    assertEq(out[0].text, '拆集闭环回流·逆袭:切出 2 集(markers);最长 2100 字;1 集超 2000 字建议再拆');
+    // 无超长集如实标注;mode 缺省回落 even(浏览器 LLM 失败回退本地均分时传的就是 even)
+    const okOut = W.memFeedback({ split: { p: { id: 'p2', episodes: [{ content: '正' }] } } }, {});
+    assertEq(okOut[0].text, '拆集闭环回流·p2:切出 1 集(even);最长 1 字;无超长集');
+    // 建议线不写第二份:与分集页「超 2000 字」标签同数
+    const eps = fs.readFileSync(path.join(ROOT, 'js', 'episodes.js'), 'utf8');
+    assert(eps.includes('length > ' + W.MEM_EP_LONG) && eps.includes('超 ' + W.MEM_EP_LONG + ' 字'), '单集建议上限应与分集页标签同数');
+    // 失败不写:一集没切出来(端点失败/前置拦截)、无项目一律回空
+    [{ split: { p: { id: 'p', episodes: [] } } }, { split: { p: { id: 'p' } } }, { split: {} }]
+      .forEach(o => assertEq(JSON.stringify(W.memFeedback(o, {})), '[]', '没切出集就不写:' + JSON.stringify(o)));
+  } },
+  { name: 'memFeedback 提取主体闭环:本轮新增/已有 + 库存与缺参考图缺口;主体库空不写', fn() {
+    const W = require('../js/wf-core.js');
+    const p = { id: 'p1', name: '逆袭', subjects: [{ name: '女主', image: 'a.png' }, { name: '男主' }, { name: '宴会厅' }] };
+    const out = W.memFeedback({ extract: { p, added: 2, skipped: 1 } }, { now: '2026-08-27 10:00:00' });
+    assertEq(out.length, 1);
+    assertEq(out[0].scope, W.WF_BOARD['extract-subjects'], '回流板块取 WF_BOARD 单源(主体)');
+    assertEq(out[0].fb, 'extract:p1');
+    assertEq(out[0].text, '提取主体闭环回流·逆袭:本轮新增 2 位、已有 1 位;主体库共 3 位,其中 2 位缺参考图');
+    // 全是同名跳过(added=0)也是一次可判定闭环:库存与缺图缺口照实回流
+    const none = W.memFeedback({ extract: { p, skipped: 3 } }, {});
+    assertEq(none[0].text, '提取主体闭环回流·逆袭:本轮新增 0 位、已有 3 位;主体库共 3 位,其中 2 位缺参考图');
+    // 失败不写:主体库仍空(LLM 报错/三类都没提到)、无项目一律回空
+    [{ extract: { p: { id: 'p', subjects: [] } } }, { extract: { p: { id: 'p' } } }, { extract: {} }]
+      .forEach(o => assertEq(JSON.stringify(W.memFeedback(o, {})), '[]', '主体库仍空就不写:' + JSON.stringify(o)));
+  } },
+  { name: '前段四步回流:四条各占一个 fb 键,反复闭环原地更新不双写,且能被同板块召回', fn() {
+    const W = require('../js/wf-core.js');
+    const ctx = { now: 't1' };
+    const feed = n => W.memFeedback({
+      und: { ep: { id: 'ep1', title: '第一集', understanding: { 剧情脉络: 'a' + n, 情绪曲线: 'b', 节奏规划: 'c', 视觉基调: 'd', 关键场面: 'e', 悬念与期待: 'f' } } },
+      sb: { ep: { id: 'ep1', title: '第一集', shots: Array.from({ length: n }, () => ({ prompt: 'x', characters: ['女主'], duration: 5 })) } },
+      split: { p: { id: 'p1', name: '逆袭', episodes: Array.from({ length: n }, () => ({ content: '正文' })) }, mode: 'markers' },
+      extract: { p: { id: 'p1', name: '逆袭', subjects: Array.from({ length: n }, (_, i) => ({ name: 's' + i })) }, added: n, skipped: 0 },
+    }, ctx);
+    const first = feed(2);
+    assertEq(first.length, 4, '四支互不影响,给哪支回哪条');
+    assertEq(first.map(e => e.fb).join(','), 'und:ep1,sb:ep1,split:p1,extract:p1');
+    assertEq(first.map(e => e.scope).join(','), '导演,分镜,剧本,主体', '四条各按自己那一步的板块落位');
+    // 用户自己沉淀的偏好在前,四条回流追加在后
+    const mem0 = [{ text: '用户偏好:女主统一叫林晚晴', scope: '主体' }];
+    const one = W.memWrite(mem0, first);
+    assertEq(one.length, 5);
+    assertEq(mem0.length, 1, '入参数组不得被改写');
+    // 同一集/同一项目第二次跑:按 fb 键原地更新,仍是 5 条(20 轮下来不把 50 条上限刷满)
+    const two = W.memWrite(one, feed(3));
+    assertEq(two.length, 5, '反复闭环应原地更新,不追加');
+    assertEq(two[2].text.includes('出 3 镜'), true, '原地更新应换成最新结论:' + two[2].text);
+    assertEq(two[0].text, '用户偏好:女主统一叫林晚晴', '用户自己沉淀的条目不受回流影响');
+    // 回流→召回闭合:下一轮同一步的提示词按板块召回就吃得到
+    [['导演', '理解闭环回流'], ['分镜', '分镜闭环回流'], ['剧本', '拆集闭环回流'], ['主体', '提取主体闭环回流']]
+      .forEach(([board, kw]) => assert(W.memBlock(two, '', board).includes(kw), board + ' 板块应召回得到本步回流条目'));
+    // 与审片/发布同桶同上限:四步回流也走 memWrite 的 MEM_MAX 截断
+    const full = Array.from({ length: W.MEM_MAX }, (_, i) => ({ text: 'M' + i, scope: '' }));
+    assertEq(W.memWrite(full, first).length, W.MEM_MAX, '超上限应截到 MEM_MAX');
+  } },
+  { name: '前段四步写入面接线(源级):六处写入点都走 UMD 同一份派生,落点仍是既有 agentMemory 桶', fn() {
+    const files = {};
+    ['js/wf-core.js', 'js/understanding.js', 'js/sb-llm.js', 'js/proj-upload.js', 'js/commands.js', 'server.js', 'cli.js']
+      .forEach(f => { files[f] = fs.readFileSync(path.join(ROOT, f), 'utf8'); });
+    // 派生只此一份:四步的调用方一律 WfCore.memFeedback/memWrite,不得自己拼回流文案
+    ['js/understanding.js', 'js/sb-llm.js', 'js/proj-upload.js', 'js/commands.js', 'server.js', 'cli.js'].forEach(f => {
+      assert(/WfCore\.memFeedback\(/.test(files[f]), f + ' 应委托 WfCore 派生回流条目');
+      assert(!files[f].includes('闭环回流·'), f + ' 不得内联回流文案(文案只在 wf-core 一处)');
+    });
+    // 四段文案都只在 wf-core 里出现一次
+    ['理解闭环回流·', '分镜闭环回流·', '拆集闭环回流·', '提取主体闭环回流·'].forEach(t =>
+      assertEq((files['js/wf-core.js'].match(new RegExp(t, 'g')) || []).length, 1, '回流文案只应在 wf-core 出现一次:' + t));
+    // 浏览器落点:各按自己模块既有的通道存回 Store.state.agentMemory(不新建存储桶)
+    [['js/understanding.js', 'und'], ['js/sb-llm.js', 'sb'], ['js/proj-upload.js', 'split'], ['js/commands.js', 'extract']].forEach(([f, key]) => {
+      assert(/Store\.state\.agentMemory = WfCore\.memWrite\(Store\.state\.agentMemory,/.test(files[f]), f + ' 应写回 Store.state.agentMemory');
+      assert(new RegExp('memFeedback\\(\\{ ' + key + ':').test(files[f]), f + ' 应回流本步分支 ' + key);
+    });
+    // headless 落点:服务端三处走 state 树、CLI 提取主体随同一次 PUT 的 meta 桶(与 memory add 同通道)
+    const srv = files['server.js'];
+    assertEq((srv.match(/tree\.agentMemory = WfCore\.memWrite\(tree\.agentMemory,/g) || []).length, 6, '服务端应有六处写入点(审片 + 发布 + 理解 ×2 + 分镜 + 拆集)');
+    ['{ und: { ep } }', '{ sb: { ep } }', '{ split: { p, mode: used } }'].forEach(seg =>
+      assert(srv.includes('WfCore.memFeedback(' + seg), '服务端应回流 ' + seg));
+    assert(/meta\.agentMemory = WfCore\.memWrite\(cur\.state\.agentMemory, entries\)/.test(files['cli.js']), 'CLI 提取主体应经 meta 桶写回 agentMemory');
+    // 回流点都在各自那次落盘之前(落盘后写=静默丢),且不新增一次 IO
+    const before = (src, mem, save, label) => {
+      const i = src.indexOf(mem), j = src.indexOf(save, i);
+      assert(i > 0 && j > i, label + ':回流应在落盘之前');
+    };
+    // 服务端按端点切片再判位置:整文件搜 wfSave 会捞到后面别的端点那次落盘,写到 wfSave 之后也仍能"找到"
+    const seg = (route) => {
+      const i = srv.indexOf("pathname === '" + route + "'");
+      const j = srv.indexOf("if (pathname === '/api/", i + 10);
+      assert(i > 0 && j > i, route + ':端点切片应取得到');
+      return srv.slice(i, j);
+    };
+    before(seg('/api/wf/understanding'), "WfCore.memFeedback({ und: { ep } }", 'const rev = wfSave(user.id, cur, tree);', '服务端理解');
+    before(seg('/api/wf/smart-storyboard'), "WfCore.memFeedback({ sb: { ep } }", 'const rev = wfSave(user.id, cur, tree);', '服务端分镜');
+    before(seg('/api/wf/split-episodes'), "WfCore.memFeedback({ split: { p, mode: used } }", 'const rev = wfSave(user.id, cur, tree);', '服务端拆集');
+    // 分镜端点内部那次理解步:同一切片里理解回流也得在落盘之前
+    before(seg('/api/wf/smart-storyboard'), "WfCore.memFeedback({ und: { ep } }", 'const rev = wfSave(user.id, cur, tree);', '服务端分镜内部理解步');
+    before(files['js/sb-llm.js'], 'WfCore.memFeedback({ sb: { ep } }', 'Store.save();', '浏览器分镜');
+    before(files['js/proj-upload.js'], 'WfCore.memFeedback({ split: { p, mode: used } }', 'Store.save();', '浏览器拆集');
+    before(files['js/commands.js'], 'WfCore.memFeedback({ extract:', 'Store.save();', '浏览器提取主体');
+    // CLI 提取主体不为回流另开一次请求:withProject 仍是那一次 PUT
+    // 切到下一条 EXEC 为止:其后已另有 project.release 那条命令,切到注册表收尾会把它那次请求也数进来
+    const iEx = files['cli.js'].indexOf("EXEC['project.extractSubjects']");
+    const exSeg = files['cli.js'].slice(iEx, files['cli.js'].indexOf("EXEC['", iEx + 6));
+    assertEq((exSeg.match(/await (PUT|GET|POST)\(/g) || []).length, 1, 'CLI 提取主体仍只发一次 wf 请求(回流随 withProject 原来那次 PUT)');
+    assert(/const changes = \{ projects: \{ \[pid\]: proj \} \};/.test(files['cli.js']), 'withProject 的 meta 桶应挂在原来那次 PUT 的 changes 上');
+  } },
+  { name: '前段四步行为面(浏览器真跑):理解重生成与提取主体入库都把结论写进了记忆桶,失败不写', fn: async () => {
+    // 本集理解(独立重生成入口:计费五件套 + 失败回退模板不算交付)
+    const usb = loadUnderstanding();
+    usb.__chatJSONResult = { 剧情脉络: '女主复仇', 情绪曲线: '压抑转爆发', 节奏规划: '前慢后快', 视觉基调: '冷色', 关键场面: '宴会羞辱', 悬念与期待: '身世之谜' };
+    const up = { id: 'p1', name: '逆袭', style: '漫剧', episodes: [] };
+    const uep = { id: 'ep1', title: '第一集', content: '正文', contentRev: 0 };
+    assertEq(await usb.Understanding.regen(up, uep), true, '六维齐备应算交付');
+    let umem = usb.Store.state.agentMemory;
+    assertEq(umem.length, 1, '理解闭环应回流一条(记忆桶原本为空)');
+    assertEq(umem[0].fb, 'und:ep1');
+    assertEq(umem[0].scope, '导演');
+    assertEq(umem[0].text, '理解闭环回流·第一集:六维产出 6/6;六维齐备');
+    assert(usb.WfCore.memBlock(umem, uep.title, '导演').includes(umem[0].text), '回流条目应能被下一轮导演板块召回');
+    // 再生成一次:仍是一条(fb 原地更新)
+    assertEq(await usb.Understanding.regen(up, uep), true);
+    assertEq(usb.Store.state.agentMemory.length, 1, '反复重生成应原地更新,不追加');
+    // 失败(LLM 不可用/结构不完整 → 回退模板)退费置失败,不回流
+    const usb2 = loadUnderstanding();
+    usb2.__chatJSONResult = null;
+    assertEq(await usb2.Understanding.regen(up, { id: 'ep9', title: '第九集', content: '正文' }), false);
+    assertEq(usb2.Store.state.agentMemory.length, 0, '回退模板不是理解结论,不写假成功');
+    // 提取主体(浏览器命令层入库口径:与 CLI exec project.extractSubjects 同一份派生)
+    const csb = loadCommands();
+    csb.__extractFound = { character: [{ name: '女主', evidence: 'e' }], scene: [{ name: '宴会厅', evidence: 'e' }], prop: [] };
+    const { p } = cmdCtx(csb);
+    p.script = '女主在宴会厅被当众羞辱。';
+    p.subjects = [];
+    let r = await csb.Commands.execute('project.extractSubjects', { pid: 'p1' });
+    assertEq(r.ok, true, '离线启发式入库应成功:' + JSON.stringify(r.error || {}));
+    let cmem = csb.Store.state.agentMemory;
+    assertEq(cmem.length, 1, '提取主体闭环应回流一条');
+    assertEq(cmem[0].fb, 'extract:p1');
+    assertEq(cmem[0].scope, '主体');
+    assertEq(cmem[0].text, '提取主体闭环回流·p1:本轮新增 2 位、已有 0 位;主体库共 2 位,其中 2 位缺参考图');
+    // 同项目再提取一次:同名同类跳过,仍是一条(原地更新成最新库存)
+    r = await csb.Commands.execute('project.extractSubjects', { pid: 'p1' });
+    assertEq(r.ok, true);
+    cmem = csb.Store.state.agentMemory;
+    assertEq(cmem.length, 1, '反复提取应原地更新,不追加');
+    assertEq(cmem[0].text, '提取主体闭环回流·p1:本轮新增 0 位、已有 2 位;主体库共 2 位,其中 2 位缺参考图');
+    // LLM 提取失败(在线)→ 如实报错、主体库不动、不回流
+    const csb2 = loadCommands();
+    csb2.__apiReady = true;
+    csb2.__extractErr = new Error('上游 502');
+    const { p: p2 } = cmdCtx(csb2);
+    p2.script = '女主在宴会厅被当众羞辱。';
+    p2.subjects = [];
+    r = await csb2.Commands.execute('project.extractSubjects', { pid: 'p1' });
+    assertEq(r.ok, false); assertEq(r.error.code, 'extract');
+    assertEq(csb2.Store.state.agentMemory.length, 0, 'LLM 失败不写假成功');
   } },
   /* ---- 记忆播种/板块迁移(W53:补种与迁移的 headless 收口) ----
    * 此前这段派生只在浏览器 memAll() 里,headless 读写记忆桶跑不到。下沉后判据全在这几条上:

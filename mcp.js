@@ -103,7 +103,7 @@ function runCli(argv) {
 /* ---- 只读资源(§2.7):高频状态查询暴露成 resource,助手按 URI 直读,不必记工具参数面 ---- */
 const RESOURCES = [
   { uri: 'hujing://projects', name: '项目列表', description: '项目列表(进度摘要),同 hujing_projects 工具', mimeType: 'application/json' },
-  { uri: 'hujing://memory', name: '协作记忆', description: '用户偏好与已确认修改决定 + 审片/发布闭环回流的可判定结论(state.agentMemory,按板块沉淀;对话层与 /api/wf/* 工作流同算法召回),同 cli memory list;板块种子未播时先用 hujing_memory_seed', mimeType: 'application/json' },
+  { uri: 'hujing://memory', name: '协作记忆', description: '用户偏好与已确认修改决定 + 主线闭环回流的可判定结论(理解/分镜/拆集/提取主体/审片/发布,state.agentMemory,按板块沉淀;对话层与 /api/wf/* 工作流同算法召回),同 cli memory list;板块种子未播时先用 hujing_memory_seed', mimeType: 'application/json' },
 ];
 const RESOURCE_TEMPLATES = [
   { uriTemplate: 'hujing://project/{pid}/show', name: '项目详情', description: '主体/分集/逐镜状态统计,同 hujing_project_show 工具', mimeType: 'application/json' },

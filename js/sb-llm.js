@@ -66,6 +66,10 @@
     ep.composed = false;
     ep.shotsSourceRev = ep.contentRev || 0; // 十轮:记录分镜对应的剧本版本(剧本修改后判旧)
     ep.shotsGraphRev = ep.graphRev || 0;    // 十二轮:记录分镜对应的事件图谱版本(图谱修订后判旧)
+    /* 分镜闭环结论按板块回流协作记忆(分镜板块):派生走 WfCore 双端单源(与服务端 /api/wf/smart-storyboard 同一份),
+     * 记忆桶经参数注入后存回既有 state.agentMemory;LLM 拆镜失败回退本地 publishShots 那条路不算闭环,不回流 */
+    Store.state.agentMemory = WfCore.memWrite(Store.state.agentMemory,
+      WfCore.memFeedback({ sb: { ep } }, { now: Store.now }));
     Store.save();
     U.toast(`LLM 已生成并发布 ${shots.length} 个分镜(${modelName})`, 'success', 3000);
     Views.episode(main, p.id, ep.id);
