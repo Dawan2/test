@@ -354,7 +354,11 @@
   /* ================= 工作流状态(唯一解释:流程条/下一步/Agent/跑批/CLI 同读) =================
    * 状态词:blocked(有阻塞项)/ ready(可立即推进)/ running(在飞)/
    *          needs_review(待确认/审片)/ needs_human(待人工)/ stale(产物过期)/ done。
-   * 主线七步:剧本→主体→分集→分镜→生成→成片;制片/导演/剧壳/切片为支线(side),不阻塞主线。 */
+   * 主线七步:剧本→主体→分集→分镜→剪辑→审片→成片;制片/导演/剧壳/切片为支线(side),不阻塞主线。 */
+
+  /* 审片达标线:分集状态与主线审片步骤共用的唯一常量(发布门 G3 另有可配阈值 releaseMinReviewScore,
+   * 那是交付前的更严门禁;本常量只管主线推导,双端同值不读 Store) */
+  D.REVIEW_MIN = 7;
 
   /* 分集级业务状态:counts + status + blockers + 推荐动作 */
   D.episodeState = function (p, ep, online) {
@@ -395,7 +399,7 @@
     else if (counts.done < counts.total) { status = 'ready'; action = { key: 'gen', label: '生成视频' }; }
     else if (counts.stale > 0) { status = 'stale'; action = { key: 'regen-stale', label: '重生成过期镜' }; }
     else if (counts.unconfirmed > 0) { status = 'needs_review'; action = { key: 'confirm', label: '确认镜头' }; }
-    else if (reviewAvg !== null && reviewAvg < 7) { status = 'needs_human'; action = { key: 'review', label: '审片修订' }; }
+    else if (reviewAvg !== null && reviewAvg < D.REVIEW_MIN) { status = 'needs_human'; action = { key: 'review', label: '审片修订' }; }
     else if (!composedReady) {
       status = ep.composed ? 'stale' : 'ready';
       action = { key: 'compose', label: ep.composed ? '重新合成' : '合成成片' };
@@ -413,6 +417,11 @@
     const staleShots = epStates.reduce((n, st) => n + st.counts.stale, 0);
     const anyShotsStale = epStates.some(st => st.shotsStale);
     const composedCnt = epStates.filter(st => st.composedReady).length;
+    /* 审片分类(全部复用 episodeState 已推导的字段:判旧的旧分已在那里置 null,此处不另写判旧逻辑) */
+    const rvPass = epStates.filter(st => st.reviewAvg !== null && st.reviewAvg >= D.REVIEW_MIN).length;
+    const rvLow = epStates.filter(st => st.reviewAvg !== null && st.reviewAvg < D.REVIEW_MIN).length;
+    const rvStale = epStates.filter(st => st.reviewStale).length;
+    const rvNone = epStates.filter(st => st.reviewAvg === null && !st.reviewStale).length;
     const noImg = subjects.filter(s => !s.image).length;
     const sh = (p && p.shell) || {};
     const step = (key, name, done, doing, blockers, action, side) => ({
@@ -449,6 +458,15 @@
           return b;
         })(),
         null),
+      step('review', '审片', eps.length > 0 && rvPass === eps.length, rvPass > 0 || rvLow > 0,
+        (() => {
+          const b = [];
+          if (rvNone) b.push({ code: 'no-review', label: rvNone + ' 集未审片' });
+          if (rvStale) b.push({ code: 'review-stale', label: rvStale + ' 集审片记录已过期' });
+          if (rvLow) b.push({ code: 'low-review', label: rvLow + ' 集审片均分低于 ' + D.REVIEW_MIN });
+          return b;
+        })(),
+        null),
       step('film', '成片', eps.length > 0 && composedCnt === eps.length, composedCnt > 0,
         (() => {
           const staleFilm = epStates.filter(st => st.status === 'stale' && st.counts.done === st.counts.total && st.counts.total > 0).length;
@@ -464,7 +482,7 @@
     if (!cur) recommendedAction = { key: 'produce', label: '量产跑批 / 导出交付', hash: '#/project/' + p.id + '/produce' };
     else if (cur.action) recommendedAction = cur.action;
     else {
-      /* 无静态动作的步骤(分镜/生成/成片):定位最需推进的分集 */
+      /* 无静态动作的步骤(分镜/剪辑/审片/成片):定位最需推进的分集 */
       const epOf = pred => { const i = epStates.findIndex(pred); return i >= 0 ? eps[i] : null; };
       if (cur.key === 'shots') {
         const ep = epOf(st => st.counts.total === 0) || epOf(st => st.shotsStale);
@@ -472,6 +490,14 @@
       } else if (cur.key === 'gen') {
         const ep = epOf(st => st.counts.total > 0 && (st.counts.done < st.counts.total || st.counts.stale > 0 || st.counts.failed > 0));
         if (ep) recommendedAction = { key: 'gen', label: '继续生成:' + ep.title, hash: `#/project/${p.id}/episode/${ep.id}` };
+      } else if (cur.key === 'review') {
+        const i = epStates.findIndex(st => st.reviewAvg === null || st.reviewAvg < D.REVIEW_MIN);
+        const ep = i >= 0 ? eps[i] : null;
+        if (ep) {
+          const st = epStates[i];
+          const label = st.reviewAvg !== null ? '审片修订:' : st.reviewStale ? '重新审片:' : '整集审片:';
+          recommendedAction = { key: 'review', label: label + ep.title, hash: `#/project/${p.id}/episode/${ep.id}` };
+        }
       } else if (cur.key === 'film') {
         const ep = epOf(st => !st.composedReady);
         if (ep) recommendedAction = { key: 'compose', label: '合成成片:' + ep.title, hash: `#/project/${p.id}/episode/${ep.id}` };
