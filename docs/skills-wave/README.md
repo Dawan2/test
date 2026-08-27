@@ -32,6 +32,7 @@
 | [w6-extract-subjects-wf.md](./w6-extract-subjects-wf.md) | 提取主体接入 `/api/wf/extract-subjects`(前段命令吃到人设与协作记忆,提示词拼装/结果规整下沉服务端) | 改提取主体链路前 |
 | [w8-split-episodes-inject.md](./w8-split-episodes-inject.md) | 剧本拆集端点补齐人设/记忆注入(`WF_BOARD` 加「剧本」板块、`buildSplitUser` 注入位、两端同装配口) | 改拆集提示词或新增 `/api/wf/*` LLM 步前 |
 | [w9-integration-log.md](./w9-integration-log.md) | 剩余分支收敛到集成分支的记录:包含性实测、并集型冲突解法、合并后测试数字、剩余未合 | 想知道主干现在是什么状态 |
+| [w12-size-gap-check.md](./w12-size-gap-check.md) | SK-18 分镜景别衔接校验(`WfCore.sizeGap` 单源落成校验项:连续同景别/两极对切/整集无递进) | 加分镜面校验项或改景别级差判据前 |
 
 ## 一分钟摘要(周期 1 收敛后)
 
@@ -39,7 +40,7 @@
 - 主线七步在代码里齐了:`Domain.workflow` 已含"审片"步(G-03),`js/skills.js` 的 `STAGES` 七步全部 `wfStep: true`。
 - 贯通缺口已收口的部分:专家人设(G-01)与协作记忆(G-02 由 agent-flow 覆盖)进 `/api/wf/*`,CLI/MCP 同链路吃到;剧本拆集(G-04)补上机读入口,headless 可从"一份整部剧本"起跑,其 LLM 步也已接入同一注入链(见 [w8-split-episodes-inject.md](./w8-split-episodes-inject.md))。
 - 空挂已清:`settings.tplVideo`(G-05)与 `KB.SECTIONS`(G-15/G-08 的 KB 侧)都有了消费方,并有断言防回退。
-- 校验宿主三面齐了:剧本面(S-01,SK-07/08/09)、主体面(S-03,SK-12/13)、成片字幕面(S-06,SK-28)共六条 `Skills.CHECKS` 校验项,两端就绪检查按主线步序同挂 `result.checks`,问题中心同挂低危提醒——纯本地零 LLM 零计费,只报不拦。
+- 校验宿主四面齐了:剧本面(S-01,SK-07/08/09)、主体面(S-03,SK-12/13)、分镜景别面(SK-18,级差取 `WfCore.sizeGap` 词表单源)、成片字幕面(S-06,SK-28)共七条 `Skills.CHECKS` 校验项,两端就绪检查按主线步序同挂 `result.checks`,问题中心同挂低危提醒——纯本地零 LLM 零计费,只报不拦。
 - 人设/记忆注入面覆盖五条工作流:理解、分镜、审片、提取主体、剧本拆集(`WfCore.WF_BOARD` 五键单源,服务端唯一装配口 `wfPersonaNote` 由契约断言锁死调用点数)。
 - 词表分叉已收口:景别/运镜/视角/角度四张词表的单一来源在 `js/wf-core.js`,`camera.js`/`review.js`/`sb-io.js`/`agent.js` 全派生(G-07,见 `w4-shot-size-glossary.md`)。
 

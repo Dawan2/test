@@ -2819,6 +2819,21 @@ const issuesTests = [
     assert(it.goto && !it.cmd, '字幕问题回分集页改台词/裁剪,不挂命令处置(不触发任何生成与合成)');
     assertEq(list.filter(x => x.sev !== 'low').length, 0, '字幕提醒不得产出高/中危(门禁状态不变)');
   } },
+  { name: 'collect:分镜景别衔接 → 低危提醒(不进高/中危,不改发布门 G2)', fn() {
+    const sb = loadIssues();
+    const done = cleanEp().shots[0];
+    // 三镜同景别成串(判据在 js/skills.js 的校验项,级差经 WfCore.sizeGap,本处只验消费)
+    const shots = [0, 1, 2].map(i => Object.assign({}, done, { id: 'sh' + i, order: i, cameraSpec: { shotSize: '中景' } }));
+    const ep = cleanEp({ composed: false, shots, lastReview: { avg: 8, perShot: shots.map((s, i) => ({ shotId: s.id, order: i, score: 8 })) } });
+    const list = sb.Issues.collect({ id: 'p1', subjects: [], episodes: [ep] });
+    const it = list.find(x => x.kind === 'shot-size-linkage');
+    assert(it, '连续同景别应入清单');
+    assertEq(it.sev, 'low', '景别衔接是提醒级(发布门 G2 只数高/中危)');
+    assertEq(it.count, 1);
+    assert(it.detail.includes('镜头1-3') && it.detail.includes('中景'), '明细应定位到镜号区间与景别,实际:' + it.detail);
+    assert(it.goto && !it.cmd, '景别问题回分集页改机位,不挂命令处置(不触发任何生成)');
+    assertEq(list.filter(x => x.sev !== 'low').length, 0, '景别提醒不得产出高/中危(门禁状态不变)');
+  } },
   { name: 'collect:剧本方法论提醒 → 低危(未拆镜集也报,不吞后续问题、不改发布门 G2)', fn() {
     const sb = loadIssues();
     // 开篇 160 字纯背景铺陈,冲突信号落在开篇窗口之外(判据在 js/skills.js,本处只验消费)
