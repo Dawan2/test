@@ -882,7 +882,7 @@
     {
       id: 'core.personaCtx', sk: 'SK-03', name: '生效人设经 ctx 过服务端', stage: CROSS, wave: 'W3',
       kinds: ['infra'],
-      prompts: ['split.system', 'extract.system', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem',
+      prompts: ['split.system', 'extract.system', 'digest.planSystem', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem',
         'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem',
         'narration.system', 'reading.system', 'concept.system', 'light.system',
         'voice.recommendSystem', 'voice.recommendBatchSystem'],
@@ -908,6 +908,8 @@
         + '(voice.recommendSystem/voice.recommendBatchSystem——两处 def 逐字节相同仍不合并:'
         + '键位是持久化面,合成一条再拆回来会废掉已写的覆盖,且批量那步要顾角色间的音色区分度),'
         + '取值口就在调用点 Persona.recommendVoice/recommendVoicesBatch,浏览器隐式读全局默认值页的覆盖表。'
+        + '剧本摘要链路(EpisodeUtil.aiScriptDigest)通读/汇总/集纲三步同一句策划人设,收编为一条 digest.planSystem 键、'
+        + '三个 Prompts.get 取用口(三处字面逐字节相同,不拆三键),末步人物小传是另一个角色仍同 extract.system。'
         + '仍欠:四处的 ops 协议/字段面/命令白名单/返回 JSON 约定仍由各自装配口拼、不开放覆盖'
         + '(那半是 ops 解析契约,用户改坏即整轮无 ops);'
         + '音色推荐两条同理只收人设句——音色库取值范围与返回 JSON 约定仍写在各自调用点、不开放覆盖'
@@ -1007,8 +1009,10 @@
         + '本条注入走板块方法论通道、没有专属人设句;剧本板块那四步内联人设已收进注册表——'
         + '旁白解说体改写 narration.system/剧本围读 reading.system/构思导演阐述 concept.system/全剧光影总控 light.system,'
         + '四步在 js/episodes.js 同经 Prompts.get 取值、用户在「全局默认值」页改得到(键登记在 SK-03 名下)。'
-        + '仍欠 G-13 的是剧本板块另外几处内联人设:js/episodes.js 的事件图谱拆解步(剧本结构分析师)与 '
-        + 'js/episode-util.js 剧本摘要的通读/汇总/集纲三步(策划人设)仍是内联字面,那几步既取不到条目正文、用户也覆盖不到',
+        + 'js/episode-util.js 剧本摘要的通读/汇总/集纲三步(策划人设)同形收编为一条 digest.planSystem 三个取用口,'
+        + '该文件的内联人设随之归零。'
+        + '仍欠 G-13 的是剧本板块还剩的那一处内联人设:js/episodes.js 的事件图谱拆解步(剧本结构分析师)仍是内联字面,'
+        + '那一步既取不到条目正文、用户也覆盖不到',
     },
     /* ---- 主体 ---- */
     {

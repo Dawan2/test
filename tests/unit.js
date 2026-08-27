@@ -4623,7 +4623,7 @@ const contractTests = [
     assertEq(await sb.EpisodeUtil.aiScriptDigest(p, () => {}), true, '摘要主流程应跑通(通读→汇总→集纲→人物小传)');
     assertEq(sb.__llm.length, 4, '四个 LLM 步应各发一次(分块通读/汇总/集纲/人物小传)');
     assertEq(sb.__llm.map(c => c.system).join('|'), [PLAN, PLAN, PLAN, ANALYST].join('|'),
-      '缺省四步 system 应与收编前逐字节相同(末步取注册表 def,前三步仍是各自内联的策划人设)');
+      '缺省四步 system 应与收编前逐字节相同(四步都取注册表 def:前三步 digest.planSystem、末步 extract.system)');
     // 末步确实是人物小传步:它的回包被消费成主体库里的人物条目
     assert(sb.__llm[3].user.includes('提取其中的主要人物'), '末步应是人物小传步');
     assertEq((p.subjects[0] || {}).name, '林晚晴', '人物小传应合并进主体库(该步真的跑了,不是空转)');
@@ -4638,7 +4638,7 @@ const contractTests = [
     const p2 = digestProject();
     assertEq(await sb2.EpisodeUtil.aiScriptDigest(p2, () => {}), true, '写覆盖后摘要主流程仍应跑通');
     assertEq(sb2.__llm.map(c => c.system).join('|'), [PLAN, PLAN, PLAN, OV].join('|'),
-      '覆盖 extract.system 时应只有小传步跟随(前三步的内联策划人设不受影响)');
+      '覆盖 extract.system 时应只有小传步跟随(前三步走另一键 digest.planSystem,不受影响)');
     assertEq(sb2.__llm.map(c => c.user).join('|'), sb.__llm.map(c => c.user).join('|'),
       '覆盖只换人设句:四步的 user 半(含返回 JSON 约定与分块正文)逐字节不变');
     assertEq((p2.subjects[0] || {}).name, '林晚晴', '覆盖后解析口径不变(JSON 契约未开放)');
@@ -4791,13 +4791,16 @@ const contractTests = [
     // 点名断言只认「仍欠」之后那段:锚点写在"已落地"那半里不算交账
     const owed = sk10.note.split('仍欠').slice(1).join('仍欠');
     assert(owed, 'SK-10 的 note 须写明仍欠什么(G-13 没闭合)');
-    ['js/episodes.js', 'js/episode-util.js'].forEach(f => assert(owed.includes(f), 'SK-10 的仍欠段须点名 ' + f));
-    /* 反向:仍欠段点名的那几处此刻确实还在内联(收编了不改记账当场红) */
+    assert(owed.includes('js/episodes.js'), 'SK-10 的仍欠段须点名 js/episodes.js');
+    /* 反向:仍欠段点名的那一处此刻确实还在内联(收编了不改记账当场红) */
     assert(ep.includes("system: '你是短剧剧本结构分析师。'"), 'js/episodes.js 事件图谱拆解步应仍是内联人设(收编后须同步改 SK-10 的仍欠段)');
+    assertEq(require('../js/prompts.js').list().filter(x => x.def === '你是短剧剧本结构分析师。').length, 0,
+      '仍欠那一处的人设句不该已在注册表里(在了就是记账没跟上)');
+    /* 摘要三步已收编,这一处的路障随之反转:仍欠段不得再点它,文件里也不得再有那句内联字面 */
     const eu = fs.readFileSync(path.join(ROOT, 'js', 'episode-util.js'), 'utf8');
-    assertEq((eu.match(/system: '你是资深短剧策划。'/g) || []).length, 3, 'js/episode-util.js 剧本摘要三步应仍是内联策划人设(同上)');
-    [require('../js/prompts.js')].forEach(P => assertEq(P.list().filter(x => x.def === '你是短剧剧本结构分析师。' || x.def === '你是资深短剧策划。').length, 0,
-      '仍欠那几处的人设句不该已在注册表里(在了就是记账没跟上)'));
+    assert(!owed.includes('js/episode-util.js'), '摘要三步已收编,SK-10 的仍欠段不得再把它记成欠账');
+    assertEq((eu.match(/system: '你是资深短剧策划。'/g) || []).length, 0, 'js/episode-util.js 不应再有摘要三步的内联策划人设');
+    assertEq(require('../js/prompts.js').list().filter(x => x.def === '你是资深短剧策划。').length, 1, '策划人设应恰好在注册表里一份(一键三口)');
     /* G-13 没闭合:按关联索引口径一个标记不摘,投影逐字节不变 */
     assert(sk10.gaps.includes('G-13'), 'G-13 仍开着,SK-10 的标记不摘');
     const g = Skills.gaps();
@@ -4805,6 +4808,55 @@ const contractTests = [
     assertEq(g['G-13'].join(','), 'script.hookType,script.aiToneBan,subjects.refDiscipline,eps.structureStage,gen.videoTpl,film.rhythmInject',
       'G-13 的六条关联索引逐字节不变(只收一面不摘标记)');
     assertEq(Skills.validate({ Prompts }).join(' | '), '', '新键须被 skill 索引引用且引用键都存在');
+  } },
+  { name: '剧本摘要通读/汇总/集纲人设:一键 digest.planSystem 三个取用口,四步 system 缺省逐字节不变、覆盖只命中前三步', fn: async () => {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    // 收编前三步各写死的同一份策划人设字面 + 末步(人物小传)那份分析助手人设:缺省逐字节不得变
+    const PLAN = '你是资深短剧策划。';
+    const ANALYST = '你是专业的短剧剧本分析助手。';
+    assertEq(Prompts.get('digest.planSystem'), PLAN, '缺省人设句应与收编前三处内联字面逐字节相同');
+    const sb = loadDigest();
+    const p = digestProject();
+    assertEq(await sb.EpisodeUtil.aiScriptDigest(p, () => {}), true, '摘要主流程应跑通(通读→汇总→集纲→人物小传)');
+    assertEq(sb.__llm.map(c => c.system).join('|'), [PLAN, PLAN, PLAN, ANALYST].join('|'), '缺省四步 system 应与收编前逐字节相同');
+    // 一键三口:三步的 system 恰好命中注册表同一条,且不是末步那一条(角色不同,不许合成一个键)
+    const hits = Prompts.list().filter(x => x.def === PLAN);
+    assertEq(hits.length, 1, '策划人设应恰好命中注册表一条(同 def 开两个键即红)');
+    assertEq(hits[0].key, 'digest.planSystem', '命中的应是剧本摘要那一条');
+    assert(Prompts.get('digest.planSystem') !== Prompts.get('extract.system'), '摘要策划人设与主体分析助手人设是两个角色,不得同键');
+    const item = Prompts.list().find(x => x.key === 'digest.planSystem');
+    assert(item && !item.vars.length && item.name.includes('剧本摘要'), '注册表应登记剧本摘要人设条目(无变量,可在全局默认值页在线改写)');
+    // 覆盖跟随:一处改写三口一并跟随,末步的小传人设不受影响
+    const OV = '你是短剧摘要策划(覆盖生效)。';
+    const sb2 = loadDigest({ 'digest.planSystem': OV });
+    const p2 = digestProject();
+    assertEq(await sb2.EpisodeUtil.aiScriptDigest(p2, () => {}), true, '写覆盖后摘要主流程仍应跑通');
+    assertEq(sb2.__llm.map(c => c.system).join('|'), [OV, OV, OV, ANALYST].join('|'),
+      '覆盖 digest.planSystem 时三口应一并跟随,末步人物小传不跟随(它听 extract.system)');
+    // 覆盖只换人设句:四步 user 半(含返回 JSON 约定与分块正文)逐字节不动,三步产出解析口径不变
+    assertEq(sb2.__llm.map(c => c.user).join('|'), sb.__llm.map(c => c.user).join('|'),
+      '覆盖只换人设句:四步的 user 半逐字节不变(JSON 契约不开放覆盖)');
+    assertEq(p2.scriptMeta.logline + '|' + p2.scriptMeta.synopsis + '|' + p2.scriptMeta.outline, '卖点|梗概|大纲', '汇总步产出仍落到 scriptMeta');
+    assertEq((p2.epOutline || []).join(','), '本集集纲', '集纲步产出仍落到 epOutline');
+    assertEq((p2.subjects[0] || {}).name, '林晚晴', '覆盖摘要人设动不到小传步的主体库落点');
+    assert(Skills.byId('core.personaCtx').prompts.includes('digest.planSystem'), 'SK-03 应登记 digest.planSystem');
+  } },
+  { name: '剧本摘要通读/汇总/集纲人设(源级):js/episode-util.js 零内联全文,同键恰好三个取用口', fn() {
+    const eu = fs.readFileSync(path.join(ROOT, 'js', 'episode-util.js'), 'utf8');
+    assertEq((eu.match(/Prompts\.get\('digest\.planSystem'\)/g) || []).length, 3, '三步应各有一个取用口(退回内联或合并成一处即红)');
+    assertEq((eu.match(/你是资深短剧策划。/g) || []).length, 0, 'js/episode-util.js 不应再有该人设句的内联全文');
+    // 三个口逐一落在它自己那一步上(user 半的首句认步),不是三处都挂在同一步
+    [['这是剧本的第', '通读'], ['以下是一部短剧剧本各部分的连续剧情概括', '汇总'], ['为以下各集分别写一句话集纲', '集纲']].forEach(([anchor, label]) =>
+      assert(new RegExp("system: Prompts\\.get\\('digest\\.planSystem'\\),[\\s\\S]{0,200}" + anchor).test(eu), label + '步的 system 应取自该键'));
+    // 末步是另一个角色:三口不许误合成 extract.system(合了则该键的取用口从 1 变 4)
+    assertEq((eu.match(/Prompts\.get\('extract\.system'\)/g) || []).length, 1, "extract.system 在本文件仍应只有人物小传步一个取用口");
+    assert(!/system: Prompts\.get\('extract\.system'\),[\s\S]{0,200}这是剧本的第/.test(eu), '通读步不得改听主体分析助手人设');
+    // 三步都只取人设句:不接「主体参考」方法论段(那是提取步的注入面,摘要不生图)
+    assert(!/system: WfCore\.\w+\([\s\S]{0,200}(这是剧本的第|连续剧情概括|一句话集纲)/.test(eu), '三步不应改取带方法论段的装配口');
+    // 这条链路没有服务端对端,server.js 里不该冒出第二份
+    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    assert(!srv.includes('你是资深短剧策划。') && !srv.includes('为以下各集分别写一句话集纲'), 'server.js 不应出现摘要三步(该链路只在浏览器)');
   } },
   { name: 'Agent 单轮人设:经 WfCore.buildAgentSystem(agent.system) 取值,缺省逐字节等于收编前的模板串', fn() {
     const Prompts = require('../js/prompts.js');
@@ -6853,11 +6905,13 @@ const skillsTests = [
       assert(!esrc.includes("system: '" + persona), 'js/episodes.js 该步不得再内联人设字面:' + persona);
       assertEq(P.list().filter(x => x.def.startsWith(persona)).length, 1, '该人设句应恰好在注册表里一份:' + persona);
     });
-    /* 仍欠段改指真正还在的那几处:同样先核源码,收编时这条同样转红 */
-    ['js/episodes.js', 'js/episode-util.js'].forEach(f => assert(owed10.includes(f), 'SK-10 的仍欠段须点名 ' + f));
+    /* 仍欠段改指真正还在的那一处:同样先核源码,收编时这条同样转红 */
+    assert(owed10.includes('js/episodes.js'), 'SK-10 的仍欠段须点名 js/episodes.js');
     assert(esrc.includes("system: '你是短剧剧本结构分析师。'"), 'js/episodes.js 事件图谱拆解步应仍是内联人设');
-    assertEq((fs.readFileSync(path.join(ROOT, 'js', 'episode-util.js'), 'utf8').match(/system: '你是资深短剧策划。'/g) || []).length, 3,
-      'js/episode-util.js 剧本摘要三步应仍是内联策划人设');
+    /* 摘要三步已收编:同形的反向断言按实况翻面(退回内联或仍记成欠账都当场红) */
+    assert(!owed10.includes('js/episode-util.js'), '摘要三步已收编,SK-10 的仍欠段不得再把它记成欠账');
+    assertEq((fs.readFileSync(path.join(ROOT, 'js', 'episode-util.js'), 'utf8').match(/system: '你是资深短剧策划。'/g) || []).length, 0,
+      'js/episode-util.js 不应再有摘要三步的内联策划人设');
     /* G-13 本身未闭合(内联提示词大头仍在),故关联索引一个不摘:改 note 动不到 gaps() 投影 */
     assertEq((Skills.gaps()['G-13'] || []).join(','),
       'script.hookType,script.aiToneBan,subjects.refDiscipline,eps.structureStage,gen.videoTpl,film.rhythmInject',
