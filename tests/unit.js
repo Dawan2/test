@@ -3353,6 +3353,30 @@ function loadContract() {
   loadFile(sb, 'release.js');
   return sb;
 }
+/* 剧本摘要(EpisodeUtil.aiScriptDigest)沙箱:逐个 LLM 步的 system/user 原样截获,ov 写进 Store 覆盖表
+ * (加载序与 index.html 同:domain → prompts → knowledge → wf-core → episode-util;episode-util 加载期强依赖 WfCore) */
+function loadDigest(ov) {
+  const sb = makeSandbox();
+  installCommon(sb);
+  sb.__apiReady = true;
+  sb.__llm = [];
+  sb.API.chatJSON = async req => {
+    sb.__llm.push({ system: req.system, user: ((req.messages || [])[0] || {}).content });
+    return { summary: '本部分概括', logline: '卖点', synopsis: '梗概', outline: '大纲',
+      outlines: [{ no: 1, outline: '本集集纲' }], characters: [{ name: '林晚晴', bio: '女主,复仇者' }] };
+  };
+  if (ov) sb.Store.state.settings.promptOverrides = ov;
+  loadFile(sb, 'domain.js');
+  loadFile(sb, 'prompts.js');
+  loadFile(sb, 'knowledge.js');
+  loadFile(sb, 'wf-core.js');
+  loadFile(sb, 'episode-util.js');
+  return sb;
+}
+function digestProject() {
+  return { id: 'p1', name: '测试项目', script: '第一段:女主被当众羞辱。\n第二段:女主当场反击。',
+    episodes: [{ id: 'ep1', title: '第一集', content: '第一集完整正文' }], subjects: [] };
+}
 /* 全脏项目夹具:过期镜(done+旧指纹)/失败镜/未确认镜各一 + 低分审片 + 主体缺图 → G1-G6/G9 同时触发 */
 function contractDirtyP() {
   const mk = (id, order, over) => Object.assign({
@@ -4057,10 +4081,10 @@ const contractTests = [
     const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
     assert(eu.includes('WfCore.extractSystem()'), '浏览器解析向导应经装配口取人设(隐式读 Store 覆盖表)');
     assert(srv.includes('WfCore.extractSystem(st.promptOverrides)'), '服务端提取主体应经装配口取人设并显式传覆盖表');
-    // 人设句字面只剩注册表一份:wf-core 不留常量,浏览器侧剩的那一处是人物小传步(另一条链路,提取步不得退回内联)
+    // 人设句字面只剩注册表一份:wf-core 不留常量,浏览器侧那处同字面内联(人物小传步)已改取同键,三个源文件一律零处
     const wf = fs.readFileSync(path.join(ROOT, 'js', 'wf-core.js'), 'utf8');
     assert(!wf.includes('你是专业的短剧剧本分析助手'), 'js/wf-core.js 不应再写第二份人设句(注册表 def 为唯一来源)');
-    assertEq((eu.match(/你是专业的短剧剧本分析助手/g) || []).length, 1, 'js/episode-util.js 里该字面应只剩人物小传步那一处');
+    assertEq((eu.match(/你是专业的短剧剧本分析助手/g) || []).length, 0, 'js/episode-util.js 不应再出现该人设句字面(提取步与人物小传步都经注册表取值)');
     assert(!srv.includes('你是专业的短剧剧本分析助手'), 'server.js 不应出现人设句字面');
     assert(Skills.byId('core.personaCtx').prompts.includes('extract.system'), 'SK-03 应登记 extract.system');
     // W45 在此点名的 Agent 单轮已收编:人设句进注册表 agent.system、装配口收覆盖表(字面与取值口由下一条钉住),
@@ -4069,6 +4093,48 @@ const contractTests = [
     assert(agentSys.startsWith(Prompts.get('agent.system')), 'Agent 单轮人设句应取自注册表(不再内联在 wf-core 模板里)');
     assertEq(Prompts.list().filter(x => agentSys.includes(x.def)).length, 1, 'Agent 单轮 system 应恰好命中注册表里它自己那一条');
     assertEq(WfCore.buildAgentSystem.length, 2, 'buildAgentSystem 应收覆盖表参数(有键可取)');
+  } },
+  { name: '剧本摘要人物小传步人设:同键 extract.system 取值,四步 system 缺省逐字节不变、覆盖只命中小传步', fn: async () => {
+    const Prompts = require('../js/prompts.js');
+    // 收编前四步写死的四份 system 字面(前三步是策划人设、末步与提取步同字面):缺省逐字节不得变
+    const PLAN = '你是资深短剧策划。';
+    const ANALYST = '你是专业的短剧剧本分析助手。';
+    const sb = loadDigest();
+    const p = digestProject();
+    assertEq(await sb.EpisodeUtil.aiScriptDigest(p, () => {}), true, '摘要主流程应跑通(通读→汇总→集纲→人物小传)');
+    assertEq(sb.__llm.length, 4, '四个 LLM 步应各发一次(分块通读/汇总/集纲/人物小传)');
+    assertEq(sb.__llm.map(c => c.system).join('|'), [PLAN, PLAN, PLAN, ANALYST].join('|'),
+      '缺省四步 system 应与收编前逐字节相同(末步取注册表 def,前三步仍是各自内联的策划人设)');
+    // 末步确实是人物小传步:它的回包被消费成主体库里的人物条目
+    assert(sb.__llm[3].user.includes('提取其中的主要人物'), '末步应是人物小传步');
+    assertEq((p.subjects[0] || {}).name, '林晚晴', '人物小传应合并进主体库(该步真的跑了,不是空转)');
+    assertEq(p.scriptMeta.logline, '卖点', '汇总步产出应落到 scriptMeta');
+    // 注册表命中:该 system 恰好等于注册表里 extract.system 那一条,不是文件里另写的一份
+    const hits = Prompts.list().filter(x => x.def === sb.__llm[3].system);
+    assertEq(hits.length, 1, '小传步 system 应恰好命中注册表一条');
+    assertEq(hits[0].key, 'extract.system', '命中的应是主体提取那一条(同为剧本分析助手把人物落进主体库)');
+    // 覆盖跟随:只换人设句,四步里只有小传步变,user 半(含 JSON 契约)逐字节不动
+    const OV = '你是主体提取员(覆盖生效)。';
+    const sb2 = loadDigest({ 'extract.system': OV });
+    const p2 = digestProject();
+    assertEq(await sb2.EpisodeUtil.aiScriptDigest(p2, () => {}), true, '写覆盖后摘要主流程仍应跑通');
+    assertEq(sb2.__llm.map(c => c.system).join('|'), [PLAN, PLAN, PLAN, OV].join('|'),
+      '覆盖 extract.system 时应只有小传步跟随(前三步的内联策划人设不受影响)');
+    assertEq(sb2.__llm.map(c => c.user).join('|'), sb.__llm.map(c => c.user).join('|'),
+      '覆盖只换人设句:四步的 user 半(含返回 JSON 约定与分块正文)逐字节不变');
+    assertEq((p2.subjects[0] || {}).name, '林晚晴', '覆盖后解析口径不变(JSON 契约未开放)');
+  } },
+  { name: '剧本摘要人物小传步人设(源级):js/episode-util.js 零内联全文,与提取步同经注册表取值口', fn() {
+    const eu = fs.readFileSync(path.join(ROOT, 'js', 'episode-util.js'), 'utf8');
+    assert(eu.includes("Prompts.get('extract.system')"), '人物小传步应经注册表取人设(浏览器隐式读 Store 覆盖表)');
+    assertEq((eu.match(/你是专业的短剧剧本分析助手/g) || []).length, 0,
+      'js/episode-util.js 不应再有该人设句的内联全文(W45 留的「恰好 1 处」计数至此归零)');
+    // 只此一份浏览器取值口:这条链路没有服务端对端,server.js 里不该冒出第二份
+    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    assert(!srv.includes('提取其中的主要人物'), 'server.js 不应出现人物小传步(该步只在浏览器摘要链路上)');
+    // 提取步的装配口不受影响:小传步只取人设句,不得顺手把「主体参考」方法论段也接上
+    assert(eu.includes('WfCore.extractSystem()'), '提取步仍应经装配口取「人设句 + 主体参考」整条');
+    assert(!/system: WfCore\.extractSystem\(\),[\s\S]{0,400}提取其中的主要人物/.test(eu), '小传步不应改取带方法论段的装配口');
   } },
   { name: 'Agent 单轮人设:经 WfCore.buildAgentSystem(agent.system) 取值,缺省逐字节等于收编前的模板串', fn() {
     const Prompts = require('../js/prompts.js');
