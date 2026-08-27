@@ -745,6 +745,8 @@ ${(ep.content || '').slice(0, 8000)}` }],
         const vDone2 = p.episodes.reduce((n, e) => n + e.shots.filter(s => s.video && Store.shotVideoReady(s)).length, 0);
         const finalCnt = p.episodes.reduce((n, e) => n + e.shots.filter(s => s.final).length, 0);
         const composedCnt = p.episodes.filter(e => Store.epComposedReady(e)).length; // 统一就绪判定(七轮:输入变化/模拟合成的集不计入)
+        // 审片板块进度:有未判旧审片记录的集数(与 Domain 主线审片步骤同口径)
+        const reviewedCnt = p.episodes.filter(e => e.lastReview && typeof e.lastReview.avg === 'number' && !Domain.reviewStaleByScript(e)).length;
         const subjImg = p.subjects.filter(s => s.image).length;
         const progressOf = {
           导演: p.concept && p.concept.statement ? '已定调 · ' + (p.concept.time || '') : '未定调(先去导演页定调)',
@@ -753,6 +755,7 @@ ${(ep.content || '').slice(0, 8000)}` }],
           分集: `${p.episodes.length} 集 · ${p.episodes.filter(e => (e.content || '').trim()).length} 集有正文`,
           分镜: `${totalShots2} 镜 · ${finalCnt} 镜定稿`,
           生成: `${vDone2}/${totalShots2} 已出片`,
+          审片: `${reviewedCnt}/${p.episodes.length} 集已审(未过期)`,
           成片: `${composedCnt}/${p.episodes.length} 集已合成`,
         };
         bodyHtml = `

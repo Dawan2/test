@@ -1,5 +1,5 @@
 /* ============ pipeline.js 创作主线(协同层) ============
- * 把分散的功能串成一条可见的主线:剧本→主体→分集→分镜→生成→成片;制片/导演/剧壳/切片为支线。
+ * 把分散的功能串成一条可见的主线:剧本→主体→分集→分镜→剪辑→审片→成片;制片/导演/剧壳/切片为支线。
  * 状态唯一来源 js/domain.js(workflow/episodeState):流程条、「下一步」、跑批、CLI workflow
  * 读同一套推导,不再各自解释业务数据;每一步可点击直达对应页面。 */
 (function () {
@@ -7,7 +7,7 @@
   /* 在线判定:domain 就绪函数的环境参数 */
   const _online = () => !!(window.Media && Media.isReady());
 
-  /* 全链路状态推导(项目级):委托 Domain.workflow——主线步骤(剧本/主体/分集/分镜/剪辑/成片)
+  /* 全链路状态推导(项目级):委托 Domain.workflow——主线步骤(剧本/主体/分集/分镜/剪辑/审片/成片)
    * + 支线步骤(制片/导演/剧壳/切片,side:true,不阻塞主线);键名与历史一致(tab 打勾/Agent 步骤图/跑批映射不变) */
   function calc(p) {
     return Domain.workflow(p, _online()).steps;
@@ -19,11 +19,14 @@
     const firstEp = eps[0];
     const undoneEp = eps.find(e => (e.shots || []).some(s => !Store.shotVideoReady(s)));
     const noShotEp = eps.find(e => !(e.shots || []).length);
+    /* 待审集(未审 / 记录判旧 / 低于达标线,与 Domain 主线审片步骤同口径) */
+    const unRvEp = () => eps.find(e => { const st = Domain.episodeState(p, e, _online()); return st.reviewAvg === null || st.reviewAvg < Domain.REVIEW_MIN; });
     switch (key) {
       case 'prod': case 'script': case 'eps': case 'director': case 'shell': case 'clips': return '#/project/' + p.id;
       case 'subjects': return '#/project/' + p.id + '/roles';
       case 'shots': return noShotEp ? `#/project/${p.id}/episode/${noShotEp.id}` : (firstEp ? `#/project/${p.id}/episode/${firstEp.id}` : '#/project/' + p.id);
       case 'gen': return undoneEp ? `#/project/${p.id}/episode/${undoneEp.id}` : (firstEp ? `#/project/${p.id}/episode/${firstEp.id}` : '#/project/' + p.id);
+      case 'review': { const e = unRvEp(); return e ? `#/project/${p.id}/episode/${e.id}` : (firstEp ? `#/project/${p.id}/episode/${firstEp.id}` : '#/project/' + p.id); }
       case 'film': return '#/project/' + p.id + '/produce';
       default: return '#/project/' + p.id;
     }
@@ -58,7 +61,7 @@
   /* 项目级下一步(项目详情页用):推荐动作由 Domain.workflow 唯一推导(阻塞细节与 P0-3 动态开场同源) */
   Pipeline.nextForProject = function (p) {
     const ra = Domain.workflow(p, _online()).recommendedAction;
-    const icons = { script: '📄', subjects: '🎭', eps: '📖', shots: '🧠', gen: '🎬', compose: '🎞', produce: '🏭' };
+    const icons = { script: '📄', subjects: '🎭', eps: '📖', shots: '🧠', gen: '🎬', review: '🧐', compose: '🎞', produce: '🏭' };
     if (!ra) return { txt: '🏭 量产跑批 / 导出交付', hash: '#/project/' + p.id + '/produce' };
     let txt = ra.label;
     if (ra.key === 'gen') { // 生成步骤补阻塞尾注(过期/失败/待确认,与 AgentOps.stateDigest 同源)
@@ -95,7 +98,8 @@
     const st = Domain.episodeState(p, ep, _online());
     if (!st.counts.total) return { key: 'subjects', txt: '← 上一步:主体/剧本' };
     if (st.counts.done < st.counts.total) return { key: 'shots', txt: '← 上一步:生成分镜' };
-    if (!st.composedReady) return { key: 'gen', txt: '← 上一步:生成视频' }; // 统一就绪判定
+    if (st.reviewAvg === null) return { key: 'gen', txt: '← 上一步:生成视频' }; // 统一就绪判定
+    if (!st.composedReady) return { key: 'review', txt: '← 上一步:整集审片' };
     return { key: 'film', txt: '← 上一步:合成成片' };
   };
 
@@ -108,6 +112,8 @@
       case 'ready':
         if (st.action.key === 'shots') return { key: 'shots', txt: '🧠 生成分镜' };
         if (st.action.key === 'gen') return { key: 'gen', txt: `🎬 生成视频(${c.total - c.done} 镜待出${note ? '·' + note.slice(1, -1) : ''})` };
+        /* 主线审片步骤:全部出片已确认但无有效审片记录时先审片(记录判旧同样按未审处理) */
+        if (st.reviewAvg === null) return { key: 'review', txt: st.reviewStale ? '🧐 重新审片(记录已过期)' : '🧐 整集审片' };
         return { key: 'film', txt: '🎞 合成成片' };
       case 'stale':
         if (st.action.key === 'reshoot') return { key: 'shots', txt: '🔄 重新拆镜(剧本/图谱已更新)' };
@@ -126,7 +132,7 @@
         if (st.action && st.action.key === 'fix-failed') return { key: 'gen', txt: `⚠ 处理失败镜(${c.failed})` };
         return { key: 'script', txt: '📄 补充剧本' };
       case 'needs_review': return { key: 'confirm', txt: `👁 确认镜头(${c.unconfirmed} 待确认)` };
-      case 'needs_human': return { key: 'review', txt: `🧠 审片修订(均分 ${st.reviewAvg})` };
+      case 'needs_human': return { key: 'review', txt: `🧐 审片修订(均分 ${st.reviewAvg})` };
       default: return { key: 'export', txt: '导出 ⬇' };
     }
   };

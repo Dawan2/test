@@ -216,6 +216,7 @@
         const k = t.dataset.step;
         if (k === 'shots') return setViewMode(bbFamily ? 'bb' : 'board');
         if (k === 'gen') return setViewMode('cut'); // 「剪辑」步骤进剪辑台
+        if (k === 'review') return Review.openEpisodeReview(p, ep, main); // 「审片」步骤开整集审片(成本确认在面板内)
         window.__projTab = { prod: '制片', script: '剧本', director: '导演', subjects: '主体', eps: '分集', film: '成片库', shell: '剧壳', clips: '切片' }[k] || '分集';
         location.hash = '#/project/' + p.id;
       });
@@ -224,6 +225,7 @@
         const nx = Pipeline.nextForEp(p, ep);
         if (nx.key === 'shots') { const t = main.querySelector('[data-x=dd-sb]'); if (t) t.click(); }
         else if (nx.key === 'gen') SB.runBatchOp(p, ep, main, 'video');
+        else if (nx.key === 'review') Commands.execute('episode.smartReview', { pid: p.id, epid: ep.id, main, ui: true }).then(r => Commands.digest(r)); // 审片修订闭环(评审→修订→重抽→复审)
         else if (nx.key === 'film') Commands.execute('episode.compose', { pid: p.id, epid: ep.id, main, ui: true }).then(r => Commands.digest(r)); // 统一命令层(ui 模式)
         else if (nx.key === 'export') window.SB.openPlayer(p, ep, false); // 顶栏导出已并入预览:预览长视频内导出
         else if (nx.run) nx.run(main); // 带执行动作的下一步(如 regen-stale 批量重生成过期镜)
@@ -234,6 +236,7 @@
         if (pv.key === 'subjects') location.hash = '#/project/' + p.id; // 回项目页(主体/剧本)
         else if (pv.key === 'shots') { const t = main.querySelector('[data-x=dd-sb]'); if (t) t.click(); }
         else if (pv.key === 'gen') SB.runBatchOp(p, ep, main, 'video');
+        else if (pv.key === 'review') Review.openEpisodeReview(p, ep, main);
         else if (pv.key === 'film') Commands.execute('episode.compose', { pid: p.id, epid: ep.id, main, ui: true }).then(r => Commands.digest(r)); // 统一命令层(ui 模式)
       };
     }
