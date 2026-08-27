@@ -4295,10 +4295,11 @@ const skillsTests = [
   } },
   { name: 'aiVoice:纯函数与消费点(就绪检查/问题中心/审片报告只读消费,不拦生成、不改门禁、不开计费)', fn: async () => {
     const sk = Skills.byId('script.aiToneBan');
-    assertEq(sk.pending.join(','), 'inject', '校验面已落地;注入面的条目正文尚未进 KB 单源,pending 如实留着不假清');
+    assertEq(sk.pending.join(','), '', '两面均已落地:注入面的条目正文已进 KB 单源,校验面早已有实现');
     assertEq(sk.checks.join(','), 'script.aiVoiceTrace');
-    assert(sk.gaps.includes('S-02') && sk.gaps.includes('G-10'), '注入面缺口(S-02)与语义面缺口(G-10)都仍记账');
-    assertEq(Skills.block('script', { ids: ['script.aiToneBan'] }), '', '注入面未落地不进拼块');
+    assert(sk.gaps.includes('G-10'), '语义面缺口(G-10)仍记账');
+    assertEq(Skills.block('script', { ids: ['script.aiToneBan'] }), require('../js/knowledge.js').section('文案AI味'),
+      '注入块应逐字节等于条目正文(索引层不复述)');
     const ep = scriptEp('她深吸一口气,眼里闪过一丝复杂。' + BG, [{ id: 'sh0', order: 0, dialogue: '因此我必须走' }]);
     const p = { id: 'p1' };
     const snap = JSON.stringify([p, ep]);
@@ -4328,6 +4329,40 @@ const skillsTests = [
     assertEq(require('../js/cmd-registry.js').byName['episode.preflight'].risk, 'read', '就绪检查应仍是 read 类零计费');
     const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
     assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 只数高/中危 —— 低危提醒不改门禁状态');
+  } },
+  { name: 'aiVoice:三张词表与每千字上限现取 KB「文案AI味」条目正文(校验层不写第二份词表)', fn() {
+    const kb = require('../js/knowledge.js').section('文案AI味');
+    assert(kb, 'S-02 已闭合:条目正文须在 KB.SECTIONS 单源可取');
+    /* 用与校验层同一条解析口径独立取一遍词表:条目改写而字面失配时这里先红 */
+    const listOf = label => ((new RegExp(label + '[^「]*「([^」]+)」').exec(kb) || [])[1] || '').split('/').filter(Boolean);
+    const cliche = listOf('套话硬禁词'), formal = listOf('书面连接词'), adverb = listOf('修饰副词');
+    assertEq([cliche.length, formal.length, adverb.length].join(','), '19,12,11', '条目三张词表须解析得出(解析不出则校验层判不出任何东西)');
+    // 逐词实跑:条目里的每个词都真判得出,即判据确实来自条目而不是本层另存的一份
+    cliche.forEach(w => assertEq(aiOf(scriptEp(w + BG)).hits.filter(h => h.code === 'ai-cliche' && h.name === w).length, 1,
+      '套话词应逐词取自条目:' + w));
+    formal.forEach(w => assertEq(aiOf(scriptEp('「' + w + '走吧」' + BG)).hits.filter(h => h.code === 'spoken-formal' && h.name === w).length, 1,
+      '书面词应逐词取自条目:' + w));
+    assertEq(aiOf(scriptEp(adverb.join('').repeat(10))).hits.map(h => h.code).join(','), 'adverb-flood', '副词词表同样取自条目');
+    assertEq(aiOf(scriptEp('她万分感慨地看着他。' + BG)).hits.length, 0, '条目没收的近义词不判(词表不是本层另写的一份)');
+    // 每千字上限同理:数字写在条目里,校验层不写第二份
+    const cap = +(/每千字超过(\d+)处/.exec(kb) || [])[1];
+    assertEq(cap, 10, '密度上限须写在条目正文里');
+    assertEq(aiOf(scriptEp(ADV.repeat(10))).hits.find(h => h.code === 'adverb-flood').limit, cap, '命中里的上限应与条目字面一致');
+    // 源级:skills.js 不得留第二份词表(副词逐词略过——「默默」同时是 SK-08 隐忍步的信号词)
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'skills.js'), 'utf8');
+    cliche.concat(formal).forEach(w => assert(!src.includes("'" + w + "'"), 'skills.js 不得写第二份词表:' + w));
+    [cliche, formal, adverb].forEach(ws => assert(!src.includes(ws.join("', '")), 'skills.js 不得整表复制条目词表'));
+  } },
+  { name: 'aiVoice:注入面落地(条目进 KB 单源 + 剧本板块方法论按键整条注入,S-02 清账)', fn() {
+    const KB = require('../js/knowledge.js');
+    assert(Object.keys(KB.SECTIONS).includes('文案AI味'), '条目须登记进 KB.SECTIONS 取用面');
+    assertEq((Skills.gaps()['S-02'] || []).join(','), '', 'S-02 已闭合,缺口投影里应清账');
+    assertEq(Skills.list('script').filter(s => s.kb.includes('文案AI味')).map(s => s.id).join(','), 'script.aiToneBan',
+      '同一步内只由 SK-10 登记该键(挂两处会让剧本步拼块出现两份正文)');
+    // 注入落点:剧本板块 Agent 就位时按键整条注入,与其余板块条目同一装配口(正文不复制)
+    const asrc = fs.readFileSync(path.join(ROOT, 'js', 'agent.js'), 'utf8');
+    assert(/剧本: \[[^\]]*'文案AI味'/.test(asrc), '剧本板块方法论注入清单应按键取该条目');
+    assert(!asrc.includes(KB.section('文案AI味')), '注入点只按键取用,不复制条目正文');
   } },
   { name: '剧本段消费点:就绪检查按主线步序附结论 + 问题中心低危(不改门禁、不新增计费)', fn() {
     const conc = Skills.check('script', { p: { id: 'p1' }, ep: scriptEp(BG) });
