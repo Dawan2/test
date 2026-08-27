@@ -70,6 +70,71 @@
     return { pass: !hits.length, level, hits };
   };
 
+  /* SK-13 跨镜头主体一致性(S-03 的一致性半):同一主体被多镜引用时,看它在镜间「锁」得一不一致——
+   * 每镜实际喂进生成请求的参考图现取 Domain.shotRefImages(与真实生成同一份构造,含 5 张上限),
+   * 引用名与全称现取 Domain.findSubject/subjectFullName,本层不写第二份取图与解析。
+   * 单镜的绝对缺陷(名字解析不到、主体全程无图)归 SK-12,本项只报跨镜差异:
+   *   ref-image-drift 该镜喂到的参考图与基准镜不是同一张(权威图与形态图混用、形态间切换)→ warn
+   *   ref-lock-gap    别的镜锁得住这镜锁不住:该形态取不到真实图(no-image)或被参考图组上限挤出(over-cap)→ warn
+   *   alias-drift     同一主体同一形态跨镜被不同名字引用(改名后旧名残留、别名混用)→ warn
+   * 基准 = 该主体跨镜出现最多的那张图/那个名字(并列取先出现者);形态不同属有意换装,不按名字漂移判。
+   * 一致性风险一律 warn,fail 留给"必然拿不到参考"的完备性面(SK-12)。 */
+  CHECKS['subjects.crossShotConsistency'] = function (obj) {
+    const o = obj || {};
+    const p = o.p;
+    const shots = (o.ep && o.ep.shots) || [];
+    if (!p || shots.length < 2) return { pass: true, level: 'info', hits: [] }; // 单镜无跨镜可比,不冒充通过判定
+    const per = new Map(); // 主体 id → 逐镜引用记录(按镜序)
+    shots.forEach(s => {
+      const order = (+s.order || 0) + 1;
+      const fed = {}; // 本镜真实进了参考图组的全称 → 图 url
+      Domain.shotRefImages(p, s).refImages.forEach(x => { fed[x.name] = x.url; });
+      const seen = {};
+      [].concat(s.characters || [], s.scene ? [s.scene] : [], s.props || [])
+        .map(n => String(n === null || n === undefined ? '' : n).trim()).filter(Boolean)
+        .forEach(name => {
+          if (seen[name]) return; // 同镜同名重复引用只计一次
+          seen[name] = 1;
+          const r = Domain.findSubject(p, name);
+          if (!r) return; // 解析不到的引用是 SK-12 的完备性面,本项不重复报
+          const full = Domain.subjectFullName(r);
+          const rec = { shotId: s.id, order, name, full, image: Domain.subjectRefImage(r), fed: fed[full] || '' };
+          if (!per.has(r.s.id)) per.set(r.s.id, []);
+          per.get(r.s.id).push(rec);
+        });
+    });
+    /* 众数(并列取先出现者):跨镜比对的基准 */
+    const modeOf = (recs, pick) => {
+      const cnt = {};
+      let best = '', bestN = 0;
+      recs.forEach(x => {
+        const v = pick(x);
+        if (!v) return;
+        const n = (cnt[v] = (cnt[v] || 0) + 1);
+        if (n > bestN) { bestN = n; best = v; }
+      });
+      return best;
+    };
+    const hits = [];
+    per.forEach(recs => {
+      const shotIds = {};
+      recs.forEach(x => { shotIds[x.shotId] = 1; });
+      if (Object.keys(shotIds).length < 2) return; // 只在一镜出场的主体无一致性可言
+      const baseImg = modeOf(recs, x => x.fed);
+      if (baseImg) recs.forEach(x => {
+        if (!x.fed) hits.push({ code: 'ref-lock-gap', shotId: x.shotId, order: x.order, name: x.full, reason: x.image ? 'over-cap' : 'no-image' });
+        else if (x.fed !== baseImg) hits.push({ code: 'ref-image-drift', shotId: x.shotId, order: x.order, name: x.full });
+      });
+      const byFull = new Map(); // 同一形态内部才比引用名:形态不同是换装,不是别名混用
+      recs.forEach(x => { if (!byFull.has(x.full)) byFull.set(x.full, []); byFull.get(x.full).push(x); });
+      byFull.forEach(g => {
+        const baseName = modeOf(g, x => x.name);
+        g.forEach(x => { if (x.name !== baseName) hits.push({ code: 'alias-drift', shotId: x.shotId, order: x.order, name: x.name, base: baseName }); });
+      });
+    });
+    return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
+  };
+
   /* 短名单 30 条内部能力(SK-01…SK-30):id 取 `stage.name` 形态,与 SK 编号一一对应。
    * covers 写该能力实际作用到的主线步骤(缺省=stage 本身);gaps 记该条已知贯通缺口编号(G-xx 图谱既有,S-xx 本轮新登记)。 */
   const REG = [
@@ -148,12 +213,16 @@
       covers: ['subjects', 'shots'], wave: 'W4', kinds: ['check'],
       kb: ['GC_REFS'], checks: ['subjects.shotRefIntegrity'], cmds: ['episode.preflight'], gaps: ['S-03'],
       note: '主体按名查找(含多形态全称)与取图口径复用 Domain,不在本层再写一份;'
-        + '校验项经就绪检查(episode.preflight)双端消费,结论只报不拦;S-03 的一致性半仍在 SK-13',
+        + '校验项经就绪检查(episode.preflight)双端消费,结论只报不拦;S-03 的一致性半由 SK-13 承接',
     },
     {
       id: 'subjects.crossShot', sk: 'SK-13', name: '跨镜头主体一致性校验', stage: 'subjects',
-      covers: ['subjects', 'gen'], wave: 'W4', kinds: ['check'], pending: ['check'],
-      kb: ['GC_MULTI', 'GC_REFS'], cmds: ['episode.generateVideos', 'shot.generateVideo'], gaps: ['G-06', 'S-03'],
+      covers: ['subjects', 'gen'], wave: 'W4', kinds: ['check'],
+      kb: ['GC_MULTI', 'GC_REFS'], checks: ['subjects.crossShotConsistency'],
+      cmds: ['episode.preflight'], gaps: ['G-06', 'S-03'],
+      note: '与 SK-12 成对闭合 S-03:完备性看单镜引用能否落到主体,一致性看同一主体跨镜锁得一不一致;'
+        + '每镜实际参考图现取 Domain.shotRefImages(与真实生成请求同一份构造,含参考图组上限);'
+        + '经就绪检查与问题中心消费,结论只报不拦;生成前置消费点待 G-06',
     },
     /* ---- 分集 ---- */
     {
