@@ -177,7 +177,8 @@
   }));
 
   /* 一键成片(exec,编排):就绪检查 → 批量生成 → 智能审片(质量闸门) → 合成成片;
-   * 待人工镜头默认阻断合成(riskyCompose 放行);onStep(stepKey) 供跑批行内状态回报;
+   * 待人工镜头默认阻断合成(riskyCompose 放行);审片被关闭/模块缺失时步骤如实登记 skipped
+   * (模块缺失=质量闸门无法执行,默认 blocked,riskyCompose 放行);onStep(stepKey) 供跑批行内状态回报;
    * 子执行一律 headless(一键成片语义=一次确认后无值守;审片后台面板经 quiet/ui 字段单独控制) */
   reg('episode.produce', { label: '一键成片', meter: false }, async ({ p, ep, args }) => {
     const steps = [];
@@ -194,8 +195,13 @@
     // 2. 批量生成(失败镜不阻塞后续,合成前统一拦截)
     onStep('批量生成视频');
     const g = push('generateVideos', await execute('episode.generateVideos', sub));
-    // 3. 智能审片(默认开;不达标先修订提示词再重抽)
-    if (args.smartReview !== false && window.Review) {
+    // 3. 智能审片(主线一等步骤,默认开;不达标先修订提示词再重抽)——缺审片一律如实登记,不静默跳过
+    if (args.smartReview === false) {
+      steps.push({ step: 'smartReview', ok: false, status: 'skipped', cost: 0, result: null, error: { code: 'disabled', message: '审片已按参数关闭(smartReview:false),质量闸门未执行' } });
+    } else if (!window.Review) {
+      steps.push({ step: 'smartReview', ok: false, status: 'skipped', cost: 0, result: null, error: { code: 'unavailable', message: '审片模块未加载,质量闸门未执行' } });
+      if (!args.riskyCompose) return Object.assign({ ok: false, status: 'blocked', error: { code: 'review-unavailable', message: '审片模块未加载,质量闸门无法执行(riskyCompose 可放行)' }, result: { steps } }, { cost: cost(), next: nextOf(p, ep) });
+    } else {
       onStep('智能审片');
       ep.sbConfig.maxRetry = Math.max(1, Math.min(5, args.maxRetry || ep.sbConfig.maxRetry || 2));
       const rv = push('smartReview', await execute('episode.smartReview', args));

@@ -1088,7 +1088,8 @@ EXEC['episode.compose'] = { needs: ['p', 'ep'], meter: true, run: async (args, f
 } };
 
 /* 一键成片(exec,编排):就绪检查 → 批量生成 → 智能审片 → 合成成片,与前端 episode.produce 同步骤同结构;
- * 智能审片依赖浏览器多模态评审引擎,CLI 侧该步如实标 skipped(等效跑批模板关闭审片),不阻断合成 */
+ * 智能审片走服务端工作流真实评审(主线一等步骤):低分镜=质量闸门默认阻断合成;
+ * 审片被关闭或评审未产出结论时该步如实登记 skipped/失败并阻断合成(riskyCompose 放行),不静默通过 */
 EXEC['episode.produce'] = { needs: ['p', 'ep'], meter: true, run: async (args, f) => { // meter:整体钱包差值(与前端 steps 累加同口径)
   const steps = [];
   const call = async (key, cmdName) => {
@@ -1103,11 +1104,17 @@ EXEC['episode.produce'] = { needs: ['p', 'ep'], meter: true, run: async (args, f
   if (st.status === 'blocked' || st.shotsStale) return execBlocked('preflight', '就绪检查未通过:' + (st.blockers.map(b => b.label).join('/') || '分镜已过期'), { steps, blockers: st.blockers });
   if (!(ep.shots || []).length) return execBlocked('no-shots', '未分镜', { steps });
   await call('generateVideos', 'episode.generateVideos'); // 2. 批量生成(失败镜不阻塞,合成前统一拦截)
-  // 3. 智能审片(二十一轮:服务端工作流真实评审;低分镜=质量闸门,默认阻断合成,--args riskyCompose 放行)
-  if (args.smartReview !== false) {
+  // 3. 智能审片(服务端工作流真实评审;低分镜=质量闸门,默认阻断合成,--args riskyCompose 放行)
+  if (args.smartReview === false) {
+    steps.push({ step: 'smartReview', ok: false, status: 'skipped', result: null, error: { code: 'disabled', message: '审片已按参数关闭(smartReview:false),质量闸门未执行' } });
+  } else {
     const rv = await call('smartReview', 'episode.smartReview');
     if (rv.result && (rv.result.lowShots || []).length && !args.riskyCompose) {
       return { ok: false, status: 'needs_human', error: { code: 'manual-gate', message: '低分 ' + rv.result.lowShots.length + ' 镜(' + rv.result.lowShots.map(x => x.order + '镜' + x.score + '分').join('、') + '),质量闸门已阻断合成(riskyCompose 可放行)' }, result: { steps } };
+    }
+    // 审片未产出结论(端点失败/网络中断):质量闸门未执行,不拿"审过了"冒充放行
+    if (!rv.result || typeof rv.result.avg !== 'number') {
+      if (!args.riskyCompose) return { ok: false, status: 'blocked', error: { code: 'review-unavailable', message: '审片未产出结论(' + ((rv.error && rv.error.message) || '未知原因') + '),质量闸门无法执行(riskyCompose 可放行)' }, result: { steps } };
     }
   }
   const c = await call('compose', 'episode.compose'); // 4. 合成成片
