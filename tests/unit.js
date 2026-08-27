@@ -3703,6 +3703,25 @@ function digestProject() {
   return { id: 'p1', name: '测试项目', script: '第一段:女主被当众羞辱。\n第二段:女主当场反击。',
     episodes: [{ id: 'ep1', title: '第一集', content: '第一集完整正文' }], subjects: [] };
 }
+/* 八维度重写文生图提示词(Persona.rewritePrompt)沙箱:该步 LLM 请求的 system/user 原样截获,ov 写进 Store 覆盖表
+ * (加载序与 index.html 同:prompts → persona;LLM 成功路径不进本地模板回退,故不必装 EpisodeUtil/styleOf) */
+function loadPersona(ov) {
+  const sb = makeSandbox();
+  installCommon(sb);
+  sb.__apiReady = true;
+  sb.__llm = [];
+  sb.API.chatJSON = async req => {
+    sb.__llm.push({ system: req.system, user: ((req.messages || [])[0] || {}).content });
+    return { prompt: '漫剧风格角色立绘,林晚晴,白底三视图' };
+  };
+  if (ov) sb.Store.state.settings.promptOverrides = ov;
+  loadFile(sb, 'prompts.js');
+  loadFile(sb, 'persona.js');
+  return sb;
+}
+function personaSubject() {
+  return { name: '林晚晴', prompt: '', persona: { 五官: '剑眉星目', 发型: '银色长直发及腰', 身材: '', 服饰: '墨色风衣', 性格: '外冷内热', 特技: '', 弱点: '', 语气: '' } };
+}
 /* 全脏项目夹具:过期镜(done+旧指纹)/失败镜/未确认镜各一 + 低分审片 + 主体缺图 → G1-G6/G9 同时触发 */
 function contractDirtyP() {
   const mk = (id, order, over) => Object.assign({
@@ -4519,6 +4538,74 @@ const contractTests = [
     // 提取步的装配口不受影响:小传步只取人设句,不得顺手把「主体参考」方法论段也接上
     assert(eu.includes('WfCore.extractSystem()'), '提取步仍应经装配口取「人设句 + 主体参考」整条');
     assert(!/system: WfCore\.extractSystem\(\),[\s\S]{0,400}提取其中的主要人物/.test(eu), '小传步不应改取带方法论段的装配口');
+  } },
+  { name: '八维度重写文生图提示词人设:经 Prompts.get(persona.promptSystem) 取值,缺省逐字节等于收编前的内联字面', fn: async () => {
+    const Prompts = require('../js/prompts.js');
+    const SYS = '你是文生图提示词专家。';
+    const p = { id: 'p1', name: '测试项目', style: '漫剧' };
+    // 缺省不变:收编前写死在该步 chatJSON 里的人设句,收编后仍逐字节相同
+    assertEq(Prompts.get('persona.promptSystem'), SYS, '缺省人设句应与收编前的内联字面逐字节相同');
+    const sb = loadPersona();
+    const out = await sb.Persona.rewritePrompt(p, personaSubject());
+    assertEq(sb.__llm.length, 1, '重写步应恰好发一次 LLM');
+    assertEq(sb.__llm[0].system, SYS, '缺省 system 应与收编前逐字节相同');
+    assertEq(out, '漫剧风格角色立绘,林晚晴,白底三视图', 'JSON 契约未开放:{"prompt":…} 仍按原口径解析');
+    const hits = Prompts.list().filter(x => x.def === sb.__llm[0].system);
+    assertEq(hits.length, 1, '该步 system 应恰好命中注册表一条');
+    assertEq(hits[0].key, 'persona.promptSystem', '命中的应是八维度重写那一条');
+    const item = Prompts.list().find(x => x.key === 'persona.promptSystem');
+    assert(item && !item.vars.length && item.name.includes('文生图'), '注册表应登记该步人设条目(无变量,可在全局默认值页在线改写)');
+    // 覆盖只换人设句:user 半(参考模板 + 八维度正文 + 返回 JSON 约定)逐字节不变
+    const OV = '你是主体立绘提示词设计师(覆盖生效)。';
+    const sb2 = loadPersona({ 'persona.promptSystem': OV });
+    const out2 = await sb2.Persona.rewritePrompt(p, personaSubject());
+    assertEq(sb2.__llm[0].system, OV, '覆盖 persona.promptSystem 时该步取值跟随');
+    assertEq(sb2.__llm[0].user, sb.__llm[0].user, '覆盖只换人设句:user 半逐字节不变');
+    assertEq(out2, out, '覆盖后解析口径不变(JSON 契约未开放)');
+    // 参考模板那一半仍走偏好设置 settings.tplImage:用户本就改得到,不在收编面里
+    assert(sb.__llm[0].user.includes('参考模板:{style}风格角色立绘'), '缺省参考模板应仍是该步内置的那一份');
+    const sb3 = loadPersona();
+    sb3.Store.state.settings.tplImage = '我的文生图模板';
+    await sb3.Persona.rewritePrompt(p, personaSubject());
+    assert(sb3.__llm[0].user.includes('参考模板:我的文生图模板'), 'tplImage 仍由用户在全局默认值页改得到(不是缺口)');
+    assertEq(sb3.__llm[0].system, SYS, '改模板不影响人设句的取值口');
+  } },
+  { name: '八维度重写文生图提示词人设(源级):js/persona.js 零内联全文,SK-11 记账随实况改写', fn() {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const psrc = fs.readFileSync(path.join(ROOT, 'js', 'persona.js'), 'utf8');
+    assert(psrc.includes("Prompts.get('persona.promptSystem')"), '该步应经注册表取人设(浏览器隐式读 Store 覆盖表)');
+    /* 收编前钉的是「这一步仍内联」,收编后这条 tripwire 反转并收严:
+     * 不只查 persona.js 没了内联全文,而是全仓只许注册表 def 这一份(哪个文件再抄一份都红) */
+    const files = fs.readdirSync(path.join(ROOT, 'js')).filter(f => f.endsWith('.js')).map(f => 'js/' + f)
+      .concat(['server.js', 'cli.js', 'mcp.js', 'index.html']);
+    const holders = files.filter(f => fs.readFileSync(path.join(ROOT, f), 'utf8').includes('你是文生图提示词专家'));
+    assertEq(holders.join(','), 'js/prompts.js', '该人设句字面应只剩注册表一份(注册表 def 为唯一来源)');
+    // 这条链路没有服务端对端:进表解决的是"可覆盖",不解决"可 headless"
+    ['server.js', 'cli.js'].forEach(f =>
+      assert(!fs.readFileSync(path.join(ROOT, f), 'utf8').includes('角色八维度人设'), f + ' 不应出现该步(八维度重写只在浏览器主体页)'));
+    // 记账:SK-11 登记自己两个注入落点的键,note 按实况改写
+    const sk11 = Skills.byId('subjects.refDiscipline');
+    assertEq(sk11.prompts.join(','), 'extract.system,persona.promptSystem', 'SK-11 应登记自己两个注入落点的提示词键');
+    assertEq(sk11.settings.join(','), 'tplImage', 'tplImage 仍是本条登记键(模板用户一直改得到,不记成缺口)');
+    assert(!/人设句入注册表待 G-13/.test(sk11.note), 'SK-11 的 note 不得再写「人设句入注册表待 G-13」(实况已进表)');
+    assert(sk11.note.includes('人设句已在注册表') && sk11.note.includes('persona.promptSystem'),
+      'SK-11 的 note 须写明本条两个登记键的人设都已在注册表');
+    /* 仍欠段只认「仍欠」之后那段(锚点写在"已落地"那半里不算交账),且点名的余量逐处对照源码还在:
+     * 后续槽把剧本模块那四步收编时这条转红,逼着同步改 SK-11 的记账 */
+    const owed = sk11.note.split('仍欠').slice(1).join('仍欠');
+    assert(owed.includes('js/episodes.js'), 'SK-11 的仍欠段须点名 G-13 余量落在哪一处(不在本条自己的登记面里)');
+    const eps = fs.readFileSync(path.join(ROOT, 'js', 'episodes.js'), 'utf8');
+    ['你是资深短剧解说编剧', '你是资深短剧/漫剧导演', '你是影视摄影指导(DP)', '你是短剧导演组的剧本围读会'].forEach(lit => {
+      assert(eps.includes("system: '" + lit), 'js/episodes.js 的这一步应仍是内联人设(收编后须同步改 SK-11 的仍欠段):' + lit);
+      assertEq(Prompts.list().filter(x => x.def.startsWith(lit)).length, 0, '注册表里不应已有这句(本槽不顺手收剧本模块四处):' + lit);
+    });
+    // 缺口未闭合(全仓内联人设仍在):标记不摘,G-13 的关联索引逐字节不变
+    assert(sk11.gaps.includes('G-13'), 'G-13 未闭合,本条的缺口标记不摘(关联索引口径:落地一面不摘标记)');
+    assertEq(Skills.gaps()['G-13'].join(','),
+      'script.hookType,script.aiToneBan,subjects.refDiscipline,eps.structureStage,gen.videoTpl,film.rhythmInject',
+      'G-13 的关联索引应逐字节不变(本槽只收一处取值口,不预支摘标记)');
+    assertEq(Skills.validate({ Prompts }).join(';'), '', '引用键自检应通过(新登记的键须在注册表内)');
   } },
   { name: 'Agent 单轮人设:经 WfCore.buildAgentSystem(agent.system) 取值,缺省逐字节等于收编前的模板串', fn() {
     const Prompts = require('../js/prompts.js');
@@ -5421,7 +5508,10 @@ const skillsTests = [
     const sk11 = Skills.byId('subjects.refDiscipline');
     assertEq(sk11.pending.length, 0, 'SK-11 校验面已落地,pending 应清空');
     assertEq(sk11.checks.join(','), 'subjects.genRefDiscipline');
-    assertEq(sk11.gaps.join(','), 'G-13', 'G-06 的校验半落地后本条只剩人设句入注册表那一项');
+    /* 说明串按实况反转:本条两个登记键的人设句都已进注册表(extract.system 与 persona.promptSystem),
+     * 这里留着 G-13 是因为缺口本身没闭合(全仓其余模块内联人设仍在),不是本条还有收编余量;
+     * 被断言的值一字未动,实况由 contract 套件那两条收编用例钉住 */
+    assertEq(sk11.gaps.join(','), 'G-13', 'G-06 的校验半落地后本条只剩 G-13 那一项');
     const sk13 = Skills.byId('subjects.crossShot');
     assertEq(sk13.checks.join(','), 'subjects.crossShotConsistency,subjects.multiShotPrompt', 'SK-13 承接一致性与多镜头写法两条实现');
     assertEq(sk13.gaps.join(','), 'S-03');
