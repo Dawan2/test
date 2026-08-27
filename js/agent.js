@@ -27,6 +27,21 @@
   };
   try { AC.prearrOn = sessionStorage.getItem('agentPrearr') === '1'; } catch (e) { /* 隐私模式等场景忽略 */ }
 
+  /* 板块方法论注入清单(按 KB.SECTIONS 键取用):板块 Agent 就位时整条注入本板块的知识库条目。
+   * 与 KB.block() 压缩摘要互补——摘要给全流程通识,本表给本板块的完整口径;
+   * 同一条提示词内不重复注入:分镜板块的 景别运镜/场面调度/剪辑节奏 由记忆种子(memAll KB_SEEDS)承担,故不列。 */
+  const BOARD_KB = {
+    剧本: ['反转五式', '人物体系', '剧本诊断'],
+    主体: ['主体参考'],
+    分集: ['六阶段结构'],
+    分镜: ['轴线匹配', '多镜头写法'],
+  };
+  function boardKBBlock(boardKey) {
+    const keys = (window.KB && BOARD_KB[boardKey]) || [];
+    if (!keys.length) return '';
+    return `\n★ 「${boardKey}」板块方法论(知识库条目,创作与审核按此口径):\n` + keys.map(k => '- ' + KB.section(k)).join('\n');
+  }
+
   /* 板块雇佣的专家对象(制片页「智能体分工」雇佣,未雇佣返回 null) */
   function boardExpert(p, boardKey) {
     const exId = p && p.boards && p.boards[boardKey] && p.boards[boardKey].expert;
@@ -780,7 +795,7 @@ ${AO.cmdProtocol()})
   /* renderGlobal/sendG/buildGlobalPrompt 等全局面板实现已拆至 agent-global.js(window.AgentG) */
 
   /* ---- 对外出口(批次拆分后):本地成员直出;ops 域与全局助手经 AgentOps/AgentG 代理(agent-ops.js/agent-global.js 后加载) ---- */
-  Object.assign(AC, { boardExpert, boardExpertBlock, upstreamFinal, expertPersona, findExpert, aPersonaBlock, gPersonaBlock, personaSelectHTML, memRemember, memBlock, openMemoryModal, guideBarHTML, opBoardKey });
+  Object.assign(AC, { boardExpert, boardExpertBlock, boardKBBlock, upstreamFinal, expertPersona, findExpert, aPersonaBlock, gPersonaBlock, personaSelectHTML, memRemember, memBlock, openMemoryModal, guideBarHTML, opBoardKey });
   window.Agent = {
     toggle, render, notify, refreshFocusChip,
     applyOps: (...a) => window.AgentOps && AgentOps.applyOps(...a),
