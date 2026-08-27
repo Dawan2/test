@@ -4803,6 +4803,70 @@ const contractTests = [
       'G-13 的六条关联索引逐字节不变(只收一面不摘标记)');
     assertEq(Skills.validate({ Prompts }).join(' | '), '', '新键须被 skill 索引引用且引用键都存在');
   } },
+  { name: '发行文案包人设:独立键 dist.copySystem 取值,缺省逐字节等于收编前的内联字面、KB 摘要尾不随覆盖变动', fn() {
+    const Prompts = require('../js/prompts.js');
+    const KB = require('../js/knowledge.js');
+    // 收编前写死在 js/proj-shell.js 那一步 system 前半的字面:缺省逐字节不得变
+    const SYS = '你是短剧发行运营专家,精通平台投稿与投流文案。';
+    assertEq(Prompts.get('dist.copySystem'), SYS, '缺省人设句应与收编前的内联字面逐字节相同');
+    const item = Prompts.list().find(x => x.key === 'dist.copySystem');
+    assert(item && !item.vars.length && item.name.startsWith('发行文案包') && item.name.includes('系统人设'),
+      '注册表应登记发行文案包人设条目(无变量,可在全局默认值页在线改写)');
+    /* 独立键而不与既有人设复用:发行运营的角色与主线各步都不同(同字面才谈得上复用) */
+    assertEq(Prompts.list().filter(x => x.def === SYS).length, 1, '该人设句应恰好命中注册表一条');
+    Prompts.list().forEach(x => assert(x.key === 'dist.copySystem' || x.def !== SYS,
+      '发行人设不得与既有键 ' + x.key + ' 同字面'));
+    /* 人设句之后现拼的 KB 摘要尾(钩子六型 + 付费卡点)是方法论正文,不随人设覆盖变动 */
+    const tail = KB.pick('钩子六型', '付费卡点');
+    assertEq(tail, KB.section('钩子六型') + KB.section('付费卡点'), '尾巴应是这两条 KB 条目正文按序拼接');
+    assert(tail, 'KB 摘要尾不应为空(条目改名后取值口会静默少半截)');
+    const OV = { 'dist.copySystem': '你是平台发行投放操盘手(覆盖生效)。' };
+    assertEq(Prompts.get('dist.copySystem', OV) + tail, '你是平台发行投放操盘手(覆盖生效)。' + tail,
+      '覆盖只换人设句:其后的 KB 摘要尾逐字节不变');
+    ['review.finalSystem', 'gen.promptSystem', 'agent.system'].forEach(k =>
+      assertEq(Prompts.get(k, OV), Prompts.get(k), '覆盖 dist.copySystem 时 ' + k + ' 应逐字节不动'));
+    /* 契约半不开放:六字段返回 JSON 仍留在 user 半,注册表里不该出现它(改坏即六个输入框一个都填不上) */
+    ['"logline"', '"introLong"', '"introShort"', '"topics"', '"announce"', '"promo"'].forEach(f =>
+      assertEq(Prompts.list().filter(x => x.def.includes(f)).length, 0, '返回 JSON 契约不进注册表:' + f));
+    /* 展示顺序按产品流程:发行是成片之后的收尾环节,排在成片审片之后、Agent 那几条之前 */
+    const keys = Prompts.list().map(x => x.key);
+    assertEq(keys[keys.indexOf('review.finalSystem') + 1], 'dist.copySystem', '发行文案包应紧接成片审片之后登记');
+    assert(keys.indexOf('dist.copySystem') < keys.indexOf('agent.system'), '发行文案包应排在 Agent 那几条之前');
+  } },
+  { name: '发行文案包人设(源级):js/proj-shell.js 零内联、取值口与 user 半锚点配对,SK-03 记账点名落点', fn() {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'proj-shell.js'), 'utf8');
+    // 取值口与这一步的 user 半锚点配对:键挪到别的调用点即红
+    assert(/system: Prompts\.get\('dist\.copySystem'\)[\s\S]{0,600}为以下短剧写发行文案包/.test(src),
+      '该步应就在它自己的取值口上经注册表取人设(浏览器隐式读 Store 覆盖表),且与该步 user 半锚点配对');
+    // 人设句之后按键现拼 KB 摘要:注入那一半不进覆盖面
+    assert(src.includes("Prompts.get('dist.copySystem') + (window.KB ? KB.pick('钩子六型', '付费卡点') : '')"),
+      'KB 钩子六型+付费卡点仍由取值口现拼(方法论正文不随人设覆盖变动)');
+    // 本槽只收这一处,收完这个文件就零内联人设了:退回内联当场红
+    assertEq((src.match(/system: '/g) || []).length, 0, 'js/proj-shell.js 不应再有内联 system 字面');
+    // 纯浏览器链路:这一步没有服务端/CLI 对端,那两处不得长出第二份 user 半
+    ['server.js', 'cli.js'].forEach(rel =>
+      assert(!fs.readFileSync(path.join(ROOT, rel), 'utf8').includes('为以下短剧写发行文案包'),
+        rel + ' 不应出现该步的 user 半(发行文案包只在浏览器剧壳页)'));
+    const sk3 = Skills.byId('core.personaCtx');
+    assert(sk3.prompts.includes('dist.copySystem'), 'SK-03 应登记 dist.copySystem');
+    assert(sk3.note.includes('dist.copySystem') && sk3.note.includes('js/proj-shell.js'),
+      'SK-03 的 note 须写明这一步的收编落点(键与取值口所在文件)');
+    assertEq(Skills.validate({ Prompts }).join(' | '), '', '新键须被 skill 索引引用且引用键都存在');
+  } },
+  { name: '注册表提示词全仓持有者名单:每条 def 的字面持有者逐键点名,恰好只有 js/prompts.js', fn() {
+    const Prompts = require('../js/prompts.js');
+    /* 名单口径:四端入口 + js 下全部模块,逐键扫一遍全仓。谁在别的文件里抄第二份 def 字面
+     * (哪怕原取值口仍走注册表)当场红;名单随注册表现推,新增键自动进名单,不必每收编一处各写一次扫描。 */
+    const files = ['server.js', 'cli.js', 'mcp.js', 'index.html']
+      .concat(fs.readdirSync(path.join(ROOT, 'js')).filter(n => n.endsWith('.js')).map(n => 'js/' + n)).sort();
+    const bodies = files.map(rel => [rel, fs.readFileSync(path.join(ROOT, rel), 'utf8')]);
+    const list = Prompts.list();
+    assert(list.length, '注册表应有条目(名单空转等于没查)');
+    list.forEach(it => assertEq(bodies.filter(([, s]) => s.includes(it.def)).map(([rel]) => rel).join(','), 'js/prompts.js',
+      it.key + ' 的提示词字面应只剩注册表一份(全仓持有者名单逐字节比对)'));
+  } },
   { name: 'Agent 单轮人设:经 WfCore.buildAgentSystem(agent.system) 取值,缺省逐字节等于收编前的模板串', fn() {
     const Prompts = require('../js/prompts.js');
     const Skills = require('../js/skills.js');
