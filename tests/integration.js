@@ -526,7 +526,7 @@ async function main() {
     const sMg = (await req('GET', '/api/state', null, token)).data.state.agentMemory || [];
     report('迁移不丢不双写(条目数不变,旧板名清零,正文原样)',
       sMg.length === memBefore + 8 && !sMg.some(m => m.scope === '构思') && sMg.filter(m => m.text === '旧板名条目:夜戏偏冷色').length === 1
-      && sMg.filter(m => m.scope === '导演').length === 1, JSON.stringify(sMg.map(m => m.scope)));
+      && sMg.filter(m => m.text === '旧板名条目:夜戏偏冷色' && m.scope === '导演').length === 1, JSON.stringify(sMg.map(m => m.scope)));
     await sleep(1100);
     const mgEmpty = await req('POST', '/api/wf/memory-seed', { from: '构思', to: '导演' }, token);
     report('空板迁移 400(旧板名下已无条目,不回空成功)', mgEmpty.status === 400 && /没有记忆条目/.test(mgEmpty.raw || ''), 'HTTP ' + mgEmpty.status + ' ' + mgEmpty.raw);

@@ -3343,6 +3343,8 @@ const server = http.createServer(async (req, res) => {
         // markers/even 两模式本就走本地切分;llm 模式锚点全落空(过滤后剩 0 集)时兜底并把 mode 如实降为 even
         if (!eps || !eps.length) { eps = WfCore.localSplitEpisodes(text); if (mode === 'llm') used = 'even'; }
         p.episodes = eps.map((e, i) => ({ id: uid('ep'), title: e.title, content: e.content, order: i, contentRev: 0, shots: [], status: 'draft' }));
+        // 拆集闭环结论按板块回流协作记忆:与浏览器 splitCore 同一份派生,同一次 wfSave 落盘
+        tree.agentMemory = WfCore.memWrite(tree.agentMemory, WfCore.memFeedback({ split: { p, mode: used } }, { now: nowStr }));
         const rev = wfSave(user.id, cur, tree);
         return ok(res, { rev, mode: used, overwritten: had, count: p.episodes.length, episodes: p.episodes.map(e => ({ id: e.id, title: e.title, chars: (e.content || '').length })) });
       } catch (e) {
@@ -3375,6 +3377,8 @@ const server = http.createServer(async (req, res) => {
         ep.understanding = WfCore.undNormalize(r.parsed, nowStr);
         ep.understanding.sourceRev = ep.contentRev || 0; // 记录理解对应的剧本版本(剧本修改后判旧)
         ep.understanding.graphRev = ep.graphRev || 0;    // 记录理解对应的事件图谱版本(图谱修订后判旧)
+        // 理解闭环结论按板块回流协作记忆:与浏览器 understanding.js 同一份派生,记忆从 state 树取出传参存回
+        tree.agentMemory = WfCore.memWrite(tree.agentMemory, WfCore.memFeedback({ und: { ep } }, { now: nowStr }));
         const rev = wfSave(user.id, cur, tree);
         return ok(res, { rev, understanding: ep.understanding });
       } catch (e) {
@@ -3426,6 +3430,8 @@ const server = http.createServer(async (req, res) => {
           ep.understanding = WfCore.undNormalize(ru.parsed, nowStr);
           ep.understanding.sourceRev = ep.contentRev || 0;
           ep.understanding.graphRev = ep.graphRev || 0; // 记录理解对应的事件图谱版本(图谱修订后判旧)
+          // 内部理解步同样是理解闭环(与 /api/wf/understanding 同一份派生);复用未过期理解时不重写
+          tree.agentMemory = WfCore.memWrite(tree.agentMemory, WfCore.memFeedback({ und: { ep } }, { now: nowStr }));
         }
         ctxBase.understandingText = WfCore.undToText(ep.understanding);
         const genShots = async (feedback, stepTag) => {
@@ -3489,6 +3495,8 @@ const server = http.createServer(async (req, res) => {
         ep.sbPlans = plans.length
           ? plans.map(pl => ({ id: uid('pl'), label: pl.label, score: pl.score, comments: pl.comments, shots: pl.shots, model: c.sbModel, contentRev: ep.contentRev || 0, time: nowStr(), adopted: !!pl.adopted }))
           : [];
+        // 分镜闭环结论按板块回流协作记忆:与浏览器 publishLLMShots 同一份派生,同一次 wfSave 落盘
+        tree.agentMemory = WfCore.memWrite(tree.agentMemory, WfCore.memFeedback({ sb: { ep } }, { now: nowStr }));
         const rev = wfSave(user.id, cur, tree);
         return ok(res, { rev, shots: shots.length, plans: plans.length, adopted: plans.length ? (plans.find(x => x.adopted) || {}).label : undefined });
       } catch (e) {

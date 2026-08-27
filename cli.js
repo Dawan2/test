@@ -126,8 +126,10 @@ function deepApply(obj, pathArr, value) {
   cur[pathArr[pathArr.length - 1]] = value;
 }
 /* fn(proj, state) 变更 proj;整体经 changes.projects 增量推回(服务端按 id 覆盖)。
- * 收费安全:fn 仅在首次拉取的快照上执行一次;409 时重取 state、回放补丁、重试提交(≤3 次) */
-async function withProject(pid, flags, fn) {
+ * 收费安全:fn 仅在首次拉取的快照上执行一次;409 时重取 state、回放补丁、重试提交(≤3 次)。
+ * memFeed(proj) 可选:回一组闭环回流记忆条目(WfCore.memFeedback 派生),随**同一次** PUT 带上 meta 桶
+ * 整组替换(与 memory add / CMD.release 同通道),不新增接口调用;重试时按最新 state 重建 meta */
+async function withProject(pid, flags, fn, memFeed) {
   let cur = await stateGet(flags);
   let proj = (cur.state.projects || []).find(p => p.id === pid);
   if (!proj) throw new CliError('项目不存在:' + pid, 4);
@@ -143,8 +145,16 @@ async function withProject(pid, flags, fn) {
       if (!proj) throw new CliError('项目不存在:' + pid, 4);
       patch.forEach(pl => deepApply(proj, pl.path, pl.value));
     }
+    const changes = { projects: { [pid]: proj } };
+    const entries = typeof memFeed === 'function' ? (memFeed(proj) || []) : [];
+    if (entries.length) {
+      const meta = {};
+      for (const k in cur.state) if (k !== 'projects') meta[k] = cur.state[k]; // meta 桶整组替换(计费键服务端权威回填)
+      meta.agentMemory = WfCore.memWrite(cur.state.agentMemory, entries);
+      changes.meta = meta;
+    }
     try {
-      const d = await PUT('/api/state', { rev: cur.rev, changes: { projects: { [pid]: proj } } }, flags);
+      const d = await PUT('/api/state', { rev: cur.rev, changes }, flags);
       return { ret, rev: d.rev, project: proj };
     } catch (e) {
       if (e.exit === 7 && attempt < 2) continue;
@@ -1331,7 +1341,9 @@ EXEC['project.extractSubjects'] = { needs: ['p'], meter: true, run: async (args,
       projLive.subjects.push(sj);
     }));
     stat.total = projLive.subjects.length;
-  });
+  // 提取主体闭环结论按板块回流协作记忆:端点只出候选不写回 state,入库口径归调用方,回流同挂入库这一步
+  // (与浏览器 Commands 的 project.extractSubjects 同一份 WfCore 派生),随同一次 PUT 的 meta 桶写回
+  }, projLive => WfCore.memFeedback({ extract: { p: projLive, added: stat.added, skipped: stat.skipped } }, { now: () => new Date().toLocaleString('zh-CN') }));
   return execOk({ added: stat.added, skipped: stat.skipped, total: stat.total, truncated: b.truncated });
 } };
 

@@ -6504,7 +6504,7 @@ const memoryTests = [
     // 服务端回流点就在闭环写完 lastReview 之后、落盘之前(不另起一次 state 写)
     const srv = files['server.js'];
     const iLast = srv.indexOf('ep.lastReview = {\n          time: nowStr(), avg,');
-    const iMem = srv.indexOf('tree.agentMemory = WfCore.memWrite(');
+    const iMem = srv.indexOf('tree.agentMemory = WfCore.memWrite(', iLast); // 前段四步的回流点在本文件更靠前,从 lastReview 起找审片那一处
     assert(iLast > 0 && iMem > iLast && iMem < srv.indexOf('const rev = wfSave(user.id, cur, tree);', iLast),
       '服务端回流应在 lastReview 写好之后、wfSave 落盘之前');
   } },

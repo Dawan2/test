@@ -46,6 +46,13 @@
       return WfCore.undFallback(p, ep, Store.now, styleOf(p));
     }
   }
+  /* 理解闭环结论按板块回流协作记忆(导演板块):派生走 WfCore 双端单源(与服务端 /api/wf/understanding 同一份),
+   * 记忆桶经参数显式注入后存回既有 state.agentMemory;回退模板不是理解结论,派生侧按 fallback 标记自行不写。
+   * 两个交付点(两阶段 Step1 与独立重生成)共用本委托,挂在各自原本那次 Store.save() 之前,不多一次落盘 */
+  function memBack(ep) {
+    Store.state.agentMemory = WfCore.memWrite(Store.state.agentMemory,
+      WfCore.memFeedback({ und: { ep } }, { now: Store.now }));
+  }
   function DIMS_DIR(ds) {
     return WfCore.dimsText(ds); // 二十一轮:导演设定五维文本下沉 wf-core.js(不再依赖 window.DIR_DIMS 兜底数组)
   }
@@ -109,6 +116,7 @@
           ep.understanding = st.understanding;
           ep.understanding.sourceRev = ep.contentRev || 0; // 十轮:记录理解对应的剧本版本(剧本修改后判旧)
           ep.understanding.graphRev = ep.graphRev || 0;    // 记录理解对应的事件图谱版本(图谱修订后判旧)
+          memBack(ep);
           Store.save();
           Tasks.done(tk);
           info(0, `<span style="color:var(--green)">✓ 本集理解已生成(${((Date.now() - t0) / 1000).toFixed(1)}s):${U.esc(st.understanding.剧情脉络.slice(0, 30))}…</span>`);
@@ -154,6 +162,7 @@
     nu.sourceRev = ep.contentRev || 0; // 生成成功刷 sourceRev(对应器当前剧本版本,不判旧)
     nu.graphRev = ep.graphRev || 0;    // 同步刷 graphRev(对应器当前图谱版本)
     ep.understanding = nu;
+    memBack(ep);
     Store.save();
     U.toast('本集理解已生成,将注入智能分镜/提示词优化/视频生成', 'success', 3000);
     return true;
