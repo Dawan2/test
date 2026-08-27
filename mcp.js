@@ -16,6 +16,7 @@ const readline = require('readline');
 
 const CLI = path.join(__dirname, 'cli.js');
 const CmdRegistry = require('./js/cmd-registry.js'); // 领域命令词表/描述单源(hujing_exec 等工具描述由此生成)
+const Skills = require('./js/skills.js'); // 主线 skill 索引(按七步索引 KB/Prompts/命令/专家的引用键;与 CLI、浏览器、server.js 同一份注册表)
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_INFO = { name: 'hujing-manju', version: '1.0.0' };
 

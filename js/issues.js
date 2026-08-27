@@ -1,11 +1,18 @@
 /* ============ issues.js 问题中心(协同层,第三阶段) ============
- * 项目级待处理问题单一聚合:失败镜/过期镜/未分镜/缺剧本/低分审片/待确认/成片过期/主体缺图,
+ * 项目级待处理问题单一聚合:失败镜/过期镜/未分镜/缺剧本/低分审片/待确认/成片过期/主体缺图/跨镜主体不一致,
  * 逐项由 Domain.episodeState(blockers/counts)推导——与流程条/下一步/跑批/CLI 同一口径,不自造第二套状态。
  * 每项问题带可操作处置:命令类(episode.generateVideos shotIds 子集重生成/智能分镜/重新合成)经统一命令层
  * ui 模式执行;导航类跳对应页面。入口:项目页「问题」按钮(角标=未解决数,Bus 事件驱动实时刷新)。 */
 (function () {
 
   const online = () => !!(window.Media && Media.isReady && Media.isReady());
+
+  /* 跨镜主体一致性命中码 → 展示文案(判据在 js/skills.js 的校验项,本层只管展示,不写第二份判定) */
+  const CONSIST = {
+    'ref-image-drift': '参考图与其余镜不是同一张',
+    'ref-lock-gap': '未进参考图组(形象无锁)',
+    'alias-drift': '引用名与其余镜不统一',
+  };
 
   /* ================= 问题清单推导(纯数据,可 vm 沙箱测试) =================
    * 条目:{ kind, sev(high|mid|low), count, label, detail, epid?, epTitle?, cmd?, shotIds?, goto? }
@@ -51,6 +58,16 @@
         out.push(Object.assign({}, base, { kind: 'low-review', sev: 'mid', count: lows.length || 1, label: `「${ep.title}」审片均分 ${st.reviewAvg} 低于达标线`, detail: lows.length ? `低分镜:${lows.map(x => (x.order + 1) + '镜' + x.score + '分').slice(0, 6).join('、')}` : '整体质量待修订(可让助手按问题清单优化提示词)', goto: `#/project/${p.id}/episode/${ep.id}` }));
       }
       if (ep.composed && !st.composedReady) out.push(Object.assign({}, base, { kind: 'composed-stale', sev: 'mid', count: 1, label: `「${ep.title}」成片已过期`, detail: '合成输入或剧本已变化,需重新合成', cmd: 'episode.compose' }));
+      /* 跨镜主体一致性(js/skills.js 校验项,纯本地零 LLM 零计费):同一主体在镜间锁到的参考图/引用名不一致 →
+       * 低危提醒,只报不拦——发布门 G2 只数高/中危,本项不改门禁状态,也不进 Domain 的阻塞项 */
+      const consist = window.Skills ? (Skills.check('subjects', { p, ep }).find(x => x.skill === 'subjects.crossShot') || {}).hits || [] : [];
+      if (consist.length) out.push(Object.assign({}, base, {
+        kind: 'subject-inconsistent', sev: 'low', count: consist.length,
+        label: `「${ep.title}」${consist.length} 处跨镜主体参考不一致`,
+        detail: consist.slice(0, 4).map(h => `镜头${h.order}「${h.name}」${CONSIST[h.code] || h.code}`).join(';')
+          + (consist.length > 4 ? ` 等 ${consist.length} 处` : '') + '——同一主体形象易在镜间漂移',
+        goto: `#/project/${p.id}/episode/${ep.id}`,
+      }));
     });
     const SEV = { high: 0, mid: 1, low: 2 };
     const sevOf = x => (SEV[x] === undefined ? 9 : SEV[x]);

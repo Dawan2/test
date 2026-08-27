@@ -22,6 +22,7 @@ const crypto = require('crypto');
 const Domain = require('./js/domain.js'); // 领域单一来源:指纹/就绪/判旧/工作流状态与主应用逐字节一致
 const CmdRegistry = require('./js/cmd-registry.js'); // 领域命令元数据单源:exec 用法/help 文案/needs 校验由此生成(与前端 Commands 同词表)
 const WfCore = require('./js/wf-core.js'); // 工作流提示词单源:produce 修订重抽的重写模板/记忆召回与浏览器同字面
+const Skills = require('./js/skills.js'); // 主线 skill 索引(按七步索引 KB/Prompts/命令/专家的引用键;与浏览器、server.js 同一份注册表)
 
 /* ================= 基础设施:配置 / 参数 / 输出 ================= */
 const CFG_DIR = process.env.HUJING_CONFIG_DIR || path.join(os.homedir(), '.hujing');
@@ -1000,11 +1001,13 @@ async function execNext(pid, epid, f) {
   } catch (_) { return null; }
 }
 
-/* 生产就绪检查(read):Domain.episodeState 单源推导 */
+/* 生产就绪检查(read):Domain.episodeState 单源推导;result.checks 附主体面校验项结论
+ * (Skills.check,纯本地零 LLM 零计费,只报不拦——不进 blockers、不改 ok/status;与前端命令层同一份结论) */
 EXEC['episode.preflight'] = { needs: ['p', 'ep'], meter: false, next: false, run: async (args, f) => {
   const { p, ep } = await execCtx(args, f);
   const st = Domain.episodeState(p, ep, true);
-  return { ok: st.status !== 'blocked' && !st.shotsStale, status: st.status, result: st };
+  const checks = Skills.check('subjects', { p, ep }, { online: true });
+  return { ok: st.status !== 'blocked' && !st.shotsStale, status: st.status, result: Object.assign({}, st, { checks }) };
 } };
 
 /* 批量生成视频(exec):确认闸口径=未确认镜跳过并如实进 skipped(与前端 headless/CLI gen-episode 一致);
