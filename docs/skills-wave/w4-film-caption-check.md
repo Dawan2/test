@@ -25,7 +25,7 @@
 
 | 位置 | 改造前 | 改造后 |
 |---|---|---|
-| `js/sb-io.js` `doCompose` | 内联三元式算 `segDur`,`it.dur` 另写一份钳制,烧录文本 `slice(0, 120)` | `Store.segDurationOf(s, true/false)` + `Store.SUB_BURN_MAX` |
+| `js/sb-io.js` `doCompose` | 内联三元式算 `segDur`,`it.dur` 另写一份钳制,烧录文本 `slice(0, 120)` | `Store.segDurationOf(s, true/false)` + `Domain.SUB_BURN_MAX` |
 | `cli.js` `composeItems` | 同上,内联第二份 | `Domain.segDurationOf(s, true/false)` + `Domain.SUB_BURN_MAX` |
 | `js/skills.js` SK-28 | ——(校验面未落地) | `Domain.subtitleSegs` + `Domain.SUB_BURN_MAX` |
 

@@ -482,7 +482,7 @@
         const shotList = (opts && opts.shotsOverride) || Store.composeSeqOf(ep);
         let itemIdx = 0;
         for (const s of shotList) {
-          const it = { text: ep.sbConfig.subtitle ? String(s.dialogue || s.narration || '').slice(0, Store.SUB_BURN_MAX) : '' };
+          const it = { text: ep.sbConfig.subtitle ? String(s.dialogue || s.narration || '').slice(0, Domain.SUB_BURN_MAX) : '' };
           let segDur = 0; // 该段在成片时间轴上的时长(SRT 用)
           if (s.audioUrl) it.audio = s.audioUrl; // 逐镜 TTS 配音混入成片音轨
           // 真实转场(2026-08 六轮):转场记在后一镜 s.transition(该镜与前一镜之间),随段传给服务端 xfade/acrossfade

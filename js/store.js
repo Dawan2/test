@@ -689,8 +689,6 @@
     composedDialogueSig(ep) {
       return Domain.composedDialogueSig(ep, _online());
     },
-    /* 烧录字幕单条硬上限(取自 domain.js:合成截断口径与字幕质检判据同一常量) */
-    SUB_BURN_MAX: Domain.SUB_BURN_MAX,
     /* 成片时间轴单段时长(实现下沉 domain.js):合成 items 与字幕时间轴共用同一口径 */
     segDurationOf(s, hasVideo) {
       return Domain.segDurationOf(s, hasVideo);
