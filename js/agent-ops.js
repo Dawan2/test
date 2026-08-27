@@ -737,13 +737,14 @@
     return blocks.join('');
   }
 
-  /* 预排模式 LLM 协议:返回 {"plan":{"action":"sb"|"batchvideo","summary":"一句话方案","params":{...}}} + {"reply":"给用户的解释"} */
+  /* 预排模式 LLM 协议:返回 {"plan":{"action":"sb"|"batchvideo","summary":"一句话方案","params":{...}}} + {"reply":"给用户的解释"}
+   * 人设句取注册表 agent.previsSystem(浏览器隐式读 Store 覆盖表);其后的方案协议与参数面仍在此拼,不开放覆盖。 */
   function prearrPrompt(p, ep, sysExtra) {
     const c = (ep && ep.sbConfig) || {};
     const vmodels = window.MODELS ? MODELS.video.join('/') : '';
     const cams = (window.SB && SB.CAMERAS ? SB.CAMERAS : (window.CAMERAS || [])).join('/');
     const strats = window.STRATEGIES ? STRATEGIES.map(s => s.id + '=' + s.name).join(',') : 'ref=分镜参考,fusion=多图融合,frames=首尾帧';
-    return `你是「虎鲸导演助手」,短剧创作智能体,当前处于「🎛 预排模式」。${sysExtra || ''}
+    return `${Prompts.get('agent.previsSystem')}${sysExtra || ''}
 用户输入创作意图,你【不直接执行任何修改、不返回 ops】,而是输出一个「参数预排方案」,由用户确认后才执行。
 返回 JSON {"reply":"给用户的解释(说明方案思路)","thinking":"一句话思考摘要","plan":{"action":"sb|batchvideo","summary":"一句话方案说明","params":{...}}}。
 action 二选一:

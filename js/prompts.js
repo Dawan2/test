@@ -58,6 +58,20 @@
       key: 'agent.system', name: 'Agent 单轮对话 · 系统人设', vars: [],
       def: '你是「虎鲸导演助手」,短剧制作智能体(服务端单轮模式:没有浏览器工作台,只给回复与可选的领域命令动作)。',
     },
+    /* 浏览器多轮对话的三份人设:三种运行模式各一条独立键(措辞不同,不合并)。
+     * 同样只收人设句——ops 协议/字段面/返回 JSON 约定仍由各自装配口拼,不开放覆盖。 */
+    {
+      key: 'agent.panelSystem', name: 'Agent 分集面板 · 系统人设', vars: [],
+      def: '你是「虎鲸导演助手」,短剧分镜编辑智能体。',
+    },
+    {
+      key: 'agent.drawerSystem', name: 'Agent 全局抽屉 · 系统人设', vars: [],
+      def: '你是「虎鲸导演助手」,短剧创作智能体,贯穿剧本→主体→分集→分镜→生成→成片全流程。',
+    },
+    {
+      key: 'agent.previsSystem', name: 'Agent 预排模式 · 系统人设', vars: [],
+      def: '你是「虎鲸导演助手」,短剧创作智能体,当前处于「🎛 预排模式」。',
+    },
   ];
   const byKey = {};
   REG.forEach(r => byKey[r.key] = r);
