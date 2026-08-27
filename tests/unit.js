@@ -3845,6 +3845,29 @@ const contractTests = [
       assert(src.includes('WfCore.buildOptimizeUser('), f + ' 的 user 半应沿用 wf-core 单源模板');
     });
   } },
+  { name: '整集共性汇总人设:两端同经 Prompts.get(review.sumSystem),缺省逐字节等于内联原字面', fn() {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    // 缺省不变:收编前两端写死的人设句字面,收编后仍逐字节相同(只换取值口,不接方法论块/注入块)
+    assertEq(Prompts.get('review.sumSystem'), '你是短剧审片总监。', '缺省人设句应与收编前的内联字面逐字节相同');
+    assertEq(Prompts.get('review.sumSystem', { 'review.sumSystem': '汇总官。' }), '汇总官。', '覆盖 review.sumSystem 时两端取值跟随');
+    const item = Prompts.list().find(x => x.key === 'review.sumSystem');
+    assert(item && !item.vars.length && item.name.includes('共性汇总'), '注册表应登记共性汇总人设条目(无变量,可在全局默认值页在线改写)');
+    // 双端消费点:两端都不留人设句字面,服务端显式传覆盖表(Node 无 window 读不到 Store)
+    const rv = fs.readFileSync(path.join(ROOT, 'js', 'review.js'), 'utf8');
+    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    assert(rv.includes("Prompts.get('review.sumSystem')"), '浏览器共性汇总应经注册表取人设');
+    assert(srv.includes("Prompts.get('review.sumSystem', ov)"), '服务端共性汇总应经注册表取人设并显式传覆盖表');
+    [['js/review.js', rv], ['server.js', srv]].forEach(([f, src]) => {
+      assert(!src.includes('你是短剧审片总监'), f + ' 不应再内联人设句(覆盖不会跟过去)');
+    });
+    assert(Skills.byId('core.personaCtx').prompts.includes('review.sumSystem'), 'SK-03 应登记 review.sumSystem');
+    // SK-03 note 点名的剩余余量属实:剧本拆集步两端仍是内联人设(收编它时本条与 note 一并改)
+    const eu = fs.readFileSync(path.join(ROOT, 'js', 'episode-util.js'), 'utf8');
+    [['js/episode-util.js', eu], ['server.js', srv]].forEach(([f, src]) => {
+      assert(src.includes("system: '你是专业的短剧策划编辑。'"), f + ' 的剧本拆集人设仍是内联(SK-03 仍欠段点名的那一处)');
+    });
+  } },
   { name: '审片升为主线一等步骤(G-03):板块 Agent 有审片席;plans/工作区/CLI 都映射 episode.smartReview', fn() {
     const D = require(path.join(ROOT, 'js/domain.js'));
     const mains = D.workflow({ id: 'p1', episodes: [], subjects: [] }, true).steps.filter(s => !s.side).map(s => s.key);
@@ -5266,7 +5289,7 @@ const skillsTests = [
     const wfSteps = DomainMod.workflow({ id: 'p1', episodes: [], subjects: [] }).steps.map(x => x.key);
     // 每条:缺口出口的实况判据 + note 里必须点名的那几处余量(接上了就要同步改 note,不许静默扩面)
     const facts = {
-      'core.personaCtx': ['G-01', /function wfPersonaNote\(/.test(srv), ['共性汇总', '未收进提示词注册表']],
+      'core.personaCtx': ['G-01', /function wfPersonaNote\(/.test(srv), ['剧本拆集', '未收进提示词注册表']],
       'core.memoryDual': ['G-02', typeof W.memRecall === 'function' && typeof W.memBlock === 'function', ['memAll', 'SK-26']],
       'review.stage': ['G-03', wfSteps.includes('review'), ['SK-24', '未审片']],
     };
@@ -5345,13 +5368,9 @@ const skillsTests = [
       && rv.includes("WfCore.memBlock(Store.state.agentMemory, ep.title || '', '成片')"), '浏览器集级 ctx 应取成片板块人设与记忆');
     assert(rv.includes('WfCore.buildSumUser(reports, episodeReviewCtx(p, ep))') && rv.includes('WfCore.buildCutUser(brief, episodeReviewCtx(p, ep))'),
       '浏览器共性汇总与四维评审都要带 ctx');
-    // 两个系统人设键仍登记在 SK-03 名下;共性汇总步仍是内联 system = SK-03 note 里点名的剩余余量
+    // 三步的系统人设键都登记在 SK-03 名下(共性汇总的 review.sumSystem 由收编断言另行钉住字面与消费点)
     const sk3 = Skills.byId('core.personaCtx');
-    ['sb.reviewSystem', 'review.finalSystem'].forEach(k => assert(sk3.prompts.includes(k), 'SK-03 应登记 ' + k));
-    ['server.js', path.join('js', 'review.js')].forEach(rel => {
-      assert(fs.readFileSync(path.join(ROOT, rel), 'utf8').includes("system: '你是短剧审片总监。'"), rel + ' 的整集共性汇总仍是内联 system');
-    });
-    assertEq(require('../js/prompts.js').list().filter(x => x.key.includes('sum')).length, 0, '共性汇总步尚未登记提示词键');
+    ['sb.reviewSystem', 'review.sumSystem', 'review.finalSystem'].forEach(k => assert(sk3.prompts.includes(k), 'SK-03 应登记 ' + k));
     // 已覆盖的那几步反向钉住:接住人设与记忆的步不得退回去
     assert(/personaNote: wfPersonaNote\(tree, p, WfCore\.WF_BOARD\['smart-review'\]\)/.test(srv), '逐镜审片步应仍带人设');
     assert(/memText: WfCore\.memBlock\(tree\.agentMemory, s\.plot \|\| '', '成片'\)/.test(srv), '逐镜审片步应仍带记忆召回');

@@ -766,14 +766,15 @@
     {
       id: 'core.personaCtx', sk: 'SK-03', name: '生效人设经 ctx 过服务端', stage: CROSS, wave: 'W3',
       kinds: ['infra'],
-      prompts: ['sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.finalSystem'],
+      prompts: ['sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem'],
       cmds: ['episode.understanding', 'episode.generateStoryboard', 'episode.smartReview'], gaps: ['G-01'],
       note: 'G-01 已落地:服务端 /api/wf/* 各端点经唯一装配口 wfPersonaNote 注入生效人设(板块雇佣 > 全局雇佣),'
         + '浏览器同装配口;infra 面的 pending 已按实况清空(gaps() 只投影 gaps 字段、不看 pending,清账动不到投影),'
         + '缺口标记按关联索引口径保留。审片侧三步的人设通道已补齐——分镜评审 sb.reviewSystem 随分镜板块 ctx、'
-        + '四维成片评审 review.finalSystem 与整集共性汇总(仍是内联 system,未登记为提示词键)随成片板块 ctx,'
-        + '三步的 user 模板经 WfCore.reviewCtxNote 统一拼注入段,两端同口径且未雇佣时逐字节不变。'
-        + '仍欠:共性汇总步的系统人设未收进提示词注册表(内联 system 不可被用户覆盖)',
+        + '四维成片评审 review.finalSystem 与整集共性汇总 review.sumSystem 随成片板块 ctx,'
+        + '三步的 user 模板经 WfCore.reviewCtxNote 统一拼注入段,两端同口径且未雇佣时逐字节不变;'
+        + '共性汇总的人设句已收进注册表,两端同经 Prompts.get 取值、缺省逐字节不变。'
+        + '仍欠:剧本拆集步的系统人设未收进提示词注册表(两端内联 system,用户覆盖不到)',
     },
     {
       id: 'core.memoryDual', sk: 'SK-04', name: '长期记忆双端与召回纯函数', stage: CROSS, wave: 'W3',
