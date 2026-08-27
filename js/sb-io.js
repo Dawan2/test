@@ -421,7 +421,7 @@
   }
 
   /* ================= SRT 软字幕(P1-6:合成时按时间轴同步产出,导出菜单另存) =================
-   * 与 doCompose items 同源:每段时长 = 时间线裁剪出入点差(视频) / it.dur(图片段) / 分镜预估时长(兜底);
+   * 与 doCompose items 同源:每段时长现取 Store.segDurationOf(口径下沉 domain.js,字幕质检同用一份);
    * 转场 xfade 重叠由服务端定,客户端字幕按硬切时间轴近似(逐段对齐,误差 ≤ 转场时长);空文本段占时长但不出条目 */
   function srtTime(sec) {
     const ms = Math.max(0, Math.round(sec * 1000));
@@ -482,7 +482,7 @@
         const shotList = (opts && opts.shotsOverride) || Store.composeSeqOf(ep);
         let itemIdx = 0;
         for (const s of shotList) {
-          const it = { text: ep.sbConfig.subtitle ? String(s.dialogue || s.narration || '').slice(0, 120) : '' };
+          const it = { text: ep.sbConfig.subtitle ? String(s.dialogue || s.narration || '').slice(0, Domain.SUB_BURN_MAX) : '' };
           let segDur = 0; // 该段在成片时间轴上的时长(SRT 用)
           if (s.audioUrl) it.audio = s.audioUrl; // 逐镜 TTS 配音混入成片音轨
           // 真实转场(2026-08 六轮):转场记在后一镜 s.transition(该镜与前一镜之间),随段传给服务端 xfade/acrossfade
@@ -491,7 +491,7 @@
             it.video = s.video.url;
             if (typeof s._tlStart === 'number') it.start = s._tlStart; // 时间线裁剪:入点
             if (typeof s._tlEnd === 'number') it.end = s._tlEnd;       // 时间线裁剪:出点
-            segDur = (typeof s._tlStart === 'number' && typeof s._tlEnd === 'number') ? Math.max(0.5, s._tlEnd - s._tlStart) : (window.SB && SB.estShotDuration ? SB.estShotDuration(s) : s.duration || 3);
+            segDur = Store.segDurationOf(s, true);
           }
           else if (s.image) {
             let img = s.image;
@@ -501,7 +501,7 @@
             }
             if (!img) continue;
             it.image = img;
-            it.dur = Math.max(2, Math.min(15, (window.SB && SB.estShotDuration ? SB.estShotDuration(s) : s.duration || 3)));
+            it.dur = Store.segDurationOf(s, false);
             segDur = it.dur;
           } else continue; // 该镜无任何素材,跳过
           items.push(it);

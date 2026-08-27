@@ -338,6 +338,26 @@
     for (let i = 0; i < sig.length; i++) h = ((h << 5) + h + sig.charCodeAt(i)) >>> 0;
     return 'd:' + h.toString(36);
   };
+  /* 成片时间轴单段时长(秒):视频段取时间线裁剪出入点差(无裁剪回落预估时长),图片段按 2-15s 钳制。
+   * 真实合成 items(sb-io.js doCompose / cli.js composeItems)与字幕时间轴共用本口径,不各写一份。 */
+  D.segDurationOf = function (s, hasVideo) {
+    const est = D.estShotDuration(s);
+    if (!hasVideo) return Math.max(2, Math.min(15, est));
+    return (typeof s._tlStart === 'number' && typeof s._tlEnd === 'number') ? Math.max(0.5, s._tlEnd - s._tlStart) : est;
+  };
+  /* 烧录字幕单条硬上限(字):超出部分合成时被截断(SRT 软字幕仍保留全文) */
+  D.SUB_BURN_MAX = 120;
+  /* 成片字幕时间轴段:与真实合成 items 同源同序(composeSeqOf 在列镜头,文本取台词优先旁白),
+   * 逐段带累计起止秒——SRT 产出与字幕质检(js/skills.js SK-28)共用本构造,不各切一份段 */
+  D.subtitleSegs = function (ep, online) {
+    let t = 0;
+    return D.composeSeqOf(ep, online).map(s => {
+      const dur = D.segDurationOf(s, !!(D.shotVideoReady(s, online) && s.video && s.video.url));
+      const seg = { id: s.id, order: (+s.order || 0) + 1, text: String(s.dialogue || s.narration || '').trim(), dur, start: t, end: t + dur };
+      t += dur;
+      return seg;
+    });
+  };
   /* 成片就绪(真实):composed 且非离线模拟 且 合成输入未变化 且 剧本/图谱版本仍为合成时版本。
    * 剧本/图谱维度(原独立 composedStaleByScript)并入:技术上存在成片文件 ≠ 业务上仍是最新成片;
    * 无指纹/无 rev 记录的旧数据:无指纹判未就绪(无法证明输入未变),无 rev 记录保持原语义(迁移兼容)。 */

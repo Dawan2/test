@@ -137,6 +137,12 @@ async function main() {
       && chk.hits.every(h => h.order >= 1 && !!h.shotId),
       JSON.stringify(chk && { level: chk.level, hits: chk.hits.length }));
   }
+  { // 成片字幕面校验项:两镜尚无视频/底图 → 合成时间轴未成形,如实给 info 空结论(不冒充通过判定)
+    const cap = ((r.out && r.out.result && r.out.result.checks) || []).find(c => c.skill === 'film.subtitleQC');
+    report('exec preflight 附成片字幕面校验项(时间轴未成形 → info 空结论)',
+      !!cap && cap.id === 'film.subtitleTiming' && cap.pass === true && cap.level === 'info' && cap.hits.length === 0,
+      JSON.stringify(cap && { level: cap.level, hits: cap.hits.length }));
+  }
   r = cli('exec', 'episode.preflight', '--pid', pid, '--epid', ep2); // ep2 无剧本
   report('exec preflight 缺剧本 → blocked exit 2', r.code === 2 && r.out.ok === false && r.out.status === 'blocked' && r.out.result.blockers.some(b => b.code === 'no-script'), 'exit=' + r.code);
   r = cli('exec', 'episode.generateVideos', '--pid', pid, '--epid', ep2); // 未确认镜 → blocked,零生成零计费

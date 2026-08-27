@@ -689,6 +689,14 @@
     composedDialogueSig(ep) {
       return Domain.composedDialogueSig(ep, _online());
     },
+    /* 成片时间轴单段时长(实现下沉 domain.js):合成 items 与字幕时间轴共用同一口径 */
+    segDurationOf(s, hasVideo) {
+      return Domain.segDurationOf(s, hasVideo);
+    },
+    /* 成片字幕时间轴段(实现下沉 domain.js):SRT 产出与字幕质检共用同一份切段 */
+    subtitleSegs(ep) {
+      return Domain.subtitleSegs(ep, _online());
+    },
     /* 节拍板出片就绪(真实):与 shotVideoReady 同语义的节拍段版本(实现下沉 domain.js) */
     beatVideoReady(b) {
       return Domain.beatVideoReady(b, _online());

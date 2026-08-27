@@ -321,7 +321,7 @@ async function composeItems(ep, flags) {
   const seq = Domain.composeSeqOf(ep, true); // canonical 序列:与写回的 composedInputHash 完全同源
   for (let idx = 0; idx < seq.length; idx++) {
     const s = seq[idx];
-    const it = { text: subtitle ? String(s.dialogue || s.narration || '').slice(0, 120) : '' };
+    const it = { text: subtitle ? String(s.dialogue || s.narration || '').slice(0, Domain.SUB_BURN_MAX) : '' };
     let segDur = 0; // 该段在成片时间轴上的时长(SRT 用)
     if (s.audioUrl) it.audio = s.audioUrl; // 逐镜 TTS 配音混入成片音轨
     if (idx > 0 && s.transition) it.transition = { type: String(s.transition).slice(0, 12) }; // 转场记在后一镜
@@ -329,7 +329,7 @@ async function composeItems(ep, flags) {
       it.video = s.video.url;
       if (typeof s._tlStart === 'number') it.start = s._tlStart; // 时间线裁剪:入点
       if (typeof s._tlEnd === 'number') it.end = s._tlEnd;       // 时间线裁剪:出点
-      segDur = (typeof s._tlStart === 'number' && typeof s._tlEnd === 'number') ? Math.max(0.5, s._tlEnd - s._tlStart) : Domain.estShotDuration(s);
+      segDur = Domain.segDurationOf(s, true);
     } else {
       let img = s.image;
       if (String(img).startsWith('data:')) { // 占位/截帧 dataURL 先传服务端(对齐 doCompose)
@@ -338,7 +338,7 @@ async function composeItems(ep, flags) {
       }
       if (!img) continue;
       it.image = img;
-      it.dur = Math.max(2, Math.min(15, Domain.estShotDuration(s)));
+      it.dur = Domain.segDurationOf(s, false);
       segDur = it.dur;
     }
     items.push(it);
@@ -1013,12 +1013,12 @@ async function execNext(pid, epid, f) {
   } catch (_) { return null; }
 }
 
-/* 生产就绪检查(read):Domain.episodeState 单源推导;result.checks 附主体面校验项结论
+/* 生产就绪检查(read):Domain.episodeState 单源推导;result.checks 附主体面与成片字幕面校验项结论
  * (Skills.check,纯本地零 LLM 零计费,只报不拦——不进 blockers、不改 ok/status;与前端命令层同一份结论) */
 EXEC['episode.preflight'] = { needs: ['p', 'ep'], meter: false, next: false, run: async (args, f) => {
   const { p, ep } = await execCtx(args, f);
   const st = Domain.episodeState(p, ep, true);
-  const checks = Skills.check('subjects', { p, ep }, { online: true });
+  const checks = Skills.check('subjects', { p, ep }, { online: true }).concat(Skills.check('film', { p, ep }, { online: true }));
   return { ok: st.status !== 'blocked' && !st.shotsStale, status: st.status, result: Object.assign({}, st, { checks }) };
 } };
 
