@@ -1681,6 +1681,15 @@ function wfSave(userId, cur, tree) {
   writeJSON(stateFile(userId), { rev: next, state: tree });
   return next;
 }
+/* 生效专家方法论注入串(板块雇佣专家 > 全局雇佣专家):服务端 wf 端点的唯一装配口,
+ * 与浏览器 personaNoteFor 同走 WfCore.personaFor——同一雇佣状态下两端提示词逐字节一致 */
+function wfPersonaNote(tree, p, board) {
+  return WfCore.personaFor({
+    experts: ExpertsData.allOf(tree && tree.customExperts),
+    hiredId: ((tree && tree.settings) || {}).hiredExpert,
+    boards: (p && p.boards) || null, board,
+  });
+}
 /* 分镜参数兜底(服务端无 storyboard.js UI 默认值;ep.sbConfig 已存在时以其为准) */
 function wfSbConfig(tree, ep) {
   const st = (tree && tree.settings) || {};
@@ -3291,8 +3300,8 @@ const server = http.createServer(async (req, res) => {
           model: st.defLLM || 'qwen-turbo', system: Prompts.get('und.system', st.promptOverrides),
           user: WfCore.buildUndUser({
             dsText: WfCore.dimsText(st.directorSetting), styleText: Domain.styleOf(p), eventsText: WfCore.eventsOfEpisode(p, ep), content: (ep.content || '').slice(0, 6000),
-            // 雇佣专家方法论 + 协作记忆(导演板块):与浏览器 understanding.js 委托点同源注入
-            personaNote: WfCore.personaNote(ExpertsData.expertOf(st.hiredExpert, tree.customExperts)),
+            // 生效专家方法论 + 协作记忆(导演板块):与浏览器 understanding.js 委托点同一装配口
+            personaNote: wfPersonaNote(tree, p, WfCore.WF_BOARD.understanding),
             memText: WfCore.memBlock(tree.agentMemory, ep.title || '', '导演'),
           }),
           temperature: 0.5, max_tokens: 1500, projectId: p.id, mockKind: 'und',
@@ -3328,8 +3337,8 @@ const server = http.createServer(async (req, res) => {
           // 二十二轮:projType 与浏览器同源推导(experts-data.projTypeOf)——雇佣解说剧导演后服务端工作流提示词同样带「解说模式」标注
           projType: ExpertsData.projTypeOf(st.hiredExpert, tree.customExperts),
           directorNote: WfCore.directorNote(st.directorSetting), conceptNote: WfCore.conceptInject(p),
-          // 雇佣专家方法论 + 协作记忆(分镜板块):与浏览器 sb-llm.js 委托点同源注入
-          personaNote: WfCore.personaNote(ExpertsData.expertOf(st.hiredExpert, tree.customExperts)),
+          // 生效专家方法论(分镜板块雇佣 > 全局雇佣)+ 协作记忆:与浏览器 sb-llm.js 同一装配口
+          personaNote: wfPersonaNote(tree, p, WfCore.WF_BOARD['smart-storyboard']),
           memText: WfCore.memBlock(tree.agentMemory, ep.title || '', '分镜'),
           langText: WfCore.langOf(p), genres: p.genres, eventsText: WfCore.eventsOfEpisode(p, ep),
           content: (ep.content || '').slice(0, 12000),
@@ -3341,7 +3350,9 @@ const server = http.createServer(async (req, res) => {
             model: c.sbModel || st.defLLM || 'qwen-turbo', system: Prompts.get('und.system', ov),
             user: WfCore.buildUndUser({
               dsText: WfCore.dimsText(st.directorSetting), styleText: ctxBase.styleText, eventsText: ctxBase.eventsText, content: (ep.content || '').slice(0, 6000),
-              personaNote: ctxBase.personaNote, memText: WfCore.memBlock(tree.agentMemory, ep.title || '', '导演'),
+              // 内部理解步按导演板块解析(与浏览器 Understanding.run 同源),记忆同板块召回
+              personaNote: wfPersonaNote(tree, p, WfCore.WF_BOARD.understanding),
+              memText: WfCore.memBlock(tree.agentMemory, ep.title || '', '导演'),
             }),
             temperature: 0.5, max_tokens: 1500, projectId: p.id, mockKind: 'und',
           });
@@ -3438,7 +3449,7 @@ const server = http.createServer(async (req, res) => {
         const opBase = sanitizeOpId(b.operationId) || uid('wfrv');
         const reviewCtx = {
           kbReviewText: KB.reviewBlock(), tplReviewText: st.tplReview || '', directorNote: WfCore.directorNote(st.directorSetting), styleText: Domain.styleOf(p),
-          personaNote: WfCore.personaNote(ExpertsData.expertOf(st.hiredExpert, tree.customExperts)), // 雇佣专家方法论(与浏览器 review.js 委托点同源)
+          personaNote: wfPersonaNote(tree, p, WfCore.WF_BOARD['smart-review']), // 生效专家方法论(与浏览器 review.js 委托点同一装配口)
         };
         const reports = [], failed = [];
         for (const s of targets) {
@@ -3564,7 +3575,8 @@ const server = http.createServer(async (req, res) => {
           model: st.defLLM || 'qwen-turbo',
           system: WfCore.buildAgentSystem({
             kbText: KB.block(),
-            personaNote: WfCore.personaNote(ExpertsData.expertOf(st.hiredExpert, tree.customExperts)),
+            // 生效专家方法论走服务端唯一装配口:对话板块 scope 即板块键(板块雇佣 > 全局雇佣,与 agent.js gPersonaBlock 同序)
+            personaNote: wfPersonaNote(tree, p, scope),
             memText: WfCore.memBlock(tree.agentMemory, text, scope),
             styleText: Domain.styleOf(p),
             cmdText: WfCore.agentCmdProtocol(CmdRegistry.META),

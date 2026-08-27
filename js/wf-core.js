@@ -62,11 +62,25 @@
     const parts = W.DIR_DIMS.filter(d => ds[d]).map(d => d + ':' + String(ds[d]).slice(0, 40));
     return parts.length ? '。导演设定:' + parts.join(';') : '';
   };
-  /* 雇佣专家方法论注入(通道与 directorNote 同款;ex=浏览器 hiredExpert() 或服务端 ExpertsData.expertOf 结果,
-   * 无专家或空 persona 返回空串不注入,行为与未雇佣时一致;persona 截断 ≤200 字) */
-  W.personaNote = function (ex) {
+  /* 雇佣专家方法论注入(通道与 directorNote 同款;ex=生效专家对象,board 非空表示该专家来自板块雇佣):
+   * 无专家或空 persona 返回空串——不注入时提示词与未雇佣时逐字节一致;persona 截断 ≤200 字 */
+  W.personaNote = function (ex, board) {
     const persona = ex && ex.persona ? String(ex.persona).trim() : '';
-    return persona ? '。专家方法论(' + (ex.name || '雇佣专家') + '):' + persona.slice(0, 200) : '';
+    if (!persona) return '';
+    return '。专家方法论(' + (ex.name || '雇佣专家') + (board ? '·' + board + '板块' : '') + '):' + persona.slice(0, 200);
+  };
+  /* 工作流→板块映射(键与 agent.js AGENT_BOARDS 板块键同名):决定该工作流优先取哪个板块雇佣的专家 */
+  W.WF_BOARD = { understanding: '导演', 'smart-storyboard': '分镜', 'smart-review': '成片' };
+  /* 生效专家方法论(双端唯一装配口):板块雇佣专家 > 全局雇佣专家 > 不注入,与 Agent 身份解析同序。
+   * o={experts:全部专家(预置+自定义),hiredId:settings.hiredExpert,boards:p.boards,board:板块键};
+   * 数据一律由调用方注入(浏览器 allExperts()/Store,服务端 ExpertsData/state 树),本模块不碰环境 */
+  W.personaFor = function (o) {
+    o = o || {};
+    const list = Array.isArray(o.experts) ? o.experts : [];
+    const find = id => (id && list.find(e => e && e.id === id)) || null;
+    const bd = (o.board && o.boards && o.boards[o.board]) || null;
+    const bex = bd ? find(bd.expert) : null;
+    return W.personaNote(bex || find(o.hiredId), bex ? o.board : '');
   };
   /* 协作记忆召回(自 agent.js 下沉,双端同算法;mem=state.agentMemory 数组经参数注入):
    * 同板块记忆优先(该板块 Agent 越用越懂该板块),再补全局最近,最后按输入关键词命中加权补召 */

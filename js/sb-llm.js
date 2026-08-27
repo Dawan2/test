@@ -14,7 +14,8 @@
       projType: window.projType ? projType() : 'drama',
       directorNote: window.directorInject ? directorInject(p.style) : '',
       conceptNote: window.conceptInject ? conceptInject(p) : '',
-      personaNote: WfCore.personaNote(window.hiredExpert ? hiredExpert() : null), // 雇佣专家方法论(与服务端 /api/wf/smart-storyboard 同源)
+      // 生效专家方法论(分镜板块雇佣 > 全局雇佣):与服务端 /api/wf/smart-storyboard 同一装配口
+      personaNote: window.personaNoteFor ? personaNoteFor(p, WfCore.WF_BOARD['smart-storyboard']) : '',
       memText: WfCore.memBlock(Store.state.agentMemory, ep.title || '', '分镜'), // 协作记忆按板块召回(与对话层同算法)
       langText: (window.langOf ? langOf(p) : WfCore.langOf(p)),
       genres: p.genres,

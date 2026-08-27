@@ -17,7 +17,7 @@
   }
   /* 全部专家 = 平台预置 + 我的自定义(三条雇佣链路统一走这里) */
   window.allExperts = function () {
-    return EXPERTS.concat(Store.state.customExperts || []);
+    return ExpertsData.allOf(Store.state.customExperts);
   };
   window.hiredExpert = function () {
     const id = (Store.state.settings || {}).hiredExpert;
@@ -26,6 +26,14 @@
   /* 项目生产类型:默认剧情模式;雇佣「出海解说剧导演」后全站按解说模式(重旁白)生产(推导逻辑双端单源 experts-data.js) */
   window.projType = function () {
     return ExpertsData.projTypeOf((Store.state.settings || {}).hiredExpert, Store.state.customExperts);
+  };
+  /* 生效专家方法论注入串(板块雇佣专家 > 全局雇佣专家):浏览器侧创作工作流的唯一装配口,
+   * 与服务端 /api/wf/* 走同一个 WfCore.personaFor——同一雇佣状态下两端提示词逐字节一致 */
+  window.personaNoteFor = function (p, board) {
+    return WfCore.personaFor({
+      experts: allExperts(), hiredId: (Store.state.settings || {}).hiredExpert,
+      boards: (p && p.boards) || null, board,
+    });
   };
 
   /* 雇佣 style 专家(预置与自定义共用):写入 hiredExpert + 导演设定五维 + 提示词三件套 */
