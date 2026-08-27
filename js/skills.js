@@ -885,7 +885,7 @@
       prompts: ['split.system', 'extract.system', 'digest.planSystem', 'graph.system', 'sb.boardSceneSystem', 'sb.boardDraftSystem', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem',
         'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem',
         'narration.system', 'reading.system', 'concept.system', 'light.system',
-        'voice.recommendSystem', 'voice.recommendBatchSystem', 'comic.bubbleSystem', 'dirset.system'],
+        'voice.recommendSystem', 'voice.recommendBatchSystem', 'comic.bubbleSystem', 'dirset.system', 'dist.copySystem'],
       cmds: ['episode.understanding', 'episode.generateStoryboard', 'episode.smartReview'], gaps: ['G-01'],
       note: 'G-01 已落地:服务端 /api/wf/* 各端点经唯一装配口 wfPersonaNote 注入生效人设(板块雇佣 > 全局雇佣),'
         + '浏览器同装配口;infra 面的 pending 已按实况清空(gaps() 只投影 gaps 字段、不看 pending,清账动不到投影),'
@@ -922,6 +922,9 @@
         + '取值口经 Prompts.get 隐式读覆盖表、与前四条同口径(纯浏览器链路,只解决可覆盖);'
         + '该键不与 und.system 复用——两句差「影视/短剧」两字,角色与产物落点都不同;'
         + 'js/gsettings.js 至此零内联人设(工坊元智能体那份人设字面在 js/experts.js,不在本文件名下)。'
+        + '剧壳发行文案包那步(js/proj-shell.js 的 AI 文案包)的人设句同形收编为 dist.copySystem,'
+        + '取值口经 Prompts.get,其后按键接的 KB 钩子六型+付费卡点仍由取值口现拼(方法论正文不随覆盖变动),'
+        + '同为纯浏览器链路的一个消费点。'
         + '仍欠:四处的 ops 协议/字段面/命令白名单/返回 JSON 约定仍由各自装配口拼、不开放覆盖'
         + '(那半是 ops 解析契约,用户改坏即整轮无 ops);'
         + '音色推荐两条同理只收人设句——音色库取值范围与返回 JSON 约定仍写在各自调用点、不开放覆盖'
