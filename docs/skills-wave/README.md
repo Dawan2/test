@@ -35,9 +35,9 @@
 | [w8-script-check.md](./w8-script-check.md) | SK-07/08/09 剧本段三条校验项,闭合 S-01 的剧本半 | 加校验项前;或想知道剧本正文怎么被判定 |
 | [w9-eps-structure-check.md](./w9-eps-structure-check.md) | SK-14/SK-15 分集段两条校验项,与 W8 成对闭合 S-01(六阶段覆盖 + 付费卡点位置) | 同上;或想知道分集表与集序怎么被判定 |
 | [w9-integration-log.md](./w9-integration-log.md) | 剩余分支收敛到集成分支的记录:包含性实测、并集型冲突解法、合并后测试数字、剩余未合 | 想知道主干现在是什么状态 |
+| [w10-cycle2-audit.md](./w10-cycle2-audit.md) | 周期 2 集成与 skill 落地独立核验报告:分支逐条成熟度、按父提交漏合的实测佐证、「合并一律取分支 head」的方法性结论 | 想知道某条分支做到哪一步;开集成槽前 |
 | [w11-preflight-film-assert.md](./w11-preflight-film-assert.md) | 就绪检查消费面并集补断言:字幕面被摘掉的两种写法实测、双端行为/结构断言分工、五种摘法转红验证 | 改 `episode.preflight` 的 `result.checks` 或新增校验面前 |
 | [w12-size-gap-check.md](./w12-size-gap-check.md) | SK-18 分镜景别衔接校验(`WfCore.sizeGap` 单源落成校验项:连续同景别/两极对切/整集无递进) | 加分镜面校验项或改景别级差判据前 |
-| [w13-integration-log.md](./w13-integration-log.md) | SK-14/15 分集段、SK-18 分镜段与 W11 断言收敛到集成分支的记录:五面并集冲突解法、被并集断言接住的转红点、合并后测试数字 | 想知道主干现在是什么状态 |
 | [w14-review-skills-check.md](./w14-review-skills-check.md) | 审片路径接入 `Skills.check` 只读消费(报告独立字段 `checks` + 弹窗/导出展示,只报不拦)、SK-03/SK-04 的 infra 面记账诚实位对齐 | 改审片报告结构、往审片路径加校验面,或动 `pending` 记账前 |
 | [w16-integration-log.md](./w16-integration-log.md) | W12 head 补合(w13 只合到父提交的漏合)与 W14 审片消费收敛到集成分支的记录:并集型冲突解法、被登记侧反查断言接住的转红点、合并后测试数字 | 想知道主干现在是什么状态 |
 
@@ -60,4 +60,4 @@
 - **缺口编号**:`G-01…G-15` 出自资产图谱,**冻结在 15 项不再新增**;新登记的缺口一律走短名单的 `S-xx` 命名空间。判定标准文档里提议的 `G-16`(发布后→上游回路)按此规则改记为 `S-08`。
 - `docs/Agent贯通落地-G1-G5.md` 里的 `G1–G5` 是该文自带的历史编号,与本目录的 `G-0x` 不是同一套,对应关系见该文与 [w5-cycle1-audit.md](./w5-cycle1-audit.md) 第 2.18 节。
 - 文档描述功能本身,不写功能溯源。
-- 动工前先看**最新一份收敛记录**的"剩余未合与残留",避免重做已落地的部分:当前是 [w16-integration-log.md](./w16-integration-log.md)(更早的分叉登记在 [w13-integration-log.md](./w13-integration-log.md)、[w9-integration-log.md](./w9-integration-log.md)、[w7-integration-log.md](./w7-integration-log.md) 与 [w6-integration-log.md](./w6-integration-log.md) 第 5 节)。
+- 动工前先看**最新一份收敛记录**的"剩余未合与残留",避免重做已落地的部分:当前是 [w16-integration-log.md](./w16-integration-log.md)(更早的分叉登记在 [w9-integration-log.md](./w9-integration-log.md)、[w7-integration-log.md](./w7-integration-log.md) 与 [w6-integration-log.md](./w6-integration-log.md) 第 5 节;W13 那一波没有留收敛记录,过程只在提交信息里)。
