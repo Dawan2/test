@@ -1,11 +1,17 @@
-/* ============ issues.js 问题中心(协同层,第三阶段) ============
+/* ============ issues.js 问题中心投影(双端:浏览器 window.Issues / Node require) ============
  * 项目级待处理问题单一聚合:失败镜/过期镜/未分镜/缺剧本/低分审片/待确认/成片过期/主体缺图/跨镜主体不一致/字幕读不顺,
- * 逐项由 Domain.episodeState(blockers/counts)推导——与流程条/下一步/跑批/CLI 同一口径,不自造第二套状态。
- * 每项问题带可操作处置:命令类(episode.generateVideos shotIds 子集重生成/智能分镜/重新合成)经统一命令层
- * ui 模式执行;导航类跳对应页面。入口:项目页「问题」按钮(角标=未解决数,Bus 事件驱动实时刷新)。 */
-(function () {
-
-  const online = () => !!(window.Media && Media.isReady && Media.isReady());
+ * 逐项由 Domain.episodeState(blockers/counts)推导——与流程条/下一步/跑批/CLI 同一口径,不自造第二套状态;
+ * 方法论低危提醒逐项由 Skills.check 的既有结论投影,判据一条不在本层。
+ * 环境差异(在线与否)经 ctx.online 显式传入,项目树经参数传入,本模块不读 window/Media/Store;
+ * 纯数据推导,无 DOM/网络/存储副作用,可安全运行于 vm 沙箱、Node(cli.js/mcp.js)与浏览器。
+ * 弹窗渲染、Bus 订阅与命令层处置在浏览器薄封装 js/issues-ui.js(它保持 window.Issues 全局名不变)。
+ * 加载点成对:index.html 在 skills.js 之后、issues-ui.js 之前;cli.js require。 */
+(function (root, factory) {
+  const isNode = typeof module === 'object' && module.exports;
+  const I = factory(isNode ? require('./domain.js') : root.Domain, isNode ? () => require('./skills.js') : () => root.Skills);
+  if (isNode) module.exports = I; else root.Issues = I;
+})(typeof self !== 'undefined' ? self : globalThis, function (Domain, skills) {
+  'use strict';
 
   /* 跨镜主体一致性命中码 → 展示文案(判据在 js/skills.js 的校验项,本层只管展示,不写第二份判定) */
   const CONSIST = {
@@ -57,14 +63,72 @@
   /* 命中 → 一行明细:镜号区间(整集级命中无镜号)+ 码文案 + 景别走向 */
   const sizeLine = h => (h.order ? `镜头${h.order}${h.to > h.order ? '-' + h.to : ''}` : '整集')
     + (SIZE[h.code] || h.code) + (h.base ? `(${h.base}→${h.name})` : h.name ? `(${h.name})` : '');
+  /* 跨镜主体一致性命中 → 一行明细:镜号 + 主体名 + 码文案 */
+  const consistLine = h => `镜头${h.order}「${h.name}」${CONSIST[h.code] || h.code}`;
+  /* 字幕命中 → 一行明细:镜号(整集级命中无镜号)+ 字数/停留 + 码文案 */
+  const captionLine = h => (h.order ? `镜头${h.order}` : '整集')
+    + (h.chars ? `(${h.chars}字/${h.dur}秒)` : '') + (CAPTION[h.code] || h.code);
 
-  /* ================= 问题清单推导(纯数据,可 vm 沙箱测试) =================
+  const KB_TAIL = '——判据取自知识库条目,只提醒不拦生成';
+
+  /* ================= 提醒投影表(面 → 校验项 id → kind/sev/挂载级别 单源) =================
+   * 每行就是一条方法论提醒的完整投影口径,collect 只按表跑,不再逐面手写取值点:
+   *   stage  取哪一面(与 Skills.check 的面键同词表)
+   *   skill  取该面哪一条校验项的 hits;null 表示整面 hits 合并
+   *   level  挂在项目级(判定输入是整张分集表这类项目对象)还是分集级
+   *   phase  分集级条目排在未拆镜/判旧等早退分支之前(pre)还是之后(post)
+   *   name / line / cap / tail  标题词、单条明细写法、明细最多列几条(null=全列且不缀「等 N 处」)、明细尾注
+   * 判据一条都不在本表:命中与命中码全部来自 js/skills.js 的校验项,本表只定"哪一档危险级、挂在哪一级、文案怎么写"。
+   * 危险级一律 low:发布门 G2 只数高/中危,方法论提醒只报不拦,不改门禁状态也不进 Domain 的阻塞项。 */
+  const REMINDERS = [
+    { kind: 'eps-structure', sev: 'low', stage: 'eps', skill: 'eps.structureStage', level: 'project', phase: 'pre',
+      name: '六阶段结构提醒', line: stageLine, cap: 4, tail: KB_TAIL },
+    { kind: 'script-craft', sev: 'low', stage: 'script', skill: null, level: 'episode', phase: 'pre',
+      name: '剧本方法论提醒', line: craftLine, cap: 4, tail: KB_TAIL },
+    { kind: 'eps-payoff', sev: 'low', stage: 'eps', skill: 'eps.payoffPoint', level: 'episode', phase: 'pre',
+      name: '付费卡点提醒', line: payoffLine, cap: null, tail: KB_TAIL },
+    { kind: 'subject-inconsistent', sev: 'low', stage: 'subjects', skill: 'subjects.crossShot', level: 'episode', phase: 'post',
+      name: '跨镜主体参考不一致', line: consistLine, cap: 4, tail: '——同一主体形象易在镜间漂移' },
+    { kind: 'shot-size-linkage', sev: 'low', stage: 'shots', skill: 'shots.sizeProgression', level: 'episode', phase: 'post',
+      name: '景别衔接提醒', line: sizeLine, cap: 4, tail: KB_TAIL },
+    { kind: 'caption-unreadable', sev: 'low', stage: 'film', skill: 'film.subtitleQC', level: 'episode', phase: 'post',
+      name: '字幕读不顺', line: captionLine, cap: 4, tail: '——成片字幕与 SRT 同一时间轴,合成前改台词/裁剪最省事' },
+  ];
+
+  /* 取该行的命中:整面结论按面缓存(同一面上挂多条投影只跑一次),再按校验项 id 分给各行。
+   * 这是本模块唯一一处 Skills 取值点——面字面量只在表里,取不到注册表(未加载)时如实回空。 */
+  function hitsOf(S, r, obj, ck, cache) {
+    if (!S) return [];
+    const res = cache[r.stage] || (cache[r.stage] = S.check(r.stage, obj, ck) || []);
+    return r.skill ? ((res.find(x => x.skill === r.skill) || {}).hits || []) : [].concat(...res.map(x => x.hits));
+  }
+  const labelOf = (r, n, ep) => (ep ? `「${ep.title}」` : '分集表 ') + n + ' 处' + r.name;
+  const detailOf = (r, hits) => (r.cap ? hits.slice(0, r.cap) : hits).map(r.line).join(';')
+    + (r.cap && hits.length > r.cap ? ` 等 ${hits.length} 处` : '') + r.tail;
+
+  /* ================= 问题清单推导(纯数据,可 vm 沙箱与 Node 直跑) =================
    * 条目:{ kind, sev(high|mid|low), count, label, detail, epid?, epTitle?, cmd?, shotIds?, goto? }
-   * cmd 条目经 Commands.execute(cmd,{pid,epid,shotIds,ui:true}) 处置;goto 条目直接跳转。 */
-  function collect(p) {
+   * ctx:{ online } 由调用方注入(浏览器薄封装按在线态取,CLI/服务端按登录态给);
+   * cmd 条目由调用方经统一命令层带 {pid,epid,shotIds} 处置,goto 条目直接跳转——两者都在本层之外发生。 */
+  function collect(p, ctx) {
     const out = [];
     if (!p) return out;
-    const on = online();
+    const on = !!(ctx || {}).online;
+    const ck = { online: on };
+    const S = skills();
+    /* 按表投影一档提醒:hits 为空不出条目;base 给分集级条目带 epid/epTitle */
+    const emit = (level, phase, obj, cache, base) => {
+      REMINDERS.forEach(r => {
+        if (r.level !== level || r.phase !== phase) return;
+        const hits = hitsOf(S, r, obj, ck, cache);
+        if (!hits.length) return;
+        out.push(Object.assign({}, base, {
+          kind: r.kind, sev: r.sev, count: hits.length,
+          label: labelOf(r, hits.length, obj.ep), detail: detailOf(r, hits),
+          goto: obj.ep ? `#/project/${p.id}/episode/${obj.ep.id}` : '#/project/' + p.id,
+        }));
+      });
+    };
     /* 项目级:主体缺权威参考图(生成防废片警示的前置阻塞) */
     const noImg = (p.subjects || []).filter(s => !s.image);
     if (noImg.length) out.push({
@@ -73,45 +137,20 @@
       detail: '缺参考图的主体参与生成会触发防废片警示:' + noImg.slice(0, 6).map(s => s.name).join('、') + (noImg.length > 6 ? ` 等 ${noImg.length} 个` : ''),
       goto: '#/project/' + p.id + '/roles',
     });
-    /* 项目级:六阶段结构覆盖(js/skills.js SK-14 校验项,纯本地零 LLM 零计费)——判定输入是整张分集表,
-     * 故按项目挂一条而不是逐集重复报;低危只报不拦,不改门禁状态也不进 Domain 的阻塞项 */
-    const arc = window.Skills ? (Skills.check('eps', { p }).find(x => x.skill === 'eps.structureStage') || {}).hits || [] : [];
-    if (arc.length) out.push({
-      kind: 'eps-structure', sev: 'low', count: arc.length,
-      label: `分集表 ${arc.length} 处六阶段结构提醒`,
-      detail: arc.slice(0, 4).map(stageLine).join(';') + (arc.length > 4 ? ` 等 ${arc.length} 处` : '')
-        + '——判据取自知识库条目,只提醒不拦生成',
-      goto: '#/project/' + p.id,
-    });
+    /* 项目级提醒:判定输入是整张分集表,故按项目挂一条而不是逐集重复报 */
+    emit('project', 'pre', { p }, {}, null);
     (p.episodes || []).forEach((ep, i) => {
-      const st = window.Domain ? Domain.episodeState(p, ep, on) : { counts: {}, blockers: [] };
+      const st = Domain ? Domain.episodeState(p, ep, on) : { counts: {}, blockers: [] };
       const c = st.counts || {};
       const base = { epid: ep.id, epTitle: ep.title || ('第' + (i + 1) + '集') };
+      const obj = { p, ep }, cache = {};
       /* 每条问题必须 Object.assign({}, base, …) 新开对象:同一集可挂多条问题,直接改 base 会让已入组条目全部串成同一引用(二十二轮修复) */
       if (!(ep.content || '').trim()) {
         out.push(Object.assign({}, base, { kind: 'no-script', sev: 'high', count: 1, label: `「${ep.title}」缺剧本正文`, detail: '无剧本无法拆镜与生成本集理解', goto: `#/project/${p.id}/episode/${ep.id}` }));
         return;
       }
-      /* 剧本文本面校验项(js/skills.js SK-07/08/09/10,纯本地零 LLM 零计费):开篇钩子锚定 / 打脸四步 / 台词单句长度 / 文案 AI 味 →
-       * 低危提醒,只报不拦——发布门 G2 只数高/中危,本项不改门禁状态,也不进 Domain 的阻塞项。
-       * 位置在未分镜等早退分支之前:剧本刚写完还没拆镜时正是这几条最该看得见的时候 */
-      const craft = window.Skills ? [].concat(...Skills.check('script', { p, ep }).map(x => x.hits)) : [];
-      if (craft.length) out.push(Object.assign({}, base, {
-        kind: 'script-craft', sev: 'low', count: craft.length,
-        label: `「${ep.title}」${craft.length} 处剧本方法论提醒`,
-        detail: craft.slice(0, 4).map(craftLine).join(';') + (craft.length > 4 ? ` 等 ${craft.length} 处` : '')
-          + '——判据取自知识库条目,只提醒不拦生成',
-        goto: `#/project/${p.id}/episode/${ep.id}`,
-      }));
-      /* 付费卡点位置(js/skills.js SK-15 校验项,同上纯本地零 LLM 零计费):集尾是不是情绪最高那一拍、
-       * 卡点承诺有没有在下一集兑现——与剧本面同为低危提醒,同样排在未拆镜等早退分支之前 */
-      const payoff = window.Skills ? (Skills.check('eps', { p, ep }).find(x => x.skill === 'eps.payoffPoint') || {}).hits || [] : [];
-      if (payoff.length) out.push(Object.assign({}, base, {
-        kind: 'eps-payoff', sev: 'low', count: payoff.length,
-        label: `「${ep.title}」${payoff.length} 处付费卡点提醒`,
-        detail: payoff.map(payoffLine).join(';') + '——判据取自知识库条目,只提醒不拦生成',
-        goto: `#/project/${p.id}/episode/${ep.id}`,
-      }));
+      /* 剧本文本面与付费卡点位置排在未分镜等早退分支之前:剧本刚写完还没拆镜时正是这几条最该看得见的时候 */
+      emit('episode', 'pre', obj, cache, base);
       if (!c.total) { out.push(Object.assign({}, base, { kind: 'no-shots', sev: 'mid', count: 1, label: `「${ep.title}」未生成分镜`, detail: '已有剧本未拆镜,可直接智能分镜', cmd: 'episode.generateStoryboard' })); return; }
       if (st.shotsStale) { out.push(Object.assign({}, base, { kind: 'shots-stale', sev: 'mid', count: 1, label: `「${ep.title}」分镜表基于旧剧本/图谱`, detail: '剧本或事件图谱修订后未重新拆镜', goto: `#/project/${p.id}/episode/${ep.id}` })); return; }
       if (c.failed) {
@@ -132,36 +171,8 @@
         out.push(Object.assign({}, base, { kind: 'low-review', sev: 'mid', count: lows.length || 1, label: `「${ep.title}」审片均分 ${st.reviewAvg} 低于达标线`, detail: lows.length ? `低分镜:${lows.map(x => (x.order + 1) + '镜' + x.score + '分').slice(0, 6).join('、')}` : '整体质量待修订(可让助手按问题清单优化提示词)', goto: `#/project/${p.id}/episode/${ep.id}` }));
       }
       if (ep.composed && !st.composedReady) out.push(Object.assign({}, base, { kind: 'composed-stale', sev: 'mid', count: 1, label: `「${ep.title}」成片已过期`, detail: '合成输入或剧本已变化,需重新合成', cmd: 'episode.compose' }));
-      /* 跨镜主体一致性(js/skills.js 校验项,纯本地零 LLM 零计费):同一主体在镜间锁到的参考图/引用名不一致 →
-       * 低危提醒,只报不拦——发布门 G2 只数高/中危,本项不改门禁状态,也不进 Domain 的阻塞项 */
-      const consist = window.Skills ? (Skills.check('subjects', { p, ep }).find(x => x.skill === 'subjects.crossShot') || {}).hits || [] : [];
-      if (consist.length) out.push(Object.assign({}, base, {
-        kind: 'subject-inconsistent', sev: 'low', count: consist.length,
-        label: `「${ep.title}」${consist.length} 处跨镜主体参考不一致`,
-        detail: consist.slice(0, 4).map(h => `镜头${h.order}「${h.name}」${CONSIST[h.code] || h.code}`).join(';')
-          + (consist.length > 4 ? ` 等 ${consist.length} 处` : '') + '——同一主体形象易在镜间漂移',
-        goto: `#/project/${p.id}/episode/${ep.id}`,
-      }));
-      /* 分镜景别递进与跳切(js/skills.js SK-18 校验项,纯本地零 LLM 零计费):级差经 WfCore.sizeGap 判,
-       * 连续同景别/两极对切/整集无递进 → 低危提醒,只报不拦——发布门 G2 只数高/中危,本项不改门禁状态 */
-      const sizes = window.Skills ? (Skills.check('shots', { p, ep }).find(x => x.skill === 'shots.sizeProgression') || {}).hits || [] : [];
-      if (sizes.length) out.push(Object.assign({}, base, {
-        kind: 'shot-size-linkage', sev: 'low', count: sizes.length,
-        label: `「${ep.title}」${sizes.length} 处景别衔接提醒`,
-        detail: sizes.slice(0, 4).map(sizeLine).join(';') + (sizes.length > 4 ? ` 等 ${sizes.length} 处` : '')
-          + '——判据取自知识库条目,只提醒不拦生成',
-        goto: `#/project/${p.id}/episode/${ep.id}`,
-      }));
-      /* 成片字幕/对白可读性(js/skills.js 校验项,纯本地零 LLM 零计费):以合成时间轴段判阅读速度与截断 →
-       * 低危提醒,只报不拦——发布门 G2 只数高/中危,本项不改门禁状态,也不进 Domain 的阻塞项 */
-      const caption = window.Skills ? (Skills.check('film', { p, ep }, { online: on }).find(x => x.skill === 'film.subtitleQC') || {}).hits || [] : [];
-      if (caption.length) out.push(Object.assign({}, base, {
-        kind: 'caption-unreadable', sev: 'low', count: caption.length,
-        label: `「${ep.title}」${caption.length} 处字幕读不顺`,
-        detail: caption.slice(0, 4).map(h => (h.order ? `镜头${h.order}` : '整集') + (h.chars ? `(${h.chars}字/${h.dur}秒)` : '') + (CAPTION[h.code] || h.code)).join(';')
-          + (caption.length > 4 ? ` 等 ${caption.length} 处` : '') + '——成片字幕与 SRT 同一时间轴,合成前改台词/裁剪最省事',
-        goto: `#/project/${p.id}/episode/${ep.id}`,
-      }));
+      /* 跨镜主体一致性 / 分镜景别衔接 / 成片字幕可读性:三条同为投影表里的分集级低危提醒 */
+      emit('episode', 'post', obj, cache, base);
     });
     const SEV = { high: 0, mid: 1, low: 2 };
     const sevOf = x => (SEV[x] === undefined ? 9 : SEV[x]);
@@ -169,108 +180,12 @@
   }
 
   /* 未解决问题数(项目页角标) */
-  function count(p) { return collect(p).length; }
+  function count(p, ctx) { return collect(p, ctx).length; }
 
-  /* ================= 处置动作 ================= */
-  async function fixIssue(p, it, main, onDone) {
-    if (it.cmd) {
-      if (!window.Commands) { U.toast('命令层未加载,请稍后重试', 'error'); return; }
-      const r = await Commands.execute(it.cmd, { pid: p.id, epid: it.epid, shotIds: it.shotIds, main: main || document.getElementById('main'), ui: true });
-      Commands.digest(r);
-      if (onDone) onDone(r);
-      return r;
-    }
-    if (it.goto) { location.hash = it.goto; if (onDone) onDone(null); return null; }
+  /* 提醒投影表的只读投影(每次现生成副本,调用方污染不回写本表) */
+  function reminders() {
+    return REMINDERS.map(r => ({ kind: r.kind, sev: r.sev, stage: r.stage, skill: r.skill, level: r.level, phase: r.phase, name: r.name }));
   }
 
-  /* ================= 问题中心弹窗 ================= */
-  let openState = null; // {p, bodyEl, close, main} 弹窗开着时 Bus 事件驱动重算
-
-  const SEV_TAG = { high: ['red', '高'], mid: ['yellow', '中'], low: ['', '低'] };
-  const FIX_LABEL = { 'episode.generateVideos': '▶ 重生成', 'episode.generateStoryboard': '▶ 智能分镜', 'episode.compose': '▶ 重新合成' };
-
-  function issueRow(p, it, idx) {
-    const [cls, name] = SEV_TAG[it.sev] || ['', ''];
-    return `
-    <div class="card" style="padding:10px 12px;margin-bottom:8px">
-      <div class="row" style="gap:6px;align-items:flex-start">
-        ${cls ? `<span class="tag ${cls}" style="flex:none;font-size:10px">${name}</span>` : ''}
-        <div class="grow">
-          <div class="small" style="font-weight:600">${U.esc(it.label)}</div>
-          <div class="small muted" style="margin-top:2px;line-height:1.5">${U.esc(it.detail)}</div>
-        </div>
-        ${it.cmd ? `<button class="btn sm primary" data-ifx="${idx}" style="flex:none">${FIX_LABEL[it.cmd] || '▶ 处理'}</button>`
-        : it.goto ? `<button class="btn sm" data-igoto="${idx}" style="flex:none">→ 去处理</button>` : ''}
-      </div>
-    </div>`;
-  }
-
-  function paintBody(list) {
-    const { p, bodyEl, main } = openState;
-    const list2 = list || collect(p); // §3.4:调用方可传入共享重算结果(防抖轮内 badge 与弹窗同一快照)
-    const hi = list2.filter(x => x.sev === 'high').length, mid = list2.filter(x => x.sev === 'mid').length, low = list2.length - hi - mid;
-    bodyEl.innerHTML = list2.length ? `
-      <div class="hint" style="margin-bottom:10px">全项目待处理问题聚合(失败/过期/未分镜/低分/待确认/缺图,与流程条同一套状态推导):
-        <span class="tag red" style="font-size:10px">高 ${hi}</span> <span class="tag yellow" style="font-size:10px">中 ${mid}</span> <span class="tag" style="font-size:10px">低 ${low}</span>
-        ——命令类问题一键处置(经统一命令层,含确认闸/预审),导航类跳转对应页面。</div>
-      ${list2.map((it, idx) => issueRow(p, it, idx)).join('')}` : '<div class="empty"><p class="small muted">🎉 项目无待处理问题,主线畅通。</p></div>';
-    bodyEl.querySelectorAll('[data-ifx]').forEach(b => b.onclick = async () => {
-      const it = list2[+b.dataset.ifx]; // 快照索引与渲染行对齐(处置后 paintBody() 无参重算刷新)
-      if (!it) return;
-      b.disabled = true;
-      await fixIssue(p, it, main, () => paintBody());
-      paintBody();
-    });
-    bodyEl.querySelectorAll('[data-igoto]').forEach(b => b.onclick = () => {
-      const it = list2[+b.dataset.igoto];
-      if (it && it.goto) { openState.close(); location.hash = it.goto; }
-    });
-  }
-
-  function openModal(p, main) {
-    if (openState && openState.close) openState.close();
-    U.openModal({
-      title: `🩺 问题中心 · ${U.esc(p.name)}`,
-      wide: true,
-      body: '<div data-issues-body></div>',
-      onMount(m, close) {
-        openState = { p, bodyEl: m.querySelector('[data-issues-body]'), close, main };
-        paintBody();
-      },
-    });
-  }
-
-  /* Bus 通配订阅:管线事件(生成/审片/合成落定)驱动弹窗与项目页角标实时重算。
-   * §3.4:150ms 防抖合并事件风暴;一轮防抖内 badge 与弹窗共享同一次 collect 快照——
-   * 此前每个事件各自全量重算(collect 对每集推导 episodeState/shotInputHash,大项目=每事件 2×全项目扫描) */
-  function bindBus() {
-    if (!window.Bus || bindBus._done) return;
-    bindBus._done = true;
-    let timer = null;
-    Bus.on('*', () => {
-      const modalOpen = !!(openState && openState.bodyEl && openState.bodyEl.isConnected);
-      const btn = document.querySelector('[data-x=pissues][data-pid]');
-      if (!modalOpen && !btn) return;
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        const cache = {}; // pid → 本轮 collect 快照
-        const collect1 = p => (cache[p.id] = cache[p.id] || collect(p));
-        const modalStillOpen = !!(openState && openState.bodyEl && openState.bodyEl.isConnected);
-        if (modalStillOpen) paintBody(collect1(openState.p));
-        if (btn.isConnected) {
-          const p = Store.getProject(btn.dataset.pid);
-          if (p) btn.innerHTML = badgeHTML(p, collect1(p));
-        }
-      }, 150);
-    });
-  }
-  if (typeof document !== 'undefined') bindBus();
-
-  /* 项目页入口按钮内联 HTML(角标实时重算用同一实现;list 可传入共享快照) */
-  function badgeHTML(p, list) {
-    const n = list ? list.length : count(p);
-    return `🩺 问题${n ? ` <b style="color:var(--red)">${n}</b>` : ''}`;
-  }
-
-  window.Issues = { collect, count, fixIssue, openModal, badgeHTML };
-})();
+  return { collect, count, reminders };
+});
