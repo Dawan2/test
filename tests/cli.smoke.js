@@ -128,6 +128,15 @@ async function main() {
   // ---- 统一领域命令 exec(第二阶段:与前端 Commands.execute 同名同结构;仅零成本路径) ----
   r = cli('exec', 'episode.preflight', '--pid', pid, '--epid', epid);
   report('exec preflight 就绪(ready+counts)', r.code === 0 && r.out.ok === true && r.out.status === 'ready' && r.out.result.counts.total === 2, 'exit=' + r.code);
+  { // 主体面校验项:导入两镜的场景「宴会厅」未提取为主体(fail),角色「女主」无参考图(warn);只报不拦,仍 ready
+    const chk = ((r.out && r.out.result && r.out.result.checks) || []).find(c => c.skill === 'subjects.refIntegrity');
+    const codes = chk ? chk.hits.map(h => h.code) : [];
+    report('exec preflight 附主体面校验项(pass/level/hits,只报不拦)',
+      !!chk && chk.pass === false && chk.level === 'fail' && r.out.ok === true && r.out.status === 'ready'
+      && codes.filter(c => c === 'unknown-subject').length === 2 && codes.filter(c => c === 'no-ref-image').length === 2
+      && chk.hits.every(h => h.order >= 1 && !!h.shotId),
+      JSON.stringify(chk && { level: chk.level, hits: chk.hits.length }));
+  }
   r = cli('exec', 'episode.preflight', '--pid', pid, '--epid', ep2); // ep2 无剧本
   report('exec preflight 缺剧本 → blocked exit 2', r.code === 2 && r.out.ok === false && r.out.status === 'blocked' && r.out.result.blockers.some(b => b.code === 'no-script'), 'exit=' + r.code);
   r = cli('exec', 'episode.generateVideos', '--pid', pid, '--epid', ep2); // 未确认镜 → blocked,零生成零计费
