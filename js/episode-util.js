@@ -212,8 +212,10 @@ ${idxs.map(i => `【第${i + 1}集 ${p.episodes[i].title}】\n${p.episodes[i].co
     // ⑤ 人物小传:基于全文分段概括提取,合并进主体库(文本级,不生图;已存在的主体不覆盖)
     if (stop()) return false;
     say('提取人物小传…');
+    // 人设走注册表单源(js/prompts.js):本步与主体提取同一件事(剧本分析助手把人物落进主体库),故同键 extract.system;
+    // 只取人设句不接方法论段——「主体参考」是提取步 WfCore.extractSystem 的注入面,本步不生图不装参考图组
     const bios = await API.chatJSON({
-      model, system: '你是专业的短剧剧本分析助手。',
+      model, system: Prompts.get('extract.system'),
       messages: [{ role: 'user', content: `以下是一部短剧剧本的全文分段概括。提取其中的主要人物,返回 JSON {"characters":[{"name":"真实人名或稳定称谓","bio":"一句话人物小传(≤60字,含身份/性格/动机)"}]},最多 12 人;严禁把台词碎片、动词短语当作人名:
 ${partials.map((s, i) => `第${i + 1}部分:${s}`).join('\n').slice(0, 8000)}` }],
       temperature: 0.3, max_tokens: 1500,
