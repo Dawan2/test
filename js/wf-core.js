@@ -81,6 +81,76 @@
     return fmtT(start) + ' - ' + fmtT(start + dur(s));
   };
 
+  /* ================= 剧本拆集(自 episode-util.js 下沉) =================
+   * 模式判定与切分算法双端单源:浏览器 episode-util/proj-upload 委托,server.js /api/wf/split-episodes 复用,
+   * CLI/MCP 经命令层调用——headless 能从"整部剧本"起跑通主线。三种模式:
+   *   markers 集/章标记 ≥2 条(纯本地切原文,零 LLM 零计费)| llm 无标记且正文 ≤SPLIT_LLM_MAX(锚点协议切原文)
+   *   | even 段落均分兜底(长文或 LLM 不可用)。三种模式都逐字保留原文,不改写正文。 */
+  W.SPLIT_LLM_MAX = 15000; // 超此长度不调 LLM(提示词过长且原文易被改写),直接按段落均分
+  W.scriptEpMarkers = text => (String(text || '').match(/第[一二三四五六七八九十百千0-9]+[集章回篇]/g) || []).length;
+  W.splitMode = function (text, llmReady) {
+    if (W.scriptEpMarkers(text) >= 2) return 'markers';
+    if (llmReady && String(text || '').length <= W.SPLIT_LLM_MAX) return 'llm';
+    return 'even';
+  };
+  W.splitTargetCount = text => Math.min(12, Math.max(2, Math.ceil(String(text || '').length / 800)));
+  /* 本地切分(markers/even 同一函数:有标记按标记切,否则段落均分) */
+  W.localSplitEpisodes = function (text) {
+    const marker = /第[一二三四五六七八九十百千0-9]+[集章回篇][^\n]*/g;
+    const matches = [...text.matchAll(marker)];
+    const eps = [];
+    if (matches.length >= 2) {
+      matches.forEach((m, i) => {
+        const end = i + 1 < matches.length ? matches[i + 1].index : text.length;
+        eps.push({ title: m[0].trim().slice(0, 20), content: text.slice(m.index, end).trim() });
+      });
+    } else {
+      // 均分: 每集约 800 字, 在段落边界切
+      const paras = text.split(/\n+/).filter(Boolean);
+      const target = W.splitTargetCount(text);
+      const per = Math.ceil(paras.length / target);
+      for (let i = 0; i < paras.length; i += per) {
+        const chunk = paras.slice(i, i + per).join('\n');
+        eps.push({ title: '第' + (eps.length + 1) + '集', content: chunk });
+      }
+    }
+    return eps;
+  };
+  /* LLM 分集提示词(锚点协议:只回标题+开头原文锚句,正文由本地按锚点切,逐字不动) */
+  W.buildSplitUser = (text, n) => `将以下剧本按剧情节奏划分为 ${n} 集,返回 JSON 数组,每个元素:
+{"title":"第X集 标题","anchor":"该集正文开头的原文第一句(≤30字,必须逐字引用原文,不要改写)"}
+要求:每集剧情相对完整、节奏卡点合理;第一集 anchor 为全文开头第一句;anchor 必须能在原文中逐字找到。
+剧本:
+${text}`;
+  /* 锚点定位切原文:按返回顺序在原文找锚句,越界/倒序/重复锚点跳过;结构不合法抛错(调用方决定退费/回退) */
+  W.splitByAnchors = function (text, out) {
+    if (!Array.isArray(out) || out.length < 2) throw new Error('LLM 未返回有效分集数组');
+    const points = [];
+    let from = 0;
+    for (const o of out) {
+      const anchor = String((o && o.anchor) || '').trim().slice(0, 30);
+      if (!anchor) continue;
+      let idx = text.indexOf(anchor, from);
+      if (idx < 0) idx = text.indexOf(anchor.slice(0, 10), from); // 宽松兜底:前 10 字
+      if (idx < 0) continue;
+      if (points.length && idx <= points[points.length - 1].idx) continue; // 防倒序/重复
+      points.push({ title: String((o && o.title) || '').trim().slice(0, 24), idx });
+      from = idx + anchor.length;
+    }
+    if (points.length < 2) throw new Error('LLM 分集锚点定位失败');
+    points[0].idx = 0; // 第一集恒从全文开头起,不丢头部
+    return points.map((pt, i) => ({
+      title: pt.title || '第' + (i + 1) + '集',
+      content: text.slice(pt.idx, i + 1 < points.length ? points[i + 1].idx : text.length).trim(),
+    })).filter(e => e.content.length > 10);
+  };
+  /* 分集在飞守卫(拆集会整表覆盖旧分集):生成中的镜头/节拍数——双端同口径,>0 一律拒绝重新分集 */
+  W.splitInflight = function (p) {
+    return ((p && p.episodes) || []).reduce((n, e) => n
+      + ((e.shots || []).filter(s => s.video && s.video.status === 'generating').length)
+      + ((e.beats || []).filter(b => b.video && b.video.status === 'generating').length), 0);
+  };
+
   /* ================= 本集理解(自 understanding.js 下沉) ================= */
   W.undToText = function (u) {
     if (!u) return '';

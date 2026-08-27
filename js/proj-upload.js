@@ -1,6 +1,6 @@
 /* ============ proj-upload.js 剧本上传/主体确认/分集生成域(自 episodes.js 拆分) ============
- * 上传剧本弹窗、主体确认+AI 生图弹窗、doSplit 分集流程;
- * 入口增补到 window.EpisodeUtil(genSubjectImage/doSplit/openSubjectConfirm/openUploadScript),
+ * 上传剧本弹窗、主体确认+AI 生图弹窗、doSplit 分集流程(执行核心 splitCore 与命令层共用);
+ * 入口增补到 window.EpisodeUtil(genSubjectImage/doSplit/splitCore/openSubjectConfirm/openUploadScript),
  * episodes.js 与 director.js 等消费方经 EpisodeUtil.* 调用,对外契约不变。 */
 (function () {
   /* ---------- 上传剧本 ---------- */
@@ -267,6 +267,41 @@
     }
     doSplitRun(p, scriptText, main, after);
   }
+  /* 分集拆分执行核心(UI 任务条与命令层 project.splitEpisodes 共用,无 DOM 依赖):
+   * 在飞守卫 → 登记任务 → 按 WfCore.splitMode 切分(llm 失败回退本地均分)→ 旧分集进回收站 → 整表覆盖写回。
+   * 守卫不过抛带 code 的 Error(调用方决定 toast 或结构化回执);opts.say 进度播报、opts.local 强制本地均分。
+   * 返回 {eps, mode, llmError}(mode: markers/llm/even,与服务端 /api/wf/split-episodes 同词表)。 */
+  async function splitCore(p, scriptText, opts) {
+    opts = opts || {};
+    const say = opts.say || (() => {});
+    // 九轮统一在飞拦截;十二轮升级异步守卫:本地任务 + 服务端 running/needs_reconcile jobs
+    // 合并判定(重新分集会覆盖全部旧分集,刷新后本地已 failed 但服务端仍在生成时同样禁止)
+    const guard = window.Tasks ? await Tasks.canDeleteScope({ projectId: p.id }) : { local: [], remote: [] };
+    if (guard.remote == null) throw Object.assign(new Error('任务中心暂时不可达,无法确认是否有在途生成任务,请稍后重试'), { code: 'tasks-unreachable' });
+    if (guard.local.length) throw Object.assign(new Error(`有 ${guard.local.length} 个任务正在进行(${guard.local[0].type} 等),请等待完成后再重新分集`), { code: 'inflight' });
+    if (guard.remote.length) throw Object.assign(new Error(`服务端仍有 ${guard.remote.length} 个生成任务在跑,请等待完成或超时后再重新分集`), { code: 'inflight' });
+    // 无明显"第X集"标记且 API 可用时由 LLM 锚点分集(正文逐字切原文);长文/离线按段落均分保原文
+    const mode = opts.local ? 'even' : WfCore.splitMode(scriptText, API.isReady());
+    if (mode === 'llm') say('正在调用 LLM 按剧情节奏分集…');
+    else if (!opts.local && API.isReady() && WfCore.scriptEpMarkers(scriptText) < 2) say('剧本较长且无集标记:按段落节奏本地均分(原文逐字保留)');
+    const tk = Tasks.start({ type: '剧本分集', model: mode === 'llm' ? API.getConfig().model : '本地拆分', target: p.name, projectId: p.id });
+    let eps = null, llmError = null;
+    if (mode === 'llm') {
+      try {
+        eps = await EpisodeUtil.llmSplitEpisodes(scriptText, API.getConfig().model, tk.id); // 七轮:任务 id 作稳定计费操作键
+      } catch (e) {
+        llmError = e.message;
+        Tasks.fail(tk, 'LLM 分集失败,已回退本地均分:' + e.message);
+      }
+    }
+    if (!eps) eps = WfCore.localSplitEpisodes(scriptText);
+    // 覆盖前旧分集快照进回收站(7 天可恢复),与确认文案一致
+    (p.episodes || []).forEach(oldEp => Store.trashPut('episode', oldEp.title, { projectId: p.id, ep: oldEp }));
+    p.episodes = eps.map((e, i) => ({ id: Store.uid('ep'), title: e.title, content: e.content, order: i, shots: [], status: 'draft' }));
+    Store.save();
+    if (tk.status === 'running') Tasks.done(tk);
+    return { eps: p.episodes, mode: llmError ? 'even' : mode, llmError };
+  }
   function doSplitRun(p, scriptText, main, after) {
     U.runTask({
       title: '生成分集',
@@ -277,35 +312,12 @@
         { label: '分集落盘', ms: 700 },
       ],
       onDone: async () => {
-        // 九轮统一在飞拦截;十二轮升级异步守卫:本地任务 + 服务端 running/needs_reconcile jobs
-        // 合并判定(重新分集会覆盖全部旧分集,刷新后本地已 failed 但服务端仍在生成时同样禁止)
-        const guard = window.Tasks ? await Tasks.canDeleteScope({ projectId: p.id }) : { local: [], remote: [] };
-        if (guard.remote == null) { U.toast('任务中心暂时不可达,无法确认是否有在途生成任务,请稍后重试', 'error'); return; }
-        if (guard.local.length) { U.toast(`有 ${guard.local.length} 个任务正在进行(${guard.local[0].type} 等),请等待完成后再重新分集`, 'error'); return; }
-        if (guard.remote.length) { U.toast(`服务端仍有 ${guard.remote.length} 个生成任务在跑,请等待完成或超时后再重新分集`, 'error'); return; }
-        let eps = null;
-        const hasMarkers = (scriptText.match(/第[一二三四五六七八九十百千0-9]+[集章回篇]/g) || []).length >= 2;
-        const tk = Tasks.start({ type: '剧本分集', model: !hasMarkers && API.isReady() ? API.getConfig().model : '本地拆分', target: p.name, projectId: p.id });
-        // 无明显"第X集"标记且 API 可用时,由 LLM 锚点分集(正文逐字切原文);长文直接本地均分保原文
-        if (!hasMarkers && API.isReady()) {
-          if (scriptText.length > 15000) {
-            U.toast('剧本较长且无集标记:按段落节奏本地均分(原文逐字保留)', 'info', 3500);
-          } else {
-            try {
-              U.toast('正在调用 LLM 按剧情节奏分集…', 'info');
-              eps = await EpisodeUtil.llmSplitEpisodes(scriptText, API.getConfig().model, tk.id); // 七轮:任务 id 作稳定计费操作键
-            } catch (e) {
-              Tasks.fail(tk, 'LLM 分集失败,已回退本地均分:' + e.message);
-              U.toast('LLM 分集失败:' + e.message + ',已回退本地均分逻辑', 'error', 4000);
-            }
-          }
-        }
-        if (!eps) eps = EpisodeUtil.splitEpisodes(scriptText);
-        // 覆盖前旧分集快照进回收站(7 天可恢复),与确认文案一致
-        (p.episodes || []).forEach(oldEp => Store.trashPut('episode', oldEp.title, { projectId: p.id, ep: oldEp }));
-        p.episodes = eps.map((e, i) => ({ id: Store.uid('ep'), title: e.title, content: e.content, order: i, shots: [], status: 'draft' }));
-        Store.save();
-        if (tk.status === 'running') Tasks.done(tk);
+        let r;
+        try {
+          r = await splitCore(p, scriptText, { say: t => U.toast(t, 'info', 3500) });
+        } catch (e) { U.toast(e.message, 'error'); return; }
+        if (r.llmError) U.toast('LLM 分集失败:' + r.llmError + ',已回退本地均分逻辑', 'error', 4000);
+        const eps = r.eps;
         const wordInfo = eps.map((e, i) => `第${i + 1}集 ${e.content.length}字`).join('、');
         const over = eps.filter(e => e.content.length > 2000).length;
         U.toast(`分集成功,共 ${eps.length} 集(${wordInfo})${over ? `,${over} 集超 2000 字建议拆分` : ''}`, over ? 'info' : 'success', 4000);
@@ -487,5 +499,5 @@
     });
   }
 
-  Object.assign(window.EpisodeUtil, { genSubjectImage, doSplit, openSubjectConfirm, openUploadScript, openRip });
+  Object.assign(window.EpisodeUtil, { genSubjectImage, doSplit, splitCore, openSubjectConfirm, openUploadScript, openRip });
 })();

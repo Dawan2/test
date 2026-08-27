@@ -104,27 +104,8 @@
     return `${base},单品特写,材质清晰,打光考究,灰底产品图`;
   }
 
-  function splitEpisodes(text) {
-    const marker = /第[一二三四五六七八九十百千0-9]+[集章回篇][^\n]*/g;
-    const matches = [...text.matchAll(marker)];
-    const eps = [];
-    if (matches.length >= 2) {
-      matches.forEach((m, i) => {
-        const end = i + 1 < matches.length ? matches[i + 1].index : text.length;
-        eps.push({ title: m[0].trim().slice(0, 20), content: text.slice(m.index, end).trim() });
-      });
-    } else {
-      // 均分: 每集约 800 字, 在段落边界切
-      const paras = text.split(/\n+/).filter(Boolean);
-      const target = Math.min(12, Math.max(2, Math.ceil(text.length / 800)));
-      const per = Math.ceil(paras.length / target);
-      for (let i = 0; i < paras.length; i += per) {
-        const chunk = paras.slice(i, i + per).join('\n');
-        eps.push({ title: '第' + (eps.length + 1) + '集', content: chunk });
-      }
-    }
-    return eps;
-  }
+  /* 本地分集(标记切分/段落均分):算法下沉 wf-core.js 双端单源,此处只做委托 */
+  const splitEpisodes = text => WfCore.localSplitEpisodes(text);
   /* 分集规则校验:章/集标记不可混用,单集建议 ≤2000 字 */
   function validateScriptRules(text) {
     const chapters = (text.match(/第[一二三四五六七八九十百千0-9]+章/g) || []).length;
@@ -317,44 +298,20 @@ ${partials.map((s, i) => `第${i + 1}部分:${s}`).join('\n').slice(0, 8000)}` }
   }
 
   /* ---------- LLM 剧本分集(无明显集标记时) ----------
-   * 锚点协议:LLM 只回每集标题+开头原文锚句,本地按锚点切原文——正文逐字不动、不重写;
-   * 长文(>15000 字)不调 LLM,返回 null 由调用方回退本地段落均分(同样保原文完整) */
+   * 提示词与锚点切分下沉 wf-core.js 双端单源(服务端 /api/wf/split-episodes 同函数字面):
+   * LLM 只回每集标题+开头原文锚句,本地按锚点切原文——正文逐字不动、不重写;
+   * 长文(>WfCore.SPLIT_LLM_MAX)不调 LLM,返回 null 由调用方回退本地段落均分(同样保原文完整) */
   async function llmSplitEpisodes(text, model, opId) {
-    const n = Math.min(12, Math.max(2, Math.ceil(text.length / 800)));
-    if (text.length > 15000) return null;
-    const user = `将以下剧本按剧情节奏划分为 ${n} 集,返回 JSON 数组,每个元素:
-{"title":"第X集 标题","anchor":"该集正文开头的原文第一句(≤30字,必须逐字引用原文,不要改写)"}
-要求:每集剧情相对完整、节奏卡点合理;第一集 anchor 为全文开头第一句;anchor 必须能在原文中逐字找到。
-剧本:
-${text}`;
+    if (text.length > WfCore.SPLIT_LLM_MAX) return null;
     const out = await API.chatJSON({
       model,
       system: '你是专业的短剧策划编辑。',
-      messages: [{ role: 'user', content: user }],
+      messages: [{ role: 'user', content: WfCore.buildSplitUser(text, WfCore.splitTargetCount(text)) }],
       temperature: 0.4, max_tokens: 2000,
       operationId: opId, // 稳定计费操作键(与所属任务同 id,解析重试不重复扣)
     });
-    if (!Array.isArray(out) || out.length < 2) throw new Error('LLM 未返回有效分集数组');
-    // 锚点定位:按返回顺序在原文中找锚句位置,切出原文段落
-    const points = [];
-    let from = 0;
-    for (const o of out) {
-      const anchor = String((o && o.anchor) || '').trim().slice(0, 30);
-      if (!anchor) continue;
-      let idx = text.indexOf(anchor, from);
-      if (idx < 0) idx = text.indexOf(anchor.slice(0, 10), from); // 宽松兜底:前 10 字
-      if (idx < 0) continue;
-      if (points.length && idx <= points[points.length - 1].idx) continue; // 防倒序/重复
-      points.push({ title: String((o && o.title) || '').trim().slice(0, 24), idx });
-      from = idx + anchor.length;
-    }
-    if (points.length < 2) throw new Error('LLM 分集锚点定位失败');
-    points[0].idx = 0; // 第一集恒从全文开头起,不丢头部
-    return points.map((pt, i) => ({
-      title: pt.title || '第' + (i + 1) + '集',
-      content: text.slice(pt.idx, i + 1 < points.length ? points[i + 1].idx : text.length).trim(),
-    })).filter(e => e.content.length > 10);
+    return WfCore.splitByAnchors(text, out);
   }
 
-  window.EpisodeUtil = { extractSubjects, genPrompt, buildSubjectPrompt, splitEpisodes, validateScriptRules, llmExtractSubjects, aiScriptDigest, runDigestDock, deriveScriptMeta };
+  window.EpisodeUtil = { extractSubjects, genPrompt, buildSubjectPrompt, splitEpisodes, validateScriptRules, llmExtractSubjects, llmSplitEpisodes, aiScriptDigest, runDigestDock, deriveScriptMeta };
 })();
