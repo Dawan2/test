@@ -16,7 +16,7 @@
  *      fs 读取真实源码 runInContext 加载,对 window.Xxx 暴露的成员做断言——被测代码即生产代码;
  *      billing.js 为纯模块直接 require(服务端与测试共享同一份推导逻辑)。
  * 用法:node tests/unit.js            全部套件
- *      node tests/unit.js agent-ops  单套件(agent-ops|experts|produce|store|sb-gen|pipeline|sb-views|sb-io|understanding|billing|contract)
+ *      node tests/unit.js agent-ops  单套件(agent-ops|billing|bus|commands|continuity|contract|domain|experts|issues|memory|pipeline|plans|produce|release|sb-gen|sb-io|sb-views|skills|split|store|tasks|understanding)
  * 约束:无网络、无服务、无浏览器;DOM 重交互(bindPrearr/bindChoices 卡片绑定等)不在本层覆盖,由 e2e 承担。 */
 'use strict';
 const fs = require('fs');
@@ -3308,6 +3308,26 @@ function appRoutes() {
   const okRoute = v => res.some(re => re.test(v)) || prefixes.some(px => v.startsWith(px)) || regexPrefixes.some(px => v.startsWith(px));
   return { res, prefixes, okRoute };
 }
+/* 文档数字对账用:阿拉伯数字与中文小写数字(一…二十)同一口径,文档换写法不必改断言 */
+const CN_DIGITS = '零一二三四五六七八九';
+function cnNum(word) {
+  const s = String(word || '');
+  if (/^\d+$/.test(s)) return +s;
+  const i = s.indexOf('十');
+  if (i < 0) return CN_DIGITS.indexOf(s);
+  const hi = i === 0 ? 1 : CN_DIGITS.indexOf(s[0]);
+  const lo = i === s.length - 1 ? 0 : CN_DIGITS.indexOf(s[i + 1]);
+  return hi < 0 || lo < 0 ? -1 : hi * 10 + lo;
+}
+/* 文档里凡是这一处措辞出现的地方,数字都必须等于实测值;一处都找不到同样算红——
+ * 否则把那句话删掉/改写就能静默绕过对账。 */
+function assertDocNum(rel, re, expect, label) {
+  const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+  const got = [...src.matchAll(re)].map(m => cnNum(m[1]));
+  assert(got.length, label + ':' + rel + ' 找不到该数字表述(改写文案时须同步本断言)');
+  assertEq(got.join(','), got.map(() => expect).join(','),
+    label + ':' + rel + ' 与实测不符(实测 ' + expect + ',文档 ' + got.join('/') + ')');
+}
 const contractTests = [
   { name: 'Issues.collect 返回数组(发布门 G2 的消费契约)', fn() {
     const sb = loadContract();
@@ -3481,7 +3501,8 @@ const contractTests = [
     // 波次配比与短名单一致:W2 单源打底 9 / W3 双端贯通 5 / W4 校验闸门 16
     const byWave = list.reduce((m, s) => { m[s.wave] = (m[s.wave] || 0) + 1; return m; }, {});
     assertEq(JSON.stringify(byWave), JSON.stringify({ W2: 9, W3: 5, W4: 16 }), '波次配比应为 W2:9 / W3:5 / W4:16');
-    // 四类既有单源键全覆盖:KB 17 条 / Prompts 6 key / 命令 11 条 / 专家 16 位(新增单源键必须进索引)
+    // 四类既有单源键全覆盖:KB 条目 / Prompts key / 领域命令 / 专家 id 一个不落(新增单源键必须进索引;
+    // 各类的条数由 contract 套件的「注册表口径」对账断言钉在 README 上,此处只查覆盖不查条数)
     const uniq = k => [...new Set([].concat(...list.map(s => s[k])))];
     const KB = require('../js/knowledge.js');
     const kbKeys = Object.keys(KB.SECTIONS);
@@ -3941,6 +3962,74 @@ const contractTests = [
     const text = require('../js/knowledge.js').section('景别运镜');
     W.SIZES.forEach(n => assert(text.includes(n), '「景别运镜」正文应覆盖阶梯档位:' + n));
     ['远景', '大特写', '中近景'].forEach(t => assert(!text.includes(t), '「景别运镜」正文不得出现阶梯外景别词:' + t));
+  } },
+  /* ---- 文档数字对账:README 里那几个"已落地 N 条 / N 项断言"一律由代码实况反推,写错即红 ----
+   * 这些数字此前只靠人工重算,分支一分裂就与实况脱节(同一句话在不同分支上写过三条/七条/九条)。
+   * 下面四条把它们钉在实测值上:改了 CHECKS、改了注册表、加了用例、加了记账件而没同步文档时,单测先红。
+   * 中文数字与阿拉伯数字同一口径(cnNum);那句话被改写删掉同样算红,否则删掉即可绕过对账。 */
+  { name: 'README 数字对账:CHECKS 落地条数与就绪检查面数由 js/skills.js 实计', fn() {
+    const Skills = require('../js/skills.js');
+    const total = Object.keys(Skills.CHECKS).length;
+    const live = s => s.kinds.includes('check') && !s.pending.includes('check');
+    const preflight = Skills.list().filter(s => live(s) && s.cmds.includes('episode.preflight'));
+    const preflightChecks = preflight.reduce((n, s) => n + s.checks.length, 0);
+    const faces = Skills.preflightStages().length;
+    // 架构框那句说的是注册表里全部已落地校验项
+    assertDocNum('README.md', /CHECKS 已落地(\d+|[一二三四五六七八九十]+)条/g, total, '架构框 CHECKS 条数');
+    assertDocNum('docs/skills-wave/README.md', /共(\d+|[一二三四五六七八九十]+)条 `Skills\.CHECKS` 校验项/g, total, '摘要句 CHECKS 条数');
+    // 就绪检查那两处说的是 result.checks 的面数与条数(登记了 episode.preflight 消费点的那部分)
+    assertDocNum('README.md', /现有(\d+|[一二三四五六七八九十]+)条——剧本面/g, preflightChecks, '就绪检查回执条数');
+    const faceRe = /(\d+|[一二三四五六七八九十]+)面(\d+|[一二三四五六七八九十]+)条/g;
+    const facePairs = [...fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8').matchAll(faceRe)];
+    assert(facePairs.length, 'README 应有「N 面 N 条」的就绪检查口径表述');
+    facePairs.forEach(m => {
+      assertEq(cnNum(m[1]) + '/' + cnNum(m[2]), faces + '/' + preflightChecks,
+        '就绪检查「N 面 N 条」应与单源面表实况一致:' + m[0]);
+    });
+  } },
+  { name: 'README 数字对账:单元测试用例数由 tests/unit.js 实计(套件表求和)', fn() {
+    const total = Object.values(SUITES).reduce((n, t) => n + t.length, 0);
+    assertDocNum('README.md', /单元测试[((](\d+) 项断言/g, total, '单元测试用例数');
+    // 套件清单也是文档口径:漏登记的套件永远不会被跑,数字对上了也是假绿
+    const names = Object.keys(SUITES).sort().join(',');
+    const suiteRe = /[a-z-]+(?:\|[a-z-]+)+/;
+    [['README.md', new RegExp('`node tests/unit\\.js (' + suiteRe.source + ')`')],
+      ['tests/unit.js', new RegExp('单套件[((](' + suiteRe.source + ')[))]')],
+    ].forEach(([rel, re]) => {
+      const m = fs.readFileSync(path.join(ROOT, rel), 'utf8').match(re);
+      assert(m, rel + ' 找不到单套件清单');
+      assertEq(m[1].split('|').sort().join(','), names, rel + ' 的单套件清单应与 SUITES 一致');
+    });
+  } },
+  { name: 'README 数字对账:注册表口径(能力/KB/提示词/命令/专家)由各注册表实计', fn() {
+    const Skills = require('../js/skills.js');
+    const n = {
+      skills: Skills.list().length,
+      kb: Object.keys(require('../js/knowledge.js').SECTIONS).length,
+      prompts: require('../js/prompts.js').list().length,
+      cmds: require('../js/cmd-registry.js').names().length,
+      experts: require('../js/experts-data.js').EXPERTS.length,
+    };
+    ['README.md', 'docs/skills-wave/README.md'].forEach(rel => {
+      assertDocNum(rel, /短名单 (\d+) 条内部能力/g, n.skills, '短名单条数');
+    });
+    assertDocNum('README.md', /KB 全部 (\d+) 条方法论/g, n.kb, 'KB 条目数');
+    assertDocNum('README.md', /(\d+) 条注册表提示词/g, n.prompts, '注册表提示词数');
+    assertDocNum('README.md', /(\d+) 条领域命令/g, n.cmds, '领域命令数');
+    assertDocNum('README.md', /(\d+) 位专家/g, n.experts, '专家数');
+    assertDocNum('README.md', /(\d+) 条主线 LLM 提示词/g, n.prompts, '主线提示词数');
+    assertDocNum('docs/skills-wave/README.md', /knowledge\.js`[((](\d+) 条目/g, n.kb, 'KB 条目数');
+    assertDocNum('docs/skills-wave/README.md', /prompts\.js`[((](\d+) 条[))]/g, n.prompts, '提示词条数');
+    assertDocNum('docs/skills-wave/README.md', /experts-data\.js`[((](\d+) 专家/g, n.experts, '专家数');
+    assertDocNum('docs/skills-wave/README.md', /skills\.js`[((](\d+) 条内部能力/g, n.skills, '短名单条数');
+  } },
+  { name: 'docs/skills-wave 索引与目录实况双向对齐(记账件不漏登记、索引行不指向空文件)', fn() {
+    const dir = path.join(ROOT, 'docs', 'skills-wave');
+    const files = fs.readdirSync(dir).filter(f => f.endsWith('.md') && f !== 'README.md').sort();
+    const src = fs.readFileSync(path.join(dir, 'README.md'), 'utf8');
+    const rows = [...src.matchAll(/^\| \[([^\]]+)\]\(\.\/([^)]+)\)/gm)].map(m => ({ label: m[1], file: m[2] }));
+    assertEq(rows.map(r => r.file).sort().join(','), files.join(','), '索引表应与目录里的记账件一一对应');
+    rows.forEach(r => assertEq(r.label, r.file, '索引行的链接文字应就是文件名(便于按名直查)'));
   } },
 ];
 
