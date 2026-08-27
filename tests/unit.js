@@ -1342,6 +1342,34 @@ const commandsTests = [
     const chk2 = (r2.result.checks || []).find(x => x.skill === 'subjects.refIntegrity');
     assertEq(chk2.pass, true); assertEq(chk2.level, 'info'); assertEq(chk2.hits.length, 0);
   } },
+  { name: 'preflight:result.checks 是剧本+主体+成片字幕三面并集(按主线步序,摘任一面即红)', fn: async () => {
+    const sb = loadCommands();
+    /* 烧录字幕开启 + 镜1 台词超硬上限:字幕面必产出 caption-truncated(fail),
+     * 即结论不是"时间轴未成形"那种空 info——摘掉 film 这一面时本例的并集与 fail 都对不上 */
+    const { p, ep } = cmdCtx(sb, {
+      sbConfig: { maxRetry: 2, subtitle: true },
+      shots: [makeShot(0, { confirm: true, dialogue: '我'.repeat(130) }), makeShot(1, { confirm: true })],
+    });
+    const r = await sb.Commands.execute('episode.preflight', { pid: 'p1', epid: 'ep1' });
+    const checks = r.result.checks || [];
+    assertEq(checks.map(x => x.skill).join(','),
+      'script.hookStrength,script.faceslapFour,script.dialogueRule,subjects.refIntegrity,subjects.crossShot,film.subtitleQC',
+      'result.checks 应是三面并集,按主线步序 script → subjects → film');
+    const cap = checks.find(x => x.skill === 'film.subtitleQC');
+    assert(cap, '就绪检查必须消费成片字幕面(film 面被摘掉则本条红)');
+    assertEq(cap.id, 'film.subtitleTiming', '字幕面结论应带实现 id');
+    assertEq(cap.pass, false); assertEq(cap.level, 'fail', '烧录字幕超硬上限=合成必丢字,判 fail');
+    assertEq(cap.hits.map(h => h.code + '@' + h.order).join(','), 'caption-truncated@1', '命中应逐段定位到镜号');
+    assertEq(cap.hits[0].limit, 120, 'hit 应带硬上限口径(Domain.SUB_BURN_MAX)');
+    /* 与直接跑三面逐字节一致:命令层不得对某一面做二次过滤/降级/改序(沙箱无 Media,ck.online=false) */
+    const ck = { online: false };
+    const direct = sb.Skills.check('script', { p, ep }, ck)
+      .concat(sb.Skills.check('subjects', { p, ep }, ck), sb.Skills.check('film', { p, ep }, ck));
+    assertEq(JSON.stringify(checks), JSON.stringify(direct), 'result.checks 应逐字节等于三面直跑结果的并集');
+    assertEq(r.ok, true); assertEq(r.status, 'ready', '字幕面 fail 只报不拦,不改就绪判定');
+    assert(!(r.result.blockers || []).some(b => /字幕/.test(b.label || '')), '字幕结论不得混进 Domain 阻塞项');
+    assertEq(r.cost, undefined, '就绪检查零计费');
+  } },
   { name: 'generateVideos:全未确认 blocked unconfirmed+skipped 清单(不发起生成)', fn: async () => {
     const sb = loadCommands();
     cmdCtx(sb, { shots: [makeShot(0, { video: { status: 'none' } }), makeShot(1, { video: { status: 'none' } })] }); // 均未确认
@@ -4168,6 +4196,28 @@ const skillsTests = [
     assertEq(sk.pending.length, 0, '校验面已落地,不应再挂 pending');
     assertEq(sk.checks.join(','), 'film.subtitleTiming');
     assertEq(Skills.check('film', { p: { id: 'p1' }, ep: capEp([capShot(0, { dialogue: '走' })]) }).length, 1, '成片步现有一条已落地校验项');
+  } },
+  { name: '就绪检查校验面并集(源级):双端 preflight 段内 script/subjects/film 同在一条 checks 表达式,登记面无漏消费', fn() {
+    /* 只断"文件里出现过 Skills.check('film'" 是有盲区的:算出来却不并进 result.checks 时照样通过。
+     * 这里把断言收到 preflight 实现段内的那一条 checks 表达式上,并按登记侧反查有无漏消费的面。 */
+    const consumers = Skills.list().filter(s => !s.pending.includes('check') && s.checks.length && s.cmds.includes('episode.preflight'));
+    assert(consumers.some(s => s.stage === 'film'), '字幕面应登记 episode.preflight 为消费点');
+    [['js/commands.js', "reg('episode.preflight'", "reg('episode.generateStoryboard'"],
+      ['cli.js', "EXEC['episode.preflight']", "EXEC['episode.generateVideos']"]].forEach(([f, from, to]) => {
+      const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+      const a = src.indexOf(from), b = src.indexOf(to);
+      assert(a >= 0 && b > a, f + ' 应能定位到就绪检查实现段');
+      const seg = src.slice(a, b);
+      const i = seg.indexOf('const checks =');
+      assert(i >= 0, f + ' 就绪检查段内应有 checks 汇总表达式');
+      const expr = seg.slice(i, seg.indexOf(';', i) + 1);
+      const at = st => expr.indexOf("Skills.check('" + st + "'");
+      ['script', 'subjects', 'film'].forEach(st => assert(at(st) > 0, f + ' checks 表达式应并入 ' + st + ' 面(只在段外调用不算消费)'));
+      assert(at('script') < at('subjects') && at('subjects') < at('film'), f + ' 三面应按主线步序 script → subjects → film 排列');
+      // 登记侧反查:凡登记了 episode.preflight 消费点的已落地校验条目,其所属面必须在这条表达式里(将来新增面漏接先红)
+      consumers.forEach(s => assert(at(s.stage) > 0, f + ' 就绪检查漏消费已登记面:' + s.id + '(' + s.stage + ')'));
+      assert(seg.includes('result: Object.assign({}, st, { checks })'), f + ' 三面并集应附在 result.checks(不并入 Domain 推导结果)');
+    });
   } },
 ];
 
