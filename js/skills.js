@@ -873,11 +873,18 @@
     },
     {
       id: 'core.expertSkillRef', sk: 'SK-02', name: '专家条目挂能力引用', stage: CROSS, wave: 'W2', kinds: ['infra'],
+      prompts: ['forge.system'],
       experts: ['ex_suspense', 'ex_sweet', 'ex_hotblood', 'ex_healing', 'ex_cinema', 'ex_narration', 'ex_revenge',
         'ex_power', 'ex_planner', 'ex_localize', 'ex_hook', 'ex_pleasure', 'ex_dialogue', 'ex_structure', 'ex_dp',
         'ex_editor'],
       gaps: ['G-09'],
-      note: '专家→能力反查出口 Skills.forExpert(id);专家条目侧的 skills[] 正向字段待 G-09',
+      note: '专家→能力反查出口 Skills.forExpert(id);专家条目侧的 skills[] 正向字段待 G-09。'
+        + '自定义专家的铸造口(专家工坊锻造器)人设句已收编为独立键 forge.system,取值口在 js/experts.js'
+        + '(gsettings 工坊页仍只引用 Experts.FORGE_SYS 这一个常量,消费侧一行未改),浏览器隐式读全局默认值页的覆盖表;'
+        + '它只有浏览器一个消费点,收编解决的是可覆盖不是可 headless。'
+        + '仍欠:锻造器那份严格 JSON 的字段面与改稿规则仍写死在调用点、不开放覆盖'
+        + '(用户改坏 normExpertDraft 就取不到 name/persona,整轮生成失败);'
+        + '且那份字段面里同样没有 skills[] —— 工坊铸出的专家从出生起就挂不上能力引用,与 G-09 是同一个缺口的两头',
     },
     {
       id: 'core.personaCtx', sk: 'SK-03', name: '生效人设经 ctx 过服务端', stage: CROSS, wave: 'W3',
@@ -1223,6 +1230,7 @@
     {
       id: 'review.memoryFeedback', sk: 'SK-26', name: '审片结论按板块回流专家', stage: 'review',
       covers: ['review', CROSS], wave: 'W4', kinds: ['orchestrate'],
+      prompts: ['forge.evolveSystem'],
       experts: ['ex_editor'], gaps: ['G-11', 'G-02'],
       steps: [
         { cmd: 'project.extractSubjects', args: {}, note: '提取主体入库收尾即把本轮新增/已有位数、主体库总量与缺参考图位数写回主体板块记忆桶' },
@@ -1253,8 +1261,15 @@
         + 'WfCore.expertBoards(板块雇佣 > 全局雇佣,与 personaFor 同一套)+ WfCore.memForBoards'
         + '(只收 scope 命中的条目,无 scope 的手工沉淀不收),板块或条目取不到在扣费前跳过——'
         + '别的板块的沉淀不再混进本专家 persona,也不拿全量记忆桶凑数。'
+        + '蒸馏那一步的人设句(进化器)也已收编为独立键 forge.evolveSystem,取值口就在 evolveExpert 经 Prompts.get,'
+        + '缺省逐字节不变、用户在「全局默认值」页改得到——蒸馏用什么口径提炼条款不再写死;'
+        + '与工坊锻造器 forge.system 分两条键(无中生有铸新专家 vs 就地改写已有专家,角色不同),'
+        + '两条同为只有浏览器一个消费点的键(收编解决的是可覆盖不是可 headless)。'
+        + '同样只收人设句:返回 JSON 的 clauses 约定、1-4 条上限与每条 ≤40 字仍由该步 user 半与 system 契约半拼,'
+        + '不开放覆盖(改坏即整轮蒸馏不出条款,且已交付的那次调用不退费)。'
         + '仍欠(G-11):蒸馏仍是人手动作——回流条目要人在专家库点「从使用记录进化」才进 persona,'
-        + 'evolveExpert 也只对自定义专家开放,自动进化与预置专家仍无出口',
+        + 'evolveExpert 也只对自定义专家开放,自动进化与预置专家仍无出口;'
+        + '人设句可覆盖不改这一面——改得到提炼口径,改不出自动触发',
     },
     /* ---- 成片 ---- */
     {
