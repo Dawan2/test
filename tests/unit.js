@@ -1357,7 +1357,7 @@ const commandsTests = [
     assertEq(checks.map(x => x.skill).join(','),
       'script.hookStrength,script.faceslapFour,script.dialogueRule,script.aiToneBan,'
       + 'subjects.refDiscipline,subjects.refIntegrity,subjects.crossShot,subjects.crossShot,'
-      + 'eps.structureStage,eps.payoffPoint,shots.sizeProgression,shots.promptEightDim,film.subtitleQC',
+      + 'eps.structureStage,eps.payoffPoint,shots.sizeProgression,shots.promptEightDim,shots.motionGate,film.subtitleQC',
       'result.checks 应是五面并集,按主线步序 script → subjects → eps → shots → film');
     const cap = checks.find(x => x.skill === 'film.subtitleQC');
     assert(cap, '就绪检查必须消费成片字幕面(film 面被摘掉则本条红)');
@@ -3476,8 +3476,11 @@ const contractTests = [
     assert(iBody > 0, 'skills.js factory 签名应为 (KB, Domain, wfCore)');
     const body = src.slice(iBody); // 只查 factory 体(UMD 头与文件头注释不计)
     ['window', 'Store', 'document', 'location', 'fetch'].forEach(w => assert(!body.includes(w), 'skills.js 模块体不得出现环境句柄:' + w));
-    // WfCore 只在校验项体内现解析,不在模块顶层绑定(否则浏览器加载顺序上取到 undefined)
-    assertEq((body.match(/wfCore\(\)/g) || []).length, 1, 'WfCore 应只在用到它的校验项里现解析一次');
+    /* WfCore 只在用到它的地方现解析(校验项体内,或顶层只放惰性取值函数),不在模块顶层取值——
+     * 浏览器加载顺序上它晚于本文件,顶层取值会绑到 undefined。判据是"顶层没有 = wfCore() 的取值",
+     * 不是出现次数(用到它的校验项会越来越多) */
+    assert((body.match(/wfCore\(\)/g) || []).length >= 1, 'WfCore 应在用到它的地方现解析');
+    assert(!/^ {2}const \w+ = wfCore\(\)/m.test(body), 'WfCore 不得在模块顶层取值(须在校验项体内或惰性取值函数里现解析)');
     assert(!/^\s*const \w+ = wfCore\(\)/m.test(body.slice(0, body.indexOf("CHECKS['"))), 'skills.js 不得在模块顶层解析 WfCore');
     // 编排型步骤只引用已注册命令(playbook 不内联新命令语义)
     const names = require('../js/cmd-registry.js').names();
@@ -4121,6 +4124,10 @@ const lexShot = (order, prompt, over) => Object.assign({ id: 'sh' + order, order
 const lexEp = (shots, over) => Object.assign({ id: 'ep1', shots }, over || {});
 const lexOf = (ep, p) => Skills.check('shots', { p: p || lexP, ep }).find(x => x.skill === 'shots.promptEightDim');
 const STABLE_OK = '五官稳定不变形,人体结构正常,动作自然不僵硬';
+/* 动态感准入夹具:判定输入同样是真实生成请求(动作幅度看动作描述那段、运镜条数看装好的那条提示词、
+ * 镜长看该请求的 duration),故一律带项目上下文;camera 缺省一个运镜(装配时按 s.camera 追加那一个) */
+const mgShot = (order, prompt, over) => lexShot(order, prompt, Object.assign({ camera: '固定镜头' }, over || {}));
+const motionOf = (ep, p) => Skills.check('shots', { p: p || lexP, ep }).find(x => x.skill === 'shots.motionGate');
 /* 成片字幕夹具:镜头缺省带分镜图(进得了合成序列),段时长由 Domain.subtitleSegs 按预估/裁剪推出,用例只摆内容 */
 const capShot = (order, over) => Object.assign({ id: 'sh' + order, order, dialogue: '', narration: '', image: '/uploads/a/f' + order + '.png' }, over || {});
 const capEp = (shots, over) => Object.assign({ id: 'ep1', sbConfig: { subtitle: true }, shots }, over || {});
@@ -4672,7 +4679,7 @@ const skillsTests = [
     assertEq(linkOf([sizeShot(0, '中景')]).level, 'info', '单镜无相邻可比,不冒充通过判定');
     assertEq(Skills.check('shots', { p: { id: 'p1' }, s: sizeShot(0, '中景') })
       .find(x => x.skill === 'shots.sizeProgression').hits.length, 0, '镜级入口无相邻输入');
-    assertEq(Skills.check('shots', {}).length, 2, '分镜步现有两条已落地校验项(景别递进 + 抽卡稳定词)');
+    assertEq(Skills.check('shots', {}).length, 3, '分镜步现有三条已落地校验项(景别递进 + 抽卡稳定词 + 动态感准入)');
   } },
   { name: 'sizeLinkage:纯函数(不改入参、同输入同结论)', fn() {
     const shots = [sizeShot(0, '中景'), sizeShot(1, '中景'), sizeShot(2, '中景'), sizeShot(3, '大全景')];
@@ -4774,6 +4781,99 @@ const skillsTests = [
     const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
     assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 只数高/中危 —— 本轮不改门禁口径');
   } },
+  { name: 'motionDiscipline:小幅慢动作镜 → info;写了大幅动作 → motion-overrun(带命中词与位置)', fn() {
+    const ok = motionOf(lexEp([mgShot(0, '她缓慢转身,窗外雨声渐起')]));
+    assertEq(ok.pass, true); assertEq(ok.level, 'info'); assertEq(ok.hits.length, 0, '慢动作小幅度的镜不应产出命中');
+    const base = '两人在雨中激烈打斗,随后奔跑离开';
+    const r = motionOf(lexEp([mgShot(0, base)]));
+    assertEq(r.pass, false); assertEq(r.level, 'warn', '动态感准入是提醒级,不升 fail');
+    assertEq(r.hits.map(h => h.code + '@' + h.order).join(','), 'motion-overrun@1');
+    assertEq(r.hits[0].name, '打斗', 'hits 应给出动作描述里最早出现的大幅动作词');
+    assertEq(r.hits[0].at, base.indexOf('打斗'), 'hits 应定位到该词在动作描述中的位置');
+    assertEq(r.hits[0].shotId, 'sh0', 'hits 应带镜头 id 供调用方跳转');
+    // 装配段(轴线规则/运镜/机位/风格/负面约束)不写动作:负面约束里的禁写词不算动作命中
+    const neg = motionOf(lexEp([mgShot(0, '她缓慢转身')]), { id: 'p1', subjects: [], negPrompt: '不要打斗、不要爆炸' });
+    assertEq(neg.hits.length, 0, '负面约束里的禁写词不得判成这一镜写了大动作');
+  } },
+  { name: 'motionDiscipline:首尾帧镜的大幅动作归 SK-13 插值面,本项不重复报', fn() {
+    const ep = lexEp([mgShot(0, '两人在雨中激烈打斗', { genStrategy: 'frames' })]);
+    assertEq(motionOf(ep).hits.length, 0, '首尾帧镜不在本项重复报');
+    const multi = Skills.check('shots', { p: lexP, ep }).concat(Skills.check('subjects', { p: lexP, ep }))
+      .find(x => x.id === 'subjects.multiShotPrompt');
+    assertEq(multi.hits.map(h => h.code + ':' + h.name).join(','), 'frames-motion-overrun:打斗',
+      '同一镜的插值风险仍由 SK-13 那一面如实报(两面合起来不漏不重)');
+  } },
+  { name: 'motionDiscipline:一镜给了两个运镜 → camera-move-crowded;同一运镜的全名与简写只计一次', fn() {
+    const r = motionOf(lexEp([mgShot(0, '她缓慢转身,随后镜头环绕镜头一圈', { camera: '推镜头' })]));
+    assertEq(r.level, 'warn');
+    assertEq(r.hits.map(h => h.code + '@' + h.order).join(','), 'camera-move-crowded@1');
+    assertEq(r.hits[0].name, '推镜头、环绕镜头', 'hits 应列出这一镜命中的运镜名');
+    assertEq(r.hits[0].count, 2); assertEq(r.hits[0].limit, 1, '上限就是条目那句「一次只给一个运镜」');
+    assertEq(motionOf(lexEp([mgShot(0, '镜头缓慢推镜,她转身', { camera: '推镜头' })])).hits.length, 0,
+      '提示词写简写、运镜字段写全名仍是同一个运镜,不算两个');
+    // 机位描述不是运镜:角度/景别两轴的取值(俯拍/特写)由请求装配追加,不得算成第二个运镜
+    assertEq(motionOf(lexEp([mgShot(0, '她缓慢转身的特写', { cameraSpec: { shotSize: '特写', angle: '俯拍' } })])).hits.length, 0,
+      '机位栏的角度/景别取值不得判成第二个运镜');
+  } },
+  { name: 'motionDiscipline:整集镜长全同 → rhythm-flat(集级一条);镜长有分布不报;镜数不足不下断言', fn() {
+    const flat = n => lexEp(Array.from({ length: n }, (_, i) => mgShot(i, '她缓慢转身')));
+    const r = motionOf(flat(4));
+    assertEq(r.hits.map(h => h.code + '@' + h.order).join(','), 'rhythm-flat@0', '整集级命中不冒充镜号');
+    assertEq(r.hits[0].count, 4); assertEq(r.hits[0].name, '3秒', 'hits 应带实测镜长与可判定镜数');
+    assertEq(motionOf(flat(3)).hits.length, 0, '可判定镜数不足判定下限时不下整集断言');
+    // 镜长现取真实请求的 duration(与合成段时长同一份估长):文案长短一变镜长就有分布
+    const varied = lexEp([0, 1, 2, 3].map(i => mgShot(i, '她缓慢转身' + '雨'.repeat(i * 100))));
+    assertEq(varied.shots.map(s => DomainMod.buildVideoRequest(lexP, varied, s).duration).join(','), '3,4,5,7', '夹具:四镜真实镜长各不相同');
+    assertEq(motionOf(varied).hits.length, 0, '镜长有分布即不报');
+  } },
+  { name: 'motionDiscipline:判据字面与运镜词表单源(现取 KB 条目正文 + WfCore 运镜表 move 轴)', fn() {
+    const KB = require('../js/knowledge.js');
+    assert(KB.section('抽卡军规').includes('大动态'), '军规①的「大动态」字面须仍在条目正文里(失配时该码退空,不制造假命中)');
+    assert(KB.section('抽卡军规').includes('一次只给一个运镜'), '军规②那句须仍在条目正文里');
+    assert(KB.section('剪辑节奏').includes('镜头长度分布'), '剪辑节奏的「节奏=镜头长度分布」须仍在条目正文里');
+    const sksrc = fs.readFileSync(path.join(ROOT, 'js', 'skills.js'), 'utf8');
+    assert(/CAMERA_MOVES\.filter\(x => x\.axis === 'move'\)/.test(sksrc), '运镜词表应现取 WfCore 运镜表的 move 轴');
+    /* 词表逐项对齐:move 轴每一项都判得动(词表加一项本项自动跟上),
+     * 角度/景别两轴的取值(俯拍/仰拍/特写是 camera 枚举的早期取值)一律不算运镜 */
+    const W = require('../js/wf-core.js');
+    W.CAMERA_MOVES.forEach(mv => {
+      const hits = motionOf(lexEp([mgShot(0, '她缓慢转身,随后' + mv.name, { camera: '推镜头' })])).hits;
+      const want = mv.axis === 'move' && mv.name !== '推镜头' ? 'camera-move-crowded' : '';
+      assertEq(hits.map(h => h.code).join(','), want, '运镜判据应逐项跟着词表:' + mv.name + '(' + mv.axis + ')');
+    });
+  } },
+  { name: 'motionDiscipline:纯函数(不改入参、同输入同结论);无判定输入不产出结论', fn() {
+    const ep = lexEp([mgShot(0, '两人在雨中激烈打斗')]);
+    const snap = JSON.stringify([lexP, ep]);
+    assertEq(JSON.stringify(motionOf(ep)), JSON.stringify(motionOf(ep)), '同输入应给同结论(无隐藏状态)');
+    assertEq(JSON.stringify([lexP, ep]), snap, '校验项不得改动领域对象');
+    assertEq(motionOf(lexEp([mgShot(0, '')])).hits.length, 0, '提示词还没写的镜无判定输入');
+    assertEq(motionOf(lexEp([])).level, 'info', '无镜头即无判定输入');
+    assertEq(Skills.check('shots', { ep }).find(x => x.skill === 'shots.motionGate').hits.length, 0, '无项目上下文不产出结论');
+    assertEq(Skills.check('shots', { p: lexP, s: mgShot(0, '两人在雨中激烈打斗') })
+      .find(x => x.skill === 'shots.motionGate').hits.map(h => h.code).join(','), 'motion-overrun', '镜级入口只判传入的那一镜');
+    assertEq(Skills.check('shots', { p: lexP, s: mgShot(0, '她缓慢转身') })
+      .find(x => x.skill === 'shots.motionGate').hits.length, 0, '单镜入口无整集节奏可比');
+  } },
+  { name: 'motionDiscipline:消费点——就绪检查按面表自动跟上(不拦生成、不改门禁、不开计费)', fn() {
+    const sk = Skills.byId('shots.motionGate');
+    assertEq(sk.pending.length, 0, '校验面已落地,不应再挂 pending');
+    assertEq(sk.checks.join(','), 'shots.motionDiscipline');
+    assert(sk.cmds.includes('episode.preflight'), '条目应登记已接通的就绪检查命令面');
+    assert(sk.gaps.includes('S-04'), '节拍板五段式那一份判定输入仍无命令出口,S-04 不清账');
+    assert(sk.gaps.includes('G-10'), '这一镜该快该慢的语义判断仍待 G-10');
+    // 消费点由登记推导:所属分镜面早已在双端就绪检查的面表里,故两端实现一行未改
+    assertPreflightFace('shots', '分镜面');
+    const consumers = Skills.list().filter(s => !s.pending.includes('check') && s.checks.length && s.cmds.includes('episode.preflight'));
+    assertEq((consumers.find(x => x.id === 'shots.motionGate') || {}).stage, 'shots', '新增校验项不改就绪检查的面清单');
+    assertEq(require('../js/cmd-registry.js').byName['episode.preflight'].risk, 'read', '就绪检查应仍是 read 类零计费');
+    ['js/sb-gen.js', 'js/produce.js'].forEach(f =>
+      assert(!fs.readFileSync(path.join(ROOT, f), 'utf8').includes('Skills.'), f + ' 生成动作里不加校验拦截(结论只报不拦)'));
+    const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
+    assert(!isrc.includes('shots.motionGate'), '本面只经就绪检查消费,问题中心不新挂提醒(要不要挂的产品口径未定)');
+    const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
+    assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 只数高/中危 —— 本轮不改门禁口径');
+  } },
   { name: 'subtitleTiming:干净夹具全 pass(台词短、停留够 → info 无命中)', fn() {
     const r = caption(capEp([capShot(0, { dialogue: '快走别回头' }), capShot(1, { narration: '雨声渐起' })]));
     assertEq(r.pass, true); assertEq(r.level, 'info'); assertEq(r.hits.length, 0, '读得完的字幕不应产出命中');
@@ -4858,8 +4958,8 @@ const skillsTests = [
     Skills.list().filter(s => s.pending.includes('check') && s.cmds.includes('episode.preflight'))
       .forEach(s => assert(!stages.includes(s.stage) || consumers.some(x => x.stage === s.stage),
         '校验面未落地的条目不应把 ' + s.stage + ' 面单独带进表:' + s.id));
-    // 表现在跑出来就是十三条结论(面表 + 各面已落地校验项数,与行为断言的期望串同一口径)
-    assertEq(stages.reduce((n, st) => n + Skills.check(st, {}).length, 0), 13, '五面共十三条已落地校验项');
+    // 表现在跑出来就是十四条结论(面表 + 各面已落地校验项数,与行为断言的期望串同一口径)
+    assertEq(stages.reduce((n, st) => n + Skills.check(st, {}).length, 0), 14, '五面共十四条已落地校验项');
     /* 两端只读该表:段内那条 checks 表达式必须取表,且不得再出现任何面字面量;
      * 取表 + concat 的写法两端逐字节相同(同表同口径,一端改写法即红)。 */
     const FRAG = 'Skills.preflightStages().reduce((all, stage) => all.concat(Skills.check(stage, { p, ep }, ck)), [])';
@@ -4886,7 +4986,7 @@ const skillsTests = [
           Skills.check('shots', { p, ep }, ck), Skills.check('film', { p, ep }, ck));
       const byTable = Skills.preflightStages().reduce((all, stage) => all.concat(Skills.check(stage, { p, ep }, ck)), []);
       assertEq(JSON.stringify(byTable), JSON.stringify(legacy), '读表 concat 应逐字节等于五面写死并集(online=' + ck.online + ')');
-      assertEq(byTable.length, 13, '并集仍是十三条结论');
+      assertEq(byTable.length, 14, '并集仍是十四条结论');
     });
     // 表是纯函数:同输入同表,且调用方拿到的是副本(改返回值不污染下次取表)
     assertEq(Skills.preflightStages().join(','), Skills.preflightStages().join(','), '同输入应给同表');
