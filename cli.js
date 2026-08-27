@@ -522,9 +522,14 @@ CMD.release = async (a, f) => {
   p.releases.push(rel);
   p.__ver = rel.ver;
   p.__lastSaved = Date.now();
-  // 写回 state
+  // 写回 state:项目桶 + meta 桶(发布闭环结论按板块回流协作记忆,派生与浏览器 stampRelease 同一份 WfCore;
+  // meta 整组替换走 memory add 同通道,同一次 PUT 里带上,不新增接口也不新增计费)
+  const meta = {};
+  for (const k in state) if (k !== 'projects') meta[k] = state[k];
+  meta.agentMemory = WfCore.memWrite(state.agentMemory, WfCore.memFeedback({ p, gate, rel }, { now: () => rel.when }));
   const tree = {
     projects: { [p.id]: p },
+    meta,
   };
   const resp = await PUT('/api/state', { rev: rev || 0, changes: tree }, f);
   return {
@@ -1426,8 +1431,9 @@ CMD.agent = async (a, f) => {
   return d;
 };
 
-/* ---- 协作记忆(双端消费):Agent 对话层沉淀的用户偏好/已确认决定,存 state.agentMemory;
- * wf 端点与对话层按 WfCore.memRecall 同算法召回注入。list 支持 --recall 预览实际注入条目 ---- */
+/* ---- 协作记忆(双端消费):Agent 对话层沉淀的用户偏好/已确认决定,加审片/发布闭环回流的可判定结论,
+ * 一律存既有 state.agentMemory;wf 端点与对话层按 WfCore.memRecall 同算法召回注入。
+ * list 支持 --recall 预览实际注入条目(回流条目带 fb 回流键,同一集/同一项目只留最新一条) ---- */
 CMD.memory = async (a, f) => {
   const sub = a[0] || 'list';
   if (sub === 'list') {

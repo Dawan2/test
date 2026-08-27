@@ -144,6 +144,65 @@
     const m = W.memRecall(mem, input, scope);
     return m.length ? '\n历史协作记忆(用户过往的偏好与已确认的修改决定,参考以保持一致):\n' + m.map(t => '- ' + t.text).join('\n') : '';
   };
+  /* ---- 闭环结论回流协作记忆(派生面双端唯一一份) ----
+   * 派生与写入分离:本组只吃入参、只回值,记忆数组由写入侧(浏览器 Store.state / 服务端 state 树 /
+   * CLI meta 桶)显式传进来再存回去——沿用既有 state.agentMemory,不新建存储桶,函数体不碰环境句柄。
+   * 只回流**可判定**的结论:闭环自己刚写下的那份记录里的结构化字段与计数(待返工镜数、共性问题类型、
+   * 四维最弱维、发布门状态与未过门项),不复述模型评语原文、不在本层另造评价口径;
+   * 判定输入取不到即回空数组——没有结论就不写记忆,不冒充。
+   * 不回流整集均分:成片板块的记忆会被下一轮逐镜审片提示词召回(memBlock scope='成片'),
+   * 把上一轮的分数喂回评分方等于给下一轮的打分设锚点;要规避什么(问题类型/最弱维)才是回流的用处。 */
+  W.MEM_MAX = 50;       // 记忆桶条数上限(与浏览器 memRemember、CLI memory add 同口径)
+  W.MEM_TEXT_MAX = 120; // 单条截断字数(同上)
+  W.MEM_LOW_SCORE = 7;  // 待返工镜的分数线:与审片报告重抽入口、发布门 G3 默认阈值同数,本层只读不改门禁口径
+  /* o={ep(带 lastReview,审片闭环) | p+gate+rel(发布闭环)},ctx={now:取时间戳(函数或字符串)};
+   * 回 [{text,time,scope,fb}]:scope=回流板块(审片/发布同属成片板块,板块键取 WF_BOARD 单源),
+   * fb=回流键(同一集/同一项目反复闭环时 memWrite 按它原地更新,不无限追加) */
+  W.memFeedback = function (o, ctx) {
+    o = o || {};
+    const now = ctx && ctx.now;
+    const time = typeof now === 'function' ? now() : String(now || '');
+    const board = W.WF_BOARD['smart-review'];
+    const out = [];
+    const add = (fb, text) => out.push({ text: String(text).slice(0, W.MEM_TEXT_MAX), time, scope: board, fb });
+    const ep = o.ep, lr = ep && ep.lastReview;
+    if (lr && typeof lr.avg === 'number') {
+      const per = Array.isArray(lr.perShot) ? lr.perShot : [];
+      const low = per.filter(x => x && +x.score < W.MEM_LOW_SCORE).length;
+      const types = (((lr.common || {}).issues) || []).map(i => i && i.type).filter(Boolean).slice(0, 3);
+      /* 四维最弱维:维度名现取 normalizeCut 的产出形状(维度名的唯一定义在本文件的四维规整处,
+       * 与 SK-24 校验面同口径),四维缺失或该步 LLM 失败标 null 时这一段不出现 */
+      const cut = lr.cut && typeof lr.cut === 'object' ? lr.cut : null;
+      const dims = cut ? Object.keys(W.normalizeCut({}))
+        .filter(k => cut[k] && typeof cut[k] === 'object' && typeof cut[k].score === 'number')
+        .sort((a, b) => cut[a].score - cut[b].score) : [];
+      const parts = ['待返工 ' + low + '/' + per.length + ' 镜'];
+      if (types.length) parts.push('共性问题 ' + types.join('、'));
+      if (dims.length) parts.push('四维最弱维 ' + dims[0] + ' ' + cut[dims[0]].score);
+      add('review:' + ep.id, '审片闭环回流·' + (ep.title || ep.id) + ':' + parts.join(';') + ';后续拆镜与提示词优先规避这几处');
+    }
+    const g = o.gate;
+    if (g && typeof g.overall === 'string' && g.overall) {
+      const p = o.p || {};
+      const open = (Array.isArray(g.gates) ? g.gates : []).filter(x => x && x.status !== 'pass').map(x => x.label).filter(Boolean);
+      add('release:' + (p.id || ''), '发布闭环回流·' + (p.name || p.id || '本项目') + ' v' + ((o.rel && o.rel.ver) || p.__ver || 0)
+        + ':发布门 ' + g.overall + '(fail ' + (+g.fails || 0) + '/warn ' + (+g.warns || 0) + ')'
+        + (open.length ? ';未过门 ' + open.join('、') : ';十门全过'));
+    }
+    return out;
+  };
+  /* 回流写入(双端同一口径):带 fb 的条目按键原地更新——同一集/同一项目反复闭环只留最新一条结论,
+   * 不把 50 条上限刷满挤掉用户自己沉淀的偏好;无 fb 的条目按追加处理。回新数组,不改入参。 */
+  W.memWrite = function (mem, entries) {
+    const out = (Array.isArray(mem) ? mem : []).slice();
+    (Array.isArray(entries) ? entries : []).forEach(e => {
+      if (!e || !e.text) return;
+      const i = e.fb ? out.findIndex(m => m && m.fb === e.fb) : -1;
+      if (i >= 0) out[i] = Object.assign({}, out[i], e);
+      else out.push(e);
+    });
+    return out.length > W.MEM_MAX ? out.slice(-W.MEM_MAX) : out;
+  };
   /* 导演设定五维文本(understanding.js DIMS_DIR 下沉) */
   W.dimsText = ds => W.DIR_DIMS.filter(d => ds && ds[d]).map(d => `${d}:${ds[d]}`).join('\n');
   /* 章节事件图谱(自 understanding.js 下沉):sourceRev 失配(或旧数据无 sourceRev 且正文改过)不注入,防"新正文+旧图谱" */

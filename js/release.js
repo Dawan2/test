@@ -19,7 +19,7 @@
  * - 阈值配置:getSettings().releaseMinReviewScore,默认 7;DEFAULTS 增加该键(不侵入 gsettings.js 太多,仅 fallback)
  *
  * 依赖:window.Issues / window.Domain / window.Compliance / window.HumanReview / window.ZipUtil / window.Store
- *   / window.U / window.Bus / window.Exporter(exportSrt/buildMaterialFiles 等)
+ *   / window.U / window.Bus / window.Exporter(exportSrt/buildMaterialFiles 等)/ window.WfCore(发布闭环结论回流记忆)
  * 所有依赖缺失时安全降级(对应门 warn + '模块未加载') */
 (function () {
   /* ---------- 阈值(不侵入 gsettings.js DEFAULTS,fallback 7) ---------- */
@@ -255,6 +255,13 @@
       snapshotVer: ver,       // 回滚目标:把 p 状态按 __ver 做回滚标记 — 实际回滚通过 Store 的 history 快照
     };
     p.releases.push(rel);
+    /* 发布闭环结论按板块回流协作记忆:门禁结果只读(overall/fails/warns 与未过门项的 label),
+     * 派生走 WfCore 双端单源(与 CLI release 同一份),写回既有 state.agentMemory;
+     * 一个字不改 G1–G10 判据与 overall 计数口径,WfCore 未加载时静默跳过(与本模块其余降级同纪律) */
+    if (window.WfCore && WfCore.memWrite) {
+      Store.state.agentMemory = WfCore.memWrite(Store.state.agentMemory,
+        WfCore.memFeedback({ p, gate: g, rel }, { now: Store.now }));
+    }
     Store.save();
     if (window.Bus) Bus.emit('release.stamped', { pid: p.id, digest: rel.digest, ver });
     return { ok: true, release: rel, gate: g };

@@ -588,6 +588,10 @@
       perShot: reports.map(x => ({ shotId: x.shot.id, order: x.shot.order, score: x.report.score, reportId: x.report.id, videoInputHash: x.report.videoInputHash || '' })),
       common, cut,
     };
+    /* 审片闭环结论按板块回流协作记忆:派生走 WfCore 双端单源,记忆桶经参数显式注入后存回既有 state.agentMemory
+     * (与服务端 /api/wf/smart-review 同一份派生);不新建存储桶、不改审片计费与发布门口径 */
+    Store.state.agentMemory = WfCore.memWrite(Store.state.agentMemory,
+      WfCore.memFeedback({ ep }, { now: Store.now }));
     Store.save();
     if (tk.status === 'running') Tasks.done(tk);
     if (window.__epReviewEpId === ep.id) window.__epReviewEpId = null;

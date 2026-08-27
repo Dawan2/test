@@ -3598,6 +3598,8 @@ const server = http.createServer(async (req, res) => {
           perShot,
           common, cut,
         };
+        // 审片闭环结论按板块回流协作记忆:与浏览器 review.js 同一份派生,记忆从 state 树显式取出后传参存回
+        tree.agentMemory = WfCore.memWrite(tree.agentMemory, WfCore.memFeedback({ ep }, { now: nowStr }));
         const rev = wfSave(user.id, cur, tree);
         return ok(res, {
           rev, avg, reviewed: reports.length, failed,

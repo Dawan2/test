@@ -897,7 +897,8 @@
         + '写入面浏览器「记住…」与 CLI memory add 同结构同上限、MCP 只读资源同链路;记忆种子不在 KB 条目面;'
         + 'infra 面的 pending 已按实况清空,缺口标记按关联索引口径保留(G-02 另由 SK-26 的回流面持有)。'
         + '仍欠三处覆盖余量:审片侧三步不带记忆召回(与 SK-03 同三步)、补种与旧板块名迁移仍只在浏览器 memAll 发生'
-        + '(纯 headless 的记忆里没有沉淀条目、旧板块名不迁移)、服务端不自动沉淀本轮结论(按板块回流归 SK-26)',
+        + '(纯 headless 的记忆里没有沉淀条目、旧板块名不迁移)、自动沉淀本轮结论只有审片/发布两个闭环'
+        + '(那一面归 SK-26 的回流面),理解/分镜/拆集/提取主体几步的结论仍不回流',
     },
     {
       id: 'core.playbookProjection', sk: 'SK-05', name: 'playbook 由注册表投影', stage: CROSS, wave: 'W4',
@@ -1129,9 +1130,23 @@
     },
     {
       id: 'review.memoryFeedback', sk: 'SK-26', name: '审片结论按板块回流专家', stage: 'review',
-      covers: ['review', CROSS], wave: 'W4', kinds: ['orchestrate'], pending: ['orchestrate'],
-      cmds: ['episode.smartReview'], experts: ['ex_editor'], gaps: ['G-11', 'G-02'],
-      note: '沿用既有记忆桶与自定义专家副本,不新建存储桶、不改预置专家数据;回流步骤尚无命令出口',
+      covers: ['review', CROSS], wave: 'W4', kinds: ['orchestrate'],
+      experts: ['ex_editor'], gaps: ['G-11', 'G-02'],
+      steps: [
+        { cmd: 'episode.smartReview', args: {}, note: '审片闭环收尾即把该集可判定结论(待返工镜数/共性问题类型/四维最弱维)写回成片板块记忆桶,下一轮审片提示词按板块召回时吃到' },
+      ],
+      note: '回流面已落地最小真实回流:审片与发布两个闭环收尾把**可判定**结论(待返工镜数、共性问题类型、'
+        + '四维最弱维、发布门状态与未过门项)写回既有记忆桶 state.agentMemory,派生只此一份 '
+        + 'WfCore.memFeedback/memWrite(记忆数组经参数注入,函数体不碰环境句柄),按回流键 fb 原地更新——'
+        + '同一集/同一项目反复闭环只留最新一条,不刷满 50 条上限挤掉用户自己沉淀的偏好。'
+        + '四处写入点:浏览器 review.js 整集审片、服务端 /api/wf/smart-review(CLI/MCP 同链路)、'
+        + '发布留痕两端(浏览器 release.js stampRelease 与 CLI release,后者随同一次 PUT 的 meta 桶写回)。'
+        + '"回流专家"的自动那一半即经此闭合:条目带板块 scope,下一轮同板块提示词按 WfCore.memBlock 召回吃到。'
+        + '整集均分有意不回流——成片板块记忆会被下一轮逐镜审片召回,把上一轮分数喂回评分方等于设锚点。'
+        + '沿用既有记忆桶与自定义专家副本,不新建存储桶、不改预置专家数据、不改发布门 G1–G10 判据与计数口径、不新增计费。'
+        + 'steps 只登记审片这一步:发布留痕两端都在领域命令注册表之外,编排层不为它挂假命令名(命令化待 G-12)。'
+        + '仍欠(G-11):回流条目蒸馏进专家 persona 仍要人在专家库点「从使用记录进化」,'
+        + 'evolveExpert 只对自定义专家开放、读记忆时不按板块过滤,自动进化与预置专家仍无出口',
     },
     /* ---- 成片 ---- */
     {

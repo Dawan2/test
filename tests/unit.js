@@ -3128,6 +3128,9 @@ function loadRelease() {
   loadFile(sb, 'domain.js');
   loadFile(sb, 'issues.js');      // 二十二轮:加载真实 Issues(原 stub 返回 {list:[]},掩盖了 G2 把数组当对象读的契约错误)
   loadFile(sb, 'continuity.js');   // stampRelease/rollbackTo 用 Continuity.bumpVer
+  loadFile(sb, 'knowledge.js');    // 与 index.html 同顺序:wf-core 的浏览器侧依赖(KB/Prompts)
+  loadFile(sb, 'prompts.js');
+  loadFile(sb, 'wf-core.js');      // stampRelease 的发布闭环结论回流走 WfCore.memFeedback/memWrite
   loadFile(sb, 'release.js');
   return sb;
 }
@@ -5561,8 +5564,10 @@ const skillsTests = [
     });
     // infra 面已无 pending;别人的未落地面一字未动(不借本轮顺手清别人的账)
     assertEq(Skills.list().filter(s => s.pending.includes('infra')).length, 0, 'infra 面已全部落地');
+    /* SK-26 的回流面已落地(审片/发布两个闭环把可判定结论写回记忆桶),故剩余 pending 只剩 SK-05 的
+     * 计划步骤投影一条;SK-26 的实况判据与不假清判据由 memory 套件的回流用例逐项钉住 */
     assertEq(Skills.list().filter(s => s.pending.length).map(s => s.sk + ':' + s.pending.join('+')).join(','),
-      'SK-05:orchestrate,SK-26:orchestrate', '剩余 pending 应只剩 orchestrate 两条');
+      'SK-05:orchestrate', '剩余 pending 应只剩 SK-05 的编排面一条');
     /* SK-29 的校验面已落地(上游定稿契约判成结论,经就绪检查消费),但 G-10 的**发布门那一半**仍未接:
      * 方法论门要不要挂成默认 warn 的可选门属产品口径,未定之前门禁一个字不动。
      * 这里不再拿 pending 快照当判据(那一面已落地,写 pending 反而是假记账),改钉真实约束:
@@ -5811,6 +5816,175 @@ const memoryTests = [
     assertEq(fields(agPush[1]), 'scope,text,time', '浏览器 memRemember 条目字段集应与 CLI 同集');
     assert(cliEntry[1].includes('slice(0, 120)') && agPush[1].includes('slice(0, 120)'), '两端都应截 120 字');
     assert(ag.includes('agentMemory = mem.slice(-50)') && cli.includes('mem.concat([entry]).slice(-50)'), '两端都应按最近 50 条截断');
+  } },
+  /* ---- 闭环结论回流记忆(SK-26 回流面):派生纯函数 + 四处写入点 ----
+   * 回流面此前只是记账里的一句"尚无命令出口";落地后判据全在这几条上:派生只此一份、
+   * 只回可判定结论、反复闭环不刷满记忆桶、四处写入点都走同一派生、记账与实况同步。 */
+  { name: 'memFeedback 审片闭环:只回可判定结论(待返工镜数/共性问题类型/四维最弱维),不回均分;无报告回空', fn() {
+    const W = require('../js/wf-core.js');
+    const ep = {
+      id: 'ep1', title: '第一集',
+      lastReview: {
+        avg: 7.8,
+        perShot: [{ shotId: 'a', score: 8.4 }, { shotId: 'b', score: 6.2 }, { shotId: 'c', score: 5.5 }],
+        common: { summary: '整集节奏偏拖', issues: [{ type: '运镜/景别偏差' }, { type: '主体一致性偏差' }] },
+        cut: { natural: { score: 8 }, continuity: { score: 6.2 }, framing: { score: 7.5 }, pacing: { score: 8.1 }, overall: '可用' },
+      },
+    };
+    const out = W.memFeedback({ ep }, { now: () => '2026-08-27 10:00:00' });
+    assertEq(out.length, 1, '一次审片闭环回流一条');
+    assertEq(out[0].scope, W.WF_BOARD['smart-review'], '回流板块应取 WF_BOARD 单源(成片)');
+    assertEq(out[0].fb, 'review:ep1', '回流键按集 id(反复闭环时原地更新)');
+    assertEq(out[0].time, '2026-08-27 10:00:00', '时间戳经 ctx.now 注入(函数体不取环境时间)');
+    assertEq(out[0].text, '审片闭环回流·第一集:待返工 2/3 镜;共性问题 运镜/景别偏差、主体一致性偏差;四维最弱维 continuity 6.2;后续拆镜与提示词优先规避这几处');
+    assert(!/7\.8/.test(out[0].text), '整集均分不得回流(成片板块记忆会被下一轮审片召回,分数会成为打分锚点)');
+    // 四维最弱维取分数最低那一维,维度名取 normalizeCut 产出形状(不写第二份四维名)
+    const dims = Object.keys(W.normalizeCut({})).filter(k => typeof W.normalizeCut({})[k] === 'object');
+    assert(dims.includes('continuity'), '维度名应取 normalizeCut 形状');
+    // 缺件降级:四维该步失败标 null、无共性问题、无逐镜条目时各段如实缺席,不编造
+    const bare = W.memFeedback({ ep: { id: 'ep2', lastReview: { avg: 9, cut: null, common: null } } }, {});
+    assertEq(bare[0].text, '审片闭环回流·ep2:待返工 0/0 镜;后续拆镜与提示词优先规避这几处');
+    assertEq(bare[0].time, '', '未注入 now 时时间戳留空(不在纯函数里取当前时间)');
+    // 没有结论就不写记忆:无 ep / 无 lastReview / avg 非数字(审片全失败)一律空数组
+    [{}, { ep: { id: 'e' } }, { ep: { id: 'e', lastReview: {} } }, { ep: { id: 'e', lastReview: { avg: null } } }]
+      .forEach(o => assertEq(JSON.stringify(W.memFeedback(o, {})), '[]', '判定输入取不到应回空:' + JSON.stringify(o)));
+    assertEq(JSON.stringify(W.memFeedback()), '[]', '无入参应回空(不抛)');
+  } },
+  { name: 'memFeedback 发布闭环:门禁 overall/计数与未过门项(只读门禁结果),十门全过如实标注', fn() {
+    const W = require('../js/wf-core.js');
+    const p = { id: 'p1', name: '逆袭', __ver: 2 };
+    const gate = {
+      overall: 'cond-pass', fails: 0, warns: 1,
+      gates: [{ code: 'g1-workflow', label: '主线步骤全完成', status: 'pass' },
+        { code: 'g10-billing', label: '计费账目核对(净消耗 vs 生成资产数)', status: 'warn' }],
+    };
+    const out = W.memFeedback({ p, gate, rel: { ver: 3 } }, { now: '2026-08-27 11:00:00' });
+    assertEq(out.length, 1);
+    assertEq(out[0].fb, 'release:p1', '回流键按项目 id');
+    assertEq(out[0].scope, W.WF_BOARD['smart-review'], '发布结论与审片同板块回流');
+    assertEq(out[0].text, '发布闭环回流·逆袭 v3:发布门 cond-pass(fail 0/warn 1);未过门 计费账目核对(净消耗 vs 生成资产数)');
+    assertEq(out[0].time, '2026-08-27 11:00:00', 'ctx.now 也接受字符串');
+    const allPass = W.memFeedback({ p, gate: { overall: 'pass', fails: 0, warns: 0, gates: [{ label: '主线步骤全完成', status: 'pass' }] } }, {});
+    assertEq(allPass[0].text, '发布闭环回流·逆袭 v2:发布门 pass(fail 0/warn 0);十门全过', '无未过门项时如实标注(ver 回落 p.__ver)');
+    // 门禁结果缺失/未跑:不回流(发布门口径与计数一个字不读第二遍)
+    [{ p }, { p, gate: {} }, { p, gate: { overall: '' } }].forEach(o =>
+      assertEq(JSON.stringify(W.memFeedback(o, {})), '[]', '无门禁结论应回空:' + JSON.stringify(o)));
+    // 单条截断与两端写入面同口径(120 字)
+    const long = W.memFeedback({ p: { id: 'p2', name: '长'.repeat(200) }, gate }, {});
+    assertEq(long[0].text.length, W.MEM_TEXT_MAX, '单条应截到 MEM_TEXT_MAX');
+  } },
+  { name: 'memWrite:按 fb 键原地更新(反复闭环只留最新一条)、不改入参、尾部截 MEM_MAX', fn() {
+    const W = require('../js/wf-core.js');
+    const mem = [{ text: '用户偏好:女主统一叫林晚晴', scope: '主体' }];
+    const e1 = { text: 'A', time: 't1', scope: '成片', fb: 'review:ep1' };
+    const one = W.memWrite(mem, e1 ? [e1] : []);
+    assertEq(one.length, 2, '首次回流追加一条');
+    assertEq(mem.length, 1, '入参数组不得被改写');
+    // 同一集第二次闭环:原地更新,不追加(否则 20 轮审片就把 50 条上限刷满,挤掉用户自己沉淀的偏好)
+    const two = W.memWrite(one, [{ text: 'B', time: 't2', scope: '成片', fb: 'review:ep1' }]);
+    assertEq(two.length, 2, '同 fb 键第二次回流应原地更新');
+    assertEq(two[1].text + '/' + two[1].time, 'B/t2', '原地更新应换成最新结论');
+    assertEq(two[0].text, '用户偏好:女主统一叫林晚晴', '用户自己沉淀的条目不受回流影响');
+    // 不同闭环各占一键;无 fb 的条目按追加处理(与「记住…」同语义)
+    const three = W.memWrite(two, [{ text: 'R', scope: '成片', fb: 'release:p1' }, { text: 'X', scope: '' }]);
+    assertEq(three.map(m => m.fb || '-').join(','), '-,review:ep1,release:p1,-', '不同回流键各占一条,无 fb 的追加');
+    // 上限:回流不得把桶顶破(与浏览器 memRemember / CLI memory add 同 50 条口径)
+    const full = Array.from({ length: W.MEM_MAX }, (_, i) => ({ text: 'M' + i, scope: '' }));
+    const capped = W.memWrite(full, [{ text: 'NEW', scope: '成片', fb: 'review:ep9' }]);
+    assertEq(capped.length, W.MEM_MAX, '超上限应截到 MEM_MAX');
+    assertEq(capped[capped.length - 1].text, 'NEW', '截断从头部丢(先进先出),新结论保留');
+    assertEq(capped[0].text, 'M1', '最旧一条被挤出');
+    // 脏入参:非数组记忆/空条目一律安全
+    assertEq(JSON.stringify(W.memWrite(null, null)), '[]', '非数组入参应回空数组');
+    assertEq(JSON.stringify(W.memWrite('x', [null, { text: '' }, {}])), '[]', '空条目不写入');
+    assertEq(W.memRecall(W.memWrite([], [e1]), '', '成片').length, 1, '回流条目应能被同板块召回(回流→召回闭合)');
+  } },
+  { name: '回流写入面四处接线(源级):派生只此一份,四处写入点都存回既有 agentMemory 桶', fn() {
+    const W = require('../js/wf-core.js');
+    const files = { 'js/review.js': null, 'server.js': null, 'js/release.js': null, 'cli.js': null };
+    Object.keys(files).forEach(f => { files[f] = fs.readFileSync(path.join(ROOT, f), 'utf8'); });
+    // 派生面单源:四个调用方一律 WfCore.memFeedback + WfCore.memWrite,不得自己拼回流文本
+    Object.keys(files).forEach(f => {
+      assert(/WfCore\.memWrite\(/.test(files[f]) && /WfCore\.memFeedback\(/.test(files[f]), f + ' 应委托 WfCore 派生回流条目');
+      assert(!files[f].includes('闭环回流·'), f + ' 不得内联回流文案(文案只在 wf-core 一处)');
+    });
+    // 落点仍是既有记忆桶:浏览器/服务端/CLI 各按自己的通道存回,不新建存储桶
+    assert(/Store\.state\.agentMemory = WfCore\.memWrite\(Store\.state\.agentMemory,/.test(files['js/review.js']), '浏览器审片闭环应写回 Store.state.agentMemory');
+    assert(/tree\.agentMemory = WfCore\.memWrite\(tree\.agentMemory,/.test(files['server.js']), '服务端审片闭环应写回 state 树的 agentMemory');
+    assert(/Store\.state\.agentMemory = WfCore\.memWrite\(Store\.state\.agentMemory,/.test(files['js/release.js']), '浏览器发布留痕应写回 Store.state.agentMemory');
+    assert(/meta\.agentMemory = WfCore\.memWrite\(state\.agentMemory,/.test(files['cli.js']), 'CLI 发布应经 meta 桶写回 agentMemory(与 memory add 同通道)');
+    // CLI 不为回流另开一次请求:仍是 release 原来那一次 PUT /api/state
+    const relSeg = files['cli.js'].slice(files['cli.js'].indexOf('CMD.release ='), files['cli.js'].indexOf("/* ---- 项目结构"));
+    assertEq((relSeg.match(/await (PUT|GET|POST)\(/g) || []).length, 1, 'CLI release 仍只发一次 state 写入请求(回流不新增接口调用)');
+    // 上限/截断/低分线三个口径:wf-core 常量与两端既有写入面字面一致(任一侧漂移即红)
+    const ag = fs.readFileSync(path.join(ROOT, 'js', 'agent.js'), 'utf8');
+    assertEq(W.MEM_MAX, 50, 'MEM_MAX 应与两端写入面的 50 条上限同数');
+    assertEq(W.MEM_TEXT_MAX, 120, 'MEM_TEXT_MAX 应与两端写入面的 120 字截断同数');
+    assert(ag.includes('slice(-' + W.MEM_MAX + ')') && ag.includes('slice(0, ' + W.MEM_TEXT_MAX + ')'), '浏览器写入面字面应与 wf-core 常量同数');
+    assertEq(W.MEM_LOW_SCORE, 7, '待返工线应与审片重抽入口/发布门 G3 默认阈值同数');
+    // 服务端回流点就在闭环写完 lastReview 之后、落盘之前(不另起一次 state 写)
+    const srv = files['server.js'];
+    const iLast = srv.indexOf('ep.lastReview = {\n          time: nowStr(), avg,');
+    const iMem = srv.indexOf('tree.agentMemory = WfCore.memWrite(');
+    assert(iLast > 0 && iMem > iLast && iMem < srv.indexOf('const rev = wfSave(user.id, cur, tree);', iLast),
+      '服务端回流应在 lastReview 写好之后、wfSave 落盘之前');
+  } },
+  { name: '回流行为面:整集审片闭环与发布留痕都真的把结论写进了记忆桶(且能被同板块召回)', fn: async () => {
+    const W = require('../js/wf-core.js');
+    // 浏览器整集审片(离线本地评审:零 LLM,结论仍可判定)
+    const sb = loadReview();
+    sb.U.bgDock = () => ({ say() {}, finish() {}, close() {}, m: { querySelector: () => ({ insertAdjacentHTML() {}, style: {} }), querySelectorAll: () => [] } });
+    const s = rvShot({ video: { status: 'done', url: '/uploads/a.mp4', inputHash: 'h1' } });
+    const ep = rvEp(s);
+    const p = { id: 'p1', name: '逆袭', style: '漫剧', episodes: [ep], subjects: [] };
+    await sb.Review.openEpisodeReview(p, ep, null);
+    assert(ep.lastReview && typeof ep.lastReview.avg === 'number', '整集审片应写下 lastReview');
+    const mem = sb.Store.state.agentMemory;
+    assertEq(mem.length, 1, '审片闭环应回流一条(记忆桶原本为空)');
+    assertEq(mem[0].fb, 'review:ep1');
+    assertEq(mem[0].scope, '成片');
+    assert(mem[0].text.startsWith('审片闭环回流·第一集:待返工 '), '回流文案应由 wf-core 派生:' + mem[0].text);
+    assert(W.memBlock(mem, s.plot, '成片').includes(mem[0].text), '回流条目应能被下一轮同板块召回(自动那一半闭合)');
+    // 同一集再审一次:仍是一条(原地更新),不把记忆桶越审越满
+    await sb.Review.openEpisodeReview(p, ep, null);
+    assertEq(sb.Store.state.agentMemory.length, 1, '反复审片应原地更新,不追加');
+    // 发布留痕(门禁结果直接注入,不改门禁判据)
+    const rsb = loadRelease();
+    const g = { overall: 'cond-pass', fails: 0, warns: 1, score: 9, at: Date.now(),
+      gates: [{ code: 'g10-billing', label: '计费账目核对(净消耗 vs 生成资产数)', status: 'warn' }] };
+    const rp = { id: 'p1', name: '逆袭', episodes: [releaseReadyEp()], subjects: [] };
+    const out = rsb.Release.stampRelease(rp, '首版', { gateResult: g, online: false });
+    assertEq(out.ok, true, '门禁条件通过应能打版本');
+    const rmem = rsb.Store.state.agentMemory;
+    assertEq(rmem.length, 1, '发布闭环应回流一条');
+    assertEq(rmem[0].fb, 'release:p1');
+    assert(rmem[0].text.includes('发布门 cond-pass(fail 0/warn 1)') && rmem[0].text.includes('未过门 计费账目核对'),
+      '回流应带门禁状态与未过门项:' + rmem[0].text);
+    // 未过门的发布不打版本 → 也不回流(没有闭环就没有结论)
+    const rsb2 = loadRelease();
+    const bad = rsb2.Release.stampRelease({ id: 'p2', name: '未过', episodes: [] }, '', { gateResult: { overall: 'fail', fails: 3, warns: 1, gates: [] } });
+    assertEq(bad.ok, false);
+    assertEq(rsb2.Store.state.agentMemory.length, 0, '发布门未通过不回流');
+  } },
+  { name: 'SK-26 记账与实况同步:回流面清 pending 且登记真实步骤,仍欠的自进化面点名 G-11', fn() {
+    const Skills = require('../js/skills.js');
+    const sk = Skills.byId('review.memoryFeedback');
+    assertEq(sk.pending.length, 0, '回流面已落地,pending 应清空');
+    assert(sk.steps.length, '编排面已落地须有步骤(playbook 不给空步)');
+    const names = require('../js/cmd-registry.js').names();
+    sk.steps.forEach(st => assert(names.includes(st.cmd), '步骤命令须已注册:' + st.cmd));
+    assertEq(sk.cmds.join(','), 'episode.smartReview', '命令面由 steps 推出:发布留痕两端不在命令注册表,不挂假命令名');
+    assert(Skills.playbooks().some(x => x.id === sk.id), '已落地编排面应进 playbooks 投影');
+    ['G-11', 'G-02'].forEach(g => assert(sk.gaps.includes(g), '缺口标记按关联索引口径保留:' + g));
+    assert(sk.note.includes('仍欠(G-11)') && sk.note.includes('evolveExpert'), 'note 须点名仍欠的自进化面(清 pending 不等于这条没有余量)');
+    assert(sk.note.includes('待 G-12'), '发布留痕的命令化出口仍待 G-12,note 须写明');
+    assert(sk.note.includes('不新建存储桶') && sk.note.includes('不改发布门'), 'note 须写明沿用既有桶、不动发布门');
+    // 自进化仍是手动那一半:evolveExpert 读记忆不按板块过滤、只对自定义专家开放(接上了 note 先失效)
+    const ex = fs.readFileSync(path.join(ROOT, 'js', 'experts.js'), 'utf8');
+    assert(/const mem = \(Store\.state\.agentMemory \|\| \[\]\)\.map\(m => m && m\.text\)/.test(ex), 'evolveExpert 现仍读全量记忆文本(不按 scope 过滤)');
+    // SK-04 的第三处余量同步改写:审片/发布两个闭环已回流,其余 wf 步仍不回流
+    const sk4 = Skills.byId('core.memoryDual');
+    assert(sk4.note.includes('审片/发布两个闭环') && sk4.note.includes('SK-26'), 'SK-04 的 note 须随回流面落地同步改写');
   } },
 ];
 
