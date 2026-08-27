@@ -15,7 +15,7 @@
       if (!API.isReady()) throw new Error('LLM 未配置');
       const tpl = (Store.state.settings || {}).tplImage || '{style}风格角色立绘,{subject},外形特征:{traits},角色设定图:白底三视图(正面/侧面/背面横向并排),精致五官,服装细节丰富,纯白背景';
       const out = await API.chatJSON({
-        system: '你是文生图提示词专家。',
+        system: Prompts.get('persona.promptSystem'),
         messages: [{ role: 'user', content: `根据以下角色八维度人设,写一段中文文生图画面提示词(以外形维度为主:五官/发型/身材/服饰,性格气质体现在神态上),返回 {"prompt":"..."}。参考模板:${tpl}\n角色名:${s.name}\n${filled.map(d => d + ':' + ps[d]).join('\n')}` }],
         temperature: 0.6, max_tokens: 600,
       });

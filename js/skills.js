@@ -1000,14 +1000,17 @@
     {
       id: 'subjects.refDiscipline', sk: 'SK-11', name: '主体参考纪律注入与生成前置校验', stage: 'subjects',
       covers: ['subjects', 'gen'], wave: 'W4', kinds: ['inject', 'check'],
-      kb: ['主体参考'], prompts: ['extract.system'], settings: ['tplImage'], checks: ['subjects.genRefDiscipline'],
+      kb: ['主体参考'], prompts: ['extract.system', 'persona.promptSystem'], settings: ['tplImage'],
+      checks: ['subjects.genRefDiscipline'],
       cmds: ['episode.preflight', 'shot.generateVideo', 'subject.generateImage'],
       gaps: ['G-13'],
       note: '注入面落在主体步系统人设 WfCore.extractSystem(浏览器解析向导与 /api/wf/extract-subjects 同一份),'
-        + '本条拼块即该条目正文;人设句已在注册表(extract.system,装配口收覆盖表参数),'
-        + '故注入面两半——人设句与方法论正文——都在单源之内、用户都改得到。'
-        + '仍欠 G-13 的是本条另一登记键 tplImage 的取用点:八维度重写文生图提示词那步的人设仍内联在 js/persona.js,'
-        + '不在注册表也就覆盖不到(与其余模块内联提示词同批处置)。'
+        + '本条拼块即该条目正文;人设句已在注册表——主体步取 extract.system,'
+        + '另一登记键 settings.tplImage 的取用点(js/persona.js 八维度重写文生图提示词那步)取 persona.promptSystem,'
+        + '两处装配口都经 Prompts.get 取值、用户在「全局默认值」页改得到(模板本身也一直改得到),'
+        + '故本条自己的登记面已无收编余量。'
+        + '仍欠 G-13 的不在本条名下:全仓其余模块的内联人设未进注册表(剧本模块的解说体改写/导演阐述/光影总控/剧本围读四步在 js/episodes.js 仍是内联字面),'
+        + '缺口未闭合故按关联索引口径不摘标记。'
         + '生成请求构造点(Domain.buildVideoRequest)不注方法论文本,生成指纹口径不动;'
         + '校验半判定输入就是那份请求的参考图组(人物数上限、被上限挤出、三视图当视频参考),'
         + '经就绪检查双端消费,结论只报不拦、不改生成动作',
