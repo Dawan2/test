@@ -69,6 +69,13 @@
     }
     return null;
   };
+  /* 主体解析结果 → 引用全称(多形态为"主体名-形态名") */
+  D.subjectFullName = r => (r ? (r.form ? r.s.name + '-' + r.form.name : r.s.name) : '');
+  /* 主体解析结果 → 可喂模型的真实参考图(形态图优先,其次主体权威图;data: 内联图不喂模型,视为无图) */
+  D.subjectRefImage = function (r) {
+    const img = r ? ((r.form && r.form.image) || r.s.imgRef || r.s.image) : '';
+    return (img && !String(img).startsWith('data:')) ? img : '';
+  };
   /* 该镜引用主体(含形态,按主体计)的 imgVer 最大值;无引用或未打点则为 0 */
   D.shotAssetVer = function (p, s) {
     let v = 0;
@@ -111,10 +118,9 @@
     const push = name => {
       const r = name && D.findSubject(p, name);
       if (!r) return;
-      const img = (r.form && r.form.image) || r.s.imgRef || r.s.image;
-      const fullName = r.form ? r.s.name + '-' + r.form.name : r.s.name;
+      const img = D.subjectRefImage(r);
       const key = r.s.id + (r.form ? '|' + r.form.id : '');
-      if (img && !String(img).startsWith('data:') && !seen.has(key)) { seen.add(key); subs.push({ name: fullName, image: img }); }
+      if (img && !seen.has(key)) { seen.add(key); subs.push({ name: D.subjectFullName(r), image: img }); }
     };
     (s.characters || []).forEach(push);
     push(s.scene);
