@@ -693,6 +693,15 @@
     STAGES, CROSS, KINDS, WAVES, CHECKS, REG,
     stages: () => STAGES.map(x => x.key),
     stageOf: key => STAGES.find(x => x.key === key) || null,
+    /* 就绪检查(episode.preflight)的校验面表:双端单一来源,浏览器命令层与 CLI 只读本表 concat,
+     * 不各写一份面清单(这段曾是并行分支反复撞车的热点,任一侧胜出都会静默摘掉别人那一面)。
+     * 面 = 注册表里"校验面已落地且把 episode.preflight 登记为消费点"的条目所属主线步,按 STAGES 步序去重;
+     * 故新增一面只需在该条目上登记 checks 实现与 cmds: ['episode.preflight'],两端自动跟上,不必再各改一处实现。
+     * pending 含 check 的条目(校验面尚无实现)不进表——它们没有结论可产出,进表也只会得到空数组。 */
+    preflightStages() {
+      return STAGES.map(x => x.key)
+        .filter(k => REG.some(s => s.stage === k && live(s, 'check') && s.cmds.indexOf('episode.preflight') >= 0));
+    },
     list(stage) { return REG.filter(s => !stage || s.stage === stage).map(copy); },
     /* 按作用面取:含把该步写进 covers 的跨步条目(list 只给主 stage) */
     covering(stage) { return REG.filter(s => s.covers.indexOf(stage) >= 0).map(copy); },
