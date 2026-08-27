@@ -25,9 +25,13 @@
 | [w4-shot-size-glossary.md](./w4-shot-size-glossary.md) | G-07 机位词表归一:景别阶梯/运镜/角度结构表下沉 `wf-core.js`、`sizeGap` 级差、15 个消费点逐点对照、指纹影响面 | 改景别/运镜取值或其消费点前 |
 | [w4-subject-ref-check.md](./w4-subject-ref-check.md) | SK-12 分镜↔主体引用完备性校验(`Skills.CHECKS` 首条实现,只报不拦) | 加校验项前 |
 | [w4-sk13-consistency.md](./w4-sk13-consistency.md) | SK-13 跨镜头主体一致性校验,与 SK-12 成对闭合 S-03 | 同上 |
+| [w4-film-caption-check.md](./w4-film-caption-check.md) | SK-28 成片字幕时间轴与阅读速度校验,切段口径下沉 `Domain.subtitleSegs` 与合成/SRT 同源 | 改字幕切段、烧录截断线或成片面校验前 |
+| [w4-audio-meta.md](./w4-audio-meta.md) | 配音渲染清单单源:音色配置/配音文本/渲染凭据口径下沉 `Domain`,成片路径按清单取音轨 | 改配音生成或成片音轨取值前 |
 | [w5-cycle1-audit.md](./w5-cycle1-audit.md) | 周期 1 逐项目独立核验报告:成熟度分档、分叉风险实测、合入次序建议 | 想知道每项做到哪一步、分叉在哪 |
 | [w6-integration-log.md](./w6-integration-log.md) | 周期 1 成果收敛到集成分支的记录:冲突解法、合并后测试数字、剩余分叉 | 想知道主干现在是什么状态 |
+| [w6-extract-subjects-wf.md](./w6-extract-subjects-wf.md) | 提取主体接入 `/api/wf/extract-subjects`(前段命令吃到人设与协作记忆,提示词拼装/结果规整下沉服务端) | 改提取主体链路前 |
 | [w8-split-episodes-inject.md](./w8-split-episodes-inject.md) | 剧本拆集端点补齐人设/记忆注入(`WF_BOARD` 加「剧本」板块、`buildSplitUser` 注入位、两端同装配口) | 改拆集提示词或新增 `/api/wf/*` LLM 步前 |
+| [w9-integration-log.md](./w9-integration-log.md) | 剩余分支收敛到集成分支的记录:包含性实测、并集型冲突解法、合并后测试数字、剩余未合 | 想知道主干现在是什么状态 |
 
 ## 一分钟摘要(周期 1 收敛后)
 
@@ -35,6 +39,8 @@
 - 主线七步在代码里齐了:`Domain.workflow` 已含"审片"步(G-03),`js/skills.js` 的 `STAGES` 七步全部 `wfStep: true`。
 - 贯通缺口已收口的部分:专家人设(G-01)与协作记忆(G-02 由 agent-flow 覆盖)进 `/api/wf/*`,CLI/MCP 同链路吃到;剧本拆集(G-04)补上机读入口,headless 可从"一份整部剧本"起跑,其 LLM 步也已接入同一注入链(见 [w8-split-episodes-inject.md](./w8-split-episodes-inject.md))。
 - 空挂已清:`settings.tplVideo`(G-05)与 `KB.SECTIONS`(G-15/G-08 的 KB 侧)都有了消费方,并有断言防回退。
+- 校验宿主三面齐了:剧本面(S-01,SK-07/08/09)、主体面(S-03,SK-12/13)、成片字幕面(S-06,SK-28)共六条 `Skills.CHECKS` 校验项,两端就绪检查按主线步序同挂 `result.checks`,问题中心同挂低危提醒——纯本地零 LLM 零计费,只报不拦。
+- 人设/记忆注入面覆盖五条工作流:理解、分镜、审片、提取主体、剧本拆集(`WfCore.WF_BOARD` 五键单源,服务端唯一装配口 `wfPersonaNote` 由契约断言锁死调用点数)。
 - 词表分叉已收口:景别/运镜/视角/角度四张词表的单一来源在 `js/wf-core.js`,`camera.js`/`review.js`/`sb-io.js`/`agent.js` 全派生(G-07,见 `w4-shot-size-glossary.md`)。
 
 ## 阅读约定
@@ -42,4 +48,4 @@
 - **缺口编号**:`G-01…G-15` 出自资产图谱,**冻结在 15 项不再新增**;新登记的缺口一律走短名单的 `S-xx` 命名空间。判定标准文档里提议的 `G-16`(发布后→上游回路)按此规则改记为 `S-08`。
 - `docs/Agent贯通落地-G1-G5.md` 里的 `G1–G5` 是该文自带的历史编号,与本目录的 `G-0x` 不是同一套,对应关系见该文与 [w5-cycle1-audit.md](./w5-cycle1-audit.md) 第 2.18 节。
 - 文档描述功能本身,不写功能溯源。
-- 动工前先看 [w6-integration-log.md](./w6-integration-log.md) 的"剩余分叉",避免重做已落地的部分。
+- 动工前先看 [w9-integration-log.md](./w9-integration-log.md) 的"剩余未合与残留"(更早的分叉登记在 [w6-integration-log.md](./w6-integration-log.md) 第 5 节),避免重做已落地的部分。
