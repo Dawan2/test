@@ -65,8 +65,9 @@ Windows 也可直接双击 `启动.bat`(自动起服务并打开浏览器)。
    │  js/bus.js      管线事件总线(Bus.emit/on)——生成/审片/合成/拉片只发结构化事件,
    │                 Agent 对话流/问题中心角标/计划进度各自订阅,发布方不感知消费方
    │  js/issues.js   问题中心投影(双端 UMD:浏览器 window.Issues / Node require)——失败/过期/
-   │                 未分镜/低分/待确认/缺图/跨镜主体参考不一致/剧本与分集方法论提醒/景别衔接/
-   │                 成片字幕读不顺 全项目聚合(Domain 与 skill 校验项单源推导;方法论提醒按
+   │                 未分镜/未审/审片过期/低分/待确认/缺图/跨镜主体参考不一致/剧本与分集方法论
+   │                 提醒/景别衔接/提示词稳定词/成片字幕读不顺 全项目聚合
+   │                 (Domain 与 skill 校验项单源推导;方法论提醒按
    │                 提醒投影表 Issues.reminders() 现投:面 → 校验项 → kind/sev/挂载级别),
    │                 项目树与 online 经参数注入,不碰 window;CLI issues / MCP hujing_issues 同读一份
    │  js/issues-ui.js 问题中心浏览器薄封装——弹窗渲染、Bus 订阅重算、命令类问题一键处置
