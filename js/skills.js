@@ -454,6 +454,52 @@
     return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
   };
 
+  /* ---- 生成段校验宿主(SK-22 生成凭据面):判定输入是该镜的生成凭据与确认态 ----
+   * 凭据 = s.video 那份产物记录(状态 / 输入指纹 inputHash / 离线模拟标记)与确认闸字段(s.confirm、s.final)。
+   * 判旧与就绪一律现取 Domain.shotVideoStale/shotVideoReady(与流程条、分集状态、批量生成同一份判定),
+   * 本层不写第二份指纹比对;在线与否取 ctx.online,与 Domain 判就绪同参。
+   * 判据都是既有机制自身的失效点——判旧机制对这一镜恒不生效、确认背书的已不是当前输入、
+   * 定稿/确认闸把这一镜挡在生成之外——而不是 Domain 已经数过的那几个计数的复述。
+   * 与其余校验项同纪律:纯本地读字段、零 LLM、零计费,结论一律 warn 不升 fail;
+   * 不进 blockers、不改发布门口径、不改确认闸行为(不写回 s.confirm/s.final)、不改计费动作。 */
+
+  /* SK-22 生成凭据与确认失效:逐镜看产物凭据立不立得住、确认态还算不算数。
+   *   credential-missing  已出片却没有输入指纹 → warn(Domain.shotVideoStale 的指纹分支只在有指纹时比对,
+   *                       这一镜此后改提示词/换参考图都不会判过期,旧片会一直冒充新成果)
+   *   sim-credential      在线态下产物是离线占位模拟 → warn(凭据不是真实上游产物;
+   *                       Domain 把它计进 noVideo,计数里看不出这一镜其实有个占位片)
+   *   final-stale         已定稿且输入已变 → warn(批量生成按 !s.final 排除定稿镜,
+   *                       「重生成过期镜」对它无效,过期在这一镜上没有出口)
+   *   confirm-stale       已确认且输入已变 → warn(确认背书的是变更前的输入——改主体图/画幅/风格后缀
+   *                       都会让指纹判旧却不回落确认闸,确认闸放行的是过期产物)
+   *   unconfirmed-pending 未确认、未定稿且还没有真实产物 → warn(批量生成会把它跳进 skipped;
+   *                       Domain 只在全镜出片时才报待确认,部分完成时这一镜是静默被跳过的)
+   * 同镜可多条命中(凭据面与确认面各判各的);定稿与确认同时命中判旧时只报定稿那条——
+   * 定稿是更强的断点,两条一起报只是同一件事说两遍。 */
+  CHECKS['gen.renderCredential'] = function (obj, ctx) {
+    const o = obj || {};
+    const p = o.p;
+    const shots = shotsOf(o);
+    if (!p || !shots.length) return { pass: true, level: 'info', hits: [] };
+    const online = !!(ctx || {}).online;
+    const hits = [];
+    shots.forEach(s => {
+      const v = s.video || {};
+      const at = { shotId: s.id, order: (+s.order || 0) + 1 };
+      const push = code => hits.push(Object.assign({ code }, at));
+      if (v.status === 'done') {
+        if (!v.inputHash) push('credential-missing');
+        if (v.simulated && online) push('sim-credential');
+      }
+      if (Domain.shotVideoStale(p, s, online)) {
+        if (s.final) push('final-stale');
+        else if (s.confirm) push('confirm-stale');
+      }
+      if (!s.confirm && !s.final && !Domain.shotVideoReady(s, online)) push('unconfirmed-pending');
+    });
+    return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
+  };
+
   /* 字幕可读性判据(成片字幕/对白面的三条阈值):
    *   CAP_CPS       阅读速度上限(字/秒):超出即观众看不完一条字幕
    *   CAP_MIN_DUR   单条最短停留(秒):低于此值字幕一闪而过
@@ -785,9 +831,14 @@
     },
     {
       id: 'gen.renderCredential', sk: 'SK-22', name: '生成凭据与确认失效校验', stage: 'gen', wave: 'W4',
-      kinds: ['check'], pending: ['check'], kb: ['抽卡军规'],
+      kinds: ['check'], kb: ['抽卡军规'], checks: ['gen.renderCredential'],
       cmds: ['episode.preflight', 'shot.generateVideo', 'episode.generateVideos'], gaps: ['S-05'],
-      note: '只读既有判旧指纹与未确认计数出 warn,不改计费动作、不新增计费标签、不改确认闸行为',
+      note: '只读既有判旧指纹与未确认计数出 warn,不改计费动作、不新增计费标签、不改确认闸行为。'
+        + '判旧与就绪现取 Domain.shotVideoStale/shotVideoReady(与流程条、分集状态、批量生成同一份判定),'
+        + '本层不写第二份指纹比对;报的是既有机制自身的失效点——无指纹的镜判旧恒不生效、'
+        + '确认与定稿背书的已不是当前输入、未确认镜会被批量生成静默跳过——不复述 Domain 已有的计数。'
+        + '本条把 gen 面带进就绪检查双端单源面表 Skills.preflightStages()(由登记推导,两端实现未改);'
+        + '生成动作侧只登记消费点不加拦截:确认闸与发布门口径一概不动,结论只报不拦',
     },
     /* ---- 审片 ---- */
     {
