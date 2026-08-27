@@ -549,6 +549,70 @@
     return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
   };
 
+  /* ---- 审片段校验宿主(SK-24 方法论维度面):判定输入是这一集已成型的审片报告 ----
+   * 报告 = ep.lastReview(整集:逐镜条目 perShot、四维成片评审 cut)与逐镜报告 s.reviews——
+   * 逐镜报告一律按 perShot.reportId 精确取(与整集报告视图同口径),不拿"最近一条"冒充当时的结论。
+   * 判据是本条注入面那两条提示词键的落点在报告里到位没有:review.finalSystem 出的四维成片评审、
+   * review.system 出的镜级三维报告;四维维度名现取 WfCore.normalizeCut 的产出形状(维度名的唯一定义
+   * 在 js/wf-core.js,本层不写第二份四维名)。整份判旧现取 Domain.reviewStaleByScript
+   * (与分集状态、问题中心、发布门 G3 同一份判定):已判旧的报告不产出结论——那已被如实报成"视为未审",
+   * 重审会整份重建,在旧报告上挑维度只是同一件事说两遍。未审/判旧/低分三类计数同归 Domain,本层不复述,
+   * 报的是既有机制自身的失效点:某一维度整段没进报告、某几镜从未进过报告、报告对象已取不回、
+   * 逐镜分背书的已不是当前视频、分数出自离线本地模拟(方法论没进过任何模型)。
+   * 与其余校验项同纪律:纯本地读字段、零 LLM、零计费,结论一律 warn 不升 fail;
+   * 不进 blockers、不改发布门 G3 口径与达标线、不改审片动作与计费。 */
+
+  /* 四维成片评审的维度键:现取 WfCore.normalizeCut 空输入的产出形状(overall 是整集总评不是维度,
+   * 按值形状排除);四维改名或增减时本判据自动跟上,不留第二份维度名 */
+  const cutDims = () => {
+    const shape = wfCore().normalizeCut({});
+    return Object.keys(shape).filter(k => shape[k] && typeof shape[k] === 'object');
+  };
+
+  /* SK-24 方法论维度进审片报告:逐集看报告里那几个方法论维度到位没有、逐镜分还算不算数。
+   *   cut-dim-missing     四维成片评审缺失或某一维无分 → warn(集级一条;该步 LLM 失败时如实标 null,
+   *                       而 Domain 与发布门 G3 只读 avg,四维缺失在报告上看不出来)
+   *   shot-dim-uncovered  该镜在 perShot 里没有条目 → warn(生成中/评审失败的镜会被跳过,
+   *                       整集均分不含它,而快照哈希涵盖全镜集,报告整体仍读作"当前")
+   *   shot-report-missing perShot 条目按 reportId 取不回报告 → warn(被后续单镜审片挤出最近五条,
+   *                       三维评语与方法论校验命中都取不回,只剩一个还在驱动均分的分数)
+   *   dim-score-stale     该条目背书的视频指纹与当前不一致而整份报告未判旧 → warn
+   *                       (子集复审沿用的旧条目:那一镜的分测的是换掉之前的视频)
+   *   local-dim-fallback  该镜报告出自离线本地模拟评审 → warn(方法论注入没进过任何模型,
+   *                       分数是种子启发式,却与真实评分同样计入均分与发布门 G3)
+   *   check-dim-absent    报告里没有方法论校验命中字段 → warn(集级一条带条数;
+   *                       该报告成型时未附命中,"没有命中"不等于判过且干净)
+   * 单镜入口(只传 s)与未审片的集无判定输入,不产出结论。四维评语写得对不对、
+   * 这一镜的分该不该是这个数属语义判断,仍归 LLM 审片(G-10),本层不冒充。 */
+  CHECKS['review.methodDim'] = function (obj) {
+    const o = obj || {};
+    const ep = o.ep;
+    const lr = ep && ep.lastReview;
+    if (!lr || typeof lr.avg !== 'number') return { pass: true, level: 'info', hits: [] };
+    if (Domain.reviewStaleByScript(ep)) return { pass: true, level: 'info', hits: [] };
+    const per = lr.perShot || [];
+    const hits = [];
+    const cut = lr.cut;
+    if (!cut || cutDims().some(k => !cut[k] || typeof cut[k].score !== 'number')) {
+      hits.push({ code: 'cut-dim-missing', shotId: '', order: 0, count: 0 });
+    }
+    let noChecks = 0;
+    (ep.shots || []).forEach(s => {
+      const at = { shotId: s.id, order: (+s.order || 0) + 1, count: 0 };
+      const rec = per.find(x => x.shotId === s.id);
+      if (!rec) { hits.push(Object.assign({ code: 'shot-dim-uncovered' }, at)); return; }
+      const rep = (s.reviews || []).find(r => r.id === rec.reportId);
+      if (!rep) { hits.push(Object.assign({ code: 'shot-report-missing' }, at)); return; }
+      if ((rec.videoInputHash || '') !== ((s.video && s.video.inputHash) || '')) {
+        hits.push(Object.assign({ code: 'dim-score-stale' }, at));
+      }
+      if (rep.mode === 'local') hits.push(Object.assign({ code: 'local-dim-fallback' }, at));
+      if (!Array.isArray(rep.checks)) noChecks++;
+    });
+    if (noChecks) hits.push({ code: 'check-dim-absent', shotId: '', order: 0, count: noChecks });
+    return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
+  };
+
   /* 字幕可读性判据(成片字幕/对白面的三条阈值):
    *   CAP_CPS       阅读速度上限(字/秒):超出即观众看不完一条字幕
    *   CAP_MIN_DUR   单条最短停留(秒):低于此值字幕一闪而过
@@ -904,10 +968,20 @@
     },
     {
       id: 'review.methodDim', sk: 'SK-24', name: '方法论维度进审片报告', stage: 'review', wave: 'W4',
-      kinds: ['inject', 'check'], pending: ['check'], kbBlocks: ['reviewBlock'],
-      prompts: ['review.system', 'review.finalSystem'], settings: ['tplReview'], cmds: ['episode.smartReview'],
+      kinds: ['inject', 'check'], kbBlocks: ['reviewBlock'],
+      prompts: ['review.system', 'review.finalSystem'], settings: ['tplReview'],
+      checks: ['review.methodDim'], cmds: ['episode.smartReview', 'episode.preflight'],
       experts: ['ex_editor'], gaps: ['G-10'],
-      note: '维度口径以 script.hookType / script.faceslapFour / shots.shotLanguage / shots.promptEightDim 的条目为准,不在本条重复登记',
+      note: '维度口径以 script.hookType / script.faceslapFour / shots.shotLanguage / shots.promptEightDim 的条目为准,不在本条重复登记。'
+        + '校验面判的是注入面那两条提示词键的落点在报告里到位没有——四维成片评审(review.finalSystem)缺失或某维无分、'
+        + '镜级报告(review.system)没覆盖到的镜、报告对象已被挤出取不回、逐镜分背书的已不是当前视频、'
+        + '分数出自离线本地模拟、报告里没有方法论校验命中字段;四维维度名现取 WfCore.normalizeCut 产出形状,'
+        + '整份判旧现取 Domain.reviewStaleByScript(与分集状态、问题中心、发布门 G3 同一份判定)——'
+        + '已判旧的报告不产出结论,未审/判旧/低分三类计数归 Domain,本层不复述。'
+        + '本条把 review 面带进就绪检查双端单源面表 Skills.preflightStages()(由登记推导,两端实现未改);'
+        + '审片路径登记的是注入面消费点(reviewBlock/tplReview 进评审提示词),校验面的判定输入是整集报告本身,'
+        + '单镜入口拿不出结论故不进报告的镜级 checks;结论只报不拦——不进 blockers、'
+        + '不改发布门 G3 与达标线、不改审片动作与计费,方法论门(SK-29)仍待 G-10/S-07',
     },
     {
       id: 'review.reviseLoop', sk: 'SK-25', name: '审片修订闭环编排', stage: 'review',

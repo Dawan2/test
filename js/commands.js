@@ -45,7 +45,7 @@
 
   /* 生产就绪检查(read):Domain.episodeState 单源推导,流程条/下一步/CLI 同口径;
    * result.checks 附各校验面结论(Skills.check,纯本地零 LLM 零计费),面清单与步序一律读双端单源表
-   * Skills.preflightStages()(现为 script → subjects → eps → shots → film),本层不写第二份面清单——只报不拦:
+   * Skills.preflightStages()(现为 script → subjects → eps → shots → gen → review → film),本层不写第二份面清单——只报不拦:
    * 不进 blockers、不改 ok/status,与 CLI exec 同一份结论 */
   reg('episode.preflight', { risk: 'read', meter: false, label: '生产就绪检查' }, async ({ p, ep }) => {
     const st = Domain.episodeState(p, ep, online());

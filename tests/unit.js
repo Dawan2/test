@@ -1344,7 +1344,7 @@ const commandsTests = [
     const chk2 = (r2.result.checks || []).find(x => x.skill === 'subjects.refIntegrity');
     assertEq(chk2.pass, true); assertEq(chk2.level, 'info'); assertEq(chk2.hits.length, 0);
   } },
-  { name: 'preflight:result.checks 是剧本+主体+分集+分镜+生成+成片字幕六面并集(按主线步序,摘任一面即红)', fn: async () => {
+  { name: 'preflight:result.checks 是剧本+主体+分集+分镜+生成+审片+成片字幕七面并集(按主线步序,摘任一面即红)', fn: async () => {
     const sb = loadCommands();
     /* 烧录字幕开启 + 镜1 台词超硬上限:字幕面必产出 caption-truncated(fail),
      * 即结论不是"时间轴未成形"那种空 info——摘掉 film 这一面时本例的并集与 fail 都对不上 */
@@ -1358,11 +1358,14 @@ const commandsTests = [
       'script.hookStrength,script.faceslapFour,script.dialogueRule,script.aiToneBan,'
       + 'subjects.refDiscipline,subjects.refIntegrity,subjects.crossShot,subjects.crossShot,'
       + 'eps.structureStage,eps.payoffPoint,shots.sizeProgression,shots.promptEightDim,'
-      + 'gen.renderCredential,film.subtitleQC',
-      'result.checks 应是六面并集,按主线步序 script → subjects → eps → shots → gen → film');
+      + 'gen.renderCredential,review.methodDim,film.subtitleQC',
+      'result.checks 应是七面并集,按主线步序 script → subjects → eps → shots → gen → review → film');
     const cred = checks.find(x => x.skill === 'gen.renderCredential');
     assert(cred, '就绪检查必须消费生成凭据面(gen 面被摘掉则本条红)');
     assertEq(cred.level, 'warn', '生成凭据面一律 warn,不升 fail');
+    const dim = checks.find(x => x.skill === 'review.methodDim');
+    assert(dim, '就绪检查必须消费审片方法论维度面(review 面被摘掉则本条红)');
+    assertEq(dim.level, 'info', '本集尚无审片报告:如实回空结论,不冒充维度缺失');
     const cap = checks.find(x => x.skill === 'film.subtitleQC');
     assert(cap, '就绪检查必须消费成片字幕面(film 面被摘掉则本条红)');
     assertEq(cap.id, 'film.subtitleTiming', '字幕面结论应带实现 id');
@@ -1374,8 +1377,8 @@ const commandsTests = [
     const direct = sb.Skills.check('script', { p, ep }, ck)
       .concat(sb.Skills.check('subjects', { p, ep }, ck), sb.Skills.check('eps', { p, ep }, ck),
         sb.Skills.check('shots', { p, ep }, ck), sb.Skills.check('gen', { p, ep }, ck),
-        sb.Skills.check('film', { p, ep }, ck));
-    assertEq(JSON.stringify(checks), JSON.stringify(direct), 'result.checks 应逐字节等于六面直跑结果的并集');
+        sb.Skills.check('review', { p, ep }, ck), sb.Skills.check('film', { p, ep }, ck));
+    assertEq(JSON.stringify(checks), JSON.stringify(direct), 'result.checks 应逐字节等于七面直跑结果的并集');
     assertEq(r.ok, true); assertEq(r.status, 'ready', '字幕面 fail 只报不拦,不改就绪判定');
     assert(!(r.result.blockers || []).some(b => /字幕/.test(b.label || '')), '字幕结论不得混进 Domain 阻塞项');
     assert(!(r.result.blockers || []).some(b => /凭据|指纹/.test(b.label || '')), '生成凭据结论不得混进 Domain 阻塞项');
@@ -3482,8 +3485,12 @@ const contractTests = [
     assert(iBody > 0, 'skills.js factory 签名应为 (KB, Domain, wfCore)');
     const body = src.slice(iBody); // 只查 factory 体(UMD 头与文件头注释不计)
     ['window', 'Store', 'document', 'location', 'fetch'].forEach(w => assert(!body.includes(w), 'skills.js 模块体不得出现环境句柄:' + w));
-    // WfCore 只在校验项体内现解析,不在模块顶层绑定(否则浏览器加载顺序上取到 undefined)
-    assertEq((body.match(/wfCore\(\)/g) || []).length, 1, 'WfCore 应只在用到它的校验项里现解析一次');
+    /* WfCore 只在校验项体内现解析,不在模块顶层绑定(否则浏览器加载顺序上取到 undefined)。
+     * 现有两处取值点:景别级差 sizeGap(SK-18)与四维成片评审的维度名 normalizeCut(SK-24);
+     * 新增/摘掉取值点即红,裸 wfCore()(解析后存起来)同样红——存起来就等于在某处提前绑定。 */
+    const lazy = [...body.matchAll(/wfCore\(\)\.(\w+)/g)].map(m => m[1]).sort();
+    assertEq(lazy.join(','), 'normalizeCut,sizeGap', 'WfCore 应只被这两处取值点现解析');
+    assertEq((body.match(/wfCore\(\)/g) || []).length, lazy.length, '每一处 wfCore() 都应即时取值,不留裸解析');
     assert(!/^\s*const \w+ = wfCore\(\)/m.test(body.slice(0, body.indexOf("CHECKS['"))), 'skills.js 不得在模块顶层解析 WfCore');
     // 编排型步骤只引用已注册命令(playbook 不内联新命令语义)
     const names = require('../js/cmd-registry.js').names();
@@ -4146,6 +4153,35 @@ const credShot = (order, over) => {
 const credOf = (shots, ctx) => Skills.check('gen', { p: credP, ep: { id: 'ep1', shots } }, ctx || { online: true })
   .find(x => x.id === 'gen.renderCredential');
 const credCodes = r => r.hits.map(h => h.code + '@' + h.order).join(',');
+/* 审片报告夹具:判定输入是已成型的审片报告。干净夹具 = 每镜都有按 reportId 取得回的真实模型报告
+ * (带方法论校验命中字段)、逐镜条目背书的正是当前视频指纹、四维成片评审四维齐全,故零命中。
+ * 快照哈希一律按构造完的集现算(与 Domain.reviewStaleByScript 判旧同一构造点),
+ * 用例只摆要偏离的那一项;lrOver 摆整集报告字段,epOver 摆分集字段(如 contentRev 抬升判旧)。 */
+const rvP = { id: 'p1' };
+const mdShot = (order, over) => Object.assign({
+  id: 'sh' + order, order, plot: '剧情' + order, prompt: '提示词' + order,
+  video: { status: 'done', url: '/uploads/gen/v' + order + '.mp4', inputHash: 'h' + order },
+  reviews: [{ id: 'rv' + order, mode: 'text', model: 'qwen-turbo', score: 8, checks: [] }],
+}, over || {});
+const mdCut = () => ({
+  natural: { score: 8, comment: '运镜平稳' }, continuity: { score: 8, comment: '衔接连贯' },
+  framing: { score: 8, comment: '景别有递进' }, pacing: { score: 8, comment: '节奏匹配' }, overall: '整集可用',
+});
+const mdEp = (shots, lrOver, epOver) => {
+  const ep = Object.assign({ id: 'ep1', title: '第一集', shots }, epOver || {});
+  ep.lastReview = Object.assign({
+    time: '2026-08-27 10:00', avg: 8, sourceRev: ep.contentRev || 0, graphRev: ep.graphRev || 0,
+    perShot: shots.map(s => ({
+      shotId: s.id, order: s.order, score: 8,
+      reportId: ((s.reviews || [])[0] || {}).id || '', videoInputHash: (s.video || {}).inputHash || '',
+    })),
+    common: { summary: '共性汇总', issues: [] }, cut: mdCut(),
+  }, lrOver || {});
+  ep.lastReview.snapshotHash = DomainMod.reviewSnapshotHashOf(ep);
+  return ep;
+};
+const mdOf = ep => Skills.check('review', { p: rvP, ep }).find(x => x.id === 'review.methodDim');
+const mdCodes = r => r.hits.map(h => h.code + '@' + h.order).join(',');
 /* 成片字幕夹具:镜头缺省带分镜图(进得了合成序列),段时长由 Domain.subtitleSegs 按预估/裁剪推出,用例只摆内容 */
 const capShot = (order, over) => Object.assign({ id: 'sh' + order, order, dialogue: '', narration: '', image: '/uploads/a/f' + order + '.png' }, over || {});
 const capEp = (shots, over) => Object.assign({ id: 'ep1', sbConfig: { subtitle: true }, shots }, over || {});
@@ -4870,6 +4906,103 @@ const skillsTests = [
     assert(ssrc.includes('Domain.shotVideoReady(s, online)'), '就绪应现取 Domain.shotVideoReady');
     assert(!/inputHash !== |shotInputHash\(/.test(ssrc), 'skill 层不得自建第二份指纹比对');
   } },
+  { name: 'methodDim:干净夹具全 pass(四维齐全 + 每镜报告取得回 + 逐镜分背书当前视频 → info 无命中)', fn() {
+    const r = mdOf(mdEp([mdShot(0), mdShot(1)]));
+    assertEq(r.pass, true); assertEq(r.level, 'info'); assertEq(r.hits.length, 0, '维度到位的报告不应产出命中');
+  } },
+  { name: 'methodDim:四维成片评审缺失/某维无分 → cut-dim-missing(集级一条,维度名取 WfCore 单源)', fn() {
+    const gone = mdOf(mdEp([mdShot(0)], { cut: null }));
+    assertEq(gone.pass, false); assertEq(gone.level, 'warn', '维度缺失是提醒级,不升 fail');
+    assertEq(mdCodes(gone), 'cut-dim-missing@0', '整集级一条,不逐镜重复报');
+    // 该步 LLM 失败时服务端如实标 null,而 Domain 与发布门 G3 只读 avg —— 四维缺失在它们眼里看不出来
+    assertEq(typeof mdEp([mdShot(0)], { cut: null }).lastReview.avg, 'number', '缺四维不影响均分字段,故只有本面报得出来');
+    const cut = mdCut();
+    delete cut.pacing;
+    assertEq(mdCodes(mdOf(mdEp([mdShot(0)], { cut }))), 'cut-dim-missing@0', '四维缺一维同样算维度没到位');
+    const noScore = mdCut();
+    noScore.framing = { comment: '只有评语没有分' };
+    assertEq(mdCodes(mdOf(mdEp([mdShot(0)], { cut: noScore }))), 'cut-dim-missing@0');
+    // 维度名是 WfCore.normalizeCut 的产出形状,skill 层不写第二份四维名
+    const W = require('../js/wf-core.js');
+    const shape = W.normalizeCut({});
+    assertEq(Object.keys(shape).filter(k => shape[k] && typeof shape[k] === 'object').join(','),
+      'natural,continuity,framing,pacing', '四维维度名的单一来源在 js/wf-core.js');
+    const ssrc = fs.readFileSync(path.join(ROOT, 'js', 'skills.js'), 'utf8');
+    assert(ssrc.includes('wfCore().normalizeCut({})'), '四维维度键应现取 WfCore.normalizeCut 产出形状');
+    ['natural', 'continuity', 'framing', 'pacing'].forEach(k =>
+      assert(!ssrc.includes("'" + k + "'"), 'skill 层不得写第二份四维名:' + k));
+  } },
+  { name: 'methodDim:某镜没进报告 → shot-dim-uncovered;报告对象已被挤出 → shot-report-missing', fn() {
+    const shots = [mdShot(0), mdShot(1)];
+    const ep = mdEp(shots);
+    ep.lastReview.perShot = ep.lastReview.perShot.slice(0, 1); // 镜2 生成中/评审失败被跳过
+    const r = mdOf(ep);
+    assertEq(r.level, 'warn');
+    assertEq(mdCodes(r), 'shot-dim-uncovered@2', '均分不含它,而快照哈希涵盖全镜集,报告整体仍读作"当前"');
+    assertEq(r.hits[0].shotId, 'sh1', 'hits 应带镜头 id 供调用方跳转');
+    assertEq(DomainMod.reviewStaleByScript(ep), false, '这一镜没进报告并不会让整份报告判旧(这正是要报的失效点)');
+    // 报告被后续单镜审片挤出最近五条:只剩一个还在驱动均分的分数,三维评语与方法论命中都取不回
+    const out = mdEp([mdShot(0, { reviews: [{ id: 'rv-new', mode: 'text', score: 9, checks: [] }] })]);
+    out.lastReview.perShot[0].reportId = 'rv0';
+    assertEq(mdCodes(mdOf(out)), 'shot-report-missing@1');
+  } },
+  { name: 'methodDim:逐镜分背书旧视频 → dim-score-stale;离线本地模拟 → local-dim-fallback;无命中字段 → check-dim-absent', fn() {
+    const ep = mdEp([mdShot(0), mdShot(1)]);
+    ep.lastReview.perShot[1].videoInputHash = 'old-hash'; // 子集复审沿用的旧条目
+    ep.lastReview.snapshotHash = DomainMod.reviewSnapshotHashOf(ep); // 复审时快照按当前镜集重算 → 整份不判旧
+    assertEq(DomainMod.reviewStaleByScript(ep), false, '整份报告读作"当前",旧条目在 Domain 眼里看不出来');
+    assertEq(mdCodes(mdOf(ep)), 'dim-score-stale@2', '那一镜的分测的是换掉之前的视频');
+    const local = mdOf(mdEp([mdShot(0, { reviews: [{ id: 'rv0', mode: 'local', model: '本地模拟评审', score: 9, checks: [] }] })]));
+    assertEq(mdCodes(local), 'local-dim-fallback@1', '方法论注入没进过任何模型,分数是种子启发式');
+    const noChk = mdEp([mdShot(0), mdShot(1)]);
+    noChk.shots.forEach(s => delete s.reviews[0].checks); // 报告成型时未附方法论校验命中
+    const r = mdOf(noChk);
+    assertEq(mdCodes(r), 'check-dim-absent@0', '集级一条,不逐镜重复报');
+    assertEq(r.hits[0].count, 2, 'hit 应带缺字段的报告条数');
+    assertEq(mdOf(mdEp([mdShot(0, { reviews: [{ id: 'rv0', mode: 'text', score: 8, checks: [] }] })])).hits.length, 0,
+      '空数组是"判过且没命中",不是缺字段');
+  } },
+  { name: 'methodDim:整份判旧/未审片/单镜入口不产出结论;纯函数不改入参', fn() {
+    const stale = mdEp([mdShot(0)], { cut: null, sourceRev: 0 }, { contentRev: 3 }); // 报告出在剧本修订之前
+    assert(DomainMod.reviewStaleByScript(stale), '剧本修订后整份报告判旧(判旧取 Domain,本层不复算)');
+    assertEq(mdOf(stale).hits.length, 0, '已判旧的报告由 Domain 与发布门报"视为未审",不在旧报告上挑维度');
+    assertEq(mdOf({ id: 'ep1', shots: [mdShot(0)] }).level, 'info', '未审片的集无判定输入(未审计数归 Domain)');
+    assertEq(Skills.check('review', {}).find(x => x.id === 'review.methodDim').level, 'info', '无分集上下文不产出结论');
+    assertEq(Skills.check('review', { p: rvP, s: mdShot(0) }).find(x => x.id === 'review.methodDim').hits.length, 0,
+      '单镜入口无整集报告可判,不冒充结论');
+    const ep = mdEp([mdShot(0), mdShot(1)], { cut: null });
+    const snap = JSON.stringify(ep);
+    assertEq(JSON.stringify(mdOf(ep)), JSON.stringify(mdOf(ep)), '同输入应给同结论(无隐藏状态)');
+    assertEq(JSON.stringify(ep), snap, '校验项不得改动领域对象——尤其不得回写报告字段');
+  } },
+  { name: 'methodDim:消费点——review 面由登记推导自动进就绪检查面表,两端 preflight 实现零改动', fn() {
+    assertPreflightFace('review', '审片方法论维度面');
+    assertPreflightOrder('gen', 'review', '审片步排在生成步之后');
+    assertPreflightOrder('review', 'film', '审片步排在成片步之前');
+    const sk = Skills.byId('review.methodDim');
+    assertEq(sk.pending.length, 0, '校验面已落地,不应再挂 pending');
+    assertEq(sk.checks.join(','), 'review.methodDim');
+    assert(sk.cmds.includes('episode.preflight'), '条目应登记就绪检查消费点(面表由此推导)');
+    assert(sk.cmds.includes('episode.smartReview'), '注入面的真实消费点仍如实登记(reviewBlock/tplReview 进评审提示词)');
+    assert(sk.gaps.includes('G-10'), '四维评语写得对不对、这一镜该不该是这个分仍是语义面,待 G-10');
+    assertEq(require('../js/cmd-registry.js').byName['episode.preflight'].risk, 'read', '就绪检查应仍是 read 类零计费');
+    // 判旧单源:skill 层只调 Domain,不自写第二份快照/rev 比对
+    const ssrc = fs.readFileSync(path.join(ROOT, 'js', 'skills.js'), 'utf8');
+    assert(ssrc.includes('Domain.reviewStaleByScript(ep)'), '整份判旧应现取 Domain.reviewStaleByScript');
+    assert(!/snapshotHash !==|sourceRev !==|reviewSnapshotHashOf/.test(ssrc), 'skill 层不得自建第二份判旧比对');
+    /* 只报不拦:审片动作侧、发布门与问题中心一概不引用本面结论——
+     * 发布门 G3 的未审/判旧/低分口径与达标线逐字不动,方法论门仍是 SK-29 的未落地面 */
+    ['js/review.js', 'js/release.js', 'js/issues.js', 'js/commands.js', 'cli.js'].forEach(f => {
+      const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+      assert(!src.includes('review.methodDim') && !src.includes("Skills.check('review'"),
+        f + ' 不得引用审片方法论维度面(只报不拦:不改审片动作、不进发布门与问题中心)');
+    });
+    const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
+    assert(/hasReview = ep => ep\.lastReview && typeof ep\.lastReview\.avg === 'number'/.test(rsrc),
+      '发布门 G3 仍只读 lastReview.avg 判有无审片记录(门禁口径不动)');
+    const sk29 = Skills.byId('film.deliverContract');
+    assert(sk29.pending.includes('check'), '发布门方法论门(SK-29)仍未落地,不得因本面落地记成已闭合');
+  } },
   { name: 'subtitleTiming:干净夹具全 pass(台词短、停留够 → info 无命中)', fn() {
     const r = caption(capEp([capShot(0, { dialogue: '快走别回头' }), capShot(1, { narration: '雨声渐起' })]));
     assertEq(r.pass, true); assertEq(r.level, 'info'); assertEq(r.hits.length, 0, '读得完的字幕不应产出命中');
@@ -4942,10 +5075,10 @@ const skillsTests = [
      * 面清单现收成一张由注册表推出的单源表:新增一面只在条目上登记 checks 实现 + cmds 消费点,两端自动跟上。
      * 断言分三层:表的推导规则(与登记侧双向对齐)、表的内容与步序、两端只读该表(段内不得再出现面字面量)。 */
     const stages = Skills.preflightStages();
-    assertEq(stages.join(' → '), 'script → subjects → eps → shots → gen → film', '面表现为六面,按 Skills.STAGES 主线步序');
+    assertEq(stages.join(' → '), 'script → subjects → eps → shots → gen → review → film', '面表现为七面,按 Skills.STAGES 主线步序');
     // 表 ⟷ 登记侧双向对齐:登记了 episode.preflight 的已落地校验面必在表里,表里的面也必有这样的登记条目
     const consumers = Skills.list().filter(s => !s.pending.includes('check') && s.checks.length && s.cmds.includes('episode.preflight'));
-    ['film', 'eps', 'shots', 'gen'].forEach(st => assert(consumers.some(s => s.stage === st), st + ' 面应登记 episode.preflight 为消费点'));
+    ['film', 'eps', 'shots', 'gen', 'review'].forEach(st => assert(consumers.some(s => s.stage === st), st + ' 面应登记 episode.preflight 为消费点'));
     consumers.forEach(s => assert(stages.includes(s.stage), '单源面表漏收已登记面:' + s.id + '(' + s.stage + ')'));
     stages.forEach(st => assert(consumers.some(s => s.stage === st), '单源面表含无人登记的面:' + st));
     // 表的顺序就是 STAGES 步序(不是登记顺序/字母序):按 STAGES 过滤后逐字节一致
@@ -4954,8 +5087,8 @@ const skillsTests = [
     Skills.list().filter(s => s.pending.includes('check') && s.cmds.includes('episode.preflight'))
       .forEach(s => assert(!stages.includes(s.stage) || consumers.some(x => x.stage === s.stage),
         '校验面未落地的条目不应把 ' + s.stage + ' 面单独带进表:' + s.id));
-    // 表现在跑出来就是十四条结论(面表 + 各面已落地校验项数,与行为断言的期望串同一口径)
-    assertEq(stages.reduce((n, st) => n + Skills.check(st, {}).length, 0), 14, '六面共十四条已落地校验项');
+    // 表现在跑出来就是十五条结论(面表 + 各面已落地校验项数,与行为断言的期望串同一口径)
+    assertEq(stages.reduce((n, st) => n + Skills.check(st, {}).length, 0), 15, '七面共十五条已落地校验项');
     /* 两端只读该表:段内那条 checks 表达式必须取表,且不得再出现任何面字面量;
      * 取表 + concat 的写法两端逐字节相同(同表同口径,一端改写法即红)。 */
     const FRAG = 'Skills.preflightStages().reduce((all, stage) => all.concat(Skills.check(stage, { p, ep }, ck)), [])';
@@ -4968,10 +5101,10 @@ const skillsTests = [
       assert(seg.includes('result: Object.assign({}, st, { checks })'), f + ' 按表跑出的结论应附在 result.checks(不并入 Domain 推导结果)');
     });
   } },
-  { name: '就绪检查校验面表:与六面写死并集逐字节等价(表收口不改行为),新增/摘掉一面即改一处', fn() {
-    /* 收表前两端各写的是面名写死的并集。这里用那份写死表达式做独立对照(随面表实况同步抬到六面),
+  { name: '就绪检查校验面表:与七面写死并集逐字节等价(表收口不改行为),新增/摘掉一面即改一处', fn() {
+    /* 收表前两端各写的是面名写死的并集。这里用那份写死表达式做独立对照(随面表实况同步抬到七面),
      * 证明"读表 concat"与它逐字节同结果——收口只动取面清单的地方,不动任何一条校验项的结论。
-     * W28 落地 gen 面时两端 preflight 实现一行未改,只有这里的对照表达式与面数口径跟着抬了一档。 */
+     * 落地 gen 面与 review 面时两端 preflight 实现都一行未改,只有这里的对照表达式与面数口径跟着抬了一档。 */
     const p = refP();
     const ep = capEp([capShot(0, { dialogue: '我'.repeat(130) }), capShot(1, { dialogue: '好'.repeat(31) })], {
       content: BG + '她被人嘲笑,却默默忍住。',
@@ -4980,16 +5113,17 @@ const skillsTests = [
     [{ online: true }, { online: false }].forEach(ck => {
       const legacy = Skills.check('script', { p, ep }, ck)
         .concat(Skills.check('subjects', { p, ep }, ck), Skills.check('eps', { p, ep }, ck),
-          Skills.check('shots', { p, ep }, ck), Skills.check('gen', { p, ep }, ck), Skills.check('film', { p, ep }, ck));
+          Skills.check('shots', { p, ep }, ck), Skills.check('gen', { p, ep }, ck),
+          Skills.check('review', { p, ep }, ck), Skills.check('film', { p, ep }, ck));
       const byTable = Skills.preflightStages().reduce((all, stage) => all.concat(Skills.check(stage, { p, ep }, ck)), []);
-      assertEq(JSON.stringify(byTable), JSON.stringify(legacy), '读表 concat 应逐字节等于六面写死并集(online=' + ck.online + ')');
-      assertEq(byTable.length, 14, '并集现为十四条结论');
+      assertEq(JSON.stringify(byTable), JSON.stringify(legacy), '读表 concat 应逐字节等于七面写死并集(online=' + ck.online + ')');
+      assertEq(byTable.length, 15, '并集现为十五条结论');
     });
     // 表是纯函数:同输入同表,且调用方拿到的是副本(改返回值不污染下次取表)
     assertEq(Skills.preflightStages().join(','), Skills.preflightStages().join(','), '同输入应给同表');
     const got = Skills.preflightStages();
-    got.push('review');
-    assert(!Skills.preflightStages().includes('review'), '取表应给副本,调用方改动不得回写单源表');
+    got.push(Skills.CROSS); // 主线七步现已全在表内,故拿贯通层键作哨兵(它永远不是就绪检查的一面)
+    assert(!Skills.preflightStages().includes(Skills.CROSS), '取表应给副本,调用方改动不得回写单源表');
   } },
   { name: 'stageCoverage:六段段名与集号区间取自 KB 条目正文,按比例摊到当前集数;干净分集表 → info', fn() {
     const KB = require('../js/knowledge.js');
@@ -5109,10 +5243,20 @@ const skillsTests = [
     const expr = src.slice(i, src.indexOf('\n  }', i));
     const at = st => expr.indexOf("Skills.check('" + st + "'");
     assert(at('script') > 0 && at('subjects') > at('script'), '两面应同在一处汇总且按主线步序排列(只在别处调用不算消费)');
-    // 登记侧反查:凡登记 episode.smartReview 为消费点的已落地校验条目,其面必须在这处汇总里(将来新增面漏接先红)
-    const consumers = Skills.list().filter(s => !s.pending.includes('check') && s.checks.length && s.cmds.includes('episode.smartReview'));
+    /* 登记侧反查:凡登记 episode.smartReview 为消费点的已落地校验条目,其面必须在这处汇总里(将来新增面漏接先红)。
+     * 反查按 covers 含 shots 收口——这处汇总的入口对象包是镜级的 {p, s}(命中还要按 h.shotId 过滤),
+     * 故只有作用面覆盖到分镜载体的条目拿得出镜级结论;`cmds` 是条目级登记而非按面登记,
+     * 覆盖不到分镜载体的条目(如 SK-24 审片面:判定输入是整集报告本身,单镜入口恒空)在这里登记的是
+     * 注入面消费点,其校验面走就绪检查,由 methodDim 消费点用例钉住。 */
+    const consumers = Skills.list().filter(s => !s.pending.includes('check') && s.checks.length
+      && s.cmds.includes('episode.smartReview') && s.covers.includes('shots'));
     assert(consumers.length >= 2, '审片路径应已登记至少两条已落地校验条目的消费点');
     consumers.forEach(s => assert(at(s.stage) > 0, '审片报告漏消费已登记面:' + s.id + '(' + s.stage + ')'));
+    // 另一向:登记了 smartReview 却覆盖不到分镜载体的已落地校验面,必须在就绪检查面表里有出口(不许两处都不消费)
+    Skills.list().filter(s => !s.pending.includes('check') && s.checks.length
+      && s.cmds.includes('episode.smartReview') && !s.covers.includes('shots'))
+      .forEach(s => assert(Skills.preflightStages().includes(s.stage) && s.cmds.includes('episode.preflight'),
+        s.id + ' 的校验面在审片报告拿不出镜级结论,须如实登记就绪检查为其消费点'));
     assert(src.includes('report.checks = shotChecks(p, s)'), '命中应挂报告的独立字段(不改三维评分与整集四维结构)');
     assert(!/issues\.(push|unshift)\([^)]*check/i.test(src), '命中不得并入 issues');
     // 展示:旧报告缺该字段照样开(结构兜底),有命中时如实标注只提醒不拦,校验项名取注册表条目名
