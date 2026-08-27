@@ -18,10 +18,51 @@
   W.UND_DIMS = ['剧情脉络', '情绪曲线', '节奏规划', '视觉基调', '关键场面', '悬念与期待'];
   W.DIR_DIMS = ['光影', '色调', '情感氛围', '服化道审美', '表演气质']; // 与 gsettings.js DIR_DIMS 同源(其为 UI 全局来源)
   W.DIR_STYLES = ['漫剧', '动漫', '写实'];
-  W.CAMERAS = ['固定镜头', '推镜头', '拉镜头', '摇镜头', '移镜头', '跟镜头', '环绕镜头', '俯拍', '仰拍', '特写'];
+  /* ---- 机位词表(景别/运镜/视角/角度)单一来源 ----
+   * 结构表带 UI 与英文摄影词所需的附加列,扁平名称数组 CAMERAS/VIEWS/ANGLES/SIZES 是其名称投影:
+   * 分镜数据只存名称(s.camera / s.cameraSpec.*),白名单校验与拆镜模板一律取名称数组;
+   * camera.js 机位选择器、review.js 景别衔接检查、sb-io.js CSV 导入、agent.js 改镜协议一律由本表派生,
+   * 不在消费方另写第二份词表。景别/运镜的情绪语义是知识库「景别运镜」条目的正文,本表不复述。 */
+  /* 景别阶梯:自空间到情绪逐层收紧,索引即级差(相邻=1、隔一级=2、两极=首尾);dist 为机位相对距离(中景=1) */
+  W.SHOT_SIZES = [
+    { name: '大全景', dist: 2, en: 'extreme wide shot' },
+    { name: '全景', dist: 1.4, en: 'wide shot' },
+    { name: '中景', dist: 1, en: 'medium shot' },
+    { name: '近景', dist: 0.8, en: 'medium close-up' },
+    { name: '特写', dist: 0.6, en: 'close-up' },
+    { name: '超级特写', dist: 0.4, en: 'extreme close-up' },
+  ];
+  /* 运镜:axis='move' 为镜头运动(arrow/short 供机位选择器芯片);末三项 axis='angle'/'size' 与
+     「角度」「景别」两栏语义重叠,是 camera 枚举的早期取值,留在取值全集内以免动既有分镜数据与生成指纹 */
+  W.CAMERA_MOVES = [
+    { name: '固定镜头', axis: 'move', arrow: '⊙', short: '固定', en: 'static shot' },
+    { name: '推镜头', axis: 'move', arrow: '↑', short: '前推', en: 'push in' },
+    { name: '拉镜头', axis: 'move', arrow: '↓', short: '后拉', en: 'pull out' },
+    { name: '摇镜头', axis: 'move', arrow: '↔', short: '横摇', en: 'pan' },
+    { name: '移镜头', axis: 'move', arrow: '→', short: '平移', en: 'tracking shot' },
+    { name: '跟镜头', axis: 'move', arrow: '⇢', short: '跟随', en: 'follow shot' },
+    { name: '环绕镜头', axis: 'move', arrow: '↻', short: '环绕', en: 'orbit' },
+    { name: '俯拍', axis: 'angle' },
+    { name: '仰拍', axis: 'angle' },
+    { name: '特写', axis: 'size' },
+  ];
+  /* 拍摄角度:deg 为仰角(负=仰拍),camera.js 机位几何与本表同源 */
+  W.CAMERA_ANGLES = [
+    { name: '仰拍', deg: -30, en: 'low-angle shot' },
+    { name: '平视', deg: 0, en: 'eye-level shot' },
+    { name: '俯拍', deg: 30, en: 'elevated shot' },
+    { name: '高角度', deg: 60, en: 'high-angle shot' },
+  ];
+  W.CAMERAS = W.CAMERA_MOVES.map(x => x.name);
   W.VIEWS = ['正面', '侧面', '背面'];
-  W.ANGLES = ['仰拍', '平视', '俯拍', '高角度'];
-  W.SIZES = ['大全景', '全景', '中景', '近景', '特写', '超级特写'];
+  W.ANGLES = W.CAMERA_ANGLES.map(x => x.name);
+  W.SIZES = W.SHOT_SIZES.map(x => x.name);
+  /* 相邻两镜景别级差(景别衔接口诀的判定基准):同级 0、相邻 1、隔一级 2……两极 4-5;
+     任一端不在阶梯上(空值或自定义词)返回 -1,由调用方跳过判定 */
+  W.sizeGap = function (a, b) {
+    const i = W.SIZES.indexOf(a), j = W.SIZES.indexOf(b);
+    return i < 0 || j < 0 ? -1 : Math.abs(i - j);
+  };
   W.VISION_MODELS = ['qwen2.5-vl-72b-instruct', 'doubao-1.5-vision-pro', 'qwen-vl-max-2025-01-25'];
   W.SPLIT_RULES = `分镜拆解规则(必须遵守):
 1. 叙事细化,而非形式拆分——判断标准:该情节若用真人影视拍摄需要多个镜头才能完成表达,则 AI 漫剧同样必须拆分。禁止一个分镜同时承载环境交代、人物动作、情绪变化与大量对白;禁止用静态画面强行承载时间流逝与情绪转折。
@@ -31,7 +72,7 @@
 5. 景别衔接口诀(必须遵守):
    - 相邻景别不硬切:前后两镜景别避免相同或相邻(如 全景→全景、全景→中景 属无信息跳切,剪辑上显生硬);
    - 景别切换隔一别:优先跨一级切换景别(如 大全景→中景、全景→近景、中景→特写),靠景别落差释放信息;
-   - 两极镜头不衔接:大全景/远景与特写/超级特写不得直接对切,须用全景或中景做过渡镜。`;
+   - 两极镜头不衔接:大全景与特写/超级特写不得直接对切,须用全景或中景做过渡镜。`;
   W.PROMPT5 = `提示词五段式标准结构(prompt 必须按此顺序组织,段间用句号衔接):
 1. 风格氛围:影视风格、色调、画质、年代感、情绪基调。
 2. 场景环境:时间、地点、天气、光线、背景元素、空间氛围。
@@ -138,7 +179,7 @@ ${ctx.content}`;
     const sceneNames = subs.filter(s => s.kind === 'scene').map(withForms).join('、') || '无';
     const propNames = subs.filter(s => s.kind === 'prop').map(withForms).join('、') || '无';
     return `将以下剧集剧本拆分为约 ${o.count} 个专业分镜(拆解规则优先,可略超),返回 JSON 数组,每个元素:
-{"plot":"剧情内容(一句话)","camera":"运镜(从 固定镜头/推镜头/拉镜头/摇镜头/移镜头/跟镜头/环绕镜头/俯拍/仰拍/特写 中选)","view":"视角(正面/侧面/背面)","angle":"拍摄角度(仰拍/平视/俯拍/高角度)","shotSize":"景别(大全景/全景/中景/近景/特写/超级特写)","characters":["出场人物名"],"scene":"场景名","props":["道具名"],"narration":"旁白(没有则空字符串)","dialogue":"台词(没有则空字符串)","prompt":"文生视频中文画面提示词","duration":时长秒数,"strategy":"生成策略(ref/frames/fusion)"}
+{"plot":"剧情内容(一句话)","camera":"运镜(从 ${W.CAMERAS.join('/')} 中选)","view":"视角(${W.VIEWS.join('/')})","angle":"拍摄角度(${W.ANGLES.join('/')})","shotSize":"景别(${W.SIZES.join('/')})","characters":["出场人物名"],"scene":"场景名","props":["道具名"],"narration":"旁白(没有则空字符串)","dialogue":"台词(没有则空字符串)","prompt":"文生视频中文画面提示词","duration":时长秒数,"strategy":"生成策略(ref/frames/fusion)"}
 要求:
 - 项目风格:${ctx.styleText}${p.globalSetting ? ',全局美学设定:' + p.globalSetting : ''};项目类型:${ctx.projType === 'narration' ? '解说模式(重旁白叙述)' : '剧情模式(重台词表演)'}${ctx.directorNote || ''}${ctx.conceptNote || ''}
 ${ctx.langText ? '- 语言要求:' + ctx.langText.slice(1) : ''}
