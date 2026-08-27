@@ -11,7 +11,9 @@
 
   /* ================= 本地推导:按 Domain 主线逐集推进(零成本,推荐默认) =================
    * 每集取其 episodeState 推荐动作(缺剧本→补剧本/未分镜→智能分镜/失败→重生成/待出→生成视频/
-   * 过期→重生成/待确认→确认/低分→审片/未合成→合成),主体缺图作前置步骤;上限 12 步。 */
+   * 过期→重生成/待确认→确认/未审或判旧→整集审片/低分→审片修订/未合成→合成),主体缺图作前置步骤;上限 12 步。
+   * 审片是主线一等步骤(与 Domain.workflow 的 review 步同口径),映射已注册命令 episode.smartReview,
+   * headless 下可真实执行(不再是只能点开页面的导航步)。 */
   function fromWorkflow(p) {
     if (!p) return null;
     const on = online();
@@ -29,7 +31,8 @@
       else if (c.done < c.total) steps.push({ key: 'gen:' + ep.id, label: `生成视频:${ep.title}(${c.total - c.done} 镜待出)`, cmd: 'episode.generateVideos', epid: ep.id });
       else if (c.stale) steps.push({ key: 'regen:' + ep.id, label: `重生成过期镜:${ep.title}(${c.stale} 镜)`, goto: hash });
       else if (c.unconfirmed) steps.push({ key: 'cfm:' + ep.id, label: `确认镜头:${ep.title}(${c.unconfirmed} 镜)`, goto: hash });
-      else if (st.reviewAvg !== null && st.reviewAvg !== undefined && st.reviewAvg < 7) steps.push({ key: 'rv:' + ep.id, label: `审片修订:${ep.title}(均分 ${st.reviewAvg})`, goto: hash });
+      else if (st.reviewAvg === null || st.reviewAvg === undefined) steps.push({ key: 'rv:' + ep.id, label: (st.reviewStale ? '重新审片:' : '整集审片:') + ep.title + (st.reviewStale ? '(记录已过期)' : ''), cmd: 'episode.smartReview', epid: ep.id });
+      else if (st.reviewAvg < Domain.REVIEW_MIN) steps.push({ key: 'rv:' + ep.id, label: `审片修订:${ep.title}(均分 ${st.reviewAvg})`, cmd: 'episode.smartReview', epid: ep.id });
       else if (!st.composedReady) steps.push({ key: 'cp:' + ep.id, label: (ep.composed ? '重新合成:' : '合成成片:') + ep.title, cmd: 'episode.compose', epid: ep.id });
     });
     if (!steps.length) return null;

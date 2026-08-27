@@ -1145,7 +1145,8 @@ async function reviseLowShots(args, f, low) {
 /* 一键成片(exec,编排):就绪检查 → 批量生成 → 智能审片(质量闸门) → 合成成片,与前端 episode.produce 同步骤同结构;
  * 审片走服务端工作流真实评审,低分镜(<7 分)自动进入 审→改→重抽→复审 闭环(与浏览器 autoSmartReview 同语义):
  * 按审片意见修订提示词 → episode.generateVideos shotIds 子集重抽 → 子集复审合并整集报告,循环 ≤maxRetry(默认 2);
- * 仍有低分镜则质量闸门阻断合成(needs_human),--args riskyCompose 放行 */
+ * 仍有低分镜则质量闸门阻断合成(needs_human);审片被关闭或评审未产出结论时如实登记 skipped/失败,
+ * 后者阻断合成不静默通过,--args riskyCompose 放行 */
 EXEC['episode.produce'] = { needs: ['p', 'ep'], meter: true, run: async (args, f) => { // meter:整体钱包差值(与前端 steps 累加同口径)
   const steps = [];
   const call = async (key, cmdName, extra) => {
@@ -1160,8 +1161,11 @@ EXEC['episode.produce'] = { needs: ['p', 'ep'], meter: true, run: async (args, f
   if (st.status === 'blocked' || st.shotsStale) return execBlocked('preflight', '就绪检查未通过:' + (st.blockers.map(b => b.label).join('/') || '分镜已过期'), { steps, blockers: st.blockers });
   if (!(ep.shots || []).length) return execBlocked('no-shots', '未分镜', { steps });
   await call('generateVideos', 'episode.generateVideos'); // 2. 批量生成(失败镜不阻塞,合成前统一拦截)
-  // 3. 智能审片 + 审→改→重抽→复审闭环(maxRetry 与注册表口径一致:1-5,默认 2)
-  if (args.smartReview !== false) {
+  // 3. 智能审片(主线一等步骤)+ 审→改→重抽→复审闭环(maxRetry 与注册表口径一致:1-5,默认 2);
+  //    审片按参数关闭时如实登记 skipped(与浏览器 commands.js 同语义),不拿"审过了"冒充
+  if (args.smartReview === false) {
+    steps.push({ step: 'smartReview', ok: false, status: 'skipped', result: null, error: { code: 'disabled', message: '审片已按参数关闭(smartReview:false),质量闸门未执行' } });
+  } else {
     let rv = await call('smartReview', 'episode.smartReview');
     let low = (rv.result && rv.result.lowShots) || [];
     const maxRetry = Math.max(1, Math.min(5, +args.maxRetry || 2));
@@ -1179,6 +1183,10 @@ EXEC['episode.produce'] = { needs: ['p', 'ep'], meter: true, run: async (args, f
     }
     if (low.length && !args.riskyCompose) {
       return { ok: false, status: 'needs_human', error: { code: 'manual-gate', message: '低分 ' + low.length + ' 镜(' + low.map(x => x.order + '镜' + x.score + '分').join('、') + '),修订重抽后仍不达标,质量闸门已阻断合成(riskyCompose 可放行)' }, result: { steps } };
+    }
+    // 审片未产出结论(端点失败/网络中断):质量闸门未执行,不拿"审过了"冒充放行
+    if (!rv.result || typeof rv.result.avg !== 'number') {
+      if (!args.riskyCompose) return { ok: false, status: 'blocked', error: { code: 'review-unavailable', message: '审片未产出结论(' + ((rv.error && rv.error.message) || '未知原因') + '),质量闸门无法执行(riskyCompose 可放行)' }, result: { steps } };
     }
   }
   const c = await call('compose', 'episode.compose'); // 4. 合成成片
