@@ -162,6 +162,25 @@ function loadAgentChat() {
   return sb;
 }
 
+/* js/persona.js 三个 LLM 步(八维度重写文生图 rewritePrompt / 音色推荐 recommendVoice、recommendVoicesBatch)共用沙箱:
+ * 逐次 LLM 调用原样截获,ov 写进 Store 覆盖表(加载序与 index.html 同:prompts.js 在 persona.js 之前)。
+ * 回值按步给:音色两步各自先摆 __voiceOut,重写步走缺省那份 {"prompt":…}(其成功路径不进本地模板回退) */
+function loadPersona(ov) {
+  const sb = makeSandbox();
+  installCommon(sb);
+  sb.styleOf = p => (p && p.style) || '漫剧';  // projects.js 全局(本套件不加载)
+  sb.__apiReady = true;
+  sb.__llm = [];
+  sb.API.chatJSON = async req => {
+    sb.__llm.push({ system: req.system, user: ((req.messages || [])[0] || {}).content, temperature: req.temperature, max_tokens: req.max_tokens });
+    return sb.__voiceOut === undefined ? { prompt: '漫剧风格角色立绘,林晚晴,白底三视图' } : sb.__voiceOut;
+  };
+  if (ov) sb.Store.state.settings.promptOverrides = ov;
+  loadFile(sb, 'prompts.js');
+  loadFile(sb, 'persona.js');
+  return sb;
+}
+
 function loadExperts() {
   const sb = makeSandbox();
   installCommon(sb);
@@ -3816,22 +3835,6 @@ function digestProject() {
   return { id: 'p1', name: '测试项目', script: '第一段:女主被当众羞辱。\n第二段:女主当场反击。',
     episodes: [{ id: 'ep1', title: '第一集', content: '第一集完整正文' }], subjects: [] };
 }
-/* 八维度重写文生图提示词(Persona.rewritePrompt)沙箱:该步 LLM 请求的 system/user 原样截获,ov 写进 Store 覆盖表
- * (加载序与 index.html 同:prompts → persona;LLM 成功路径不进本地模板回退,故不必装 EpisodeUtil/styleOf) */
-function loadPersona(ov) {
-  const sb = makeSandbox();
-  installCommon(sb);
-  sb.__apiReady = true;
-  sb.__llm = [];
-  sb.API.chatJSON = async req => {
-    sb.__llm.push({ system: req.system, user: ((req.messages || [])[0] || {}).content });
-    return { prompt: '漫剧风格角色立绘,林晚晴,白底三视图' };
-  };
-  if (ov) sb.Store.state.settings.promptOverrides = ov;
-  loadFile(sb, 'prompts.js');
-  loadFile(sb, 'persona.js');
-  return sb;
-}
 function personaSubject() {
   return { name: '林晚晴', prompt: '', persona: { 五官: '剑眉星目', 发型: '银色长直发及腰', 身材: '', 服饰: '墨色风衣', 性格: '外冷内热', 特技: '', 弱点: '', 语气: '' } };
 }
@@ -4956,6 +4959,64 @@ action 二选一:
       '多轮三份的 ops 协议/返回 JSON 约定应仍留在各自装配口(注册表里不该出现)');
     ['agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem'].forEach(k =>
       assert(Skills.byId('core.personaCtx').prompts.includes(k), 'SK-03 应登记 ' + k));
+  } },
+  { name: '音色推荐两份人设:单个/批量各一键,缺省逐字节等于收编前的内联字面,覆盖不串台', fn: async () => {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const PERSONA = '你是配音导演。';
+    const KEYS = ['voice.recommendSystem', 'voice.recommendBatchSystem'];
+    // 缺省不变:两处内联字面逐字节相同(两处 def 相同也不合成一个键,键位是持久化面)
+    KEYS.forEach(k => assertEq(Prompts.get(k), PERSONA, k + ' 缺省人设句应与收编前的内联字面逐字节相同'));
+    assertEq(Prompts.list().filter(x => x.def === PERSONA).length, 2, '两条独立键各留一份 def(合并即只剩一条)');
+    KEYS.forEach(k => {
+      const it = Prompts.list().find(x => x.key === k);
+      assert(it && !it.vars.length && it.name.includes('音色推荐') && it.name.includes('系统人设'),
+        '注册表应登记 ' + k + ' 条目(无变量,可在全局默认值页在线改写)');
+    });
+    /* 行为面:两步各真跑一次,system 取注册表、user 半(音色库取值范围 + 返回 JSON 约定)逐字节等于收编前 */
+    const p = { id: 'p1', name: '测试项目', style: '漫剧' };
+    const s = { name: '林晚晴', persona: { 性格: '外冷内热', 语气: '低沉冷静' } };
+    const chars = [s, { name: '陆行舟', persona: { 性格: '张扬' } }];
+    const voices = ['高冷御姐', '少年音', '温柔细腻'];
+    const sb = loadPersona();
+    sb.__voiceOut = { voice: '高冷御姐', reason: '冷感贴人设' };
+    assertEq((await sb.Persona.recommendVoice(p, s, voices)).voice, '高冷御姐', '单个推荐应吃到 LLM 结果(该步真的跑了,不是空转)');
+    sb.__voiceOut = [{ name: '林晚晴', voice: '高冷御姐', reason: 'r1' }, { name: '陆行舟', voice: '少年音', reason: 'r2' }];
+    assertEq((await sb.Persona.recommendVoicesBatch(p, chars, voices))['陆行舟'].voice, '少年音', '批量推荐应按角色名落回各自音色');
+    assertEq(sb.__llm.length, 2, '两步应各发一次 LLM 调用');
+    assertEq(sb.__llm.map(c => c.system).join('|'), [PERSONA, PERSONA].join('|'), '两步缺省 system 应与收编前逐字节相同');
+    assertEq(sb.__llm[0].user, '根据角色人设「外冷内热;低沉冷静」(角色:林晚晴,项目风格:漫剧),从音色库 '
+      + JSON.stringify(voices) + ' 中推荐最合适的 1 个,返回 {"voice":"必须是音色库中的一项","reason":"一句话理由"}',
+      '单个推荐的 user 半应逐字节不变(音色库取值范围与返回 JSON 约定在内)');
+    assertEq(sb.__llm[1].user, '根据以下角色人设为每个角色推荐最合适的音色,项目风格:漫剧。音色库:' + JSON.stringify(voices)
+      + '。返回 JSON 数组,每个元素 {"name":"角色名(必须与输入完全一致)","voice":"必须是音色库中的一项","reason":"一句话理由"}:\n'
+      + JSON.stringify([{ name: '林晚晴', persona: '外冷内热;低沉冷静' }, { name: '陆行舟', persona: '张扬' }]),
+      '批量推荐的 user 半应逐字节不变(角色简报与返回 JSON 约定在内)');
+    assertEq(sb.__llm.map(c => c.temperature + '/' + c.max_tokens).join('|'), '0.4/300|0.4/1200', '两步的取样参数一字未动');
+    assertEq(sb.__charges.length + sb.__tasks.length, 0, '两步仍是免费辅助(不登记任务、不扣费)');
+    /* 覆盖只换对应那一份:另一份逐字节不变(两处 def 相同,合成一个键这一层先红) */
+    for (const key of KEYS) {
+      const ov = '你是音色导演(' + key + ' 覆盖生效)。';
+      const sb2 = loadPersona({ [key]: ov });
+      sb2.__voiceOut = { voice: '高冷御姐', reason: 'r' };
+      await sb2.Persona.recommendVoice(p, s, voices);
+      sb2.__voiceOut = [{ name: '林晚晴', voice: '高冷御姐', reason: 'r' }];
+      await sb2.Persona.recommendVoicesBatch(p, chars, voices);
+      const want = KEYS.map(k => (k === key ? ov : PERSONA)).join('|');
+      assertEq(sb2.__llm.map(c => c.system).join('|'), want, '覆盖 ' + key + ' 只换对应那一步的人设句,另一步不串台');
+      assertEq(sb2.__llm.map(c => c.user).join('|'), sb.__llm.map(c => c.user).join('|'), '覆盖只换人设句:两步的 user 半逐字节不变');
+    }
+    // 契约半不开放覆盖:音色库取值范围与返回 JSON 约定不做成可覆盖变量
+    assertEq(Prompts.list().filter(x => x.def.includes('必须是音色库中的一项') || x.def.includes('"voice"')).length, 0,
+      '音色库取值范围/返回 JSON 约定应仍留在各自调用点(注册表里不该出现)');
+    // 源级:两处各取自己那一键,人设全文在文件里零命中(注册表 def 是唯一来源)
+    const psrc = fs.readFileSync(path.join(ROOT, 'js', 'persona.js'), 'utf8');
+    KEYS.forEach(k => assert(psrc.includes("Prompts.get('" + k + "')"), '音色推荐应取自注册表键 ' + k));
+    assertEq((psrc.match(/你是配音导演/g) || []).length, 0, 'js/persona.js 不应再内联该人设句(覆盖不会跟过去)');
+    KEYS.forEach(k => assert(Skills.byId('core.personaCtx').prompts.includes(k), 'SK-03 应登记 ' + k));
+    // 记账锚点:仍欠段(只认「仍欠」之后那段)须点名这两条的边界——契约半不开放覆盖,开了就要同步改记账
+    const owed3 = (Skills.byId('core.personaCtx').note || '').split('仍欠').slice(1).join('仍欠');
+    assert(owed3.includes('音色库') && owed3.includes('不开放覆盖'), 'SK-03 的仍欠段须写明音色推荐的契约半不开放覆盖');
   } },
   { name: '审片升为主线一等步骤(G-03):板块 Agent 有审片席;plans/工作区/CLI 都映射 episode.smartReview', fn() {
     const D = require(path.join(ROOT, 'js/domain.js'));
@@ -6775,6 +6836,11 @@ const skillsTests = [
     assert(rw.includes('tplImage') && rw.includes("Prompts.get('persona.promptSystem')") && !rw.includes("system: '你是文生图提示词专家。'"),
       'js/persona.js 的文生图重写步应经注册表取人设(参考模板仍取 settings.tplImage)');
     assertEq(P.list().filter(x => x.def === '你是文生图提示词专家。').length, 1, '该人设句应恰好在注册表里一份(注册表 def 为唯一来源)');
+    /* 同文件的配音导演两步也已收编(两条独立键,行为面由 contract 套件那条钉住):
+     * 文生图重写步与这两步合到一起,js/persona.js 的内联人设归零——退回任意一处都要同步改记账 */
+    assertEq((psrc.match(/system: ['`]你是/g) || []).length, 0, 'js/persona.js 应已无内联人设(文生图重写与配音导演两步都已进注册表)');
+    ['voice.recommendSystem', 'voice.recommendBatchSystem'].forEach(k =>
+      assert(keys.includes(k), '配音导演那两步的人设句应已在注册表:' + k));
     const owed10 = owedOf(sk10.note);
     const esrc = fs.readFileSync(path.join(ROOT, 'js', 'episodes.js'), 'utf8');
     /* 这四步已收编,路障随之反转:键在表里、取值口在 js/episodes.js、仍欠段不得再把它们记成欠账 */
