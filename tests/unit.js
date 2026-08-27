@@ -1357,7 +1357,7 @@ const commandsTests = [
     assertEq(checks.map(x => x.skill).join(','),
       'script.hookStrength,script.faceslapFour,script.dialogueRule,script.aiToneBan,'
       + 'subjects.refDiscipline,subjects.refIntegrity,subjects.crossShot,subjects.crossShot,'
-      + 'eps.structureStage,eps.payoffPoint,shots.sizeProgression,film.subtitleQC',
+      + 'eps.structureStage,eps.payoffPoint,shots.sizeProgression,shots.promptEightDim,film.subtitleQC',
       'result.checks 应是五面并集,按主线步序 script → subjects → eps → shots → film');
     const cap = checks.find(x => x.skill === 'film.subtitleQC');
     assert(cap, '就绪检查必须消费成片字幕面(film 面被摘掉则本条红)');
@@ -4115,6 +4115,12 @@ const multiShot = (p, shots) => Skills.check('subjects', { p, ep: { id: 'ep1', s
 const sizeShot = (order, shotSize) => ({ id: 'sh' + order, order, cameraSpec: shotSize === undefined ? {} : { shotSize } });
 const linkOf = shots => Skills.check('shots', { p: { id: 'p1' }, ep: { id: 'ep1', shots } }).find(x => x.skill === 'shots.sizeProgression');
 const sizes = (...list) => linkOf(list.map((x, i) => sizeShot(i, x)));
+/* 抽卡稳定词夹具:判定输入是真实生成请求那条提示词,故一律带项目上下文(缺省项目无主体,请求里就没有主体定义前置) */
+const lexP = { id: 'p1', subjects: [] };
+const lexShot = (order, prompt, over) => Object.assign({ id: 'sh' + order, order, characters: [], scene: '', props: [], prompt }, over || {});
+const lexEp = (shots, over) => Object.assign({ id: 'ep1', shots }, over || {});
+const lexOf = (ep, p) => Skills.check('shots', { p: p || lexP, ep }).find(x => x.skill === 'shots.promptEightDim');
+const STABLE_OK = '五官稳定不变形,人体结构正常,动作自然不僵硬';
 /* 成片字幕夹具:镜头缺省带分镜图(进得了合成序列),段时长由 Domain.subtitleSegs 按预估/裁剪推出,用例只摆内容 */
 const capShot = (order, over) => Object.assign({ id: 'sh' + order, order, dialogue: '', narration: '', image: '/uploads/a/f' + order + '.png' }, over || {});
 const capEp = (shots, over) => Object.assign({ id: 'ep1', sbConfig: { subtitle: true }, shots }, over || {});
@@ -4629,8 +4635,9 @@ const skillsTests = [
     assertEq(sizes('远景', '远景', '远景', '远景').hits.length, 0, '阶梯外自定义词不判定,不冒充结论');
     assertEq(sizes('中景', '中景', undefined, '中景', '中景').hits.length, 0, '被缺字段隔开的两段两镜串不合并计数');
     assertEq(linkOf([sizeShot(0, '中景')]).level, 'info', '单镜无相邻可比,不冒充通过判定');
-    assertEq(Skills.check('shots', { p: { id: 'p1' }, s: sizeShot(0, '中景') })[0].hits.length, 0, '镜级入口无相邻输入');
-    assertEq(Skills.check('shots', {}).length, 1, '分镜步现有一条已落地校验项');
+    assertEq(Skills.check('shots', { p: { id: 'p1' }, s: sizeShot(0, '中景') })
+      .find(x => x.skill === 'shots.sizeProgression').hits.length, 0, '镜级入口无相邻输入');
+    assertEq(Skills.check('shots', {}).length, 2, '分镜步现有两条已落地校验项(景别递进 + 抽卡稳定词)');
   } },
   { name: 'sizeLinkage:纯函数(不改入参、同输入同结论)', fn() {
     const shots = [sizeShot(0, '中景'), sizeShot(1, '中景'), sizeShot(2, '中景'), sizeShot(3, '大全景')];
@@ -4657,6 +4664,80 @@ const skillsTests = [
     const sksrc = fs.readFileSync(path.join(ROOT, 'js', 'skills.js'), 'utf8');
     assert(sksrc.includes('wfCore().sizeGap'), '景别级差应现取 WfCore.sizeGap');
     assert(!/indexOf\((?:prev|cur|a|b)\)/.test(sksrc), 'skill 层不得自建景别索引查表(级差只由 sizeGap 给)');
+  } },
+  { name: 'stableLexicon:三条稳定词写全 → info;只写一部分 → stable-word-partial(带已写与缺的字面)', fn() {
+    const ok = lexOf(lexEp([lexShot(0, '她缓慢转身,窗外雨声渐起;' + STABLE_OK)]));
+    assertEq(ok.pass, true); assertEq(ok.level, 'info'); assertEq(ok.hits.length, 0, '稳定词写全的镜不应产出命中');
+    const r = lexOf(lexEp([lexShot(0, '她缓慢转身,窗外雨声渐起;五官稳定不变形,人体结构正常')]));
+    assertEq(r.pass, false); assertEq(r.level, 'warn', '稳定词面只到提醒级');
+    assertEq(r.hits.map(h => h.code + '@' + h.order).join(','), 'stable-word-partial@1');
+    assertEq(r.hits[0].name, '不变形、结构正常', 'hits 应给出已写的字面');
+    assertEq(r.hits[0].miss, '不僵硬', 'hits 应给出该补的字面');
+    assertEq(r.hits[0].shotId, 'sh0', 'hits 应带镜头 id 供调用方跳转');
+  } },
+  { name: 'stableLexicon:一个稳定词都没有 → no-stable-word;命中条目自列的模糊词 → vague-word(逐词一条)', fn() {
+    const r = lexOf(lexEp([lexShot(0, '她缓慢转身,平稳横移,固定镜头')]));
+    assertEq(r.hits.map(h => h.code + ':' + h.miss).join(','), 'no-stable-word:不变形、结构正常、不僵硬', 'hits 应列出三条该补的字面');
+    assertEq(r.hits[0].name, '', '一个都没写时无已写字面可给');
+    const v = lexOf(lexEp([lexShot(0, '一个很酷的镜头,画面好看;' + STABLE_OK)]));
+    assertEq(v.hits.map(h => h.code + ':' + h.name).join(','), 'vague-word:好看,vague-word:很酷', '模糊词逐词一条,稳定词写全则不再报稳定词面');
+    assertEq(v.level, 'warn');
+    assertEq(lexOf(lexEp([lexShot(0, '她缓慢转身,神情黯淡;' + STABLE_OK)])).hits.length, 0, '不含模糊词的具体描述不报');
+  } },
+  { name: 'stableLexicon:判定输入是真实生成请求(现取 Domain.buildVideoRequest),不是分镜字段本身', fn() {
+    // 稳定词写在本集美术风格后缀里:逐镜提示词字段看不见,但真实发出去的那条带着它——判后者才不误报
+    const shot = lexShot(0, '她缓慢转身,窗外雨声渐起');
+    const ep = lexEp([shot], { styleSuffix: '写实电影感,' + STABLE_OK });
+    assert(!shot.prompt.includes('不僵硬'), '夹具:分镜字段本身没写稳定词');
+    assert(DomainMod.buildVideoRequest(lexP, ep, shot).prompt.includes('不僵硬'), '真实生成请求里由美术风格后缀带出稳定词');
+    assertEq(lexOf(ep).hits.length, 0, '判真实请求即不误报');
+    // 主体定义前置那句一致性声明不算稳定词(锁不锁得住归 SK-13,本项只判解剖/动作三面)
+    const p = manySubjP(1);
+    const refed = lexShot(1, '她缓慢转身,窗外雨声渐起', { characters: ['角色0'] });
+    assert(DomainMod.buildVideoRequest(p, null, refed).prompt.includes('严格保持一致'), '有主体参考图组时请求自带一致性声明');
+    assertEq(lexOf(lexEp([refed]), p).hits.map(h => h.code).join(','), 'no-stable-word', '一致性声明不顶替稳定词');
+  } },
+  { name: 'stableLexicon:词表单源——稳定词与模糊词字面现筛 KB 抽卡条目,skill 层不写第二份词表', fn() {
+    const KB = require('../js/knowledge.js');
+    const rules = KB.section('抽卡军规');
+    ['不变形', '结构正常', '不僵硬'].forEach(w =>
+      assert(rules.includes(w) && KB.section('抽卡公式').includes(w), '稳定词字面须同时在两条条目正文里:' + w));
+    assert(/模糊词[((]"好看\/很美\/很酷"/.test(rules), '模糊词表须仍写在条目正文括号里(字面失配时判据退空,不制造假命中)');
+    const sksrc = fs.readFileSync(path.join(ROOT, 'js', 'skills.js'), 'utf8');
+    ['好看', '很美', '很酷'].forEach(w => assert(!sksrc.includes(w), 'skill 层不得内联模糊词字面(只从条目正文切):' + w));
+    // 通用的"稳定"二字不进判据:运镜/机位描述里也出现得到,收进来会把没写稳定词的镜判成写了
+    assertEq(lexOf(lexEp([lexShot(0, '镜头平稳,画面稳定,缓慢推镜')])).hits.map(h => h.code).join(','), 'no-stable-word');
+  } },
+  { name: 'stableLexicon:纯函数(不改入参、同输入同结论);提示词未写与无项目上下文不产出结论', fn() {
+    const ep = lexEp([lexShot(0, '她缓慢转身,窗外雨声渐起')]);
+    const snap = JSON.stringify([lexP, ep]);
+    assertEq(JSON.stringify(lexOf(ep)), JSON.stringify(lexOf(ep)), '同输入应给同结论(无隐藏状态)');
+    assertEq(JSON.stringify([lexP, ep]), snap, '校验项不得改动领域对象');
+    assertEq(lexOf(lexEp([lexShot(0, '')])).hits.length, 0, '提示词还没写的镜无判定输入');
+    assertEq(lexOf(lexEp([lexShot(0, '', { plot: '她缓慢转身' })])).hits.map(h => h.code).join(','), 'no-stable-word',
+      '只有剧情文案的镜按请求装配同口径判(prompt 缺则取 plot)');
+    assertEq(lexOf(lexEp([])).level, 'info', '无镜头即无判定输入');
+    assertEq(Skills.check('shots', { ep }).find(x => x.skill === 'shots.promptEightDim').hits.length, 0, '无项目上下文不产出结论');
+    assertEq(Skills.check('shots', { p: lexP, s: lexShot(0, '她缓慢转身') })
+      .find(x => x.skill === 'shots.promptEightDim').hits.length, 1, '镜级入口只判传入的那一镜');
+  } },
+  { name: 'stableLexicon:消费点——就绪检查按面表自动跟上(不拦生成、不改门禁、不开计费)', fn() {
+    const sk = Skills.byId('shots.promptEightDim');
+    assertEq(sk.pending.length, 0, '校验面已落地,不应再挂 pending');
+    assertEq(sk.checks.join(','), 'shots.stableLexicon');
+    assert(sk.cmds.includes('episode.preflight'), '条目应登记已接通的就绪检查命令面');
+    assert(sk.gaps.includes('G-10'), '八维填得全不全、动作写得慢不慢的语义判断仍待 G-10');
+    // 消费点由登记推导:所属分镜面早已在双端就绪检查的面表里,故两端实现一行未改
+    assertPreflightFace('shots', '分镜面');
+    const consumers = Skills.list().filter(s => !s.pending.includes('check') && s.checks.length && s.cmds.includes('episode.preflight'));
+    assertEq((consumers.find(x => x.id === 'shots.promptEightDim') || {}).stage, 'shots', '新增校验项不改就绪检查的面清单');
+    assertEq(require('../js/cmd-registry.js').byName['episode.preflight'].risk, 'read', '就绪检查应仍是 read 类零计费');
+    ['js/sb-gen.js', 'js/produce.js'].forEach(f =>
+      assert(!fs.readFileSync(path.join(ROOT, f), 'utf8').includes('Skills.'), f + ' 生成动作里不加校验拦截(结论只报不拦)'));
+    const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
+    assert(!isrc.includes('shots.promptEightDim'), '本面只经就绪检查消费,问题中心不新挂提醒(要不要挂的产品口径未定)');
+    const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
+    assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 只数高/中危 —— 本轮不改门禁口径');
   } },
   { name: 'subtitleTiming:干净夹具全 pass(台词短、停留够 → info 无命中)', fn() {
     const r = caption(capEp([capShot(0, { dialogue: '快走别回头' }), capShot(1, { narration: '雨声渐起' })]));
@@ -4742,8 +4823,8 @@ const skillsTests = [
     Skills.list().filter(s => s.pending.includes('check') && s.cmds.includes('episode.preflight'))
       .forEach(s => assert(!stages.includes(s.stage) || consumers.some(x => x.stage === s.stage),
         '校验面未落地的条目不应把 ' + s.stage + ' 面单独带进表:' + s.id));
-    // 表现在跑出来就是十二条结论(面表 + 各面已落地校验项数,与行为断言的期望串同一口径)
-    assertEq(stages.reduce((n, st) => n + Skills.check(st, {}).length, 0), 12, '五面共十二条已落地校验项');
+    // 表现在跑出来就是十三条结论(面表 + 各面已落地校验项数,与行为断言的期望串同一口径)
+    assertEq(stages.reduce((n, st) => n + Skills.check(st, {}).length, 0), 13, '五面共十三条已落地校验项');
     /* 两端只读该表:段内那条 checks 表达式必须取表,且不得再出现任何面字面量;
      * 取表 + concat 的写法两端逐字节相同(同表同口径,一端改写法即红)。 */
     const FRAG = 'Skills.preflightStages().reduce((all, stage) => all.concat(Skills.check(stage, { p, ep }, ck)), [])';
@@ -4770,7 +4851,7 @@ const skillsTests = [
           Skills.check('shots', { p, ep }, ck), Skills.check('film', { p, ep }, ck));
       const byTable = Skills.preflightStages().reduce((all, stage) => all.concat(Skills.check(stage, { p, ep }, ck)), []);
       assertEq(JSON.stringify(byTable), JSON.stringify(legacy), '读表 concat 应逐字节等于五面写死并集(online=' + ck.online + ')');
-      assertEq(byTable.length, 12, '并集仍是十二条结论');
+      assertEq(byTable.length, 13, '并集仍是十三条结论');
     });
     // 表是纯函数:同输入同表,且调用方拿到的是副本(改返回值不污染下次取表)
     assertEq(Skills.preflightStages().join(','), Skills.preflightStages().join(','), '同输入应给同表');
