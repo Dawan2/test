@@ -4900,6 +4900,28 @@ action 二选一:
     assertEq(rows.map(r => r.file).sort().join(','), files.join(','), '索引表应与目录里的记账件一一对应');
     rows.forEach(r => assertEq(r.label, r.file, '索引行的链接文字应就是文件名(便于按名直查)'));
   } },
+  { name: 'docs/skills-wave 索引完备性:每份 wNN-*.md 各有自己的索引行,散文点到的记账件不许悬空', fn() {
+    const dir = path.join(ROOT, 'docs', 'skills-wave');
+    const all = fs.readdirSync(dir).filter(f => f.endsWith('.md'));
+    const src = fs.readFileSync(path.join(dir, 'README.md'), 'utf8');
+    const rows = new Set([...src.matchAll(/^\| \[[^\]]+\]\(\.\/([^)]+)\)/gm)].map(m => m[1]));
+    // 逐份点名:文件在而索引行不在即红(上一条那种"两个集合相等"的写法,漏一份文件时会被同时漏掉的索引行抵消掉)
+    const waves = all.filter(f => /^w\d+-/.test(f)).sort();
+    assert(waves.length > 0, 'docs/skills-wave 下应有 wNN-*.md 记账件');
+    waves.forEach(f => assert(rows.has(f), '记账件 ' + f + ' 在目录里但索引表没有它那一行(合入时漏登记,或只合到了漏掉索引行的那一版)'));
+    // 反向那一向:任何文档里 ./xxx.md 形式的相对链接都必须指到真文件,wNN-*.md 还必须在索引里
+    // ——文件与索引行一起缺时,靠"别处散文已经点了名"这一层报红
+    const missing = [];
+    all.forEach(f => {
+      const body = fs.readFileSync(path.join(dir, f), 'utf8');
+      [...body.matchAll(/\]\(\.\/([A-Za-z0-9._-]+\.md)\)/g)].forEach(m => {
+        const t = m[1];
+        if (!all.includes(t)) missing.push(f + ' → ' + t + '(文件不存在)');
+        else if (/^w\d+-/.test(t) && !rows.has(t)) missing.push(f + ' → ' + t + '(文件在但索引无此行)');
+      });
+    });
+    assertEq(missing.join(' / '), '', '目录内相对链接不许悬空');
+  } },
 ];
 
 /* ================= 套件 18:tasks.js(任务中心:§3.1 桌面通知/标题角标,§3.2 进度模型) ================= */
