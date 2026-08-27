@@ -19,7 +19,7 @@ $ grep -n "配音导演" js/persona.js
 | `js/persona.js:83` | `Persona.recommendVoice(p, s, voices)` | `js/roles.js` 角色卡「按性格推荐音色」→ `RoleOps.recommendVoice`(另经 `js/role-editor.js` 的 `[data-x=vrec]`) | 单个角色人设 + 音色库 + `{"voice","reason"}` 契约 |
 | `js/persona.js:110` | `Persona.recommendVoicesBatch(p, chars, voices)` | `js/roles.js` 批量配音色(`batchRecommendVoices`,一次 LLM 调用推全部角色) | 全部角色简报数组 + 音色库 + `[{"name","voice","reason"}]` 契约 |
 
-两处的 `system` 字面**逐字节相同**(都是 `'你是配音导演。'`,9 个字符),按本槽口径这就允许共用一条键。
+两处的 `system` 字面**逐字节相同**(都是 `'你是配音导演。'`,7 个字符),按本槽口径这就允许共用一条键。
 
 ## 2. 仍取两条独立键:允许共用不等于该共用
 
