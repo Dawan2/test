@@ -235,4 +235,7 @@ node -e "console.log(require('./js/knowledge.js').pick('主体参考').length)" 
 - **没碰发布门与计费**:`js/release.js`、`billing.js`、`server.js`、`cli.js`、`mcp.js` 本槽零改动。
 - **没重做功能**:`w56` 已落地的实现一行未改,本槽的改动只有四处冲突的收敛与 README 一个数字。
 - **没代写别人的记账件**:W56 自己留了 `w56-aiscript-digest-prompt.md`,本文不复述其内容;
-  W53 那处没有记账件的缺口**仍如实留在** `w57-integration-log.md` 第 6 节代记的位置,本槽不补造一份 `w53-*.md`。
+  W53 那处缺口按 `w57-integration-log.md` 第 6 节代记的位置原样留着,本槽不补造一份 `w53-*.md`。
+  **W67 更正**:那处不是「W53 没留记账件」,而是 W57 合 `w53` 时取了中间点 `09887be`,漏掉 tip `0045962`
+  上那份 143 行的 `w53-memall-headless-seed.md` 与它那行索引;本槽照抄了 W57 的判断,同样有误。
+  该文件与索引行随 W67 补合,见 [w67-integration-log.md](./w67-integration-log.md)。
