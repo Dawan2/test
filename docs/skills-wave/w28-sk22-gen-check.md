@@ -65,13 +65,18 @@ if (!s.confirm && !s.final && !Domain.shotVideoReady(s, online)) push('unconfirm
 
 ```
 $ git diff 4e57148..HEAD --stat
- README.md     |  12 +++---
- js/skills.js  |  55 ++++++++++++++++++++++++-
- tests/unit.js | 128 ++++++++++++++++++++++++++++++++++++++++++++++++++--------
+ README.md                              |  12 +--
+ docs/skills-wave/README.md             |   3 +-
+ docs/skills-wave/w28-sk22-gen-check.md | 153 +++++++++++++++++++++++++++++++++
+ js/skills.js                           |  55 +++++++++++-
+ tests/unit.js                          | 128 +++++++++++++++++++++++----
 
 $ git diff 4e57148..HEAD -- js/commands.js cli.js | wc -l
 0
 ```
+
+`js/skills.js` 那 55 行里,只有 2 行是改动既有内容(条目上去掉 `pending`、登记 `checks`),
+其余 53 行是新增的校验宿主注释与实现;`js/commands.js` 与 `cli.js` 一个字符没动。
 
 面表与两端回执自动跟上:
 
