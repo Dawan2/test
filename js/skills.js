@@ -882,7 +882,8 @@
     {
       id: 'core.personaCtx', sk: 'SK-03', name: '生效人设经 ctx 过服务端', stage: CROSS, wave: 'W3',
       kinds: ['infra'],
-      prompts: ['split.system', 'extract.system', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem', 'agent.system'],
+      prompts: ['split.system', 'extract.system', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem',
+        'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem'],
       cmds: ['episode.understanding', 'episode.generateStoryboard', 'episode.smartReview'], gaps: ['G-01'],
       note: 'G-01 已落地:服务端 /api/wf/* 各端点经唯一装配口 wfPersonaNote 注入生效人设(板块雇佣 > 全局雇佣),'
         + '浏览器同装配口;infra 面的 pending 已按实况清空(gaps() 只投影 gaps 字段、不看 pending,清账动不到投影),'
@@ -893,10 +894,14 @@
         + '主体提取的人设句同形收编为 extract.system,装配口 WfCore.extractSystem 随之收覆盖表参数,'
         + '五条工作流(拆集/本集理解/智能分镜/智能审片/提取主体)的 system 半至此全部可被用户覆盖;'
         + 'Agent 单轮对话步的人设句同形收编为 agent.system,装配口 WfCore.buildAgentSystem 随之收覆盖表参数,'
-        + '/api/wf/* 六个 LLM 端点的人设句至此全部在注册表内。'
-        + '仍欠:浏览器多轮对话面板的系统人设未收进提示词注册表(分集面板/全局抽屉/预排模式三份措辞各写一份,'
-        + '与服务端单轮那句不是同一句话,用户在全局默认值页覆盖不到);'
-        + '单轮那处也只收了人设句,ops 协议/命令白名单/返回 JSON 约定仍由 wf-core 拼、不开放覆盖(改坏即整轮解析失败)',
+        + '/api/wf/* 六个 LLM 端点的人设句至此全部在注册表内;'
+        + '浏览器多轮三份人设同形收编为三条独立键(分集面板 agent.panelSystem/全局抽屉 agent.drawerSystem/'
+        + '预排模式 agent.previsSystem——三种运行模式措辞不同,不合成一个键),装配口分别是 AgentCore.panelSystem/'
+        + 'AgentG.buildGlobalPrompt/agent-ops 的 prearrPrompt,浏览器隐式读全局默认值页的覆盖表,'
+        + '单轮与多轮的人设句至此全部在注册表内。'
+        + '仍欠:四处的 ops 协议/字段面/命令白名单/返回 JSON 约定仍由各自装配口拼、不开放覆盖'
+        + '(那半是 ops 解析契约,用户改坏即整轮无 ops);'
+        + '多轮那三份没有 Node 第二消费点,两端只落在取值口(同一注册表键 + Prompts.get 读覆盖),不是两个消费点',
     },
     {
       id: 'core.memoryDual', sk: 'SK-04', name: '长期记忆双端与召回纯函数', stage: CROSS, wave: 'W3',

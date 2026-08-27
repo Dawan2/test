@@ -140,6 +140,28 @@ function loadAgentOps() {
   return sb;
 }
 
+/* 浏览器多轮对话三个装配口(分集面板 AgentCore.panelSystem / 全局抽屉 AgentG.buildGlobalPrompt /
+ * 预排模式 agent-ops 的 prearrPrompt,后者经 prearrSend 的上游请求体观测):按 index.html 同顺序加载三文件 */
+function loadAgentChat() {
+  const sb = makeSandbox();
+  installCommon(sb);
+  sb.styleOf = p => (p && p.style) || '漫剧';  // projects.js 全局(本套件不加载)
+  sb.MODELS = { image: ['seedream-x'], video: ['seedance-x', 'kling-x'] };
+  sb.STRATEGIES = [{ id: 'ref', name: '分镜参考' }, { id: 'fusion', name: '多图融合' }];
+  sb.allExperts = () => [{ id: 'ex_t1', name: '悬疑导演', persona: '擅长悬疑' }];
+  sb.hiredExpert = () => null;
+  Object.assign(sb.SB, { CAMERAS: ['固定镜头', '推镜头'], blankShot: () => ({}), renderShots() {} });
+  loadFile(sb, 'cmd-registry.js');
+  loadFile(sb, 'domain.js');
+  loadFile(sb, 'prompts.js');
+  loadFile(sb, 'knowledge.js');
+  loadFile(sb, 'wf-core.js');
+  loadFile(sb, 'agent.js');
+  loadFile(sb, 'agent-ops.js');
+  loadFile(sb, 'agent-global.js');
+  return sb;
+}
+
 function loadExperts() {
   const sb = makeSandbox();
   installCommon(sb);
@@ -4101,10 +4123,128 @@ ops 仅支持统一领域命令:{"op":"run","cmd":"命令名","args":{参数}}(p
       assert(!src.includes('短剧制作智能体'), f + ' 不应再写第二份人设句(注册表 def 为唯一来源)');
     });
     assert(Skills.byId('core.personaCtx').prompts.includes('agent.system'), 'SK-03 应登记 agent.system');
-    // SK-03 note 点名的剩余余量属实:浏览器多轮三份人设仍各写一份,注册表里没有它们的键
+    // W49 在此点名的浏览器多轮三份人设已收编:三条独立键进注册表(字面与装配输出由下一条钉住),
+    // 此处只反向钉住不许退回内联——三处模板串里从此都不写人设全文
     const multi = ['js/agent.js', 'js/agent-global.js', 'js/agent-ops.js'].map(f => fs.readFileSync(path.join(ROOT, f), 'utf8'));
-    assert(multi[0].includes('短剧分镜编辑智能体') && multi[1].includes('短剧创作智能体') && multi[2].includes('短剧创作智能体'), '浏览器多轮三份人设应各自仍在(措辞与单轮不同,不合并成同一个键)');
-    multi.forEach((src, i) => assertEq(Prompts.list().filter(x => src.includes(x.def)).length, 0, '浏览器多轮第 ' + (i + 1) + ' 份人设仍不在注册表内(SK-03 仍欠段点名的那一处)'));
+    const multiKeys = ['agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem'];
+    multiKeys.forEach(k => assert(Prompts.list().some(x => x.key === k), '注册表应有浏览器多轮人设键 ' + k));
+    multi.forEach((src, i) => {
+      assert(src.includes("Prompts.get('" + multiKeys[i] + "')"), '浏览器多轮第 ' + (i + 1) + ' 份人设应取自注册表键 ' + multiKeys[i]);
+      multiKeys.forEach(k => assert(!src.includes(Prompts.get(k)), '第 ' + (i + 1) + ' 个文件不应再内嵌 ' + k + ' 的人设全文(注册表 def 为唯一来源)'));
+    });
+  } },
+  { name: '浏览器多轮三份人设:分集面板/全局抽屉/预排模式各一键,缺省逐字节等于收编前的模板串', fn: async () => {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const PANEL = '你是「虎鲸导演助手」,短剧分镜编辑智能体。';
+    const DRAWER = '你是「虎鲸导演助手」,短剧创作智能体,贯穿剧本→主体→分集→分镜→生成→成片全流程。';
+    const PREVIS = '你是「虎鲸导演助手」,短剧创作智能体,当前处于「🎛 预排模式」。';
+    // 缺省不变:三处模板串开头写死的人设句,收编后逐字节相同(三种运行模式措辞不同,不合成同一个键)
+    assertEq(Prompts.get('agent.panelSystem'), PANEL, '分集面板缺省人设句应与收编前的内联字面逐字节相同');
+    assertEq(Prompts.get('agent.drawerSystem'), DRAWER, '全局抽屉缺省人设句应与收编前的内联字面逐字节相同');
+    assertEq(Prompts.get('agent.previsSystem'), PREVIS, '预排模式缺省人设句应与收编前的内联字面逐字节相同');
+    assertEq(new Set([PANEL, DRAWER, PREVIS, Prompts.get('agent.system')]).size, 4,
+      '四种运行模式的人设措辞互不相同(合成同一个键会让其中几端的角色定位失真)');
+    ['agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem'].forEach(k => {
+      const it = Prompts.list().find(x => x.key === k);
+      assert(it && !it.vars.length && it.name.startsWith('Agent ') && it.name.includes('系统人设'),
+        '注册表应登记 ' + k + ' 条目(无变量,可在全局默认值页在线改写)');
+    });
+    /* 装配输出逐字节:生成段(KB 块/人设注入/记忆召回/命令白名单/动作别名/按需查询协议/运镜词表)
+     * 各有单一来源,此处按同一来源取值代入,对账的是连接文本与注入段次序 */
+    const sb = loadAgentChat();
+    const AC = sb.AgentCore, AO = sb.AgentOps, W = sb.WfCore, KB = sb.KB;
+    const p = { id: 'p1', name: '测试项目', style: '漫剧', subjects: [], episodes: [] };
+    const ep = makeEp({ content: '第一集剧本正文', sbConfig: { shotCount: 12, sbMode: 'create', shotDur: 5, quality: '720p', ratio: '9:16' } });
+    const text = '把镜头3改夜景';
+    const panel = AC.panelSystem(p, ep, text);
+    assert(panel.startsWith(PANEL + KB.block() + AC.aPersonaBlock(ep) + AC.memBlock(text, '分镜') + '\n用户给自然语言指令,'),
+      '分集面板注入段次序(KB → 生效人设 → 协作记忆)应仍接在人设句之后');
+    assertEq(panel, PANEL + KB.block() + AC.aPersonaBlock(ep) + AC.memBlock(text, '分镜') + `
+用户给自然语言指令,你要么给建议,要么输出对分镜表的结构化修改。
+返回 JSON {"reply":"中文回复","thinking":"一句话思考摘要","ops":[操作]}(可选键 "choices" 见下)。
+ops 支持:
+{"op":"update","shot":镜头号,"fields":{"剧情/名称/运镜/视角/角度/景别/光圈/提示词/旁白/台词/时长":"新值"}}
+{"op":"insert","after":镜头号,"shot":{"名称":"","剧情":"","运镜":"","提示词":""}}
+{"op":"delete","shot":镜头号}  {"op":"move","shot":镜头号,"to":目标位置}
+{"op":"batch","filter":{"含人物":"角色名"},"fields":{...}}(批量改所有该角色出场镜头)
+{"op":"beatupdate","scene":场次号,"beat":节拍号,"fields":{"情绪/剧情/分镜文字":"新值"}}(改分镜脚本层某节拍;场次/节拍号从 1 开始)
+{"op":"sceneupdate","scene":场次号,"fields":{"标题/剧情":"新值"}}(改分镜脚本层某场次标题或场次剧情)
+★ 动作类 ops(会真正驱动工作台执行,慎用但可用):
+{"op":"run","cmd":"命令名","args":{参数}}(驱动工作台对应真实功能,按其规则扣费;pid/epid 自动注入无需填写。命令白名单与参数面:
+${AO.cmdProtocol()})
+兼容旧格式:{"op":"run","action":"${AO.actProtocol()}"}(中文动作别名,无参数通道,能用 cmd+args 时优先新格式)
+{"op":"goto","target":"分镜脚本|分镜视频|剪辑|节拍板|镜头组"}(切换工作区视图)
+{"op":"select","shot":镜头号}(选中某镜头到右栏编辑)
+纯咨询/建议类问题 ops 返回 []。运镜限:${W.CAMERAS.join('/')};视角:${W.VIEWS.join('/')};角度:${W.ANGLES.join('/')};景别:${W.SIZES.join('/')};光圈:ƒ/1.4~ƒ/11。项目风格:漫剧。
+★ 关键决策点选项卡:当对话处于创作方向/风格/方案等关键决策点、适合让用户拍板时,额外返回可选键 "choices":{"title":"选择主题(如:复仇方向选择)","options":[{"t":"方向一:标题","d":"一句话描述"}]}(2-4 个);返回 choices 的本轮 ops 返回 [],等用户提交选择后再据此继续。${AO.queryProtocol()}`,
+      '分集面板 system 应与收编前逐字节相同(人设句 + 字段面 + ops 协议 + 决策选项卡)');
+    const drawer = sb.AgentG.buildGlobalPrompt({ p, ep });
+    assertEq(drawer, DRAWER + KB.block() + `
+当前上下文:项目「测试项目」分集「第一集」。
+用户给自然语言指令,你要么给建议,要么输出结构化修改 ops。返回 JSON {"reply":"中文回复","thinking":"一句话思考摘要","ops":[操作]}(可选键 "choices" 见下)。
+支持的 ops:
+{"op":"project","fields":{"名称/风格/影调/全局设定":"新值"}}
+{"op":"scriptmeta","fields":{"卖点/梗概":"新值"}}
+{"op":"subject","name":"主体名","fields":{"名称/提示词/描述":"新值"}}
+{"op":"episode","ep":"第二集","fields":{"标题/正文":"新值"}}
+{"op":"addep","title":"第十一集","content":"正文"}  {"op":"delep","ep":"第三集"}
+{"op":"update","shot":镜头号,"fields":{"剧情/名称/运镜/提示词/旁白/台词/时长":"新值"}}
+{"op":"insert","after":镜头号,"shot":{"名称":"","剧情":"","提示词":""}}
+{"op":"delete","shot":镜头号}  {"op":"move","shot":镜头号,"to":目标位置}
+{"op":"batch","filter":{"含人物":"角色名"},"fields":{...}}
+★ 动作类 ops(会真正驱动工作台执行,慎用但可用):
+{"op":"goto","target":"制片|剧本|导演|主体|分集|成片库|剧壳|切片|一键跑批"}(跳转到对应板块/工作区)
+{"op":"run","action":"AI策划|剧本译制"}(调起对应完整工作流)
+{"op":"run","action":"${AO.actProtocol()}"}(驱动当前分集工作台)
+{"op":"select","shot":镜头号}
+纯咨询/建议类问题 ops 返回 []。项目风格:漫剧。修改类指令必须给 ops,不要只在 reply 里说"已修改"。
+★ 关键决策点选项卡:当对话处于创作方向/风格/方案等关键决策点、适合让用户拍板时,额外返回可选键 "choices":{"title":"选择主题(如:复仇方向选择)","options":[{"t":"方向一:标题","d":"一句话描述"}]}(2-4 个);返回 choices 的本轮 ops 返回 [],等用户提交选择后再据此继续。`,
+      '全局抽屉 system 应与收编前逐字节相同(项目+分集 ctx:镜头层字段面在内)');
+    const drawerNoEp = sb.AgentG.buildGlobalPrompt({ p, ep: null });
+    assert(drawerNoEp.startsWith(DRAWER + KB.block() + '\n当前上下文:项目「测试项目」。'), '无分集 ctx 也应以同一份人设句开头');
+    assert(!drawerNoEp.includes('{"op":"update"') && !drawerNoEp.includes('{"op":"select"'), '无分集 ctx 不应给镜头层字段面(协议半随 ctx 收放,与人设句无关)');
+    // 预排模式:走真实发送路径,截获上游请求体的 system 半
+    sb.__apiReady = true;
+    const sent = [];
+    sb.Understanding.chatJSONRobust = async o => { sent.push(o); return { reply: '方案', thinking: 't' }; };
+    const previsSend = () => AO.prearrSend({ p, ep, chat: [], text: '来12镜', model: 'm', renderMsgs() {}, sysExtra: '\n★注入段' });
+    await previsSend();
+    assertEq(sent[0].system, PREVIS + `\n★注入段
+用户输入创作意图,你【不直接执行任何修改、不返回 ops】,而是输出一个「参数预排方案」,由用户确认后才执行。
+返回 JSON {"reply":"给用户的解释(说明方案思路)","thinking":"一句话思考摘要","plan":{"action":"sb|batchvideo","summary":"一句话方案说明","params":{...}}}。
+action 二选一:
+- "sb":智能分镜/拆镜/生成分镜类意图。params 可用键(对齐分镜配置,数值必须钳在范围内):
+  shotCount 整数2-40;sbPlans 整数1-3(分镜方案数,>1 时多方案对比择优);sbMode "create"(创作模式)或"tweet"(推文模式);shotDur 数字2-15(秒/镜);batchVideoModel 视频模型;quality "480p"|"720p"|"1080p";ratio "16:9"|"9:16"|"1:1";autoOptimize true/false(自动优化提示词);smartReview true/false(智能审片)
+- "batchvideo":批量生成视频类意图。params 可用键:
+  batchVideoModel;quality "480p"|"720p"|"1080p";ratio "16:9"|"9:16"|"1:1";batchStrategy(ref=分镜参考,fusion=多图融合);batchCamera 运镜(固定镜头/推镜头)
+可用视频模型:seedance-x/kling-x。
+只输出用户明确提到或可合理推断的键,其余省略(执行时以当前配置为底)。当前配置:{"shotCount":12,"sbMode":"create","shotDur":5,"quality":"720p","ratio":"9:16"}
+无法判断属于哪类生成意图时【不要返回 plan】,按普通创作顾问对话回答(只给 reply)。`,
+      '预排模式 system 应与收编前逐字节相同(人设句 + 注入段 + 方案协议 + 参数面)');
+    /* 覆盖只换对应那一份人设:另两份与各自的协议半逐字节不变(浏览器隐式读 Store 覆盖表) */
+    const ovCases = [
+      ['agent.panelSystem', PANEL, '你是面板编辑助手(覆盖生效)。'],
+      ['agent.drawerSystem', DRAWER, '你是全局创作助手(覆盖生效)。'],
+      ['agent.previsSystem', PREVIS, '你是预排编排助手(覆盖生效)。'],
+    ];
+    for (const [key, def, ov] of ovCases) {
+      sb.Store.state.settings.promptOverrides = { [key]: ov };
+      await previsSend();
+      const got = { 'agent.panelSystem': AC.panelSystem(p, ep, text), 'agent.drawerSystem': sb.AgentG.buildGlobalPrompt({ p, ep }), 'agent.previsSystem': sent[sent.length - 1].system };
+      const base = { 'agent.panelSystem': panel, 'agent.drawerSystem': drawer, 'agent.previsSystem': sent[0].system };
+      Object.keys(got).forEach(k => {
+        if (k === key) assertEq(got[k], ov + base[k].slice(def.length), '覆盖 ' + key + ' 只换人设句,其后协议半逐字节不变');
+        else assertEq(got[k], base[k], '覆盖 ' + key + ' 不应动到 ' + k + ' 那份装配');
+      });
+    }
+    delete sb.Store.state.settings.promptOverrides;
+    assertEq(AC.panelSystem(p, ep, text), panel, '清空覆盖应逐字节回到缺省');
+    // 协议契约不做成可覆盖变量:注册表里不得出现返回 JSON 约定与 ops 字段面
+    assertEq(Prompts.list().filter(x => x.def.includes('"reply"') || x.def.includes('"op"')).length, 0,
+      '多轮三份的 ops 协议/返回 JSON 约定应仍留在各自装配口(注册表里不该出现)');
+    ['agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem'].forEach(k =>
+      assert(Skills.byId('core.personaCtx').prompts.includes(k), 'SK-03 应登记 ' + k));
   } },
   { name: '审片升为主线一等步骤(G-03):板块 Agent 有审片席;plans/工作区/CLI 都映射 episode.smartReview', fn() {
     const D = require(path.join(ROOT, 'js/domain.js'));
@@ -5804,7 +5944,7 @@ const skillsTests = [
     const wfSteps = DomainMod.workflow({ id: 'p1', episodes: [], subjects: [] }).steps.map(x => x.key);
     // 每条:缺口出口的实况判据 + note 里必须点名的那几处余量(接上了就要同步改 note,不许静默扩面)
     const facts = {
-      'core.personaCtx': ['G-01', /function wfPersonaNote\(/.test(srv), ['浏览器多轮', '未收进提示词注册表']],
+      'core.personaCtx': ['G-01', /function wfPersonaNote\(/.test(srv), ['ops 协议', '不开放覆盖']],
       'core.memoryDual': ['G-02', typeof W.memRecall === 'function' && typeof W.memBlock === 'function', ['memAll', 'SK-26']],
       'review.stage': ['G-03', wfSteps.includes('review'), ['SK-24', '未审片']],
     };

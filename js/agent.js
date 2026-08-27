@@ -291,6 +291,30 @@
   /* ops 应用器(applyFields/mapShotFields/applyOps)与执行闭环验证(verifyOps/verifyNote)
    * 已拆至 agent-ops.js;__AGENT_TEST 测试钩子亦随迁该文件。 */
 
+  /* 分集面板多轮对话的 system 装配口:人设句取注册表 agent.panelSystem(浏览器隐式读 Store 覆盖表),
+   * 其后的字段面/ops 协议/命令白名单/返回 JSON 约定仍在此拼,不开放覆盖(改坏约定即整轮 ops 解析失败)。 */
+  function panelSystem(p, ep, text) {
+    const AO = window.AgentOps;
+    return `${Prompts.get('agent.panelSystem')}${window.KB ? KB.block() : ''}${aPersonaBlock(ep)}${memBlock(text, '分镜')}
+用户给自然语言指令,你要么给建议,要么输出对分镜表的结构化修改。
+返回 JSON {"reply":"中文回复","thinking":"一句话思考摘要","ops":[操作]}(可选键 "choices" 见下)。
+ops 支持:
+{"op":"update","shot":镜头号,"fields":{"剧情/名称/运镜/视角/角度/景别/光圈/提示词/旁白/台词/时长":"新值"}}
+{"op":"insert","after":镜头号,"shot":{"名称":"","剧情":"","运镜":"","提示词":""}}
+{"op":"delete","shot":镜头号}  {"op":"move","shot":镜头号,"to":目标位置}
+{"op":"batch","filter":{"含人物":"角色名"},"fields":{...}}(批量改所有该角色出场镜头)
+{"op":"beatupdate","scene":场次号,"beat":节拍号,"fields":{"情绪/剧情/分镜文字":"新值"}}(改分镜脚本层某节拍;场次/节拍号从 1 开始)
+{"op":"sceneupdate","scene":场次号,"fields":{"标题/剧情":"新值"}}(改分镜脚本层某场次标题或场次剧情)
+★ 动作类 ops(会真正驱动工作台执行,慎用但可用):
+{"op":"run","cmd":"命令名","args":{参数}}(驱动工作台对应真实功能,按其规则扣费;pid/epid 自动注入无需填写。命令白名单与参数面:
+${AO.cmdProtocol()})
+兼容旧格式:{"op":"run","action":"${AO.actProtocol()}"}(中文动作别名,无参数通道,能用 cmd+args 时优先新格式)
+{"op":"goto","target":"分镜脚本|分镜视频|剪辑|节拍板|镜头组"}(切换工作区视图)
+{"op":"select","shot":镜头号}(选中某镜头到右栏编辑)
+纯咨询/建议类问题 ops 返回 []。运镜限:${WfCore.CAMERAS.join('/')};视角:${WfCore.VIEWS.join('/')};角度:${WfCore.ANGLES.join('/')};景别:${WfCore.SIZES.join('/')};光圈:ƒ/1.4~ƒ/11。项目风格:${styleOf(p)}。
+★ 关键决策点选项卡:当对话处于创作方向/风格/方案等关键决策点、适合让用户拍板时,额外返回可选键 "choices":{"title":"选择主题(如:复仇方向选择)","options":[{"t":"方向一:标题","d":"一句话描述"}]}(2-4 个);返回 choices 的本轮 ops 返回 [],等用户提交选择后再据此继续。${AO.queryProtocol()}`;
+  }
+
   /* ================= 聊天面板 ================= */
   function toggle(p, ep, main) {
     ep.agentOpen = !ep.agentOpen;
@@ -496,24 +520,7 @@
         // 共用同 opId 的 q1/q2 步骤槽位,一条消息仍只扣 1 积分);拿到补齐数据即正常作答
         const llmOpt = {
           model,
-          system: `你是「虎鲸导演助手」,短剧分镜编辑智能体。${window.KB ? KB.block() : ''}${aPersonaBlock(ep)}${memBlock(text, '分镜')}
-用户给自然语言指令,你要么给建议,要么输出对分镜表的结构化修改。
-返回 JSON {"reply":"中文回复","thinking":"一句话思考摘要","ops":[操作]}(可选键 "choices" 见下)。
-ops 支持:
-{"op":"update","shot":镜头号,"fields":{"剧情/名称/运镜/视角/角度/景别/光圈/提示词/旁白/台词/时长":"新值"}}
-{"op":"insert","after":镜头号,"shot":{"名称":"","剧情":"","运镜":"","提示词":""}}
-{"op":"delete","shot":镜头号}  {"op":"move","shot":镜头号,"to":目标位置}
-{"op":"batch","filter":{"含人物":"角色名"},"fields":{...}}(批量改所有该角色出场镜头)
-{"op":"beatupdate","scene":场次号,"beat":节拍号,"fields":{"情绪/剧情/分镜文字":"新值"}}(改分镜脚本层某节拍;场次/节拍号从 1 开始)
-{"op":"sceneupdate","scene":场次号,"fields":{"标题/剧情":"新值"}}(改分镜脚本层某场次标题或场次剧情)
-★ 动作类 ops(会真正驱动工作台执行,慎用但可用):
-{"op":"run","cmd":"命令名","args":{参数}}(驱动工作台对应真实功能,按其规则扣费;pid/epid 自动注入无需填写。命令白名单与参数面:
-${AO.cmdProtocol()})
-兼容旧格式:{"op":"run","action":"${AO.actProtocol()}"}(中文动作别名,无参数通道,能用 cmd+args 时优先新格式)
-{"op":"goto","target":"分镜脚本|分镜视频|剪辑|节拍板|镜头组"}(切换工作区视图)
-{"op":"select","shot":镜头号}(选中某镜头到右栏编辑)
-纯咨询/建议类问题 ops 返回 []。运镜限:${WfCore.CAMERAS.join('/')};视角:${WfCore.VIEWS.join('/')};角度:${WfCore.ANGLES.join('/')};景别:${WfCore.SIZES.join('/')};光圈:ƒ/1.4~ƒ/11。项目风格:${styleOf(p)}。
-★ 关键决策点选项卡:当对话处于创作方向/风格/方案等关键决策点、适合让用户拍板时,额外返回可选键 "choices":{"title":"选择主题(如:复仇方向选择)","options":[{"t":"方向一:标题","d":"一句话描述"}]}(2-4 个);返回 choices 的本轮 ops 返回 [],等用户提交选择后再据此继续。${AO.queryProtocol()}`,
+          system: panelSystem(p, ep, text),
           user: `${histBlock}本集剧本摘要:${(ep.content || '').slice(0, 500)}\n当前分镜表:\n${AO.compactShots(ep)}${AO.focusBlock(p, ep)}${AgentRefs.block(p, ep, 'ep')}${AO.stateBlock(p, ep)}\n\n用户指令:${text}`,
           temperature: 0.4, max_tokens: 6000,
         };
@@ -779,7 +786,7 @@ ${AO.cmdProtocol()})
   /* renderGlobal/sendG/buildGlobalPrompt 等全局面板实现已拆至 agent-global.js(window.AgentG) */
 
   /* ---- 对外出口(批次拆分后):本地成员直出;ops 域与全局助手经 AgentOps/AgentG 代理(agent-ops.js/agent-global.js 后加载) ---- */
-  Object.assign(AC, { boardExpert, boardExpertBlock, boardKBBlock, upstreamFinal, expertPersona, findExpert, aPersonaBlock, gPersonaBlock, personaSelectHTML, memRemember, memBlock, openMemoryModal, guideBarHTML, opBoardKey });
+  Object.assign(AC, { boardExpert, boardExpertBlock, boardKBBlock, upstreamFinal, expertPersona, findExpert, aPersonaBlock, gPersonaBlock, personaSelectHTML, panelSystem, memRemember, memBlock, openMemoryModal, guideBarHTML, opBoardKey });
   window.Agent = {
     toggle, render, notify, refreshFocusChip,
     applyOps: (...a) => window.AgentOps && AgentOps.applyOps(...a),

@@ -544,6 +544,8 @@
     if (window.AgentRefs) AgentRefs.paint(); // 📎 引用 chips 行(容器随抽屉重渲为空,此处重填并接线)
   }
 
+  /* 全局抽屉多轮对话的 system 装配口:人设句取注册表 agent.drawerSystem(浏览器隐式读 Store 覆盖表),
+   * 其后的字段面/ops 协议/返回 JSON 约定仍在此拼,不开放覆盖(改坏约定即整轮 ops 解析失败)。 */
   function buildGlobalPrompt(ctx) {
     const { p, ep } = ctx;
     const shotSpec = ep ? `
@@ -551,7 +553,7 @@
 {"op":"insert","after":镜头号,"shot":{"名称":"","剧情":"","提示词":""}}
 {"op":"delete","shot":镜头号}  {"op":"move","shot":镜头号,"to":目标位置}
 {"op":"batch","filter":{"含人物":"角色名"},"fields":{...}}` : '';
-    return `你是「虎鲸导演助手」,短剧创作智能体,贯穿剧本→主体→分集→分镜→生成→成片全流程。${window.KB ? KB.block() : ''}
+    return `${Prompts.get('agent.drawerSystem')}${window.KB ? KB.block() : ''}
 当前上下文:${ep ? `项目「${p.name}」分集「${ep.title}」` : p ? `项目「${p.name}」` : '项目列表'}。
 用户给自然语言指令,你要么给建议,要么输出结构化修改 ops。返回 JSON {"reply":"中文回复","thinking":"一句话思考摘要","ops":[操作]}(可选键 "choices" 见下)。
 支持的 ops:
@@ -583,5 +585,5 @@
     return info + `\n用户指令:${text}`;
   }
 
-  window.AgentG = { toggleGlobal, closeGlobal, refreshGlobal, openBoard, applyGlobalOps, isOpen: () => !!gDrawer };
+  window.AgentG = { toggleGlobal, closeGlobal, refreshGlobal, openBoard, applyGlobalOps, buildGlobalPrompt, isOpen: () => !!gDrawer };
 })();
