@@ -492,15 +492,17 @@
    * 智能分镜 runSmartSB、本地兜底 publishShots 已拆至 sb-llm.js(window.SB);
    * 失败任务重试入口 window.__retryShotTask 已拆至 sb-batch.js。 */
 
-  /* 分镜真实配音:豆包语音 TTS → s.audioUrl(在线);失败抛错由调用方处理。
+  /* 分镜真实配音:豆包语音 TTS → s.audioUrl + s.audioMeta 渲染凭据(在线);失败抛错由调用方处理。
+   * 音色配置与配音文本走 Domain 单源(与 CLI/合成侧清单同一口径);
    * opId 可选:计费操作键(调用方任务 id),透传服务端白名单计费(tts.gen) */
   async function ttsShot(p, ep, s, opId) {
-    const vc = Voice.norm(s.voiceCfg || p.narration || s.voice || ep.sbConfig.narratorVoice);
-    const text = String(s.narration || s.dialogue || '').trim() || String(s.plot || '').trim();
+    const vc = Domain.voiceCfgOf(p, ep, s);
+    const text = Domain.audioTextOf(s);
     if (!text) throw new Error('该分镜无旁白/台词文本,无法配音');
+    const voiceId = Voice.volcOf(vc.voice);
     const r = await Media.genTTS({
       text: text.slice(0, 300),
-      voice: Voice.volcOf(vc.voice),
+      voice: voiceId,
       speed: vc.rate,
       volume: Math.max(0.5, Math.min(2, (vc.volume || 5) / 5)),
       emotion: vc.emotion && vc.emotion !== '平静' ? Voice.emotionOf(vc.emotion) : undefined,
@@ -508,42 +510,54 @@
     });
     s.audio = true;
     s.audioUrl = r.url;
+    // 渲染凭据:上游实际音色 id 取服务端回执(缺省回落本次送上游的 voice_type),参数/文本签名供判旧
+    s.audioMeta = Domain.audioMetaWrite(vc, text, { url: r.url, duration: r.duration, voiceId: r.voice || voiceId, time: Store.now() });
     s.history = s.history || [];
     s.history.unshift({ type: '音频', model: '豆包语音·' + Voice.label(vc), time: Store.now() });
     return r;
+  }
+
+  /* 离线占位配音:无真实音轨,凭据如实标 offline(合成时不混音,清单可查) */
+  function markOfflineAudio(p, ep, s, vc, modelLabel) {
+    s.audio = true;
+    s.audioMeta = Domain.audioMetaWrite(vc, Domain.audioTextOf(s), { offline: true, time: Store.now() });
+    s.history = s.history || [];
+    s.history.unshift({ type: '音频', model: modelLabel, time: Store.now() });
   }
 
   async function genAudio(p, ep, s, main) {
     if (s.__busy) return U.toast('该分镜正在处理中', 'info');
     s.__busy = true;
     try {
-      const vc = Voice.norm(s.voiceCfg || p.narration || s.voice || ep.sbConfig.narratorVoice);
+      const vc = Domain.voiceCfgOf(p, ep, s);
       const vlabel = Voice.label(vc);
+      const online = !!(window.Media && Media.isReady());
       const rerender = () => { if (onEpPage(p, ep)) renderShots(main, p, ep); else Store.save(); };
-      const tk = Tasks.start({ type: '生成音频', model: MODELS.tts[0] + '·' + vlabel, target: `${ep.title}·镜头${s.order + 1}`, cost: COST.audio, projectId: p.id, episodeId: ep.id, shotId: s.id });
-      if (!U.charge(COST.audio, `分镜音频生成(${vlabel})`)) { Tasks.fail(tk, '积分不足'); return; }
-      if (window.Media && Media.isReady()) {
+      let ok = false, failMsg = '';
+      // 计费五件套统一走 Tasks.run(登记→扣费→执行→失败退费),不再手写扣费/退费
+      await Tasks.run({
+        type: '生成音频', model: MODELS.tts[0] + '·' + vlabel + (online ? '' : '(离线模拟)'),
+        target: `${ep.title}·镜头${s.order + 1}`, cost: COST.audio, actionName: `分镜音频生成(${vlabel})`,
+        projectId: p.id, episodeId: ep.id, shotId: s.id,
+      }, async tk => {
         try {
-          await ttsShot(p, ep, s, tk.id);
+          if (online) {
+            await ttsShot(p, ep, s, tk.id);
+            Store.save();
+            ok = true;
+            return { filename: `镜头${s.order + 1}_配音.mp3`, dataURL: s.audioUrl };
+          }
+          await U.delay(700);
+          markOfflineAudio(p, ep, s, vc, MODELS.tts[0] + '·' + vlabel + '(离线模拟)');
           Store.save();
-          Tasks.done(tk, { filename: `镜头${s.order + 1}_配音.mp3`, dataURL: s.audioUrl });
-          U.toast('音频生成完成(' + vlabel + ')', 'success');
+          ok = true;
         } catch (e) {
-          U.refund(COST.audio, '分镜配音失败', tk.id);
-          Tasks.fail(tk, e.message);
-          U.toast('配音失败,积分已自动返还:' + e.message, 'error', 4000);
+          failMsg = (e && e.message) || String(e);
+          throw e;
         }
-        rerender();
-        return;
-      }
-      // 离线模式:仅打标记
-      await U.delay(700);
-      s.audio = true;
-      s.history = s.history || [];
-      s.history.unshift({ type: '音频', model: MODELS.tts[0] + '·' + vlabel + '(离线模拟)', time: Store.now() });
-      Store.save();
-      Tasks.done(tk);
-      U.toast('音频生成完成(' + vlabel + ',离线模拟)', 'success');
+      });
+      if (ok) U.toast('音频生成完成(' + vlabel + (online ? '' : ',离线模拟') + ')', 'success');
+      else if (failMsg) U.toast('配音失败,积分已自动返还:' + failMsg, 'error', 4000);
       rerender();
     } finally {
       s.__busy = false;
@@ -669,7 +683,7 @@
   /* window.SB 透出(批次 E 拆分):本地成员 + 共享给 sb-views.js/sb-gen.js 的常量与辅助;
    * 拆分前成员 syncFrames/framePH/batchGenVideos/shotVersions/estShotDuration 已移入 sb-gen.js,
    * 由 sb-gen.js 末尾 Object.assign 回挂 window.SB,外部调用点(sb-io/produce/timeline 等)不变。 */
-  window.SB = { blankShot, buildShotPrompt, CAMERAS, renderShots, defaultSBConfig, snapshotShot, prevEpTail, onEpPage, ttsShot, genAudio, TRANSITIONS, VOICES, PROMPT5_SECS, SPLIT_RULES, PROMPT5, STRATEGIES };
+  window.SB = { blankShot, buildShotPrompt, CAMERAS, renderShots, defaultSBConfig, snapshotShot, prevEpTail, onEpPage, ttsShot, genAudio, markOfflineAudio, TRANSITIONS, VOICES, PROMPT5_SECS, SPLIT_RULES, PROMPT5, STRATEGIES };
   window.STRATEGIES = STRATEGIES; // 供 agent.js 等板块读取(单一来源,不再硬编码拷贝)
   window.CAMERAS = CAMERAS;
 })();

@@ -2,7 +2,7 @@
  * 加载顺序:storyboard.js、sb-views.js 之后,sb-io.js 之前;共享常量/辅助顶部经 window.SB 解构,
  * 美术后缀 SBViews.artSuffixApp 运行时解析。拆分前 window.SB 成员在末尾回挂,外部调用点不变。 */
 (function () {
-  const { onEpPage, prevEpTail, ttsShot, openConfirmGateModal, autoSmartReview, snapshotShot, renderShots, STRATEGIES } = window.SB;
+  const { onEpPage, prevEpTail, ttsShot, markOfflineAudio, openConfirmGateModal, autoSmartReview, snapshotShot, renderShots, STRATEGIES } = window.SB;
 
   function shotVersions(s) {
     // 汇总带画面/提示词的版本(取自 history,新条目在最上)
@@ -630,9 +630,7 @@
         U.toast(`镜头${s.order + 1} 配音完成`, 'success');
       }).catch(e => U.toast(`镜头${s.order + 1} 配音失败:` + e.message, 'error', 3500));
     } else {
-      s.audio = true;
-      s.history = s.history || [];
-      s.history.unshift({ type: '音频', model: MODELS.tts[0], time: Store.now() });
+      markOfflineAudio(p, ep, s, Domain.voiceCfgOf(p, ep, s), MODELS.tts[0] + '(离线模拟)');
     }
   }
 
@@ -762,10 +760,7 @@
       s.lastFrame = framePH(s, 'last');
       s.history = s.history || [];
       s.history.unshift({ type: '视频', model: s.video.model + (gn ? '·' + gn : ''), time: Store.now(), strategy: s.genStrategy || 'ref', prompt: effPrompt, frame: s.video.frame, voiceRef: vrefIds.size, firstFrame: s.firstFrame || null, lastFrame: s.lastFrame || null });
-      if (ep.sbConfig.syncVoice && !s.audio) {
-        s.audio = true;
-        s.history.unshift({ type: '音频', model: MODELS.tts[0], time: Store.now() });
-      }
+      if (ep.sbConfig.syncVoice && !s.audio) markOfflineAudio(p, ep, s, Domain.voiceCfgOf(p, ep, s), MODELS.tts[0] + '(离线模拟)');
       Tasks.done(tks[i], { filename: `${gn || ep.title}_镜头${s.order + 1}_视频帧.png`, dataURL: s.video.frame });
       okCnt++;
     }
