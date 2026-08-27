@@ -213,6 +213,117 @@
     });
     return out.length > W.MEM_MAX ? out.slice(-W.MEM_MAX) : out;
   };
+  /* ---- 记忆播种与板块迁移(双端唯一一份) ----
+   * 板块改名迁移与"标准沉淀 + 知识库种子"补种此前只发生在浏览器 agent.js memAll() 里,headless
+   * (CLI/MCP/服务端工作流)读写记忆桶时跑不到那段——纯 headless 用户的记忆里没有沉淀条目、旧板块名
+   * 也要等浏览器打开一次才归位。本组把那段派生下沉为纯函数,两端同一份。
+   * 与本文件其余函数同纪律:记忆桶、知识库、时间戳、板块词表一律经参数注入,函数体不碰任何环境句柄;
+   * 落点仍是既有 state.agentMemory,条目仍是既有结构({text,time,scope} + 知识库条目的 kb 同键标识),
+   * 不新建存储桶、不另造第二套记忆 schema。
+   * 板块词表不在本层另写一份:浏览器传 AGENT_BOARDS 的板块键,headless 传 Skills.STAGES 主线七步名
+   * 加支线「导演」板块(WF_BOARD.understanding),两端取值同集。 */
+  W.MEM_BOARD_RENAMES = { 构思: '导演' }; // 板块改名:旧 scope → 新 scope(条目原地改名,不复制第二条)
+  /* 标准沉淀:用户确认的工作流标准(正文只此一份;legacy=已沉淀过的识别标记,命中则保留用户既有条目不重复种) */
+  W.MEM_STD_SEEDS = [
+    {
+      board: '分镜', legacy: '五段式标准结构',
+      text: '分镜提示词五段式标准结构:风格氛围(风格/色调/画质/年代感/情绪基调)+场景环境(时间/地点/天气/光线/空间氛围)+镜头运动(景别/运镜/速度/视角/焦距)+分镜内容(人物动作/表情/台词)+负面提示词(禁BGM/字幕等);标记 @角色 $场景 #道具',
+    },
+    {
+      board: '分镜', legacy: '景别衔接口诀',
+      text: '景别衔接口诀:相邻景别不硬切(前后镜景别避免相同或相邻,防止无信息跳切);景别切换隔一别(优先跨一级切换,如全景→近景、中景→特写);两极镜头不衔接(大全景与特写/超级特写不得直接对切,须用全景或中景过渡)',
+    },
+  ];
+  /* 知识库沉淀(js/knowledge.js):按 KB.SECTIONS 键取条目正文种入长期记忆,召回时按关键词命中自动注入。
+   * keys=取用键(条目正文唯一权威,此处不留第二份措辞);kb=同键沉淀标识,条目正文改过后自动跟随;
+   * legacy=旧手抄版的识别标记(老数据已沉淀过则保留用户既有条目,不重复种) */
+  W.MEM_KB_SEEDS = [
+    { keys: ['钩子六型'], board: '剧本', legacy: '钩子六型' },
+    { keys: ['打脸四步', '付费卡点'], board: '剧本', legacy: '打脸四步' },
+    { keys: ['对话铁律'], board: '剧本', legacy: '对话铁律' },
+    { keys: ['景别运镜', '场面调度', '剪辑节奏'], board: '分镜', legacy: '景别即情绪' },
+    { keys: ['抽卡军规', '抽卡公式'], board: '分镜', legacy: '抽卡五条军规' },
+  ];
+  /* 有登记种子的板块(去重保序):播种指定板块时的空板判据,由上面两张种子表推出,不另写清单 */
+  W.memSeedBoards = function () {
+    const out = [];
+    W.MEM_STD_SEEDS.concat(W.MEM_KB_SEEDS).forEach(s => { if (out.indexOf(s.board) < 0) out.push(s.board); });
+    return out;
+  };
+  const memBoardCheck = (board, boards) => {
+    if (Array.isArray(boards) && boards.length && boards.indexOf(board) < 0) {
+      throw new Error('未知板块名:' + board + '(可用板块:' + boards.join('/') + ')');
+    }
+  };
+  /* 播种/迁移(mem=记忆数组,回新数组不改入参)。
+   * o={kb:知识库对象(缺省跳过知识库种子),now:取时间戳(函数或字符串),boards:板块词表,board:只播该板块}。
+   * 回 {mem, added:[新种条目], updated:[正文跟随更新的知识库键], migrated:[{from,to,count}], changed}。
+   * 明确报错(不静默空成功):board 不在板块词表 → 未知板名;board 无登记种子 → 空板。
+   * 已种过再播是幂等的(added 为空、changed=false),那不是错误。 */
+  W.memSeed = function (mem, o) {
+    o = o || {};
+    const out = (Array.isArray(mem) ? mem : []).slice();
+    const nowOf = typeof o.now === 'function' ? o.now : () => String(o.now === undefined || o.now === null ? '' : o.now);
+    const board = o.board ? String(o.board).trim() : '';
+    if (board) {
+      memBoardCheck(board, o.boards);
+      if (W.memSeedBoards().indexOf(board) < 0) {
+        throw new Error('板块「' + board + '」没有登记的记忆种子(有种子的板块:' + W.memSeedBoards().join('/') + ')');
+      }
+    }
+    const added = [], updated = [], migrated = [];
+    // 板块改名迁移(表驱动,自动那一半):旧板名下无条目属常态,不报错
+    Object.keys(W.MEM_BOARD_RENAMES).forEach(from => {
+      const to = W.MEM_BOARD_RENAMES[from];
+      if (board && to !== board) return;
+      let n = 0;
+      out.forEach((m, i) => { if (m && m.scope === from) { out[i] = Object.assign({}, m, { scope: to }); n++; } });
+      if (n) migrated.push({ from, to, count: n });
+    });
+    const has = txt => out.some(m => m && String(m.text || '').indexOf(txt) >= 0);
+    W.MEM_STD_SEEDS.forEach(s => {
+      if (board && s.board !== board) return;
+      if (has(s.legacy)) return;
+      const entry = { text: s.text, time: nowOf(), scope: s.board };
+      out.push(entry);
+      added.push(entry);
+    });
+    const kb = o.kb;
+    if (kb && typeof kb.pick === 'function') W.MEM_KB_SEEDS.forEach(s => {
+      if (board && s.board !== board) return;
+      const key = s.keys.join('+');
+      const text = kb.pick.apply(kb, s.keys);
+      const i = out.findIndex(m => m && m.kb === key);
+      if (i >= 0) { // 条目正文改过:同键沉淀跟随更新
+        if (out[i].text !== text) { out[i] = Object.assign({}, out[i], { text }); updated.push(key); }
+        return;
+      }
+      if (s.legacy && has(s.legacy)) return; // 老数据的手抄版:保留用户既有条目,不重复种
+      const entry = { text, kb: key, time: nowOf(), scope: s.board };
+      out.push(entry);
+      added.push(entry);
+    });
+    return { mem: out, added, updated, migrated, changed: !!(added.length || updated.length || migrated.length) };
+  };
+  /* 板块迁移(用户显式指定旧板名→新板名):条目原地改 scope,不丢不双写,回新数组不改入参。
+   * o={boards:板块词表}。空板(旧板名下无条目)与未知新板名一律抛错——迁移是用户显式请求,
+   * 不静默回一个"成功但什么也没动"的结果。 */
+  W.memMigrateBoard = function (mem, from, to, o) {
+    from = String(from === undefined || from === null ? '' : from).trim();
+    to = String(to === undefined || to === null ? '' : to).trim();
+    if (!from || !to) throw new Error('板块迁移需同时给出旧板名与新板名');
+    if (from === to) throw new Error('旧板名与新板名相同:' + from);
+    memBoardCheck(to, (o || {}).boards);
+    const out = (Array.isArray(mem) ? mem : []).slice();
+    const moved = [];
+    out.forEach((m, i) => {
+      if (!m || m.scope !== from) return;
+      out[i] = Object.assign({}, m, { scope: to });
+      moved.push(out[i]);
+    });
+    if (!moved.length) throw new Error('旧板名「' + from + '」下没有记忆条目,未发生迁移');
+    return { mem: out, moved, migrated: [{ from, to, count: moved.length }], changed: true };
+  };
   /* 导演设定五维文本(understanding.js DIMS_DIR 下沉) */
   W.dimsText = ds => W.DIR_DIMS.filter(d => ds && ds[d]).map(d => `${d}:${ds[d]}`).join('\n');
   /* 章节事件图谱(自 understanding.js 下沉):sourceRev 失配(或旧数据无 sourceRev 且正文改过)不注入,防"新正文+旧图谱" */

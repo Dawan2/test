@@ -102,48 +102,15 @@
 
   /* ---- 持久化记忆:记住用户过往的修改意图/偏好,跨会话召回注入 ----
    * 轻量实现:state.agentMemory(上限 50 条,先进先出);召回=最近 4 条 + 与当前输入关键词重合度最高的 4 条 */
+  /* 板块改名迁移 + 标准沉淀/知识库种子补种:派生走 WfCore 双端单源(headless 侧
+   * /api/wf/memory-seed 与 CLI memory seed 吃同一份种子表),记忆桶/知识库/时间戳/板块词表经参数注入;
+   * 落点仍是既有 Store.state.agentMemory,种子表与迁移表不在本文件留第二份 */
   function memAll() {
-    Store.state.agentMemory = Store.state.agentMemory || [];
-    // 板块改名迁移:旧 scope「构思」→「导演」
-    if (Store.state.agentMemory.some(m => m.scope === '构思')) {
-      Store.state.agentMemory.forEach(m => { if (m.scope === '构思') m.scope = '导演'; });
-      Store.save();
-    }
-    // 标准沉淀:分镜视频提示词五段式标准结构(用户确认的工作流标准,缺则补入长期记忆,召回时自动注入)
-    if (!Store.state.agentMemory.some(m => (m.text || '').includes('五段式标准结构'))) {
-      Store.state.agentMemory.push({
-        text: '分镜提示词五段式标准结构:风格氛围(风格/色调/画质/年代感/情绪基调)+场景环境(时间/地点/天气/光线/空间氛围)+镜头运动(景别/运镜/速度/视角/焦距)+分镜内容(人物动作/表情/台词)+负面提示词(禁BGM/字幕等);标记 @角色 $场景 #道具',
-        time: Store.now(), scope: '分镜',
-      });
-      Store.save();
-    }
-    // 标准沉淀:景别衔接口诀(导演传授的剪辑衔接准则,拆镜/审片/改镜时遵循)
-    if (!Store.state.agentMemory.some(m => (m.text || '').includes('景别衔接口诀'))) {
-      Store.state.agentMemory.push({
-        text: '景别衔接口诀:相邻景别不硬切(前后镜景别避免相同或相邻,防止无信息跳切);景别切换隔一别(优先跨一级切换,如全景→近景、中景→特写);两极镜头不衔接(大全景与特写/超级特写不得直接对切,须用全景或中景过渡)',
-        time: Store.now(), scope: '分镜',
-      });
-      Store.save();
-    }
-    /* 知识库沉淀(js/knowledge.js):按 KB.SECTIONS 键取条目正文种入长期记忆,召回时按关键词命中自动注入。
-     * keys=取用键(条目正文唯一权威,此处不留第二份措辞);kb=同键沉淀标识,条目正文改过后自动跟随;
-     * legacy=旧手抄版的识别标记(老数据已沉淀过则保留用户既有条目,不重复种) */
-    const KB_SEEDS = [
-      [['钩子六型'], '剧本', '钩子六型'],
-      [['打脸四步', '付费卡点'], '剧本', '打脸四步'],
-      [['对话铁律'], '剧本', '对话铁律'],
-      [['景别运镜', '场面调度', '剪辑节奏'], '分镜', '景别即情绪'],
-      [['抽卡军规', '抽卡公式'], '分镜', '抽卡五条军规'],
-    ];
-    if (window.KB) KB_SEEDS.forEach(([keys, scope, legacy]) => {
-      const kb = keys.join('+');
-      const text = KB.pick(...keys);
-      const seeded = Store.state.agentMemory.find(m => m.kb === kb);
-      if (seeded) { seeded.text = text; return; } // 条目正文改过:同键沉淀跟随更新
-      if (legacy && Store.state.agentMemory.some(m => (m.text || '').includes(legacy))) return;
-      Store.state.agentMemory.push({ text, kb, time: Store.now(), scope });
+    const r = WfCore.memSeed(Store.state.agentMemory, {
+      kb: window.KB || null, now: () => Store.now(), boards: AGENT_BOARDS.map(b => b.key),
     });
-    Store.save();
+    Store.state.agentMemory = r.mem;
+    if (r.changed) Store.save();
     return Store.state.agentMemory;
   }
   function memRemember(text, scope) {

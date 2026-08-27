@@ -5805,7 +5805,9 @@ const skillsTests = [
     // 每条:缺口出口的实况判据 + note 里必须点名的那几处余量(接上了就要同步改 note,不许静默扩面)
     const facts = {
       'core.personaCtx': ['G-01', /function wfPersonaNote\(/.test(srv), ['浏览器多轮', '未收进提示词注册表']],
-      'core.memoryDual': ['G-02', typeof W.memRecall === 'function' && typeof W.memBlock === 'function', ['memAll', 'SK-26']],
+      // SK-04 的补种/迁移余量已由 W53 接上(memSeed 双端单源 + headless 入口),「仍欠」段的锚点随实况改指
+      // 自动沉淀那一半:理解/分镜/拆集/提取主体几步的结论仍不回流(回流面本身归 SK-26)
+      'core.memoryDual': ['G-02', typeof W.memRecall === 'function' && typeof W.memSeed === 'function', ['理解/分镜/拆集/提取主体', 'SK-26']],
       'review.stage': ['G-03', wfSteps.includes('review'), ['SK-24', '未审片']],
     };
     Object.keys(facts).forEach(id => {
