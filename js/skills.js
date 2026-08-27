@@ -883,7 +883,8 @@
       id: 'core.personaCtx', sk: 'SK-03', name: '生效人设经 ctx 过服务端', stage: CROSS, wave: 'W3',
       kinds: ['infra'],
       prompts: ['split.system', 'extract.system', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem',
-        'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem'],
+        'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem',
+        'narration.system', 'reading.system', 'concept.system', 'light.system'],
       cmds: ['episode.understanding', 'episode.generateStoryboard', 'episode.smartReview'], gaps: ['G-01'],
       note: 'G-01 已落地:服务端 /api/wf/* 各端点经唯一装配口 wfPersonaNote 注入生效人设(板块雇佣 > 全局雇佣),'
         + '浏览器同装配口;infra 面的 pending 已按实况清空(gaps() 只投影 gaps 字段、不看 pending,清账动不到投影),'
@@ -899,6 +900,9 @@
         + '预排模式 agent.previsSystem——三种运行模式措辞不同,不合成一个键),装配口分别是 AgentCore.panelSystem/'
         + 'AgentG.buildGlobalPrompt/agent-ops 的 prearrPrompt,浏览器隐式读全局默认值页的覆盖表,'
         + '单轮与多轮的人设句至此全部在注册表内。'
+        + '剧本模块四步(旁白解说体改写 narration.system/剧本围读 reading.system/构思导演阐述 concept.system/'
+        + '全剧光影总控 light.system——四步角色互不相同,四条独立键)同形收编,取值口都在 js/episodes.js 经 Prompts.get,'
+        + '这四条与多轮那三条同口径:只有浏览器一个消费点,收编解决的是可覆盖不是可 headless。'
         + '仍欠:四处的 ops 协议/字段面/命令白名单/返回 JSON 约定仍由各自装配口拼、不开放覆盖'
         + '(那半是 ops 解析契约,用户改坏即整轮无 ops);'
         + '多轮那三份没有 Node 第二消费点,两端只落在取值口(同一注册表键 + Prompts.get 读覆盖),不是两个消费点',
@@ -991,10 +995,12 @@
         + '三张词表与每千字上限一律现取该条目正文,校验层不写第二份词表,注入与校验两面同一份判据;'
         + '两处载体与 SK-09 同(剧本正文引号台词与分镜 s.dialogue),'
         + '经就绪检查、问题中心与审片报告消费,审片路径只读附本镜命中(独立字段,不并入 issues、不改评分与达标线);'
-        + '有没有人味、像不像这个人物说的话属语义面,待 G-10;'
-        + '本条注入走板块方法论通道、没有专属人设句,'
-        + '仍欠 G-13 的是剧本模块几处内联提示词(解说体改写、导演阐述、光影总控、剧本围读)未进注册表——'
-        + '那几步既取不到本条目正文,用户也覆盖不到',
+        + '有没有人味、像不像这个人物说的话属语义面,待 G-10。'
+        + '本条注入走板块方法论通道、没有专属人设句;剧本板块那四步内联人设已收进注册表——'
+        + '旁白解说体改写 narration.system/剧本围读 reading.system/构思导演阐述 concept.system/全剧光影总控 light.system,'
+        + '四步在 js/episodes.js 同经 Prompts.get 取值、用户在「全局默认值」页改得到(键登记在 SK-03 名下)。'
+        + '仍欠 G-13 的是剧本板块另外几处内联人设:js/episodes.js 的事件图谱拆解步(剧本结构分析师)与 '
+        + 'js/episode-util.js 剧本摘要的通读/汇总/集纲三步(策划人设)仍是内联字面,那几步既取不到条目正文、用户也覆盖不到',
     },
     /* ---- 主体 ---- */
     {
@@ -1009,7 +1015,8 @@
         + '另一登记键 settings.tplImage 的取用点(js/persona.js 八维度重写文生图提示词那步)取 persona.promptSystem,'
         + '两处装配口都经 Prompts.get 取值、用户在「全局默认值」页改得到(模板本身也一直改得到),'
         + '故本条自己的登记面已无收编余量。'
-        + '仍欠 G-13 的不在本条名下:全仓其余模块的内联人设未进注册表(剧本模块的解说体改写/导演阐述/光影总控/剧本围读四步在 js/episodes.js 仍是内联字面),'
+        + '仍欠 G-13 的不在本条名下:全仓其余模块的内联人设未进注册表(剧本板块那四步已随 SK-03 收编,'
+        + 'js/episodes.js 的事件图谱拆解步与 js/episode-util.js 剧本摘要三步仍是内联字面),'
         + '缺口未闭合故按关联索引口径不摘标记。'
         + '生成请求构造点(Domain.buildVideoRequest)不注方法论文本,生成指纹口径不动;'
         + '校验半判定输入就是那份请求的参考图组(人物数上限、被上限挤出、三视图当视频参考),'

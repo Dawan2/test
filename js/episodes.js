@@ -464,7 +464,7 @@
           try {
             const out = await API.chatJSON({
               model: (Store.state.settings || {}).defLLM || API.getConfig().model,
-              system: '你是资深短剧解说编剧,擅长把短剧剧本改写成旁白解说体(解说模式)。',
+              system: Prompts.get('narration.system'),
               billingAction: 'llm.narration', operationId: tk.id,
               messages: [{ role: 'user', content: `把以下短剧单集剧本改写为旁白解说体剧本,返回 JSON {"narration":"改写后的旁白稿全文"}。
 要求:以第三人称旁白叙述为主;保留全部剧情节点与关键信息(不遗漏转折与钩子);角色台词转化为旁白转述(如"他怒吼着让她滚开"而非直接引用对白);分集结构不变,仍是这一集的完整内容;语言口语流畅,适合配音解说。
@@ -616,7 +616,7 @@ ${(ep.content || '').slice(0, 8000)}` }],
           try {
             const out = await API.chatJSON({
               model: (Store.state.settings || {}).defLLM || API.getConfig().model,
-              system: '你是资深短剧/漫剧导演,在项目开拍前做导演阐述(Director Treatment)。',
+              system: Prompts.get('concept.system'),
               messages: [{ role: 'user', content: `通读以下短剧剧本信息,为这部剧做开拍前的整体创作定调,返回 JSON:
 {"statement":"导演阐述(一句话定调,有美学主张)","positioning":"题材定位","audience":"目标受众","reference":"美学参考(作品/美学)","artStyle":"美术风格(具体可执行)","palette":"影调(从 ${(window.TONE_PRESETS || []).join('/')} 中选最贴合的一个)","lighting":"光影基调","ratio":"画幅(16:9 或 9:16 或 1:1,按发布平台惯用)","platform":"发布平台(抖音/快手/红果/视频号/TikTok(出海))","epDur":"单集时长目标","editPace":"整体剪辑节奏","hookSec":"开场钩子时长","epStruct":"单集结构","emotion":"情绪总谱","performance":"表演气质","voiceMusic":"配音与音乐音效基调","density":"分镜密度","maxShot":"单镜时长上限","continuity":"一致性约束"}
 要求:具体可执行、风格统一、贴合剧本题材;所有字段为中文短句。
@@ -986,7 +986,7 @@ ${(ep.content || '').slice(0, 8000)}` }],
           const c = p.concept || {};
           const out = await API.chatJSON({
             model: (Store.state.settings || {}).defLLM || API.getConfig().model,
-            system: '你是影视摄影指导(DP),负责全剧光影总控。',
+            system: Prompts.get('light.system'),
             messages: [{ role: 'user', content: `为以下短剧的每个场景制定光影色调控制方案,返回 JSON {"scenes":[{"name":"场景名(与给出的一致)","palette":["主色 HEX×3(如 #F4E8D0)"],"keys":"执行要点(布光方向/氛围/可读性要求,≤60字)"}]}
 要求:符合整剧定调;同场景跨集保持一致;惊悚/悬疑场景与温情场景拉开反差。
 整剧定调:${c.statement || '(未填写)'};美术风格:${c.artStyle || p.style};影调:${c.palette || p.tone || '无'};光影基调:${c.lighting || '(未填写)'}
@@ -1177,7 +1177,7 @@ ${(ep.content || '').slice(0, 8000)}` }],
         try {
           const out = await API.chatJSON({
             model: (Store.state.settings || {}).defLLM || API.getConfig().model,
-            system: '你是短剧导演组的剧本围读会,由编剧/导演/制片联合评审。',
+            system: Prompts.get('reading.system'),
             messages: [{ role: 'user', content: `对以下短剧剧本做一次围读评审,返回 JSON:
 {"overall":"整体评价(≤120字)","highlights":"亮点(≤80字)","issues":[{"where":"第X集/全局","problem":"问题描述(具体)","suggestion":"修改建议(可执行)"}]}
 关注:节奏与钩子强度、场次逻辑、人物动机、台词口语化、分集卡点。issues 给出 3-8 条最重要的问题。
