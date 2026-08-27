@@ -45,6 +45,7 @@
 | [w17-preflight-stages.md](./w17-preflight-stages.md) | 就绪检查校验面清单收成双端单源表 `Skills.preflightStages()`(冲突热点收口:新增一面只改一处),含推导规则、逐字节等价取证与变异验证 | **新增校验面前必读**;改 `episode.preflight` 的 `result.checks` 前 |
 | [w18-gen-prompt-unify.md](./w18-gen-prompt-unify.md) | `gen.promptSystem` 收编两端内联:`WfCore.optimizeSystem` 与 `buildOptimizeUser` 配对、CLI 侧覆盖表显式传参、为什么修订链路不接方法论块 | 改审片修订提示词或往注册表收编内联人设前 |
 | [w19-g06-inject.md](./w19-g06-inject.md) | G-06 残留两条落地:「多镜头写法」进拆镜人设 `sbSystem`、「主体参考」进主体人设 `extractSystem`、键为什么只挂一个宿主、缺省提示词变长的兼容影响 | 改拆镜/提取主体提示词,或往某一步补 KB 注入前 |
+| [w21-integration-log.md](./w21-integration-log.md) | W15/W17/W18/W19 收敛到集成分支的记录:并集型冲突逐处解法、用例名集合比对证明没删测、包含性实测的有效期口径 | 想知道主干现在是什么状态 |
 
 ## 一分钟摘要(周期 2 收敛后)
 
@@ -65,4 +66,4 @@
 - **缺口编号**:`G-01…G-15` 出自资产图谱,**冻结在 15 项不再新增**;新登记的缺口一律走短名单的 `S-xx` 命名空间。判定标准文档里提议的 `G-16`(发布后→上游回路)按此规则改记为 `S-08`。
 - `docs/Agent贯通落地-G1-G5.md` 里的 `G1–G5` 是该文自带的历史编号,与本目录的 `G-0x` 不是同一套,对应关系见该文与 [w5-cycle1-audit.md](./w5-cycle1-audit.md) 第 2.18 节。
 - 文档描述功能本身,不写功能溯源。
-- 动工前先看**最新一份收敛记录**的"剩余未合与残留",避免重做已落地的部分:当前是 [w16-integration-log.md](./w16-integration-log.md)(更早的分叉登记在 [w9-integration-log.md](./w9-integration-log.md)、[w7-integration-log.md](./w7-integration-log.md) 与 [w6-integration-log.md](./w6-integration-log.md) 第 5 节;W13 那一波没有留收敛记录,过程只在提交信息里)。
+- 动工前先看**最新一份收敛记录**的"剩余未合与残留",避免重做已落地的部分:当前是 [w21-integration-log.md](./w21-integration-log.md)(更早的分叉登记在 [w16-integration-log.md](./w16-integration-log.md)、[w13-integration-log.md](./w13-integration-log.md)、[w9-integration-log.md](./w9-integration-log.md)、[w7-integration-log.md](./w7-integration-log.md) 与 [w6-integration-log.md](./w6-integration-log.md) 第 5 节)。W13 的记录件随 W21 合入,W16 第 5.3 节记的那条悬挂索引行随之解掉。
