@@ -1052,7 +1052,7 @@
             try {
               U.toast('LLM 优化提示词中…', 'info');
               const out = await API.chatJSON({
-                system: '你是文生视频提示词专家。',
+                system: WfCore.genPromptSystem(), // 注册表人设 + 抽卡公式/军规按键注入(js/wf-core.js 单源)
                 messages: [{ role: 'user', content: `请${strat}。优化以下分镜提示词,保持原意,返回 {"prompt":"优化后的中文提示词"}:\n${s.prompt}` }],
                 temperature: 0.7, max_tokens: 800,
               });

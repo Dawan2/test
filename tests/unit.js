@@ -3447,6 +3447,7 @@ const contractTests = [
     const KB = require('../js/knowledge.js');
     assertEq(Skills.block('shots', { ids: ['shots.shotLanguage'] }), KB.pick('景别运镜', '轴线匹配'), '分镜注入块应逐字节等于 KB 条目拼接');
     assertEq(Skills.block('review'), KB.reviewBlock(), '审片注入块应逐字节等于 KB.reviewBlock()');
+    assertEq(Skills.block('gen'), KB.pick('抽卡公式', '抽卡军规'), '生成步注入块应逐字节等于 KB 条目拼接');
     const src = fs.readFileSync(path.join(ROOT, 'js', 'skills.js'), 'utf8');
     // 加载期依赖只有 KB 与 Domain 两件双端纯模块;WfCore 以解析器形态传入(浏览器里它晚于本文件加载)
     const iBody = src.indexOf('function (KB, Domain, wfCore) {');
@@ -3515,9 +3516,10 @@ const contractTests = [
       const n = Skills.list(st).reduce((m, s) => m + (s.pending.includes('check') ? 0 : s.checks.length), 0);
       assertEq(Skills.check(st, {}).length, n, st + ' 步结论数应等于该步已落地校验项数');
     });
-    // 注入面未落地(如 tplVideo 零消费)的条目不进拼块
+    // 注入面未落地的条目一条也不进拼块(逐条按自身 stage 单取,拼块为空即未挂假出口)
     const KB = require('../js/knowledge.js');
-    assertEq(Skills.block('gen'), '', '生成步注入面待 G-05 定性,现不产出拼块');
+    list.filter(s => s.pending.includes('inject')).forEach(s =>
+      assertEq(Skills.block(s.stage, { ids: [s.id] }), '', s.id + ' 注入面未落地不应产出拼块'));
     assertEq(Skills.block('film'), KB.DR_RHYTHM, '成片步注入块应逐字节等于 KB 剪辑节奏条目');
   } },
   { name: 'skill 索引加载点成对:index.html(knowledge 之后 wf-core 之前)+ server/cli/mcp require', fn() {
@@ -3720,6 +3722,22 @@ const contractTests = [
     const sys = WfCore.sbSystem({});
     assert(sys.includes(KB.section('景别运镜')) && sys.includes(KB.section('轴线匹配')), '拆镜系统人设应含两条目正文');
     assert(sys.startsWith(require('../js/prompts.js').get('sb.system', {})), '拆镜人设应以 sb.system 提示词开头(注册表覆盖生效)');
+  } },
+  { name: '知识库取用:生成步提示词改写人设整条注入抽卡公式+军规,与 Skills.block(gen) 逐字节同源', fn() {
+    const KB = require('../js/knowledge.js');
+    const Skills = require('../js/skills.js');
+    const Prompts = require('../js/prompts.js');
+    const WfCore = require('../js/wf-core.js');
+    const sys = WfCore.genPromptSystem({});
+    assert(sys.startsWith(Prompts.get('gen.promptSystem', {})), '改写人设应以 gen.promptSystem 提示词开头(注册表覆盖生效)');
+    assertEq(sys, Prompts.get('gen.promptSystem', {}) + Skills.block('gen'), '改写人设的方法论段应逐字节等于生成步注入块');
+    assertEq(WfCore.genPromptSystem({ 'gen.promptSystem': '改写器。' }), '改写器。' + KB.pick('抽卡公式', '抽卡军规'), '覆盖只换人设句,方法论正文不受影响');
+    // 生成侧消费点:提示词工具走单源函数,不在模块内留第二份人设句与条目正文
+    const sv = fs.readFileSync(path.join(ROOT, 'js', 'sb-views.js'), 'utf8');
+    assert(sv.includes('WfCore.genPromptSystem('), '分镜提示词工具应经 WfCore.genPromptSystem 取人设');
+    // 生成请求构造点不注方法论文本:注进去会改 s.prompt 的输入指纹口径,存量已出片镜头会被全量判旧
+    const dom = fs.readFileSync(path.join(ROOT, 'js', 'domain.js'), 'utf8');
+    assert(!/KB\./.test(dom), 'domain.js 不应引用 KB(生成指纹口径与方法论文本解耦)');
   } },
   { name: '审片升为主线一等步骤(G-03):板块 Agent 有审片席;plans/工作区/CLI 都映射 episode.smartReview', fn() {
     const D = require(path.join(ROOT, 'js/domain.js'));

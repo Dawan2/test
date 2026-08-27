@@ -602,12 +602,16 @@
     },
     /* ---- 生成 ---- */
     {
-      id: 'gen.videoTpl', sk: 'SK-21', name: '视频提示词模板落位', stage: 'gen', wave: 'W2',
-      kinds: ['inject'], pending: ['inject'], kb: ['抽卡公式'], settings: ['tplVideo'],
+      id: 'gen.videoTpl', sk: 'SK-21', name: '视频提示词模板落位与抽卡方法论注入', stage: 'gen', wave: 'W2',
+      kinds: ['inject'], kb: ['抽卡公式', '抽卡军规'], prompts: ['gen.promptSystem'], settings: ['tplVideo'],
       cmds: ['shot.generateVideo', 'episode.generateVideos'],
       experts: ['ex_suspense', 'ex_sweet', 'ex_hotblood', 'ex_healing', 'ex_cinema', 'ex_narration', 'ex_revenge', 'ex_power'],
-      gaps: ['G-05', 'G-13'],
-      note: '模板三件套的 tplVideo 面现为零消费,接进生成请求构造前本条不出注入块(G-05 二选一定性后落地)',
+      gaps: ['G-06', 'G-13'],
+      note: '注入面两半:模板半(tplVideo)经 WfCore.fillTplVideo 落在提示词成型链路(拆镜要素要求、'
+        + '模型未给 prompt 的兜底、本地拼装出口 SB.buildShotPrompt),模板为空时输出逐字节不变;'
+        + '方法论半按键整条注入提示词改写人设 WfCore.genPromptSystem——本条拼块即那两条条目正文,'
+        + '生成请求构造点(Domain.buildVideoRequest)不注方法论文本,生成指纹口径不动;'
+        + '多镜头写法/主体参考两条仍未进任何提示词构造点(G-06 未闭),模块内联提示词入注册表的覆盖面待 G-13',
     },
     {
       id: 'gen.renderCredential', sk: 'SK-22', name: '生成凭据与确认失效校验', stage: 'gen', wave: 'W4',
