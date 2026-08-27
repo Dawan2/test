@@ -6702,9 +6702,18 @@ const memoryTests = [
       const i = src.indexOf(mem), j = src.indexOf(save, i);
       assert(i > 0 && j > i, label + ':回流应在落盘之前');
     };
-    before(srv, "WfCore.memFeedback({ und: { ep } }", 'const rev = wfSave(user.id, cur, tree);', '服务端理解');
-    before(srv, "WfCore.memFeedback({ sb: { ep } }", 'const rev = wfSave(user.id, cur, tree);', '服务端分镜');
-    before(srv, "WfCore.memFeedback({ split: { p, mode: used } }", 'const rev = wfSave(user.id, cur, tree);', '服务端拆集');
+    // 服务端按端点切片再判位置:整文件搜 wfSave 会捞到后面别的端点那次落盘,写到 wfSave 之后也仍能"找到"
+    const seg = (route) => {
+      const i = srv.indexOf("pathname === '" + route + "'");
+      const j = srv.indexOf("if (pathname === '/api/", i + 10);
+      assert(i > 0 && j > i, route + ':端点切片应取得到');
+      return srv.slice(i, j);
+    };
+    before(seg('/api/wf/understanding'), "WfCore.memFeedback({ und: { ep } }", 'const rev = wfSave(user.id, cur, tree);', '服务端理解');
+    before(seg('/api/wf/smart-storyboard'), "WfCore.memFeedback({ sb: { ep } }", 'const rev = wfSave(user.id, cur, tree);', '服务端分镜');
+    before(seg('/api/wf/split-episodes'), "WfCore.memFeedback({ split: { p, mode: used } }", 'const rev = wfSave(user.id, cur, tree);', '服务端拆集');
+    // 分镜端点内部那次理解步:同一切片里理解回流也得在落盘之前
+    before(seg('/api/wf/smart-storyboard'), "WfCore.memFeedback({ und: { ep } }", 'const rev = wfSave(user.id, cur, tree);', '服务端分镜内部理解步');
     before(files['js/sb-llm.js'], 'WfCore.memFeedback({ sb: { ep } }', 'Store.save();', '浏览器分镜');
     before(files['js/proj-upload.js'], 'WfCore.memFeedback({ split: { p, mode: used } }', 'Store.save();', '浏览器拆集');
     before(files['js/commands.js'], 'WfCore.memFeedback({ extract:', 'Store.save();', '浏览器提取主体');
