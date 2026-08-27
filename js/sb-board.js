@@ -191,7 +191,7 @@
       try {
         const out = await API.chatJSON({
           model: ep.sbConfig.sbModel,
-          system: '你是顶级短剧编剧,擅长场次与情绪节拍拆解。',
+          system: Prompts.get('sb.boardSceneSystem'),
           messages: [{ role: 'user', content: `将以下剧本(单集)拆解为结构化分镜脚本,返回 JSON:
 {"scenes":[{"title":"场次标题(沿用原文场次标记,如 2-1 枯井水下 夜/内)","text":"该场剧情梗概(保留原文关键信息)","beats":[{"emotion":"情绪节拍(如 压抑/铺垫/反转/爆发/释怀)","plot":"该节拍剧情(一句话)","shot":"分镜文字:画面化的镜头内容描述(谁在哪、做什么、氛围光影),用于连续画面表达"}]}]}
 要求:按场次组织;每场 2-5 个节拍,按剧情发展顺序;shot 必须是可视化描述,不要抽象概括;不要编造原文没有的剧情。
@@ -230,7 +230,7 @@ ${(ep.content || '').slice(0, 8000)}` }],
         const brief = cur.scenes.map((sc, si) => `场次${si + 1}「${sc.title}」:\n` + sc.beats.map((b, bi) => `  节拍${si + 1}.${bi + 1}[${b.emotion || '平'}] ${b.plot || b.shot}`).join('\n')).join('\n');
         const out = await API.chatJSON({
           model: ep.sbConfig.sbModel,
-          system: '你是顶级短剧分镜师,擅长把情绪节拍拆成连续画面表达的文字分镜。',
+          system: Prompts.get('sb.boardDraftSystem'),
           messages: [{ role: 'user', content: `把以下分集脚本的每个节拍拆成 1-3 条文字分镜,返回 JSON:
 {"beats":[{"key":"场次号.节拍号(如 1.2)","shots":["文字分镜1","文字分镜2"]}]}
 每条文字分镜 = 一个连续画面镜头的可视化描述(谁在哪、做什么动作、景别氛围),镜头之间要有叙事连续性;不编造原文没有的剧情。

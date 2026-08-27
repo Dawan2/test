@@ -302,6 +302,39 @@ function loadSbIo() {
   return sb;
 }
 
+/* sb-board.js 分镜脚本创作层:两步 AI 拆解的 handler 挂在 bindScriptBoard 的闭包里,
+ * 按 index.html 同顺序加载 prompts.js 后用假 host 取回两个按钮的 onclick 真跑一遍,截获上游请求体。
+ * ov 为覆盖表(浏览器隐式读 Store.state.settings.promptOverrides)。 */
+function loadSbBoard(ov) {
+  const sb = makeSandbox();
+  installCommon(sb);
+  if (ov) sb.Store.state.settings.promptOverrides = ov;
+  sb.__apiReady = true;
+  sb.__llm = [];      // 上游请求体逐条留档(system/messages 都在里面)
+  sb.__llmResult = []; // 用例按步序预置回包
+  sb.API.chatJSON = async req => { sb.__llm.push(req); return sb.__llmResult.shift(); };
+  sb.Views = { episode() {} };
+  sb.AgentRefs = { add: () => true };
+  Object.assign(sb.SB, { // 顶部解构槽位(本套件只跑前两步,第三步转换不触及)
+    blankShot: order => ({ order, history: [] }), buildShotPrompt: () => '',
+  });
+  loadFile(sb, 'prompts.js');
+  loadFile(sb, 'sb-board.js');
+  return sb;
+}
+/* 假 host:只认两个 AI 按钮的选择器,其余选择器一律空集(编辑绑定不在本层覆盖) */
+function boardHost() {
+  const mk = () => ({ disabled: false, innerHTML: '', textContent: '', onclick: null });
+  const btns = { 'bd-ai': mk(), 'bd-draft': mk() };
+  const host = {
+    innerHTML: '',
+    addEventListener() {},
+    querySelectorAll: () => [],
+    querySelector(sel) { const m = sel.match(/\[data-x=([\w-]+)\]/); return (m && btns[m[1]]) || null; },
+  };
+  return { host, btns };
+}
+
 /* storyboard.js:仅取 buildShotPrompt(分镜提示词单一出口)——顶层依赖 Voice/WfCore,projects.js 全局经 stub 注入 */
 function loadStoryboard() {
   const sb = makeSandbox();
@@ -4632,6 +4665,110 @@ const contractTests = [
     // 提取步的装配口不受影响:小传步只取人设句,不得顺手把「主体参考」方法论段也接上
     assert(eu.includes('WfCore.extractSystem()'), '提取步仍应经装配口取「人设句 + 主体参考」整条');
     assert(!/system: WfCore\.extractSystem\(\),[\s\S]{0,400}提取其中的主要人物/.test(eu), '小传步不应改取带方法论段的装配口');
+  } },
+  { name: '分镜脚本创作层两步人设:两个独立键各自取值,缺省逐字节等于收编前的内联字面、覆盖只换对应那一键', fn: async () => {
+    const Prompts = require('../js/prompts.js');
+    // 收编前两步写死的 system 字面:缺省逐字节不得变
+    const SCENE = '你是顶级短剧编剧,擅长场次与情绪节拍拆解。';
+    const DRAFT = '你是顶级短剧分镜师,擅长把情绪节拍拆成连续画面表达的文字分镜。';
+    const run = async ov => {
+      const sb = loadSbBoard(ov);
+      const { host, btns } = boardHost();
+      const p = { id: 'p1', subjects: [] };
+      const ep = makeEp({ content: '1-1 枯井水下 夜/内\n女主被当众羞辱。' });
+      sb.__llmResult = [
+        { scenes: [{ title: '1-1 枯井水下 夜/内', text: '场次梗概', beats: [{ emotion: '压抑', plot: '节拍剧情', shot: '画面描述' }] }] },
+        { beats: [{ key: '1.1', shots: ['文字分镜1', '文字分镜2'] }] },
+      ];
+      sb.SB.bindScriptBoard(host, p, ep, {}, false);
+      await btns['bd-ai'].onclick();    // ① AI 拆解场次与节拍
+      await btns['bd-draft'].onclick(); // ② 拆解为文字分镜
+      return { sb, ep };
+    };
+    const a = await run();
+    assertEq(a.sb.__llm.length, 2, '两步应各发一次 LLM(场次节拍拆解 / 文字分镜拆解)');
+    assertEq(a.sb.__llm.map(c => c.system).join('|'), [SCENE, DRAFT].join('|'),
+      '缺省两步 system 应与收编前的内联字面逐字节相同');
+    // 两步真的跑了(不是空转):场次节拍落进 ep.scriptBoard、文字分镜落进节拍下一级
+    assertEq(a.ep.scriptBoard.scenes[0].title, '1-1 枯井水下 夜/内', '① 的回包应落进 ep.scriptBoard');
+    assertEq((a.ep.scriptBoard.scenes[0].beats[0].shotsDraft || []).join('|'), '文字分镜1|文字分镜2', '② 的回包应落进 beat.shotsDraft');
+    // 注册表登记:两条无变量条目,条目名带步名与「系统人设」
+    [['sb.boardSceneSystem', '场次节拍'], ['sb.boardDraftSystem', '文字分镜']].forEach(([k, label]) => {
+      const item = Prompts.list().find(x => x.key === k);
+      assert(item && !item.vars.length && item.name.includes(label) && item.name.includes('系统人设'),
+        '注册表应登记该步人设条目(无变量,可在全局默认值页在线改写):' + k);
+    });
+    // 每句字面恰好命中注册表一条(同 def 开两个键即红)
+    [SCENE, DRAFT].forEach(def => assertEq(Prompts.list().filter(x => x.def === def).length, 1,
+      '该人设句应恰好命中注册表一条:' + def));
+    // 两句措辞互不相同,且与既有分镜/剧本类人设都不同字面——合成单键当场红(合掉后另一条 Prompts.get 回空串)
+    assert(SCENE !== DRAFT, '两步措辞应互不相同(字面同才谈得上共用一键)');
+    ['sb.system', 'sb.reviewSystem', 'und.system', 'split.system'].forEach(k =>
+      assert(Prompts.get(k) !== SCENE && Prompts.get(k) !== DRAFT, '两步人设不应与既有键同字面(同字面才该复用):' + k));
+    // 覆盖矩阵 2×2:写一条覆盖时只有那一步跟随,另一步与两步的 user 半逐字节不动
+    const OV = '你是拆解员(覆盖生效)。';
+    for (const [key, want] of [['sb.boardSceneSystem', [OV, DRAFT]], ['sb.boardDraftSystem', [SCENE, OV]]]) {
+      const b = await run({ [key]: OV });
+      assertEq(b.sb.__llm.map(c => c.system).join('|'), want.join('|'),
+        '覆盖 ' + key + ' 时应只有该步跟随(另一步不受影响)');
+      assertEq(JSON.stringify(b.sb.__llm.map(c => c.messages)), JSON.stringify(a.sb.__llm.map(c => c.messages)),
+        '覆盖只换人设句:两步的 user 半(含返回 JSON 约定与正文摘取)逐字节不变');
+      assertEq((b.ep.scriptBoard.scenes[0].beats[0].shotsDraft || []).join('|'), '文字分镜1|文字分镜2',
+        '覆盖后解析口径不变(JSON 契约未开放)');
+    }
+    // 注册顺序按产品流程:两键相邻、场次节拍步在前,且都排在智能分镜之前(「① 分镜脚本」tab 在前)
+    const keys = Prompts.list().map(x => x.key);
+    assertEq(keys.indexOf('sb.boardDraftSystem') - keys.indexOf('sb.boardSceneSystem'), 1,
+      '两键应相邻且场次节拍步在前(后续槽插到中间即红)');
+    assert(keys.indexOf('sb.boardDraftSystem') < keys.indexOf('sb.system'),
+      '分镜脚本创作层两键应排在智能分镜之前');
+    // 契约半不开放:两份返回 JSON 的字段名一个不进注册表(用户改一个字即整轮解析失败)
+    const defs = Prompts.list().map(x => x.def).join('\n');
+    ['"scenes"', '"beats"', '"shots"', '"emotion"'].forEach(f =>
+      assert(!defs.includes(f), '两步的返回 JSON 字段名不应进注册表(契约半不开放覆盖):' + f));
+  } },
+  { name: '分镜脚本创作层两步人设(源级):js/sb-board.js 零内联、逐步配对取值口,全仓只剩注册表一份', fn() {
+    const P = require('../js/prompts.js');
+    const SCENE = '你是顶级短剧编剧,擅长场次与情绪节拍拆解。';
+    const DRAFT = '你是顶级短剧分镜师,擅长把情绪节拍拆成连续画面表达的文字分镜。';
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'sb-board.js'), 'utf8');
+    // 取值口与各步 user 半锚点配对:两个键互换位置即红
+    [['sb.boardSceneSystem', '将以下剧本(单集)拆解为结构化分镜脚本'],
+      ['sb.boardDraftSystem', '把以下分集脚本的每个节拍拆成 1-3 条文字分镜'],
+    ].forEach(([key, anchor]) => {
+      const i = src.indexOf("system: Prompts.get('" + key + "'),");
+      assert(i >= 0, 'js/sb-board.js 该步应经注册表取人设(不带第二参数=隐式读 Store 覆盖表):' + key);
+      assert(src.slice(i, i + 600).includes(anchor), '取值口应与该步 user 半锚点配对(两个键串了位即红):' + key);
+    });
+    assertEq((src.match(/system: '你是/g) || []).length, 0, 'js/sb-board.js 应零内联人设(W66 记的「两处」至此归零)');
+    // 全仓持有者名单:两句字面恰好只剩注册表一份(别处抄第二份即红,哪怕原文件仍走注册表)
+    const files = ['index.html', 'server.js', 'cli.js', 'mcp.js']
+      .concat(fs.readdirSync(path.join(ROOT, 'js')).filter(f => f.endsWith('.js')).map(f => 'js/' + f));
+    [SCENE, DRAFT].forEach(def => {
+      const holders = files.filter(f => fs.readFileSync(path.join(ROOT, f), 'utf8').includes(def));
+      assertEq(holders.join(','), 'js/prompts.js', '该人设句字面应全仓只剩注册表一份:' + def);
+    });
+    // 不许长出第二端:两步只在浏览器,收编解决的是「可覆盖」不是「可 headless」
+    ['server.js', 'cli.js'].forEach(f => {
+      const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
+      ['将以下剧本(单集)拆解为结构化分镜脚本', '把以下分集脚本的每个节拍拆成 1-3 条文字分镜'].forEach(anchor =>
+        assert(!s.includes(anchor), f + ' 不应出现分镜脚本创作层的 user 半:' + anchor));
+    });
+    // 键登记在人设通道的记账宿主 SK-03 名下;新账写在「已落地」那半,仍欠段(ops 协议)不许被占
+    const sk03 = Skills.byId('core.personaCtx');
+    const owed = (sk03.note || '').split('仍欠').slice(1).join('仍欠');
+    ['sb.boardSceneSystem', 'sb.boardDraftSystem'].forEach(k => {
+      assert(sk03.prompts.includes(k), 'SK-03 应登记 ' + k);
+      assert(sk03.note.includes(k), 'SK-03 的 note 须点名新收编的键:' + k);
+      assert(!owed.includes(k), '新收编的键应写在「已落地」那半,不许挤进仍欠段:' + k);
+    });
+    assert(owed.includes('ops 协议') && owed.includes('不开放覆盖'), 'SK-03 的仍欠段应仍是 ops 协议那半(本槽不动那一段)');
+    // G-13 未闭合(全仓内联人设大头仍在):收两处动不到关联索引投影
+    assertEq((Skills.gaps()['G-13'] || []).join(','),
+      'script.hookType,script.aiToneBan,subjects.refDiscipline,eps.structureStage,gen.videoTpl,film.rhythmInject',
+      '收编两处不动 gaps() 投影(缺口标记按关联索引口径保留)');
+    assertEq(Object.keys(Skills.gaps()).length, 20, 'gaps() 键数不应变');
+    assertEq(Skills.validate({ Prompts: P, KB: require('../js/knowledge.js') }).join(';'), '', '新登记的提示词键须通过引用自检');
   } },
   { name: 'Agent 单轮人设:经 WfCore.buildAgentSystem(agent.system) 取值,缺省逐字节等于收编前的模板串', fn() {
     const Prompts = require('../js/prompts.js');

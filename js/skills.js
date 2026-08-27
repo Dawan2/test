@@ -882,7 +882,7 @@
     {
       id: 'core.personaCtx', sk: 'SK-03', name: '生效人设经 ctx 过服务端', stage: CROSS, wave: 'W3',
       kinds: ['infra'],
-      prompts: ['split.system', 'extract.system', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem',
+      prompts: ['split.system', 'extract.system', 'sb.boardSceneSystem', 'sb.boardDraftSystem', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem',
         'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem'],
       cmds: ['episode.understanding', 'episode.generateStoryboard', 'episode.smartReview'], gaps: ['G-01'],
       note: 'G-01 已落地:服务端 /api/wf/* 各端点经唯一装配口 wfPersonaNote 注入生效人设(板块雇佣 > 全局雇佣),'
@@ -899,6 +899,10 @@
         + '预排模式 agent.previsSystem——三种运行模式措辞不同,不合成一个键),装配口分别是 AgentCore.panelSystem/'
         + 'AgentG.buildGlobalPrompt/agent-ops 的 prearrPrompt,浏览器隐式读全局默认值页的覆盖表,'
         + '单轮与多轮的人设句至此全部在注册表内。'
+        + '分镜脚本创作层两步的人设句同形收编为两条独立键(场次节拍拆解 sb.boardSceneSystem/'
+        + '文字分镜拆解 sb.boardDraftSystem——编剧与分镜师两个角色,措辞与产物落点都不同,不合成一个键),'
+        + '两步在 js/sb-board.js 同经 Prompts.get 取值、缺省逐字节不变,'
+        + '与多轮那三份同为只有浏览器一个消费点的键(用户在「全局默认值」页改得到)。'
         + '仍欠:四处的 ops 协议/字段面/命令白名单/返回 JSON 约定仍由各自装配口拼、不开放覆盖'
         + '(那半是 ops 解析契约,用户改坏即整轮无 ops);'
         + '多轮那三份没有 Node 第二消费点,两端只落在取值口(同一注册表键 + Prompts.get 读覆盖),不是两个消费点',
