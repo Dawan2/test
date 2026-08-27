@@ -2936,6 +2936,48 @@ const contractTests = [
     assert(mcpSrc.includes("require('./js/cmd-registry.js')"), 'mcp.js 应 require 注册表');
     assert(mcpSrc.includes('CmdRegistry.names()'), 'mcp.js hujing_exec 词表应由 CmdRegistry.names() 生成');
   } },
+  { name: 'skill 索引引用键单源:kb/prompts/cmds/experts 全部命中既有注册表,stage ⊆ 主线七步', fn() {
+    const Skills = require('../js/skills.js');
+    const Domain = require('../js/domain.js');
+    const wfStepKeys = Domain.workflow({ id: 'p1', episodes: [], subjects: [] }).steps.filter(s => !s.side).map(s => s.key);
+    const bad = Skills.validate({
+      Prompts: require('../js/prompts.js'), CmdRegistry: require('../js/cmd-registry.js'),
+      ExpertsData: require('../js/experts-data.js'), wfStepKeys,
+    });
+    assertEq(bad.join(' | '), '', 'skill 引用键应全部存在于既有注册表');
+    // 七步索引:六步与 Domain.workflow 主线步骤键同词表,审片(review)待 G-03 升为一等步骤
+    const stages = Skills.stages();
+    assertEq(stages.join(','), 'script,subjects,eps,shots,gen,review,film', '主线七步词表');
+    wfStepKeys.forEach(k => assert(stages.includes(k), 'workflow 主线步骤 ' + k + ' 应在 skill 索引词表内'));
+    assertEq(Skills.stageOf('review').wfStep, false, 'review 尚未进 Domain.workflow,须如实标注');
+    // 索引层不复制正文:块文本逐字节等于 KB 原文/压缩块
+    const KB = require('../js/knowledge.js');
+    assertEq(Skills.block('shots', { ids: ['shots.grammar'] }), KB.DR_SHOT + KB.DR_AXIS, '分镜注入块应逐字节等于 KB 条目拼接');
+    assertEq(Skills.block('review'), KB.reviewBlock(), '审片注入块应逐字节等于 KB.reviewBlock()');
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'skills.js'), 'utf8');
+    const body = src.slice(src.indexOf('function (KB) {')); // 只查 factory 体(UMD 头与文件头注释不计)
+    ['window', 'Store', 'document', 'location', 'fetch'].forEach(w => assert(!body.includes(w), 'skills.js 模块体不得出现环境句柄:' + w));
+    // 编排型步骤只引用已注册命令(playbook 不内联新命令语义)
+    const names = require('../js/cmd-registry.js').names();
+    Skills.list().filter(s => s.kind === 'orchestrate').forEach(s => {
+      const pb = Skills.playbook(s.id);
+      assert(pb && pb.steps.length, s.id + ' 应有 playbook 步骤');
+      pb.steps.forEach(st => assert(names.includes(st.cmd), s.id + ' 步骤命令未注册:' + st.cmd));
+    });
+    // 校验型扩展点:登记的校验项必须有实现(不挂空项),check 结果数与该步登记数一致
+    [].concat(...Skills.list().map(s => s.checks)).forEach(id => assert(typeof Skills.CHECKS[id] === 'function', '校验项未注册实现:' + id));
+    assertEq(Skills.check('review', {}).length, Skills.list('review').reduce((n, s) => n + s.checks.length, 0), 'check 结果数应等于该步已登记校验项数');
+  } },
+  { name: 'skill 索引加载点成对:index.html(knowledge 之后 wf-core 之前)+ server/cli/mcp require', fn() {
+    const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+    const iKB = html.indexOf('js/knowledge.js'), iSk = html.indexOf('js/skills.js'), iWf = html.indexOf('js/wf-core.js');
+    assert(iSk > 0, 'index.html 应挂载 js/skills.js');
+    assert(iKB < iSk && iSk < iWf, 'skills.js 须在 knowledge.js 之后、wf-core.js 之前(依赖 KB,且供 wf-core 取块)');
+    ['server.js', 'cli.js', 'mcp.js'].forEach(f => {
+      const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+      assert(src.includes("require('./js/skills.js')"), f + ' 应 require skill 索引(四端同一份注册表)');
+    });
+  } },
   { name: 'MCP resources/prompts(§2.7):initialize 声明能力;list/get 实跑;模板参数代入与流程序列', fn() {
     const { spawnSync } = require('child_process');
     const reqs = [

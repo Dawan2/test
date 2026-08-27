@@ -21,6 +21,7 @@ const path = require('path');
 const crypto = require('crypto');
 const Domain = require('./js/domain.js'); // 领域单一来源:指纹/就绪/判旧/工作流状态与主应用逐字节一致
 const CmdRegistry = require('./js/cmd-registry.js'); // 领域命令元数据单源:exec 用法/help 文案/needs 校验由此生成(与前端 Commands 同词表)
+const Skills = require('./js/skills.js'); // 主线 skill 索引(按七步索引 KB/Prompts/命令/专家的引用键;与浏览器、server.js 同一份注册表)
 
 /* ================= 基础设施:配置 / 参数 / 输出 ================= */
 const CFG_DIR = process.env.HUJING_CONFIG_DIR || path.join(os.homedir(), '.hujing');

@@ -842,6 +842,7 @@ const Domain = require('./js/domain.js');
 const WfCore = require('./js/wf-core.js');
 const Prompts = require('./js/prompts.js');
 const KB = require('./js/knowledge.js');
+const Skills = require('./js/skills.js'); // 主线 skill 索引(只存 KB/Prompts/CmdRegistry/专家的引用键,按七步索引;与 knowledge.js 同处加载)
 const ExpertsData = require('./js/experts-data.js'); // 专家注册表双端单源(二十二轮):wf 端点据 hiredExpert 推导 projType
 const BILLING_ACTIONS = Object.assign({}, BILLING.DEFAULT_ACTIONS, CONFIG.billingActions || {});
 /* 前端 COST 键 → 服务端动作(同步投影用;config 覆盖价格后前端自动跟随) */

@@ -23,6 +23,11 @@ Windows 也可直接双击 `启动.bat`(自动起服务并打开浏览器)。
    │  js/wf-core.js  工作流纯核(双端 UMD,二十一轮)——智能分镜/本集理解/智能审片的
    │                 提示词拼装与结果规整单一来源:浏览器 sb-llm/understanding/review 委托,
    │                 server.js /api/wf/* 端点 require;Prompts/KB 同步 UMD 化(覆盖表显式传入)
+   │  js/skills.js  主线 skill 索引注册表(双端 UMD)——按主线七步(剧本/主体/分集/分镜/
+   │                 生成/审片/成片)索引既有资产,条目只存引用键(KB 条目与压缩块 / Prompts
+   │                 key / 领域命令名 / 专家 id),不复制任何方法论与提示词正文;
+   │                 Skills.list/block/check/playbook 四个接口,Skills.validate(deps) 自检
+   │                 引用键存在性(注册表由调用方注入,模块内不碰 window/Store)
    │  js/commands.js 统一领域命令注册表(Commands.execute)——就绪检查/智能分镜/批量生成/
    │                 智能审片/合成/一键成片,UI 按钮(ui 模式,决策弹窗保留)、导演助手动作、
    │                 跑批引擎、CLI exec(后三者 headless)同一命令层;Commands.digest 统一消化回执
@@ -290,7 +295,8 @@ node cli.js export <pid> <epid> --out ./out        # 下载 mp4 + srt
 
 ## 专业知识库与专家体系(js/knowledge.js + gsettings.js)
 
-- **KB 知识库**:编剧域(八律/六阶段结构/单集三段式/钩子六型/反转五式/打脸四步/付费卡点/对话铁律/人物体系/剧本诊断)+ 导演域(场面调度/景别运镜情绪表/轴线匹配/剪辑节奏)+ AI 抽卡域(八维提示词公式/五条军规/多镜头写法),为短剧创作与提示词工程方法论的系统化整理;`KB.block()` 注入虎鲸助手(全局+分集)系统提示词,`KB.SECTIONS` 供各生成环节按名取用。
+- **KB 知识库**:编剧域(八律/六阶段结构/单集三段式/钩子六型/反转五式/打脸四步/付费卡点/对话铁律/人物体系/剧本诊断)+ 导演域(场面调度/景别运镜情绪表/轴线匹配/剪辑节奏)+ AI 抽卡域(八维提示词公式/五条军规/多镜头写法),为短剧创作与提示词工程方法论的系统化整理;`KB.block()` 注入虎鲸助手(全局+分集)系统提示词,`KB.SECTIONS` 是全库名→文本平表;条目按主线步骤的取用索引在 `js/skills.js`(见下条)。
+- **主线 skill 索引(js/skills.js)**:把知识条目(KB)、可覆盖提示词(Prompts)、领域命令(CmdRegistry)、专家(ExpertsData)四类既有资产按主线七步(剧本/主体/分集/分镜/生成/审片/成片)登记为一张索引表——15 条 skill 覆盖 KB 全部 17 条方法论与 6 条注册表提示词,条目字段 `{id,name,stage,kind,kb,kbBlocks,prompts,cmds,experts,checks,steps,gaps}` **只存引用键**,正文仍只在 knowledge.js / prompts.js 各一份。`Skills.block(stage,{ids,sep})` 按索引现取 KB 拼注入块(与现有硬编码注入点逐字节一致),`Skills.playbook(id)` 给编排型 skill 的命令步骤(只引用已注册命令名),`Skills.check(stage,obj,ctx)` 跑校验型扩展点 `CHECKS`(纯本地、零 LLM、零计费,当前为空表不挂空项),`Skills.validate(deps)` 由契约测试断言引用键全部命中。四端同一份注册表:index.html(knowledge.js 之后、wf-core.js 之前)+ server.js / cli.js / mcp.js require;`stage` 六步与 `Domain.workflow` 主线步骤键同词表,审片如实标注 `wfStep:false`(尚未进 workflow 步骤集合),条目 `gaps` 字段记录该步已知贯通缺口编号。
 - **专家雇佣扩充**:风格导演新增 暗黑复仇导演🗡️(打脸四步结构/压抑爆发)/古装权谋导演🏮(信息差智斗/仪式感构图);功能专家新增 钩子工程师🪝/爽点架构师⚡/对白医生💬/结构医师🩺/摄影指导📷/剪辑指导✂️——人设均以 KB 方法论为底座,可在「偏好学习→专家雇佣」全局雇佣(风格类)或「制片→智能体分工」板块雇佣(功能类),也可在助手身份下拉直接切换。**专家自进化**:自定义专家带「🧠 从使用记录进化」——把你的纠正/偏好(agentMemory)LLM 蒸馏为 ≤4 条进化条款追加进该专家 persona(1 积分,无新增退费),已进化专家带 🧠×N 角标。
 
 ## 工程治理(2026-08 大审查后十三轮收敛)
