@@ -351,7 +351,7 @@
           p, ep, chat, text,
           model: (Store.state.settings || {}).defLLM || API.getConfig().model,
           renderMsgs,
-          sysExtra: (AC.gBoard ? `\n你当前作为「${AC.gBoard.key}」板块的${AC.gBoard.agent}与用户协作,聚焦:${AC.gBoard.focus}。${AC.upstreamFinal(ctx.p, AC.gBoard.key)}` : '') + AC.gPersonaBlock() + AC.memBlock(text, AC.gBoard && AC.gBoard.key),
+          sysExtra: (AC.gBoard ? `\n你当前作为「${AC.gBoard.key}」板块的${AC.gBoard.agent}与用户协作,聚焦:${AC.gBoard.focus}。${AC.upstreamFinal(ctx.p, AC.gBoard.key)}${AC.boardKBBlock(AC.gBoard.key)}` : '') + AC.gPersonaBlock() + AC.memBlock(text, AC.gBoard && AC.gBoard.key),
         });
         return;
       }
@@ -386,7 +386,7 @@
         // 共用同 opId 的 q1/q2 步骤槽位,与路由/纪要蒸馏同一条消息只扣一次)
         const llmOptG = {
           model,
-          system: buildGlobalPrompt(ctx) + (AC.gBoard ? `\n你当前作为「${AC.gBoard.key}」板块的${AC.gBoard.agent}与用户协作,聚焦:${AC.gBoard.focus}。本板块的生成/审核/定稿节奏由你引导。${AC.upstreamFinal(ctx.p, AC.gBoard.key)}` : orcaGlobalCtx(ctx.p)) + AC.gPersonaBlock() + AC.memBlock(text, AC.gBoard && AC.gBoard.key) + AO.queryProtocol(),
+          system: buildGlobalPrompt(ctx) + (AC.gBoard ? `\n你当前作为「${AC.gBoard.key}」板块的${AC.gBoard.agent}与用户协作,聚焦:${AC.gBoard.focus}。本板块的生成/审核/定稿节奏由你引导。${AC.upstreamFinal(ctx.p, AC.gBoard.key)}${AC.boardKBBlock(AC.gBoard.key)}` : orcaGlobalCtx(ctx.p)) + AC.gPersonaBlock() + AC.memBlock(text, AC.gBoard && AC.gBoard.key) + AO.queryProtocol(),
           user: histBlockG + buildGlobalUser(ctx, text),
           temperature: 0.4, max_tokens: 6000,
         };

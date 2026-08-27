@@ -128,8 +128,8 @@ ${ctx.content}`;
       genStrategy: cfg.batchStrategy || 'ref', inheritTail: false, firstFrame: null, lastFrame: null, name: '',
     };
   };
-  /* 智能分镜系统人设(知识库条目同源;ov=用户提示词覆盖表) */
-  W.sbSystem = ov => Prompts.get('sb.system', ov) + KB.DR_SHOT + KB.DR_AXIS;
+  /* 智能分镜系统人设(按 KB.SECTIONS 键取条目正文,知识库单一来源;ov=用户提示词覆盖表) */
+  W.sbSystem = ov => Prompts.get('sb.system', ov) + KB.pick('景别运镜', '轴线匹配');
   /* 拆镜 user 模板(自 genShotsLLM 下沉;o={count,mode,optimize,adv,feedback},ctx={styleText,projType,directorNote,conceptNote,langText,genres,understandingText,eventsText,content(截 12000),subjects}) */
   W.buildSBUser = function (p, ep, o, ctx) {
     const withForms = sj => sj.name + ((sj.forms || []).length ? `(形态:${sj.forms.map(f => f.name).join('/')})` : '');
