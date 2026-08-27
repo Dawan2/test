@@ -1,5 +1,5 @@
 /* ============ cmd-registry.js 统一领域命令元数据注册表(双端 UMD,二十二轮) ============
- * 8 条领域命令的共享元数据(name/label/risk/needs/desc/args)单一来源:
+ * 全部领域命令的共享元数据(name/label/risk/needs/desc/args)单一来源:
  *   浏览器 js/commands.js 的 REG 注册默认值与 Commands.list() 自省、CLI `exec` 用法/help 文案、
  *   mcp.js 工具描述全部由此生成;两端各自只注册 handler(commands.js REG / cli.js EXEC)。
  * meter 为各端执行侧差异(浏览器 produce 由子命令计量,CLI 按整体钱包差值),不进共享元数据。 */
@@ -48,6 +48,11 @@
       name: 'episode.produce', label: '一键成片', risk: 'exec', needs: ['p', 'ep'],
       desc: '编排:就绪检查→批量生成→智能审片(质量闸门)→合成成片;待人工镜默认阻断合成,riskyCompose 放行',
       args: [PID, EPID, { name: 'confirmAll', type: 'boolean', desc: '授权全量生成' }, { name: 'smartReview', type: 'boolean', desc: '审片开关(默认开)' }, { name: 'maxRetry', type: 'number', desc: '审片不达标重试上限 1-5(默认 2)' }, { name: 'riskyCompose', type: 'boolean', desc: '放行待人工/低分镜参与合成' }, UI],
+    },
+    {
+      name: 'project.splitEpisodes', label: '剧本拆集', risk: 'exec', needs: ['p'],
+      desc: '整部剧本拆为分集:集/章标记 ≥2 条按标记切(零 LLM),否则 LLM 锚点分集(正文逐字切原文),长文/离线按段落均分;已有分集需 overwrite 授权覆盖(旧分集可恢复)',
+      args: [PID, { name: 'overwrite', type: 'boolean', desc: '授权覆盖现有分集(headless 默认拒绝,防误删已分镜数据)' }, { name: 'local', type: 'boolean', desc: '强制本地按段落均分(不调 LLM,零计费)' }, UI],
     },
     {
       name: 'episode.understanding', label: '本集理解', risk: 'exec', needs: ['p', 'ep'],
