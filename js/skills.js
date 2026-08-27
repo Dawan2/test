@@ -941,7 +941,10 @@
         + '每步只在计划层登记"当下待不待办"的状态取材器,需要授权或人工挑选的状态出导航步不代授权);'
         + 'MCP 中段流程模板也由本投影切片(js/flow-tpl.js 按主体/分集/分镜/生成四段取本条 steps 的有序切片,'
         + '每步补"参数从哪取"与"断点在哪一码",经 cli flow-template 与 MCP 工具/提示模板出口,只读零计费不代授权)。'
-        + 'G-12 仍挂账:发布留痕两端的命令化出口未接(见 SK-25),编排层仍为它挂不出命令名',
+        + 'G-12 的第三个落点也已接上:发布留痕收进命令注册表成 project.release(浏览器按钮/CLI/服务端端点/MCP 同名同结构),'
+        + '编排层现在为它挂得出命令名(登记在 SK-25/SK-26)。本链步序仍止于合成成片——'
+        + '发布留痕是整条主线跑完之后的收尾动作,不是主线的第七步,故不串进本投影,'
+        + '制作计划与中段流程模板也就不为它出步(两处都只切本投影,口径自动一致)',
     },
     /* ---- 剧本 ---- */
     {
@@ -1160,7 +1163,18 @@
         { cmd: 'episode.generateVideos', args: {}, note: '按审片问题修订提示词后只重跑低分镜(shotIds 传低分镜子集)' },
         { cmd: 'episode.smartReview', args: {}, note: '复审:仍有待人工镜则回 needs_human' },
         { cmd: 'episode.compose', args: {}, note: '达标后合成成片' },
+        { cmd: 'project.release', args: {}, note: '收尾留痕:过发布门后打版本号,未过门如实 blocked 不留痕(force 授权位留空由用户明示)' },
       ],
+      note: 'G-12 在本条的落点已接上:发布留痕从"两端各一份实现、都在领域命令注册表之外"改成一条已注册命令 '
+        + 'project.release——准入判定与写回收进 js/release-core.js 双端单源(浏览器 Release.stampRelease、'
+        + '服务端 /api/wf/release 同一个 stamp,环境差异经参数注入),浏览器交付检查的「打版本」按钮改走命令表,'
+        + 'CLI `exec project.release` / `release` 与 MCP hujing_release 同名同结构同链路。'
+        + '本条 steps 因此补上收尾这一步:修订闭环达标合成之后就是留痕,args 仍留空——'
+        + 'force 是授权位(未过门强打),归用户明示,编排层不代授权。'
+        + '发布留痕零 LLM、零上游、零计费:它只写 p.releases 与 p.__ver,不进 Tasks.run 也不走 wfLLM,'
+        + '门禁判据、fail/warn 计数与 overall 四级口径一个字未动(不抬门也不把 warn 变 fail)。'
+        + '仍欠(G-03):审片虽已是主线一等步骤,本条的修订循环仍靠调用方自己看 lowShots 决定重抽哪几镜——'
+        + 'shotIds 子集不由编排层推导,复审不达标时的收敛次数也没有登记口径',
     },
     {
       id: 'review.memoryFeedback', sk: 'SK-26', name: '审片结论按板块回流专家', stage: 'review',
@@ -1168,17 +1182,20 @@
       experts: ['ex_editor'], gaps: ['G-11', 'G-02'],
       steps: [
         { cmd: 'episode.smartReview', args: {}, note: '审片闭环收尾即把该集可判定结论(待返工镜数/共性问题类型/四维最弱维)写回成片板块记忆桶,下一轮审片提示词按板块召回时吃到' },
+        { cmd: 'project.release', args: {}, note: '发布闭环收尾同理:门禁状态与未过门项写回项目级记忆桶(未过门不留痕也就不回流)' },
       ],
       note: '回流面已落地最小真实回流:审片与发布两个闭环收尾把**可判定**结论(待返工镜数、共性问题类型、'
         + '四维最弱维、发布门状态与未过门项)写回既有记忆桶 state.agentMemory,派生只此一份 '
         + 'WfCore.memFeedback/memWrite(记忆数组经参数注入,函数体不碰环境句柄),按回流键 fb 原地更新——'
         + '同一集/同一项目反复闭环只留最新一条,不刷满 50 条上限挤掉用户自己沉淀的偏好。'
         + '四处写入点:浏览器 review.js 整集审片、服务端 /api/wf/smart-review(CLI/MCP 同链路)、'
-        + '发布留痕两端(浏览器 release.js stampRelease 与 CLI release,后者随同一次 PUT 的 meta 桶写回)。'
+        + '发布留痕两端(浏览器 release.js stampRelease 与服务端 /api/wf/release,CLI `exec project.release` 与 MCP 同链路)。'
         + '"回流专家"的自动那一半即经此闭合:条目带板块 scope,下一轮同板块提示词按 WfCore.memBlock 召回吃到。'
         + '整集均分有意不回流——成片板块记忆会被下一轮逐镜审片召回,把上一轮分数喂回评分方等于设锚点。'
         + '沿用既有记忆桶与自定义专家副本,不新建存储桶、不改预置专家数据、不改发布门 G1–G10 判据与计数口径、不新增计费。'
-        + 'steps 只登记审片这一步:发布留痕两端都在领域命令注册表之外,编排层不为它挂假命令名(命令化待 G-12)。'
+        + 'steps 两步都是已注册命令:发布留痕的命令化出口(G-12 的第三个落点)已接上——'
+        + '判定与写回收进 js/release-core.js 双端单源,出口是 project.release,'
+        + '编排层不再需要为这一步挂假命令名,记忆回流的两个闭环因此都能被 playbook 投影出来。'
         + '仍欠(G-11):回流条目蒸馏进专家 persona 仍要人在专家库点「从使用记录进化」,'
         + 'evolveExpert 只对自定义专家开放、读记忆时不按板块过滤,自动进化与预置专家仍无出口',
     },

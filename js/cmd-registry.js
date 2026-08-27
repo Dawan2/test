@@ -65,6 +65,13 @@
       args: [PID, { name: 'subjectIds', type: 'array', desc: '只处理指定主体 id 子集(默认全部缺图主体)' }, UI],
     },
     {
+      name: 'project.release', label: '发布留痕', risk: 'exec', needs: ['p'],
+      desc: '成片主线收尾:过发布门后打版本号并写一条 releases 留痕(digest/ver/checksum/门禁结论,可回滚定位);未过门如实 blocked 不留痕,空项目(无分集)如实拒绝;零 LLM 零计费',
+      args: [PID, { name: 'note', type: 'string', desc: '发布说明(≤500 字,如 首版/第 5 次修订)' },
+        { name: 'minScore', type: 'number', desc: '审片均分阈值(缺省取偏好设置 releaseMinReviewScore,默认 7)' },
+        { name: 'force', type: 'boolean', desc: '授权位:未过发布门仍强制打版本(该版本留痕标 forced,须由用户明示)' }, UI],
+    },
+    {
       name: 'project.extractSubjects', label: '提取主体', risk: 'exec', needs: ['p'],
       desc: 'LLM 从项目剧本提取角色/场景/道具主体合并入库(同名同类不覆盖,新主体待生图);浏览器离线回退本地启发式',
       args: [PID, { name: 'mode', type: 'string', desc: 'normal|fine(精细模式提示词/八维度人设更详尽)' }, UI],

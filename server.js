@@ -845,6 +845,7 @@ const KB = require('./js/knowledge.js');
 const Skills = require('./js/skills.js'); // 主线 skill 索引(只存 KB/Prompts/CmdRegistry/专家的引用键,按七步索引;与 knowledge.js 同处加载)
 const ExpertsData = require('./js/experts-data.js'); // 专家注册表双端单源(二十二轮):wf 端点据 hiredExpert 推导 projType
 const CmdRegistry = require('./js/cmd-registry.js'); // 领域命令词表单源:/api/wf/agent 的 run 类 ops 协议与白名单过滤
+const ReleaseCore = require('./js/release-core.js'); // 发布留痕双端单源:发布门七项核心门与打版本写回(与浏览器 Release.stampRelease 同一份)
 const BILLING_ACTIONS = Object.assign({}, BILLING.DEFAULT_ACTIONS, CONFIG.billingActions || {});
 /* 前端 COST 键 → 服务端动作(同步投影用;config 覆盖价格后前端自动跟随) */
 const COST_PROJECTION = {
@@ -3650,6 +3651,34 @@ const server = http.createServer(async (req, res) => {
       } catch (e) {
         return fail(res, e.httpStatus || 502, e.message || '提取主体失败', e.httpStatus || 502);
       } finally { rateLimitDone(user.id); }
+    }
+
+    /* 发布留痕(成片主线收尾,headless 出口):{pid,note?,minScore?,force?} → 发布门判定 + 打版本写回。
+     * 判定与写回一律走 js/release-core.js 双端单源(与浏览器 Release.stampRelease 同一个 stamp);
+     * 门禁是本端点自己算的(七项核心门,客户端结论不作数),判据/fail-warn 计数/overall 四级口径一字未动——
+     * 未过门 409(force 授权位由调用方明示,强制打的版本留痕标 forced)、空项目 400、项目不存在 404。
+     * 零 LLM、零上游、零计费:发布留痕本来就不是计费动作,故不进 wfLLM,也不入 wf 限流窗口
+     * (与 /api/state PUT 同性质的本地状态写入)。闭环结论按板块回流既有记忆桶,随同一次 wfSave 落盘。 */
+    if (pathname === '/api/wf/release' && req.method === 'POST') {
+      try {
+        const b = await readJSONBody(req, 256 * 1024);
+        const { cur, tree, p } = wfLoadCtx(user.id, String(b.pid || ''), '');
+        if (!p) return fail(res, 404, '项目不存在', 404);
+        const st = (tree && tree.settings) || {};
+        const minScore = b.minScore !== undefined ? +b.minScore : (st.releaseMinReviewScore || ReleaseCore.DEFAULT_MIN_SCORE);
+        const gate = ReleaseCore.gates(p, { minScore, online: true, Domain });
+        const r = ReleaseCore.stamp(p, {
+          gate, force: !!b.force, note: b.note,
+          who: user.username || 'headless', when: nowStr(), savedAt: Date.now(),
+        });
+        if (!r.ok) return fail(res, r.code === 'gate-blocked' ? 409 : 400, r.message + (r.code === 'gate-blocked' ? ',force 可强制打版本' : ''), r.code === 'gate-blocked' ? 409 : 400);
+        tree.agentMemory = WfCore.memWrite(tree.agentMemory,
+          WfCore.memFeedback({ p, gate, rel: r.release }, { now: nowStr }));
+        const rev = wfSave(user.id, cur, tree);
+        return ok(res, { rev, release: r.release, gateOverall: gate.overall, gate });
+      } catch (e) {
+        return fail(res, e.httpStatus || 502, e.message || '发布留痕失败', e.httpStatus || 502);
+      }
     }
 
     /* Agent 单轮对话(服务端管线):{pid,epid?,text,scope?} → 拼装注入(KB/专家 persona/协作记忆/状态摘要)
