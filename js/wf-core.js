@@ -302,6 +302,9 @@ ${ctx.content}`;
   };
   /* 智能分镜系统人设(按 KB.SECTIONS 键取条目正文,知识库单一来源;ov=用户提示词覆盖表) */
   W.sbSystem = ov => Prompts.get('sb.system', ov) + KB.pick('景别运镜', '轴线匹配');
+  /* 视频提示词改写系统人设(生成步注入点):注册表人设 + 抽卡方法论两条按键整条注入,
+   * 与 sbSystem 同形态——正文只从 KB 取,本层不写第二份;键与 skill 索引生成步(gen)登记的同一批。 */
+  W.genPromptSystem = ov => Prompts.get('gen.promptSystem', ov) + KB.pick('抽卡公式', '抽卡军规');
   /* 拆镜 user 模板(自 genShotsLLM 下沉;o={count,mode,optimize,adv,feedback},ctx={styleText,projType,directorNote,conceptNote,personaNote,memText,langText,genres,understandingText,eventsText,content(截 12000),subjects,tplVideoText}) */
   W.buildSBUser = function (p, ep, o, ctx) {
     const withForms = sj => sj.name + ((sj.forms || []).length ? `(形态:${sj.forms.map(f => f.name).join('/')})` : '');

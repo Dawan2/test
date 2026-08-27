@@ -30,6 +30,10 @@
       def: '你是资深短剧导演。',
     },
     {
+      key: 'gen.promptSystem', name: '视频提示词改写 · 系统人设', vars: [],
+      def: '你是文生视频提示词专家。',
+    },
+    {
       key: 'review.system', name: '单镜审片 · 系统人设', vars: [],
       def: '你是资深影视审片专家组(技术/匹配/导演三席)。',
     },
