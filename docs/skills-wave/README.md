@@ -45,6 +45,7 @@
 | [w17-preflight-stages.md](./w17-preflight-stages.md) | 就绪检查校验面清单收成双端单源表 `Skills.preflightStages()`(冲突热点收口:新增一面只改一处),含推导规则、逐字节等价取证与变异验证 | **新增校验面前必读**;改 `episode.preflight` 的 `result.checks` 前 |
 | [w18-gen-prompt-unify.md](./w18-gen-prompt-unify.md) | `gen.promptSystem` 收编两端内联:`WfCore.optimizeSystem` 与 `buildOptimizeUser` 配对、CLI 侧覆盖表显式传参、为什么修订链路不接方法论块 | 改审片修订提示词或往注册表收编内联人设前 |
 | [w19-g06-inject.md](./w19-g06-inject.md) | G-06 残留两条落地:「多镜头写法」进拆镜人设 `sbSystem`、「主体参考」进主体人设 `extractSystem`、键为什么只挂一个宿主、缺省提示词变长的兼容影响 | 改拆镜/提取主体提示词,或往某一步补 KB 注入前 |
+| [w20-cycle3-audit.md](./w20-cycle3-audit.md) | 周期 3(W11–W19)逐项目独立核验报告:锚定 SHA、逐支成熟度 M0–M4、独立 worktree 重跑的测试数字、阻塞与下一目标 | 想知道某条分支做到哪一步;开集成槽前 |
 | [w21-integration-log.md](./w21-integration-log.md) | W15/W17/W18/W19 收敛到集成分支的记录:并集型冲突逐处解法、用例名集合比对证明没删测、包含性实测的有效期口径 | 想知道主干现在是什么状态 |
 
 ## 一分钟摘要(周期 2 收敛后)
