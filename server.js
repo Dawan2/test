@@ -1583,7 +1583,13 @@ function userUploadBytes(userId) {
  * 但计费动作由服务端按工作流定死(不接受客户端 billingAction——llm.* 族标签套利在工作流端点消失);
  * opt.step 走步骤槽位(同 operationId 聚合一笔扣费,stepBudget 8);失败一律先退费再抛错,
  * 调用方如实回报(服务端工作流不回退本地模板冒充交付——离线兜底是浏览器语义,服务端恒在线语义)。 */
-function wfMockOut(kind) {
+function wfMockOut(kind, opt) {
+  // 拆集 mock:锚点必须能在原文中逐字找到(splitByAnchors 按锚点切原文),故按段落首句现造
+  if (kind === 'split') {
+    const paras = String((opt && opt.mockText) || '').split(/\n+/).map(x => x.trim()).filter(x => x.length > 10);
+    const pick = [paras[0] || '', paras[Math.floor(paras.length / 2)] || paras[1] || ''];
+    return pick.map((t, i) => ({ title: '第' + (i + 1) + '集 mock', anchor: t.slice(0, 20) }));
+  }
   if (kind === 'und') return { 剧情脉络: 'mock 脉络:冲突开场中段升级结尾留钩', 情绪曲线: 'mock 曲线:铺垫到爆发', 节奏规划: 'mock 节奏:前缓后快', 视觉基调: 'mock 基调:主体突出', 关键场面: 'mock 场面:对峙与反转', 悬念与期待: 'mock 悬念:结尾钩子' };
   if (kind === 'shots') return [
     { plot: '钩子开场:女主被当众羞辱', camera: '固定镜头', view: '正面', angle: '平视', shotSize: '中景', characters: [], scene: '', props: [], narration: '', dialogue: '你们会后悔的。', prompt: '漫剧风格,宴会厅,女主被嘲讽,冷色调', duration: 5, strategy: 'ref' },
@@ -1596,9 +1602,9 @@ function wfMockOut(kind) {
   return { reply: 'mock' };
 }
 async function wfLLM(userId, opt) {
-  // opt: {action, reason, opId, step, wfName, model, system, user|messages, temperature, max_tokens, projectId, mockKind}
+  // opt: {action, reason, opId, step, wfName, model, system, user|messages, temperature, max_tokens, projectId, mockKind, mockText}
   // 测试 mock(与 /api/llm/chat 同约定):不调上游也不扣费
-  if (process.env.MOCK_LLM === '1' || CONFIG.mockLlm) return { parsed: wfMockOut(opt.mockKind), model: 'mock-llm', mock: true };
+  if (process.env.MOCK_LLM === '1' || CONFIG.mockLlm) return { parsed: wfMockOut(opt.mockKind, opt), model: 'mock-llm', mock: true };
   // proxyCharge 需要 res 写失败响应——内部调用用收集型 shim,转为抛出
   const shim = { __st: 0, __msg: '', writeHead(c) { this.__st = c; }, end(b) { try { this.__msg = (JSON.parse(b) || {}).message || ''; } catch (_) {} } };
   const charge = proxyCharge(shim, userId, opt.action, opt.reason || ('工作流(' + opt.action + ')'), opt.opId, 'wf/' + (opt.wfName || 'llm'), { step: opt.step, _projectId: opt.projectId }, { stepBudget: opt.stepBudget || 8 });
@@ -3273,6 +3279,49 @@ const server = http.createServer(async (req, res) => {
      * 智能分镜/本集理解/智能审片的 LLM 编排下沉服务端——CLI/MCP/外部 Agent 不再依赖浏览器引擎;
      * 计费动作服务端定死(不接受客户端标签),提示词/规整与浏览器同源(js/wf-core.js);
      * 失败退费+如实报错(不本地冒充);写回 state 与 /api/state PUT 同路径。 */
+    /* 剧本拆集(主线前段 headless 起点):整部剧本 p.script → p.episodes。
+     * 模式与切分算法经 WfCore 双端单源(markers 零 LLM / llm 锚点切原文 / even 段落均分),
+     * 正文逐字保留;LLM 步失败退费+如实报错(不本地冒充,调用方可加 local 走零计费均分)。
+     * 覆盖保护:已有分集需 overwrite 显式授权,在飞生成一律拒绝;旧数据在 wfSave 的 state 快照中可恢复。 */
+    if (pathname === '/api/wf/split-episodes' && req.method === 'POST') {
+      if (!rateLimitOk(user.id)) return fail(res, 429, '请求过于频繁,请稍候', 429);
+      try {
+        const b = await readJSONBody(req, 1024 * 1024);
+        const { cur, tree, p } = wfLoadCtx(user.id, String(b.pid || ''), '');
+        if (!p) return fail(res, 404, '项目不存在', 404);
+        const text = String(p.script || '').trim();
+        if (!text) return fail(res, 400, '项目暂无剧本原文,请先写入剧本(CLI project-script)', 400);
+        const had = (p.episodes || []).length;
+        if (had && !b.overwrite) return fail(res, 409, '已有 ' + had + ' 个分集:重新分集会整表覆盖(含分镜数据),需 overwrite 显式授权', 409);
+        const infl = WfCore.splitInflight(p);
+        if (infl) return fail(res, 409, '有 ' + infl + ' 个镜头/节拍正在生成,请等待完成后再重新分集', 409);
+        const st = (tree && tree.settings) || {};
+        const llmReady = !!(CONFIG.apiKey || process.env.MOCK_LLM === '1' || CONFIG.mockLlm);
+        const mode = b.local ? 'even' : WfCore.splitMode(text, llmReady);
+        let eps = null;
+        if (mode === 'llm') {
+          const r = await wfLLM(user.id, {
+            action: 'llm.chat', reason: '剧本拆集(' + (p.name || p.id) + ')', opId: sanitizeOpId(b.operationId) || uid('wfsp'), step: 'main', wfName: 'split-episodes',
+            model: st.defLLM || 'qwen-turbo', system: '你是专业的短剧策划编辑。',
+            user: WfCore.buildSplitUser(text, WfCore.splitTargetCount(text)),
+            temperature: 0.4, max_tokens: 2000, projectId: p.id, mockKind: 'split', mockText: text,
+          });
+          try { eps = WfCore.splitByAnchors(text, r.parsed); } catch (e) {
+            if (r.charge) proxyRefund(user.id, r.charge, e.message);
+            return fail(res, 502, 'LLM 分集失败(已退费):' + e.message + ';可加 local 参数按段落均分(零计费)', 502);
+          }
+        }
+        let used = mode;
+        // markers/even 两模式本就走本地切分;llm 模式锚点全落空(过滤后剩 0 集)时兜底并把 mode 如实降为 even
+        if (!eps || !eps.length) { eps = WfCore.localSplitEpisodes(text); if (mode === 'llm') used = 'even'; }
+        p.episodes = eps.map((e, i) => ({ id: uid('ep'), title: e.title, content: e.content, order: i, contentRev: 0, shots: [], status: 'draft' }));
+        const rev = wfSave(user.id, cur, tree);
+        return ok(res, { rev, mode: used, overwritten: had, count: p.episodes.length, episodes: p.episodes.map(e => ({ id: e.id, title: e.title, chars: (e.content || '').length })) });
+      } catch (e) {
+        return fail(res, e.httpStatus || 502, e.message || '剧本拆集失败', e.httpStatus || 502);
+      } finally { rateLimitDone(user.id); }
+    }
+
     if (pathname === '/api/wf/understanding' && req.method === 'POST') {
       if (!CONFIG.apiKey && !(process.env.MOCK_LLM === '1' || CONFIG.mockLlm)) return fail(res, 503, '服务端未配置 LLM key,请创建 config.json 并填入 apiKey', 503);
       if (!rateLimitOk(user.id)) return fail(res, 429, '请求过于频繁,请稍候', 429);
