@@ -3497,7 +3497,7 @@ const contractTests = [
     // 编排型步骤只引用已注册命令(playbook 不内联新命令语义)
     const names = require('../js/cmd-registry.js').names();
     const orch = Skills.list().filter(s => s.kinds.includes('orchestrate') && !s.pending.includes('orchestrate'));
-    assert(orch.length >= 3, '编排面已落地的条目不应少于 3 条(主线前段/审片修订闭环/一键成片投影)');
+    assert(orch.length >= 4, '编排面已落地的条目不应少于 4 条(主线全链/主线前段/审片修订闭环/一键成片投影)');
     assertEq(Skills.playbooks().map(p => p.id).join(','), orch.map(s => s.id).join(','), 'playbooks() 应投影全部已落地编排条目');
     orch.forEach(s => {
       const pb = Skills.playbook(s.id);
@@ -3515,6 +3515,42 @@ const contractTests = [
     assertEq(Skills.byId('eps.frontPipeline').cmds.join(','), front.steps.map(s => s.cmd).join(','), '编排条目 cmds 应由 steps 推出');
     // 步骤不预设参数:拆集的 overwrite 未授权即拒(编排层只给步序,不替调用方授权覆盖已有分集)
     front.steps.forEach(st => assertEq(Object.keys(st.args).length, 0, '前段步骤不应预设参数:' + st.cmd));
+    /* SK-05 主线全链编排:贯通层这条编排的 steps 把已注册命令串成端到端一条链,playbook 不再为 null。
+     * 与 SK-16(前段)/SK-25(审片修订)/SK-30(一键成片)的关系是全链与分段,不是第二份语义。 */
+    const chain = Skills.playbook('core.playbookProjection');
+    assert(chain, 'SK-05 编排面已落地,playbook 不应为 null');
+    assertEq(chain.steps.map(s => s.cmd).join(','),
+      'project.extractSubjects,subject.generateImage,project.splitEpisodes,episode.understanding,'
+      + 'episode.generateStoryboard,episode.preflight,episode.generateVideos,episode.smartReview,episode.compose',
+      '主线全链 playbook 应按主线步序串起端到端九步');
+    chain.steps.forEach(st => assertEq(Object.keys(st.args).length, 0, '全链步骤不应预设参数:' + st.cmd));
+    assertEq(Skills.byId('core.playbookProjection').cmds.join(','), chain.steps.map(s => s.cmd).join(','),
+      'SK-05 的 cmds 应由 steps 推出(不再手写第二份全量清单)');
+    /* 步序与 Domain.workflow 同源:落到主线步上的那几步在链上不得倒序(工作流改序或步骤插错位置时先红);
+     * 本集理解与就绪检查是所属步的前置动作,不单独映射一个主线步,故不参与本断言 */
+    const stepOfCmd = {
+      'project.extractSubjects': 'subjects', 'subject.generateImage': 'subjects', 'project.splitEpisodes': 'eps',
+      'episode.generateStoryboard': 'shots', 'episode.generateVideos': 'gen', 'episode.smartReview': 'review',
+      'episode.compose': 'film',
+    };
+    const anchors = chain.steps.map(s => stepOfCmd[s.cmd]).filter(Boolean).map(k => wfStepKeys.indexOf(k));
+    assert(anchors.every(i => i >= 0), '全链锚点步应全部落在 Domain.workflow 主线步骤上');
+    anchors.forEach((v, i) => assert(i === 0 || anchors[i - 1] <= v, '全链步序不得与 Domain.workflow 主线步序倒置'));
+    // 两条编排不许分叉:SK-16 前段四步须是全链的有序子序列
+    let at = -1;
+    front.steps.forEach(st => {
+      const k = chain.steps.findIndex((c, i) => i > at && c.cmd === st.cmd);
+      assert(k > at, '前段编排的步骤应是主线全链的有序子序列:' + st.cmd);
+      at = k;
+    });
+    /* 有意不进链的两条:断点补拍与聚合编排各有归属,不串进主线全链;
+     * 摘掉 SK-05 的全量 cmds 后它们仍被别的条目登记(全命令覆盖那条契约不靠本条兜底) */
+    ['shot.generateVideo', 'episode.produce'].forEach(n => {
+      assert(!chain.steps.some(s => s.cmd === n), n + ' 不应串进主线全链(断点补拍 / 三步聚合各有归属)');
+      assert(Skills.list().some(s => s.id !== 'core.playbookProjection' && s.cmds.includes(n)), n + ' 应仍被其他条目登记');
+    });
+    // 编排面落地不摘缺口标记:计划步骤与 MCP 流程模板两处投影未接,G-12 仍在
+    assert(Skills.byId('core.playbookProjection').gaps.includes('G-12'), 'G-12 的关联索引应仍在(落地一面不等于整条清账)');
     // 校验型扩展点:登记的校验项必须有实现(不挂空项),check 结果数与该步登记数一致
     [].concat(...Skills.list().map(s => s.checks)).forEach(id => assert(typeof Skills.CHECKS[id] === 'function', '校验项未注册实现:' + id));
     assertEq(Skills.check('review', {}).length, Skills.list('review').reduce((n, s) => n + s.checks.length, 0), 'check 结果数应等于该步已登记校验项数');
@@ -5587,7 +5623,7 @@ const skillsTests = [
     // infra 面已无 pending;别人的未落地面一字未动(不借本轮顺手清别人的账)
     assertEq(Skills.list().filter(s => s.pending.includes('infra')).length, 0, 'infra 面已全部落地');
     assertEq(Skills.list().filter(s => s.pending.length).map(s => s.sk + ':' + s.pending.join('+')).join(','),
-      'SK-05:orchestrate,SK-26:orchestrate', '剩余 pending 应只剩 orchestrate 两条');
+      'SK-26:orchestrate', '剩余 pending 应只剩 SK-26 的 orchestrate 一条');
     /* SK-29 的校验面已落地(上游定稿契约判成结论,经就绪检查消费),但 G-10 的**发布门那一半**仍未接:
      * 方法论门要不要挂成默认 warn 的可选门属产品口径,未定之前门禁一个字不动。
      * 这里不再拿 pending 快照当判据(那一面已落地,写 pending 反而是假记账),改钉真实约束:
