@@ -128,6 +128,55 @@
     return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
   };
 
+  /* SK-10 文案 AI 味的文本层检出:判定输入是给人看的文案两处载体——剧本正文与分镜 s.dialogue
+   * (与 SK-09 同两处载体,一份实现判两处)。三条判据全是本地词法命中,零 LLM 零计费:
+   *   ai-cliche     命中 AI 套话硬禁词 → warn(逐次记词与位置;台词载体记镜号)
+   *   spoken-formal 台词写成书面连接词 → warn(只判台词载体:人物嘴里不说"综上所述")
+   *   adverb-flood  正文修饰副词密度超上限 → warn(整段一条,不逐词重复报)
+   * 只判词法层看得见的痕迹:这一句有没有人味、像不像这个人物说的话属语义判断,
+   * 仍归 LLM 审片(G-10),本层不冒充语义审片,结论一律 warn 不升 fail。 */
+  const AI_CLICHE = ['五味杂陈', '百感交集', '思绪万千', '若有所思', '意味深长', '难以言喻',
+    '闪过一丝', '勾起一抹', '微微一笑', '缓缓开口', '深吸一口气', '陷入沉思', '陷入了沉思',
+    '空气仿佛凝固', '空气凝固', '时间仿佛静止', '命运的齿轮', '不由自主', '心头一颤'];
+  /* 书面连接词:叙述里用得上,从人物嘴里说出来就是没落地的成品腔,故只判台词载体 */
+  const FORMAL_WORDS = ['然而', '因此', '此外', '总而言之', '综上所述', '值得注意的是', '值得一提的是',
+    '众所周知', '由此可见', '换言之', '需要注意的是', '不仅如此'];
+  /* 修饰副词:单个都正常,通篇堆砌才是痕迹,故只按密度判、不逐词报 */
+  const ADVERB_WORDS = ['缓缓', '轻轻', '微微', '淡淡', '静静', '默默', '悄悄', '慢慢', '深深', '紧紧', '幽幽'];
+  const ADVERB_MIN = 200;   // 判密度的最短正文(去空白):短段落里一两个叠词副词是常态,不下密度断言
+  const ADVERB_PER_K = 10;  // 每千字修饰副词命中上限
+  /* 词表在文本中的全部命中(逐词逐次),按位置排序即阅读顺序;词表内无互为前缀的词,不会重复计同一段 */
+  const allOf = (t, words) => {
+    const out = [];
+    words.forEach(w => { for (let i = t.indexOf(w); i >= 0; i = t.indexOf(w, i + w.length)) out.push({ at: i, word: w }); });
+    return out.sort((a, b) => a.at - b.at);
+  };
+  CHECKS['script.aiVoiceTrace'] = function (obj) {
+    const o = obj || {};
+    const hits = [];
+    const body = compact(scriptTextOf(o));
+    if (body.length >= SCRIPT_MIN) {
+      allOf(body, AI_CLICHE).forEach(x => hits.push({ code: 'ai-cliche', where: 'script', at: x.at, name: x.word }));
+      const re = new RegExp(LINE_RE.source, 'g'); // 每次现开:全局正则的 lastIndex 不跨调用留状态
+      for (let m = re.exec(body); m; m = re.exec(body)) {
+        allOf(m[0].slice(1, -1), FORMAL_WORDS)
+          .forEach(x => hits.push({ code: 'spoken-formal', where: 'script', at: m.index + 1 + x.at, name: x.word }));
+      }
+      const ad = allOf(body, ADVERB_WORDS);
+      if (body.length >= ADVERB_MIN && ad.length * 1000 > body.length * ADVERB_PER_K) {
+        hits.push({ code: 'adverb-flood', where: 'script', at: ad[0].at, name: ad[0].word, count: ad.length, limit: ADVERB_PER_K });
+      }
+    }
+    ((o.ep && o.ep.shots) || (o.s ? [o.s] : [])).forEach(s => {
+      const line = compact(s.dialogue);
+      if (!line) return;
+      const loc = { where: 'shot', shotId: s.id, order: (+s.order || 0) + 1 };
+      allOf(line, AI_CLICHE).forEach(x => hits.push(Object.assign({ code: 'ai-cliche', name: x.word }, loc)));
+      allOf(line, FORMAL_WORDS).forEach(x => hits.push(Object.assign({ code: 'spoken-formal', name: x.word }, loc)));
+    });
+    return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
+  };
+
   /* SK-09 台词单句长度(对白铁律的校验半):KB「对话铁律」的"单句≤30字"落到两处台词载体上——
    * 剧本正文的引号台词,与分镜表的 s.dialogue(条目 covers 含 shots,同一判据两处载体一份实现)。
    *   long-line  单句去空白字数超阈值 → warn(hit 带载体、镜号与句首摘要)
@@ -614,9 +663,14 @@
     },
     {
       id: 'script.aiToneBan', sk: 'SK-10', name: '文案 AI 味硬禁与痕迹检出', stage: 'script',
-      covers: ['script', 'shots'], wave: 'W4', kinds: ['inject', 'check'], pending: ['inject', 'check'],
+      covers: ['script', 'shots'], wave: 'W4', kinds: ['inject', 'check'], pending: ['inject'],
+      checks: ['script.aiVoiceTrace'], cmds: ['episode.preflight', 'episode.smartReview'],
       experts: ['ex_dialogue'], gaps: ['S-02', 'G-13', 'G-10'],
-      note: '条目正文自撰后进 KB 单源(S-02),本条现无可引用条目键;校验面只做本地词法命中,零 LLM',
+      note: '校验面只做本地词法命中(套话硬禁词、台词书面腔、修饰副词密度),零 LLM 零计费,'
+        + '两处载体与 SK-09 同(剧本正文引号台词与分镜 s.dialogue)——'
+        + '经就绪检查、问题中心与审片报告消费,审片路径只读附本镜命中(独立字段,不并入 issues、不改评分与达标线);'
+        + '有没有人味、像不像这个人物说的话属语义面,待 G-10。'
+        + '注入面的条目正文自撰后进 KB 单源(S-02),故本条现无可引用条目键,人设句入注册表待 G-13',
     },
     /* ---- 主体 ---- */
     {

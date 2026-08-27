@@ -28,6 +28,9 @@
     'missing-step': '打脸四步缺环节',
     'step-out-of-order': '打脸四步步序倒置',
     'long-line': '台词单句超长',
+    'ai-cliche': 'AI 套话',
+    'spoken-formal': '台词写成书面腔',
+    'adverb-flood': '修饰副词堆砌',
   };
   /* 命中 → 一行明细:码文案 + 定位(打脸步名 / 台词摘要 / 镜号) */
   const craftLine = h => (CRAFT[h.code] || h.code)
@@ -89,7 +92,7 @@
         out.push(Object.assign({}, base, { kind: 'no-script', sev: 'high', count: 1, label: `「${ep.title}」缺剧本正文`, detail: '无剧本无法拆镜与生成本集理解', goto: `#/project/${p.id}/episode/${ep.id}` }));
         return;
       }
-      /* 剧本文本面校验项(js/skills.js SK-07/08/09,纯本地零 LLM 零计费):开篇钩子锚定 / 打脸四步 / 台词单句长度 →
+      /* 剧本文本面校验项(js/skills.js SK-07/08/09/10,纯本地零 LLM 零计费):开篇钩子锚定 / 打脸四步 / 台词单句长度 / 文案 AI 味 →
        * 低危提醒,只报不拦——发布门 G2 只数高/中危,本项不改门禁状态,也不进 Domain 的阻塞项。
        * 位置在未分镜等早退分支之前:剧本刚写完还没拆镜时正是这几条最该看得见的时候 */
       const craft = window.Skills ? [].concat(...Skills.check('script', { p, ep }).map(x => x.hits)) : [];
