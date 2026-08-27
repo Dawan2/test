@@ -765,18 +765,23 @@
     },
     {
       id: 'core.personaCtx', sk: 'SK-03', name: '生效人设经 ctx 过服务端', stage: CROSS, wave: 'W3',
-      kinds: ['infra'], pending: ['infra'],
+      kinds: ['infra'],
       prompts: ['sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.finalSystem'],
       cmds: ['episode.understanding', 'episode.generateStoryboard', 'episode.smartReview'], gaps: ['G-01'],
-      note: 'G-01 已落地:服务端 /api/wf/* 各端点经唯一装配口 wfPersonaNote 注入生效人设,浏览器同装配口;'
-        + '本条 pending 的 infra 面留的是注册表侧记账收敛(改 pending 会动 gaps 投影,单列一轮),口径同 SK-23',
+      note: 'G-01 已落地:服务端 /api/wf/* 各端点经唯一装配口 wfPersonaNote 注入生效人设(板块雇佣 > 全局雇佣),'
+        + '浏览器同装配口;infra 面的 pending 已按实况清空(gaps() 只投影 gaps 字段、不看 pending,清账动不到投影),'
+        + '缺口标记按关联索引口径保留。仍欠的是覆盖余量不是出口:审片侧三步至今不带人设——'
+        + '分镜评审 sb.reviewSystem、四维成片评审 review.finalSystem(两键都在本条登记内)与整集共性汇总'
+        + '(内联 system,未登记为提示词键),两端同缺;这三步要不要带人设的产品口径未定,不在本条冒充已覆盖',
     },
     {
       id: 'core.memoryDual', sk: 'SK-04', name: '长期记忆双端与召回纯函数', stage: CROSS, wave: 'W3',
-      kinds: ['infra'], pending: ['infra'], gaps: ['G-02'],
+      kinds: ['infra'], gaps: ['G-02'],
       note: 'G-02 已落地:召回策略(同板块最近若干 + 全局最近若干)已抽为 WfCore.memRecall/memBlock 双端同用,'
-        + '记忆种子不在 KB 条目面;本条 pending 的 infra 面留的是注册表侧记账收敛('
-        + '改 pending 会动 gaps 投影,单列一轮),口径同 SK-23',
+        + '写入面浏览器「记住…」与 CLI memory add 同结构同上限、MCP 只读资源同链路;记忆种子不在 KB 条目面;'
+        + 'infra 面的 pending 已按实况清空,缺口标记按关联索引口径保留(G-02 另由 SK-26 的回流面持有)。'
+        + '仍欠三处覆盖余量:审片侧三步不带记忆召回(与 SK-03 同三步)、补种与旧板块名迁移仍只在浏览器 memAll 发生'
+        + '(纯 headless 的记忆里没有沉淀条目、旧板块名不迁移)、服务端不自动沉淀本轮结论(按板块回流归 SK-26)',
     },
     {
       id: 'core.playbookProjection', sk: 'SK-05', name: 'playbook 由注册表投影', stage: CROSS, wave: 'W4',
@@ -969,10 +974,13 @@
     /* ---- 审片 ---- */
     {
       id: 'review.stage', sk: 'SK-23', name: '审片升为主线一等步骤', stage: 'review', wave: 'W3',
-      kinds: ['infra'], pending: ['infra'], prompts: ['review.system', 'review.finalSystem'],
+      kinds: ['infra'], prompts: ['review.system', 'review.finalSystem'],
       cmds: ['episode.smartReview'], gaps: ['G-03'],
-      note: 'G-03 已落地:Domain.workflow 含审片步、STAGES 里 review 的 wfStep 已为 true;'
-        + '本条 pending 的 infra 面留的是注册表侧记账收敛(改 pending 会动 gaps 投影,单列一轮)',
+      note: 'G-03 已落地:Domain.workflow 含审片步、STAGES 里 review 的 wfStep 已为 true,'
+        + '流程条/项目级推荐动作/计划步骤(映射 episode.smartReview)/板块智能体「审片」四处消费面同步到位;'
+        + 'infra 面的 pending 已按实况清空,缺口标记按关联索引口径保留。'
+        + '仍欠:审片步在就绪检查面表里还没有校验面(归 SK-24,待 G-10)、问题中心只报低分不报「未审片」;'
+        + '审片不作分集级硬阻塞(硬门禁仍归发布门 G3)是既定口径,不算欠账',
     },
     {
       id: 'review.methodDim', sk: 'SK-24', name: '方法论维度进审片报告', stage: 'review', wave: 'W4',

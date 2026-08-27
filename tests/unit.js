@@ -5260,29 +5260,87 @@ const skillsTests = [
     assert(body.includes('台词单句 31 字超上限'), '命中应译成人话展示');
     assert(!/未发现关键问题[\s\S]*方法论校验命中[\s\S]*rv-score/.test(body), '命中区应在评分区之后,不改评分版式');
   } },
-  { name: '记账诚实位:infra 面仍 pending 的三条须有 note 说明缺口已落地实况(不假清未完成面)', fn() {
+  { name: '记账对齐:infra 三条的 pending 按实况清空,note 点名仍欠的覆盖余量(不假清未完成面)', fn() {
     const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
     const W = require('../js/wf-core.js');
     const wfSteps = DomainMod.workflow({ id: 'p1', episodes: [], subjects: [] }).steps.map(x => x.key);
+    // 每条:缺口出口的实况判据 + note 里必须点名的那几处余量(接上了就要同步改 note,不许静默扩面)
     const facts = {
-      'core.personaCtx': ['G-01', /function wfPersonaNote\(/.test(srv)],
-      'core.memoryDual': ['G-02', typeof W.memRecall === 'function' && typeof W.memBlock === 'function'],
-      'review.stage': ['G-03', wfSteps.includes('review')],
+      'core.personaCtx': ['G-01', /function wfPersonaNote\(/.test(srv), ['sb.reviewSystem', 'review.finalSystem', '共性汇总']],
+      'core.memoryDual': ['G-02', typeof W.memRecall === 'function' && typeof W.memBlock === 'function', ['memAll', 'SK-26']],
+      'review.stage': ['G-03', wfSteps.includes('review'), ['SK-24', '未审片']],
     };
     Object.keys(facts).forEach(id => {
-      const [gap, landed] = facts[id];
+      const [gap, landed, owed] = facts[id];
       const s = Skills.byId(id);
       assert(landed, id + ' 的 ' + gap + ' 出口应仍在(实况变动先红,不靠文档口径)');
-      assert(s.pending.includes('infra'), id + ' 的 infra 面是注册表侧记账收敛,不得在本轮假清');
-      assert(s.gaps.includes(gap), id + ' 应仍写明缺口编号 ' + gap);
+      assertEq(s.pending.length, 0, id + ' 的 infra 面已落地,pending 应按实况清空');
+      assert(s.gaps.includes(gap), id + ' 应仍写明缺口编号 ' + gap + '(关联索引口径:落地不摘标记)');
       assert(new RegExp(gap + ' 已落地').test(s.note || ''), id + ' 的 note 须如实说明 ' + gap + ' 已落地(读者不该读成没做)');
+      assert(/仍欠/.test(s.note || ''), id + ' 的 note 须写明仍欠什么(清了 pending 不等于这条没有余量)');
+      owed.forEach(k => assert((s.note || '').includes(k), id + ' 的 note 须点名仍欠的那一处:' + k));
     });
+    // infra 面已无 pending;别人的未落地面一字未动(不借本轮顺手清别人的账)
+    assertEq(Skills.list().filter(s => s.pending.includes('infra')).length, 0, 'infra 面已全部落地');
+    assertEq(Skills.list().filter(s => s.pending.length).map(s => s.sk + ':' + s.pending.join('+')).join(','),
+      'SK-05:orchestrate,SK-24:check,SK-26:orchestrate,SK-29:check', '剩余 pending 应只剩 check 两条 + orchestrate 两条');
     // 发布门的方法论门仍待 G-10:本轮只接审片路径的只读消费,门禁计数口径逐字不动
     const sk29 = Skills.byId('film.deliverContract');
     assert(sk29.pending.includes('check') && sk29.gaps.includes('G-10'), '发布门方法论门仍未落地,不得因审片接线记成已闭合');
     const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
     assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 仍只数高/中危');
     assert(!/lastReview\.checks|report\.checks/.test(rsrc), '发布门不读审片报告的校验命中字段(本轮不接门禁)');
+  } },
+  { name: 'infra 余量实况:审片侧三步两端都没有人设/记忆通道(接上了 note 先失效)', fn() {
+    const wfSrc = fs.readFileSync(path.join(ROOT, 'js', 'wf-core.js'), 'utf8');
+    // 三步的 user 模板是双端唯一来源:模板里没有这两个 ctx 字段,即两端都注入不进去
+    const defOf = name => {
+      const i = wfSrc.indexOf('W.' + name + ' =');
+      assert(i >= 0, 'wf-core 应有 ' + name);
+      const j = wfSrc.indexOf('\n  W.', i + 1);
+      return wfSrc.slice(i, j < 0 ? wfSrc.length : j);
+    };
+    ['sbReviewUser', 'buildSumUser', 'buildCutUser'].forEach(n => {
+      const src = defOf(n);
+      assert(!/personaNote/.test(src), n + ' 现无人设通道:接上了要同步改 SK-03 的 note(不许静默扩面)');
+      assert(!/memText/.test(src), n + ' 现无记忆通道:接上了要同步改 SK-04 的 note');
+    });
+    // 两个欠覆盖的系统人设键确实登记在 SK-03 名下(note 那句「两键都在本条登记内」不是空话)
+    const sk3 = Skills.byId('core.personaCtx');
+    ['sb.reviewSystem', 'review.finalSystem'].forEach(k => assert(sk3.prompts.includes(k), 'SK-03 应登记 ' + k));
+    // 第三步(整集共性汇总)两端仍是内联 system,未登记为提示词键——故不在 SK-03 的 prompts 里
+    ['server.js', path.join('js', 'review.js')].forEach(rel => {
+      const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      assert(src.includes("system: '你是短剧审片总监。'"), rel + ' 的整集共性汇总仍是内联 system');
+    });
+    assertEq(require('../js/prompts.js').list().filter(x => x.key.includes('sum')).length, 0, '共性汇总步尚未登记提示词键');
+    // 已覆盖的那几步反向钉住:接住人设与记忆的步不得退回去
+    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    assert(/personaNote: wfPersonaNote\(tree, p, WfCore\.WF_BOARD\['smart-review'\]\)/.test(srv), '逐镜审片步应仍带人设');
+    assert(/memText: WfCore\.memBlock\(tree\.agentMemory, s\.plot \|\| '', '成片'\)/.test(srv), '逐镜审片步应仍带记忆召回');
+  } },
+  { name: '清 pending 的行为面为零:gaps() 与面表都不看 pending(退回旧记账后投影逐字节相同)', fn() {
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'skills.js'), 'utf8');
+    // live() 只判 inject/check/orchestrate 三面:infra 面的 pending 不进任何投影
+    const kinds = (src.match(/live\((?:s|x), '(\w+)'\)/g) || []).map(m => m.match(/'(\w+)'/)[1]);
+    assert(kinds.length, 'skills.js 应有 live() 的机制面判定');
+    assertEq(kinds.filter((v, i, a) => a.indexOf(v) === i).sort().join(','), 'check,inject,orchestrate',
+      'infra 面不参与 live 推导(故清它的 pending 动不到 block/check/playbook/面表)');
+    const snap = () => JSON.stringify([Skills.gaps(), Skills.preflightStages(),
+      Skills.preflightStages().map(st => Skills.check(st, {}).length), Skills.playbooks().map(x => x.id), Skills.block('gen').length]);
+    const before = snap();
+    const ids = ['core.personaCtx', 'core.memoryDual', 'review.stage'];
+    const targets = ids.map(id => Skills.REG.find(x => x.id === id));
+    try {
+      targets.forEach(s => { s.pending = ['infra']; }); // 临时退回本轮之前的记账
+      assertEq(snap(), before, '把三条 pending 退回 infra 后各投影应逐字节相同——「改 pending 会动 gaps 投影」不成立');
+      assertEq(Skills.validate({}).join(';'), '', '退回后契约仍全通过(infra 面不受未落地面的登记禁令约束)');
+    } finally {
+      targets.forEach(s => { s.pending = []; });
+    }
+    assertEq(snap(), before, '恢复后投影不变(本用例不留残留状态)');
+    assertEq(Object.keys(Skills.gaps()).length, 20, '缺口键数不随 pending 变(本轮清三条 pending,键数一字未动)');
+    ['G-01', 'G-02', 'G-03'].forEach(g => assert((Skills.gaps()[g] || []).length, g + ' 的关联索引应仍在(落地不摘标记)'));
   } },
 ];
 
