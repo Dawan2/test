@@ -173,6 +173,27 @@
     return fail('compose', ct.status === 'failed' ? ('合成失败:' + (ct.reason || '')) : '合成超时未完成(任务仍在后台,可稍后重试)');
   }));
 
+  /* 剧本拆集(exec,项目级):执行核心 EpisodeUtil.splitCore(模式判定/切分算法经 WfCore 双端单源,
+   * 与服务端 /api/wf/split-episodes 同口径);已有分集一律要求 overwrite 显式授权(整表覆盖不可撤销,
+   * 旧分集进回收站 7 天可恢复;UI 的「重新分集」按钮仍走 doSplit 的覆盖确认弹窗),在飞生成拒绝覆盖 */
+  reg('project.splitEpisodes', { label: '剧本拆集', needs: ['p'] }, ({ p, args }) => metered(REG['project.splitEpisodes'], async () => {
+    const text = String(p.script || '').trim();
+    if (!text) return blocked('no-script', '项目暂无剧本原文,请先上传剧本');
+    if (!window.EpisodeUtil || !EpisodeUtil.splitCore) return fail('unavailable', '分集模块未加载');
+    const had = (p.episodes || []).length;
+    if (had && !args.overwrite) return blocked('has-episodes', `已有 ${had} 个分集:重新分集会整表覆盖(含分镜数据),需 overwrite 显式授权`, { episodes: had });
+    let r;
+    try {
+      r = await EpisodeUtil.splitCore(p, text, { local: !!args.local, say: args.ui ? (t => U.toast(t, 'info', 3500)) : undefined });
+    } catch (e) {
+      if (e && e.code) return blocked(e.code, e.message);
+      return fail('split', (e && e.message) || e);
+    }
+    const out = ok({ episodes: r.eps.length, mode: r.mode, overwritten: had, llmError: r.llmError || null, titles: r.eps.map(e => e.title) });
+    out.next = nextOf(p, null);
+    return out;
+  }));
+
   /* 本集理解(exec):Understanding.regen(计费/失败退费与编辑器「重新生成」同源) */
   reg('episode.understanding', { label: '本集理解' }, ({ p, ep }) => metered(REG['episode.understanding'], async () => {
     if (!window.Understanding || !Understanding.regen) return fail('unavailable', '理解模块未加载');

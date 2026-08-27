@@ -590,6 +590,18 @@ CMD['project-create'] = async (_, f) => {
     } catch (e) { if (e.exit === 7 && attempt < 2) continue; throw e; }
   }
 };
+/* 项目剧本原文写入(主线起点):p.script 是拆集/主体提取的输入,建项目后可随时替换 */
+CMD['project-script'] = async (a, f) => {
+  need(a[0] && (f['script-file'] || f.script !== undefined), '用法:hujing project-script <pid> (--script-file f.txt | --script 正文)\n'
+    + '  写入项目剧本原文(≤20 万字),供 exec project.splitEpisodes 拆集与主体提取使用。');
+  const text = f['script-file'] ? fs.readFileSync(path.resolve(f['script-file']), 'utf8') : String(f.script || '');
+  need(text.trim(), '剧本原文不能为空');
+  need(text.length <= 200000, '剧本超过 20 万字上限(与主应用一致)');
+  return (await withProject(a[0], f, async proj => {
+    proj.script = text;
+    return { id: proj.id, chars: text.length, episodes: (proj.episodes || []).length };
+  })).ret;
+};
 CMD['episode-add'] = async (a, f) => {
   need(a[0] && f.title, '用法:hujing episode-add <pid> --title 第1集 [--content-file f.txt]');
   const content = f['content-file'] ? fs.readFileSync(path.resolve(f['content-file']), 'utf8') : (f.content || '');
@@ -1197,6 +1209,22 @@ EXEC['episode.produce'] = { needs: ['p', 'ep'], meter: true, run: async (args, f
   return execOk({ steps, url: (c.result && c.result.url) || '' });
 } };
 
+/* 剧本拆集(exec,项目级):服务端工作流端点 /api/wf/split-episodes——模式判定(markers/llm/even)与
+ * 切分算法经 js/wf-core.js 与浏览器同源;正文逐字保留。已有分集需 overwrite 授权(409→blocked),
+ * local 强制按段落均分(零 LLM 零计费) */
+EXEC['project.splitEpisodes'] = { needs: ['p'], meter: true, run: async (args, f) => {
+  try {
+    const d = await POST('/api/wf/split-episodes', {
+      pid: args.pid, operationId: crypto.randomUUID(), overwrite: !!args.overwrite, local: !!args.local,
+    }, f, { timeoutMs: 240000 });
+    return execOk({ count: d.count, mode: d.mode, overwritten: d.overwritten, episodes: d.episodes });
+  } catch (e) {
+    // 409 两种:已有分集需授权 / 有镜头在生成——与浏览器命令层同 code 词表
+    if (e instanceof CliError && e.exit === 7) return execBlocked(/正在生成/.test(e.message) ? 'inflight' : 'has-episodes', e.message);
+    throw e;
+  }
+} };
+
 /* LLM 创作类(二十一轮:LLM 编排已下沉服务端工作流端点 /api/wf/*——计费动作服务端定死,
  * 提示词/规整与浏览器 js/wf-core.js 同源;端点直接写回 state,CLI 只调用+结构化回执) */
 EXEC['episode.understanding'] = { needs: ['p', 'ep'], meter: true, run: async (args, f) => {
@@ -1298,6 +1326,7 @@ CMD.exec = async (a, f) => {
   const args = Object.assign(f.args ? JSON.parse(f.args) : {}, {
     pid: f.pid, epid: f.epid, sid: f.sid,
     confirmAll: !!f['confirm-all'], noImage: !!f['no-image'], timeout: f.timeout,
+    overwrite: f.overwrite ? true : undefined, local: f.local ? true : undefined, // 缺省留 undefined,--args 的同名值不被覆盖
   });
   Object.keys(args).forEach(k => args[k] === undefined && delete args[k]);
   if (cmd.needs.includes('p')) need(args.pid, '缺 --pid');
@@ -1453,6 +1482,7 @@ const HELP = `虎鲸漫剧 CLI —— 面向 AI 助手与人工的全链路命�
   project-show <pid>                               项目详情(主体/分集/镜状态统计)
   workflow <pid> [epid]                            统一工作流状态(流程条/下一步/Agent 同口径)
   project-create --name 剧名 [--style 漫剧] [--script-file f.txt]
+  project-script <pid> (--script-file f.txt | --script 正文)   写入项目剧本原文(拆集/主体提取的输入)
   episode-add <pid> --title 第1集 [--content-file f.txt]
   episode-script <pid> <epid> --content-file f.txt 写入剧本(contentRev+1)
   episode-show <pid> <epid>                        分集详情(逐镜状态)
@@ -1493,7 +1523,7 @@ const HELP = `虎鲸漫剧 CLI —— 面向 AI 助手与人工的全链路命�
 
 统一领域命令(与前端 Commands.execute 同名同结构 {ok,status,result,error,cost,next};词表/参数面由 js/cmd-registry.js 单源生成)
 ${CmdRegistry.META.map(m => '  exec ' + (m.name + (CmdRegistry.usageOf(m) ? ' ' + CmdRegistry.usageOf(m) : '')).padEnd(58) + m.label + ':' + m.desc).join('\n')}
-  (exit 映射:ok→0 | blocked→2/6/4 | failed→5;--args '{"pid":".."}' 可整体传参)
+  (exit 映射:ok→0 | blocked→2/6/4 | failed→5;--args '{"pid":".."}' 可整体传参;拆集另支持 --overwrite / --local)
 
 工具
   agent "自然语言指令" --pid X [--epid Y] [--scope 板块] [--apply]

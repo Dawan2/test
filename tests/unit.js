@@ -1275,6 +1275,17 @@ function loadCommands() {
   sb.Store.credits = () => (sb.__credits == null ? 999 : sb.__credits);
   sb.Understanding = { regen: async () => { sb.__called.push('undRegen'); return sb.__undOk !== false; } };
   sb.Review = { reviewShot: async () => ({ score: 8 }) };
+  /* project.splitEpisodes 的执行核心(真实实现 proj-upload.js splitCore;此处只验命令层闸门与回执结构) */
+  sb.EpisodeUtil = {
+    splitCore: async (p, text, opts) => {
+      sb.__called.push('splitCore');
+      sb.__splitOpts = opts || {};
+      if (sb.__splitErr) throw sb.__splitErr;
+      p.episodes = [{ id: 'ep_a', title: '第1集', content: text.slice(0, 10) }, { id: 'ep_b', title: '第2集', content: text.slice(10) }];
+      sb.Store.save();
+      return { eps: p.episodes, mode: (opts && opts.local) ? 'even' : 'markers', llmError: null };
+    },
+  };
   loadFile(sb, 'domain.js');
   loadFile(sb, 'knowledge.js'); // skill 索引的加载期依赖(与 index.html 同顺序:domain → knowledge → skills)
   loadFile(sb, 'skills.js');    // 就绪检查附带的主体面校验项(result.checks)
@@ -1468,6 +1479,42 @@ const commandsTests = [
     cmdCtx(sb, { content: '' });
     r = await sb.Commands.execute('episode.understanding', { pid: 'p1', epid: 'ep1' });
     assertEq(r.error.code, 'no-script', '缺剧本应 blocked');
+  } },
+  /* ---- G-04:剧本拆集命令(项目级 headless 入口) ---- */
+  { name: 'splitEpisodes:缺剧本原文 blocked;已有分集需 overwrite 授权(默认不覆盖)', fn: async () => {
+    const sb = loadCommands();
+    const { p } = cmdCtx(sb);
+    let r = await sb.Commands.execute('project.splitEpisodes', { pid: 'p1' });
+    assertEq(r.status, 'blocked'); assertEq(r.error.code, 'no-script');
+    assert(!sb.__called.includes('splitCore'), '缺剧本不应进入切分');
+    p.script = '第一集 开场\n女主被当众羞辱\n第二集 反击\n女主揭穿真相';
+    r = await sb.Commands.execute('project.splitEpisodes', { pid: 'p1' });
+    assertEq(r.status, 'blocked'); assertEq(r.error.code, 'has-episodes');
+    assertEq(r.result.episodes, 1, '应如实回报现有分集数');
+    assert(!sb.__called.includes('splitCore'), '未授权覆盖不应进入切分');
+  } },
+  { name: 'splitEpisodes:overwrite 授权后回执 mode/分集数/next;local 透传强制均分', fn: async () => {
+    const sb = loadCommands();
+    const { p } = cmdCtx(sb);
+    p.script = '第一集 开场\n女主被当众羞辱\n第二集 反击\n女主揭穿真相';
+    let r = await sb.Commands.execute('project.splitEpisodes', { pid: 'p1', overwrite: true });
+    assertEq(r.ok, true); assertEq(r.result.episodes, 2); assertEq(r.result.mode, 'markers');
+    assertEq(r.result.overwritten, 1, '应如实回报被覆盖的分集数');
+    assertEq(r.result.titles.join(','), '第1集,第2集');
+    assert(r.next, '项目级命令应附 Domain.workflow 重推的 next');
+    r = await sb.Commands.execute('project.splitEpisodes', { pid: 'p1', overwrite: true, local: true });
+    assertEq(sb.__splitOpts.local, true, 'local 应透传执行核心(零 LLM 段落均分)');
+    assertEq(r.result.mode, 'even');
+  } },
+  { name: 'splitEpisodes:在飞守卫/任务中心不可达 → 带 code 的 blocked(不静默覆盖分集)', fn: async () => {
+    const sb = loadCommands();
+    const { p } = cmdCtx(sb, { shots: [] });
+    p.script = '一段没有集标记的剧本正文\n第二段正文继续推进剧情';
+    p.episodes = [];
+    sb.__splitErr = Object.assign(new Error('有 2 个任务正在进行,请等待完成后再重新分集'), { code: 'inflight' });
+    const r = await sb.Commands.execute('project.splitEpisodes', { pid: 'p1' });
+    assertEq(r.status, 'blocked'); assertEq(r.error.code, 'inflight');
+    assert(r.error.message.includes('等待完成'), '应透出守卫原因');
   } },
   { name: 'generateStoryboard:hooks 回执/缺剧本/积分不足 三态', fn: async () => {
     const sb = loadCommands();
@@ -3707,7 +3754,91 @@ const skillsTests = [
   } },
 ];
 
-const SUITES = { 'agent-ops': agentOpsTests, experts: expertsTests, produce: produceTests, commands: commandsTests, store: storeTests, 'sb-gen': sbGenTests, pipeline: pipelineTests, 'sb-views': sbViewsTests, 'sb-io': sbIoTests, understanding: understandingTests, billing: billingTests, domain: domainTests, bus: busTests, issues: issuesTests, plans: plansTests, continuity: continuityTests, release: releaseTests, contract: contractTests, skills: skillsTests, tasks: tasksTests };
+/* ================= 套件 20:剧本拆集双端单源(wf-core split* + 服务端/CLI/浏览器接入,G-04) =================
+ * 主线前段 headless 起点:模式判定与切分算法只此一份,浏览器/服务端/CLI 全部委托;正文逐字保留。 */
+const splitTests = [
+  { name: 'splitMode:集/章标记 ≥2 走 markers(零 LLM);无标记短文走 llm;长文/离线走 even', fn() {
+    const W = require('../js/wf-core.js');
+    const marked = '第一集 开场\n正文一\n第二集 反击\n正文二';
+    assertEq(W.splitMode(marked, true), 'markers');
+    assertEq(W.splitMode(marked, false), 'markers', '标记切分不依赖 LLM 可用性');
+    assertEq(W.splitMode('一段无标记的剧本正文', true), 'llm');
+    assertEq(W.splitMode('一段无标记的剧本正文', false), 'even', 'LLM 不可用应回落段落均分');
+    assertEq(W.splitMode('长'.repeat(W.SPLIT_LLM_MAX + 1), true), 'even', '超长文不调 LLM(提示词过长易改写原文)');
+    assertEq(W.scriptEpMarkers(marked), 2);
+  } },
+  { name: 'localSplitEpisodes:按标记切原文逐字不丢;无标记按段落均分且集数落在 2-12', fn() {
+    const W = require('../js/wf-core.js');
+    const text = '第一集 开场\n女主被当众羞辱\n第二集 反击\n女主揭穿真相';
+    const eps = W.localSplitEpisodes(text);
+    assertEq(eps.length, 2);
+    assertEq(eps[0].title, '第一集 开场');
+    assert(eps[0].content.includes('女主被当众羞辱') && eps[1].content.includes('女主揭穿真相'), '正文应随标记切分逐字保留');
+    const plain = Array.from({ length: 40 }, (_, i) => '第' + i + '段正文内容占位' ).join('\n');
+    const even = W.localSplitEpisodes(plain);
+    assert(even.length >= 2 && even.length <= 12, '均分集数应在 2-12,实际 ' + even.length);
+    assertEq(even.map(e => e.content).join('\n'), plain, '均分应逐段拼回原文(不丢段不改写)');
+    assertEq(W.splitTargetCount('字'.repeat(8000)), 10);
+    assertEq(W.splitTargetCount('短'), 2, '极短文也至少 2 集');
+  } },
+  { name: 'buildSplitUser:锚点协议提示词(原文逐字引用要求 + 集数 + 全文)', fn() {
+    const W = require('../js/wf-core.js');
+    const u = W.buildSplitUser('剧本正文示例', 3);
+    assert(u.includes('划分为 3 集'), '应带目标集数');
+    assert(u.includes('"anchor"') && u.includes('逐字引用原文'), '应为锚点协议(只回标题+锚句,正文本地切)');
+    assert(u.includes('剧本正文示例'), '应带全文');
+  } },
+  { name: 'splitByAnchors:按锚点切原文(首集从头起)、倒序/重复锚点跳过、结构不合法抛错', fn() {
+    const W = require('../js/wf-core.js');
+    const text = '开场:女主被当众羞辱,众人哄笑。\n转折:女主当场揭穿真相,全场哗然。';
+    const eps = W.splitByAnchors(text, [{ title: '第1集 羞辱', anchor: '开场:女主被当众羞辱' }, { title: '第2集 反击', anchor: '转折:女主当场揭穿真相' }]);
+    assertEq(eps.length, 2);
+    assertEq(eps[0].title, '第1集 羞辱');
+    assert(eps[0].content.startsWith('开场'), '首集恒从全文开头起,不丢头部');
+    assert(eps[1].content.startsWith('转折'), '次集应从锚点切起');
+    // 倒序锚点被跳过后不足 2 个定位点 → 抛错(调用方退费/回退)
+    let err = '';
+    try { W.splitByAnchors(text, [{ anchor: '转折:女主当场揭穿真相' }, { anchor: '开场:女主被当众羞辱' }]); } catch (e) { err = e.message; }
+    assertEq(err, 'LLM 分集锚点定位失败');
+    err = '';
+    try { W.splitByAnchors(text, [{ anchor: '开场:女主被当众羞辱' }]); } catch (e) { err = e.message; }
+    assertEq(err, 'LLM 未返回有效分集数组', '少于 2 集应判无效');
+    err = '';
+    try { W.splitByAnchors(text, { title: 'x' }); } catch (e) { err = e.message; }
+    assertEq(err, 'LLM 未返回有效分集数组', '非数组应判无效');
+  } },
+  { name: 'splitInflight:生成中镜头/节拍计数(拆集整表覆盖前的双端同口径守卫)', fn() {
+    const W = require('../js/wf-core.js');
+    assertEq(W.splitInflight(null), 0);
+    const p = { episodes: [
+      { shots: [{ video: { status: 'generating' } }, { video: { status: 'done' } }], beats: [{ video: { status: 'generating' } }] },
+      { shots: [{ video: { status: 'failed' } }] },
+    ] };
+    assertEq(W.splitInflight(p), 2, '在飞镜头+节拍都要计入');
+  } },
+  { name: '双端单源(源级):浏览器/服务端/CLI 全部委托 wf-core,不各抄一份切分算法与提示词', fn() {
+    const eu = fs.readFileSync(path.join(ROOT, 'js', 'episode-util.js'), 'utf8');
+    assert(eu.includes('WfCore.localSplitEpisodes') && eu.includes('WfCore.buildSplitUser') && eu.includes('WfCore.splitByAnchors'), 'episode-util 应委托 WfCore 拆集核心');
+    assert(!eu.includes('划分为 ${n} 集'), 'episode-util 不应再内联分集提示词');
+    assert(eu.includes('llmSplitEpisodes,'), 'llmSplitEpisodes 必须挂上 EpisodeUtil 出口(此前漏挂,浏览器 LLM 分集恒回退均分)');
+    const pu = fs.readFileSync(path.join(ROOT, 'js', 'proj-upload.js'), 'utf8');
+    assert(pu.includes('WfCore.splitMode') && pu.includes('WfCore.localSplitEpisodes'), 'proj-upload 分集流程应走 WfCore 模式判定');
+    assert(pu.includes('splitCore'), 'UI 任务条与命令层应共用 splitCore 执行核心');
+    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    assert(srv.includes("'/api/wf/split-episodes'"), '服务端应有拆集工作流端点');
+    ['WfCore.splitMode', 'WfCore.buildSplitUser', 'WfCore.splitByAnchors', 'WfCore.localSplitEpisodes', 'WfCore.splitInflight'].forEach(fn2 =>
+      assert(srv.includes(fn2), '服务端拆集应复用 ' + fn2));
+    assert(/proxyRefund\(user\.id, r\.charge/.test(srv), '拆集 LLM 步失败应退费(不本地冒充)');
+    const cli = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    assert(cli.includes("POST('/api/wf/split-episodes'"), 'CLI 拆集应走服务端工作流端点');
+    assert(!cli.includes('划分为'), 'CLI 不应内联分集提示词');
+    assert(cli.includes("CMD['project-script']"), 'CLI 应能写入项目剧本原文(headless 主线起点)');
+    const mcp = fs.readFileSync(path.join(ROOT, 'mcp.js'), 'utf8');
+    assert(mcp.includes('hujing_split_episodes') && mcp.includes('hujing_project_script'), 'MCP 应暴露剧本写入与拆集入口');
+  } },
+];
+
+const SUITES = { 'agent-ops': agentOpsTests, experts: expertsTests, produce: produceTests, commands: commandsTests, store: storeTests, 'sb-gen': sbGenTests, pipeline: pipelineTests, 'sb-views': sbViewsTests, 'sb-io': sbIoTests, understanding: understandingTests, billing: billingTests, domain: domainTests, bus: busTests, issues: issuesTests, plans: plansTests, continuity: continuityTests, release: releaseTests, contract: contractTests, skills: skillsTests, tasks: tasksTests, split: splitTests };
 (async () => {
   const filter = process.argv[2];
   let passed = 0, failed = 0;

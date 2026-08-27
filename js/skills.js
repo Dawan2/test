@@ -172,7 +172,7 @@
       kinds: ['orchestrate'], pending: ['orchestrate'],
       cmds: ['episode.preflight', 'episode.generateStoryboard', 'episode.generateVideos', 'shot.generateVideo',
         'episode.smartReview', 'episode.compose', 'episode.produce', 'episode.understanding',
-        'subject.generateImage', 'project.extractSubjects'],
+        'subject.generateImage', 'project.extractSubjects', 'project.splitEpisodes'],
       gaps: ['G-12'],
       note: '本条登记命令全面;编排型条目的步骤投影出口 Skills.playbooks(),计划步骤改由投影生成待 G-12',
     },
@@ -241,12 +241,12 @@
     {
       id: 'eps.frontPipeline', sk: 'SK-16', name: '主线前段编排', stage: 'eps',
       covers: ['script', 'subjects', 'eps', 'shots'], wave: 'W3', kinds: ['orchestrate'], gaps: ['G-04'],
-      cmds: ['project.extractSubjects'],
+      cmds: ['project.splitEpisodes', 'project.extractSubjects'],
       steps: [
         { cmd: 'episode.understanding', args: {}, note: '本集理解:先出人物/情绪/场景口径' },
         { cmd: 'episode.generateStoryboard', args: {}, note: '智能分镜:按理解口径拆镜' },
       ],
-      note: '主体提取已有领域命令(cmds 登记),拆集命令与两步前置进 steps 待 G-04',
+      note: '拆集与主体提取的领域命令已就位(cmds 登记,G-04);两步前置进 steps 会改本编排产出,单列一轮处置',
     },
     /* ---- 分镜 ---- */
     {
