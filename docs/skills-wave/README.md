@@ -47,6 +47,7 @@
 | [w19-g06-inject.md](./w19-g06-inject.md) | G-06 残留两条落地:「多镜头写法」进拆镜人设 `sbSystem`、「主体参考」进主体人设 `extractSystem`、键为什么只挂一个宿主、缺省提示词变长的兼容影响 | 改拆镜/提取主体提示词,或往某一步补 KB 注入前 |
 | [w20-cycle3-audit.md](./w20-cycle3-audit.md) | 周期 3(W11–W19)逐项目独立核验报告:锚定 SHA、逐支成熟度 M0–M4、独立 worktree 重跑的测试数字、阻塞与下一目标 | 想知道某条分支做到哪一步;开集成槽前 |
 | [w21-integration-log.md](./w21-integration-log.md) | W15/W17/W18/W19 收敛到集成分支的记录:并集型冲突逐处解法、用例名集合比对证明没删测、包含性实测的有效期口径 | 想知道主干现在是什么状态 |
+| [w24-sk10-ai-voice.md](./w24-sk10-ai-voice.md) | SK-10 文案 AI 味的校验半落地(套话硬禁词/台词书面腔/修饰副词密度三码词法命中):三张词表的取舍口径、为什么不冒充语义审片、注入半为什么仍挂 `pending` | 加剧本面校验项、改 AI 味判据,或想知道文案怎么被词法判定 |
 
 ## 一分钟摘要(周期 2 收敛后)
 
@@ -54,7 +55,7 @@
 - 主线七步在代码里齐了:`Domain.workflow` 已含"审片"步(G-03),`js/skills.js` 的 `STAGES` 七步全部 `wfStep: true`。
 - 贯通缺口已收口的部分:专家人设(G-01)与协作记忆(G-02 由 agent-flow 覆盖)进 `/api/wf/*`,CLI/MCP 同链路吃到;剧本拆集(G-04)补上机读入口,headless 可从"一份整部剧本"起跑,其 LLM 步也已接入同一注入链(见 [w8-split-episodes-inject.md](./w8-split-episodes-inject.md))。
 - 空挂已清:`settings.tplVideo`(G-05)与 `KB.SECTIONS`(G-15/G-08 的 KB 侧)都有了消费方,并有断言防回退。生成步的注入面亦已出块——`Skills.block('gen')` 逐字节等于提示词改写人设 `WfCore.genPromptSystem` 的方法论段(抽卡公式+抽卡军规),SK-21 的 `pending` 随之清空(见 [w15-gen-block.md](./w15-gen-block.md))。G-06 的**注入半到此闭合**:残留两条也已进主线提示词构造点——「多镜头写法」进拆镜人设 `WfCore.sbSystem`、「主体参考」进主体提取人设 `WfCore.extractSystem`,两处缺省提示词随之变长,拼块逐字节对账与兼容影响见 [w19-g06-inject.md](./w19-g06-inject.md);G-06 的校验半(生成前 warn 前置)仍挂 SK-11/SK-13。该人设键的取值口已收编到底:审片一键优化与 CLI 修订重抽改经 `WfCore.optimizeSystem` 只取人设句(缺省逐字节不变),覆盖两端一并跟随(见 [w18-gen-prompt-unify.md](./w18-gen-prompt-unify.md))。
-- 校验宿主五面齐了:剧本面(S-01,SK-07/08/09)、主体面(S-03,SK-12/13)、分集面(SK-14/15)、分镜景别面(SK-18,级差取 `WfCore.sizeGap` 词表单源)、成片字幕面(S-06,SK-28)共九条 `Skills.CHECKS` 校验项,剧本面与分集面成对闭合 S-01;两端就绪检查按主线步序同挂 `result.checks`,问题中心同挂低危提醒——纯本地零 LLM 零计费,只报不拦。**面清单现为双端单源表 `Skills.preflightStages()`**,由注册表现推(校验面已落地 + 登记 `episode.preflight` 消费点),两端只读该表 `concat`,**新增一面只改一处**(在条目上登记 `checks` 实现与 `cmds`),见 [w17-preflight-stages.md](./w17-preflight-stages.md)。五面并集与步序由行为断言(浏览器端真跑命令看回执)+ 面表源级断言(表与登记侧双向对齐 + 两端只读该表且写法逐字节相同 + 段内不得写死面名)锁死,断言分工的由来见 [w11-preflight-film-assert.md](./w11-preflight-film-assert.md);新增一面漏接或单端退回写死清单时这些断言先红,W13 收敛 SK-18 与 W17 收表时均实测接住过。
+- 校验宿主五面齐了:剧本面(S-01,SK-07/08/09;文案 AI 味 SK-10 的校验半随 W24 落地,见 [w24-sk10-ai-voice.md](./w24-sk10-ai-voice.md))、主体面(S-03,SK-12/13)、分集面(SK-14/15)、分镜景别面(SK-18,级差取 `WfCore.sizeGap` 词表单源)、成片字幕面(S-06,SK-28)共十条 `Skills.CHECKS` 校验项,剧本面与分集面成对闭合 S-01;两端就绪检查按主线步序同挂 `result.checks`,问题中心同挂低危提醒——纯本地零 LLM 零计费,只报不拦。**面清单现为双端单源表 `Skills.preflightStages()`**,由注册表现推(校验面已落地 + 登记 `episode.preflight` 消费点),两端只读该表 `concat`,**新增一面只改一处**(在条目上登记 `checks` 实现与 `cmds`),见 [w17-preflight-stages.md](./w17-preflight-stages.md)。五面并集与步序由行为断言(浏览器端真跑命令看回执)+ 面表源级断言(表与登记侧双向对齐 + 两端只读该表且写法逐字节相同 + 段内不得写死面名)锁死,断言分工的由来见 [w11-preflight-film-assert.md](./w11-preflight-film-assert.md);新增一面漏接或单端退回写死清单时这些断言先红,W13 收敛 SK-18 与 W17 收表时均实测接住过。
 - 校验结论已进审片路径(G-10 的第一半):审片报告按镜只读消费剧本面与主体面,命中挂报告独立字段 `checks` 并在弹窗/导出各列一区——不并入 `issues`、不参与评分与达标线、不改发布门计数与计费动作;发布门那一半(SK-29 方法论门)仍 `pending`,见 [w14-review-skills-check.md](./w14-review-skills-check.md)。
 - 记账诚实位:`SK-03`/`SK-04`/`SK-23` 的 `infra` 面仍 `pending`(改 `pending` 会动 `Skills.gaps()` 投影,单列一轮),但三条 `note` 已一律写明 G-01/G-02/G-03 的已落地实况,并由断言钉在三处出口的实况上。
 - 人设/记忆注入面覆盖五条工作流:理解、分镜、审片、提取主体、剧本拆集(`WfCore.WF_BOARD` 五键单源,服务端唯一装配口 `wfPersonaNote` 由契约断言锁死调用点数)。
