@@ -2,6 +2,7 @@
 /* ============ mcp.js 虎鲸漫剧 MCP server(stdio,零依赖) ============
  * 把 cli.js 的全链路命令包装为 MCP 工具,供支持 MCP 的 AI 助手(Claude Code/Cursor/Trae 等)
  * 以协议方式调用:工具调用 =  spawn node cli.js <命令>(stdout 纯 JSON 原样透传,exit code 映射 isError)。
+ * 例外:声明 local 的注册表只读工具(hujing_playbook)在本进程直读 js/skills.js 答复,不起子进程、不打服务端、零计费。
  *
  * 协议:stdio 传输,换行分隔的 JSON-RPC 2.0 消息;实现 initialize/ping/tools/list/tools/call
  *   + resources/list|resources/read(只读状态资源,免反复拼工具调用)+ prompts/list|prompts/get(流程模板)。
@@ -59,8 +60,26 @@ const TOOLS = [
   { name: 'hujing_release', description: '打发布版本(留痕 releases;通过/条件通过才执行,force 强制)', inputSchema: obj({ pid: pidEp.pid, note: S, minScore: N, force: B }, ['pid']), build: i => ['release', i.pid].concat(i.note ? ['--note', i.note] : [], i.minScore ? ['--min-score', String(i.minScore)] : [], i.force ? ['--force'] : []) },
   { name: 'hujing_exec', description: '统一领域命令透传(与前端 Commands.execute 同名同结构;词表单源 cmd-registry.js):' + CmdRegistry.META.map(m => m.name + '(' + m.label + ')').join('、'), inputSchema: obj({ name: Object.assign({}, S, { description: '命令名:' + CmdRegistry.names().join(' / ') }), args: { type: 'object', description: '命令参数,如 {"pid":"..","epid":".."};各命令参数面见 cmd-registry.js' } }, ['name']), build: i => ['exec', i.name, '--args', JSON.stringify(i.args || {})] },
   { name: 'hujing_llm', description: 'LLM 透传(服务端 key;自由提示词,剧本/文案类辅助)', inputSchema: obj({ user: Object.assign({}, S, { description: '用户提示词' }), system: S, json: Object.assign({}, B, { description: '期望返回 JSON(自动解析)' }) }, ['user']), build: i => ['llm', '--user', i.user].concat(i.system ? ['--system', i.system] : [], i.json ? ['--json'] : []) },
+  { name: 'hujing_playbook', description: '只读:主线编排 playbook 步骤表 + 就绪检查各面已登记校验项(直读注册表 js/skills.js 答复,不调 CLI、不碰服务端、零计费)。步骤只给命令名与步序,授权位/子集位一律留空由调用方自己定', inputSchema: obj({ id: Object.assign({}, S, { description: 'playbook id(缺省列出全部;core.playbookProjection=主线全链九步)' }) }), local: i => playbookView(i.id) },
   { name: 'hujing_agent', description: 'Agent 单轮对话(服务端 /api/wf/agent:KB/专家方法论/协作记忆/状态摘要注入由服务端拼装,计费 llm.agent;返回 reply + run 类领域命令 ops,apply=true 时逐条经 exec 同链路执行并各自计费)', inputSchema: obj({ text: Object.assign({}, S, { description: '自然语言指令或提问' }), pid: pidEp.pid, epid: Object.assign({}, S, { description: '分集 id(缺省为项目级视角)' }), scope: Object.assign({}, S, { description: '记忆召回板块:导演|剧本|主体|分集|分镜|生成|成片(缺省按上下文)' }), apply: Object.assign({}, B, { description: '执行返回的 ops(真实计费)' }) }, ['text', 'pid']), build: i => ['agent', i.text, '--pid', i.pid].concat(i.epid ? ['--epid', i.epid] : [], i.scope ? ['--scope', i.scope] : [], i.apply ? ['--apply'] : []) },
 ];
+
+/* ---- 注册表只读投影:playbook 步骤表与就绪检查校验面直读 js/skills.js 答复 ----
+ * 纯索引读取:不 spawn CLI、不打服务端、不产生任何计费动作,未登录也答得出。
+ * steps 里的 args 是投影原样(主线全链一律空):授权位(overwrite/confirmAll/riskyCompose)与子集位属调用方决策,
+ * 编排层只给步序不预设授权——助手照步序自己拼 hujing_exec 的参数,本工具不代替它做危险决定。 */
+function playbookView(id) {
+  const all = Skills.playbooks();
+  const pbs = id ? all.filter(pb => pb.id === id) : all;
+  if (id && !pbs.length) return { error: '未知 playbook id:' + id + '(可用:' + all.map(pb => pb.id).join(' / ') + ')' };
+  return {
+    playbooks: pbs.map(pb => ({ id: pb.id, title: pb.title, steps: pb.steps.map(s => ({ cmd: s.cmd, args: s.args, note: s.note || '' })) })),
+    checks: Skills.preflightStages().map(stage => ({
+      stage, name: (Skills.stageOf(stage) || {}).name || stage,
+      items: [].concat(...Skills.list(stage).map(s => s.checks)),
+    })),
+  };
+}
 
 /* ---- 调 CLI:stdout 纯 JSON 透传;exit code → isError(附 stderr 诊断) ---- */
 function runCli(argv) {
@@ -153,6 +172,12 @@ const PROMPTS = [
 async function callTool(name, input) {
   const t = TOOLS.find(x => x.name === name);
   if (!t) return { content: [{ type: 'text', text: '未知工具:' + name }], isError: true };
+  if (t.local) { // 注册表只读工具:本进程直接答复(无 CLI 子进程、无上游调用、无计费)
+    let out;
+    try { out = t.local(input || {}); }
+    catch (e) { return { content: [{ type: 'text', text: '参数错误:' + ((e && e.message) || e) }], isError: true }; }
+    return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }], isError: !!(out && out.error) };
+  }
   let argv;
   try { argv = t.build(input || {}); }
   catch (e) { return { content: [{ type: 'text', text: '参数错误:' + ((e && e.message) || e) }], isError: true }; }

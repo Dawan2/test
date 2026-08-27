@@ -2938,6 +2938,9 @@ function loadPlans() {
   };
   sb.__cmdCalls = [];
   loadFile(sb, 'domain.js');
+  loadFile(sb, 'knowledge.js');  // skill 索引的加载期依赖(与 index.html 同顺序:domain → knowledge → skills)
+  loadFile(sb, 'skills.js');     // 计划步骤的命令与步序取自主线全链 playbook(SK-05)
+  loadFile(sb, 'cmd-registry.js'); // 投影步的集级/项目级作用域判定(needs)
   loadFile(sb, 'plans.js');
   return sb;
 }
@@ -2955,12 +2958,70 @@ const plansTests = [
     };
     const pl = sb.Plans.fromWorkflow(p);
     assertEq(pl.steps[0].label.includes('补齐主体参考图'), true, '缺图应为前置步骤');
+    assertEq(pl.steps[0].cmd, 'subject.generateImage', '补图前置步映射投影里的主体生图命令(不再是只能跳页面的导航步)');
+    assertEq(pl.steps[0].epid, undefined, '项目级步不挂 epid');
     const sb1 = pl.steps.find(s => s.epid === 'ep1');
     assertEq(sb1.cmd, 'episode.generateStoryboard', '未拆镜集应映射智能分镜命令');
     const gen = pl.steps.find(s => s.epid === 'ep2');
     assertEq(gen.cmd, 'episode.generateVideos', '有失败镜集应映射批量生成(失败镜在 pend 集合内)');
     assert(pl.steps.every(s => s.status === 'pending'), '新计划步骤应全部 pending');
     assertEq(sb.Plans.summary(p), null, '未落库前项目无计划');
+  } },
+  /* G-12 一半:计划步骤由 SK-05 主线全链 playbook 投影生成——命令名与步序现取投影,
+   * 计划层只登记"这一步当下待不待办"的状态取材器,不再手写第二份命令链。 */
+  { name: 'fromWorkflow:命令与步序取自主线全链 playbook 投影(不写第二份命令链)', fn() {
+    const sb = loadPlans();
+    const chain = sb.Skills.playbook('core.playbookProjection').steps.map(s => s.cmd);
+    const proj = sb.Plans.projection();
+    assertEq(proj.map(x => x.cmd).join(','), chain.join(','), '自省表应与投影逐步对齐(步序也现取)');
+    assert(proj.every(x => x.registered), '投影每一步都须登记取材器,漏登记:' + proj.filter(x => !x.registered).map(x => x.cmd).join(','));
+    assertEq(proj.filter(x => !x.occupies).map(x => x.cmd).join(','), 'episode.understanding,episode.preflight',
+      '只有本集理解(拆镜编排内部步)与就绪检查(零计费结论面)不占计划步');
+    // 计划步的命令一律落在投影上:项目级步排在集级步之前,且各自按投影步序
+    const p = {
+      id: 'p1', script: '整本剧本',
+      subjects: [{ id: 'sj1', name: '主角', image: '' }],
+      episodes: [{ id: 'ep1', title: '第一集', content: '剧本', shots: [] }, cleanEp({ id: 'ep2', title: '第二集', lastReview: null })],
+    };
+    const steps = sb.Plans.fromWorkflow(p).steps;
+    assertEq(steps.map(s => s.cmd || 'goto').join(','),
+      'subject.generateImage,episode.generateStoryboard,episode.smartReview', '实际:' + steps.map(s => s.label).join(' / '));
+    steps.forEach(s => assert(!s.cmd || chain.includes(s.cmd), '计划步的命令应来自投影:' + s.cmd));
+    // 投影 args 一律留空,计划层也不补授权位/子集位(不拿假 args 冒充可执行)
+    steps.forEach(s => assertEq(Object.keys(s.args || {}).length, 0, '计划步不应预设参数:' + s.cmd));
+    assertEq(sb.Plans.fromWorkflow({ id: 'p0', subjects: [], episodes: [] }), null, '无待办即无计划');
+  } },
+  { name: 'fromWorkflow:项目级前置按投影步序出(提取主体→拆集),拆集不预授权 overwrite', fn() {
+    const sb = loadPlans();
+    // 只有一份整部剧本:主体库空、分集空 → 前两步就是投影的项目级两步
+    const fresh = sb.Plans.fromWorkflow({ id: 'p1', script: '整本剧本', subjects: [], episodes: [] });
+    assertEq(fresh.steps.map(s => s.cmd).join(','), 'project.extractSubjects,project.splitEpisodes');
+    assert(fresh.steps.every(s => s.args === undefined), '拆集步不得预设 overwrite(整表覆盖属人工授权)');
+    // 已有分集:拆集步不再出(不靠假授权覆盖已分镜数据)
+    const had = sb.Plans.fromWorkflow({ id: 'p1', script: '整本剧本', subjects: [{ id: 'sj1', name: '主角', image: 'u' }], episodes: [{ id: 'ep1', title: '第一集', content: '', shots: [] }] });
+    assert(!had.steps.some(s => s.cmd === 'project.splitEpisodes'), '已有分集时不应再出拆集步');
+    assertEq(had.steps[0].label, '补充剧本:第一集', '缺正文集出导航步(没有可执行命令能替用户写剧本)');
+    assertEq(had.steps[0].cmd, undefined);
+    assert(had.steps[0].goto.includes('/episode/ep1'));
+  } },
+  { name: 'fromWorkflow:需授权/需人工挑选的状态一律出导航步(重拆覆盖/过期镜子集/确认闸不代授权)', fn() {
+    const sb = loadPlans();
+    const doneShot = cleanEp().shots[0];
+    // 分镜判旧:重拆会整表覆盖已有分镜 → 导航步
+    const stale = cleanEp({ shotsSourceRev: 0, contentRev: 3 });
+    let s = sb.Plans.fromWorkflow({ id: 'p1', subjects: [], episodes: [stale] }).steps[0];
+    assertEq(s.cmd, undefined, '重新拆镜不应挂命令(覆盖已有分镜属人工决策)');
+    assert(s.label.includes('重新拆镜'), '实际:' + s.label);
+    // 素材已更新的过期镜:要按 shotIds 挑子集重跑 → 导航步(不拿子集位假 args 冒充可执行)
+    const staleShots = cleanEp({ shots: [Object.assign({}, doneShot, { video: { status: 'done', url: 'http://x/v.mp4', inputHash: 'bogus' } })], composed: false });
+    s = sb.Plans.fromWorkflow({ id: 'p1', subjects: [], episodes: [staleShots] }).steps[0];
+    assertEq(s.label, '重生成过期镜:第一集(1 镜)');
+    assertEq(s.cmd, undefined, '过期镜重生成不应挂命令(shotIds 子集属调用方决策)');
+    // 未确认镜:确认闸属人工决策,不用 confirmAll 代授权
+    const unconfirmed = cleanEp({ shots: [Object.assign({}, doneShot, { confirm: false })], composed: false });
+    s = sb.Plans.fromWorkflow({ id: 'p1', subjects: [], episodes: [unconfirmed] }).steps[0];
+    assertEq(s.label, '确认镜头:第一集(1 镜)');
+    assertEq(s.cmd, undefined, '确认镜头不应挂命令(confirmAll 是授权位)');
   } },
   { name: 'fromWorkflow:未审/判旧/低分三态都映射 episode.smartReview(不再是只能跳页面的导航步)', fn() {
     const sb = loadPlans();
@@ -2993,7 +3054,7 @@ const plansTests = [
     const pl = sb.Plans.fromWorkflow(p);
     sb.Plans.replace(p, pl);
     assertEq(p.agentPlan.id, pl.id, 'replace 应落库 p.agentPlan');
-    assertEq(pl.steps[0].goto !== undefined, true, '步骤 0 应为导航类(补图)');
+    assertEq(pl.steps[0].cmd, 'subject.generateImage', '步骤 0 应为项目级补图步');
     sb.__cmdResult = { ok: true, status: 'done', cost: 5, result: { total: 3, ok: 3, failed: [] } };
     await sb.Plans.execStep(p, 1, null);
     assertEq(p.agentPlan.steps[1].status, 'done', 'ok 回执应置 done');
@@ -3023,12 +3084,15 @@ const plansTests = [
   } },
   { name: 'runAll:依次执行到首个未完成步骤即停(导航步骤到位即停)', fn: async () => {
     const sb = loadPlans();
-    const p = { id: 'p1', subjects: [{ id: 'sj1', name: '主角', image: '' }], episodes: [{ id: 'ep1', title: '第一集', content: '剧本', shots: [] }] };
+    const p = { id: 'p1', subjects: [{ id: 'sj1', name: '主角', image: 'u' }], episodes: [
+      { id: 'ep1', title: '第一集', content: '', shots: [] },      // 缺正文 → 导航步(补剧本)
+      { id: 'ep2', title: '第二集', content: '剧本', shots: [] },  // 未拆镜 → 命令步(智能分镜)
+    ] };
     sb.Plans.replace(p, sb.Plans.fromWorkflow(p));
     sb.__cmdResult = { ok: false, status: 'failed', error: { code: 'gen', message: '上游失败' } };
     await sb.Plans.runAll(p, null);
-    assertEq(p.agentPlan.steps[0].status, 'done', '导航步骤(补图)应到位即 done');
-    assertEq(sb.__cmdCalls.length, 1, '首步失败后应停止,不继续执行后续步骤');
+    assertEq(p.agentPlan.steps[0].status, 'done', '导航步骤(补剧本)应到位即 done');
+    assertEq(sb.__cmdCalls.length, 1, '首个命令步失败后应停止,不继续执行后续步骤');
     assertEq(p.agentPlan.steps[1].status, 'failed');
   } },
 ];
@@ -3549,7 +3613,7 @@ const contractTests = [
       assert(!chain.steps.some(s => s.cmd === n), n + ' 不应串进主线全链(断点补拍 / 三步聚合各有归属)');
       assert(Skills.list().some(s => s.id !== 'core.playbookProjection' && s.cmds.includes(n)), n + ' 应仍被其他条目登记');
     });
-    // 编排面落地不摘缺口标记:计划步骤与 MCP 流程模板两处投影未接,G-12 仍在
+    // 编排面落地不摘缺口标记:计划步骤已接(见 plans 套件),MCP 流程模板补主线中段那一半未接,G-12 仍在
     assert(Skills.byId('core.playbookProjection').gaps.includes('G-12'), 'G-12 的关联索引应仍在(落地一面不等于整条清账)');
     // 校验型扩展点:登记的校验项必须有实现(不挂空项),check 结果数与该步登记数一致
     [].concat(...Skills.list().map(s => s.checks)).forEach(id => assert(typeof Skills.CHECKS[id] === 'function', '校验项未注册实现:' + id));
@@ -3683,6 +3747,45 @@ const contractTests = [
     assert(txt.includes('hujing_wait') && txt.includes('failedOnly'), '失败镜排查模板应含断点续查与 failedOnly 重跑');
     assert(byId[5].error && byId[5].error.code === -32602, '缺必填参数应 -32602');
     assert(byId[6].error && byId[6].error.code === -32602, '未知资源 URI 应 -32602');
+  } },
+  /* mcp.js 此前 require 了 skill 索引却零使用:注册表只读工具是它的第一个出口——
+   * 本进程直读 js/skills.js 答复(不起 cli 子进程、不打服务端、零计费),步骤 args 一律留空不预授权。 */
+  { name: 'MCP 注册表只读工具:playbook 步骤表与校验面直读 skills.js 答复(零计费、args 不预授权)', fn() {
+    const { spawnSync } = require('child_process');
+    const Skills = require('../js/skills.js');
+    const reqs = [
+      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'hujing_playbook', arguments: { id: 'core.playbookProjection' } } },
+      { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'hujing_playbook', arguments: {} } },
+      { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'hujing_playbook', arguments: { id: 'bogus' } } },
+    ];
+    // 无服务器无 token:只读注册表的工具照样答得出(它不经 CLI,也就不需要登录)
+    const env = Object.assign({}, process.env, { HUJING_SERVER: '', HUJING_TOKEN: '' });
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'mcp.js')], { input: reqs.map(x => JSON.stringify(x)).join('\n') + '\n', encoding: 'utf8', timeout: 30000, env });
+    const byId = {};
+    String(r.stdout || '').trim().split('\n').filter(Boolean).forEach(l => { const m = JSON.parse(l); byId[m.id] = m; });
+    const names = ((byId[1].result || {}).tools || []).map(t => t.name);
+    assert(names.includes('hujing_playbook'), 'tools/list 应含注册表只读工具,实际:' + names.join(','));
+    const one = JSON.parse(byId[2].result.content[0].text);
+    assertEq(byId[2].result.isError, false, '只读工具不应报错');
+    assertEq(one.playbooks.length, 1);
+    assertEq(one.playbooks[0].steps.map(s => s.cmd).join(','), Skills.playbook('core.playbookProjection').steps.map(s => s.cmd).join(','),
+      '步骤表应逐步等于注册表投影(不在 MCP 侧手抄第二份步序)');
+    one.playbooks[0].steps.forEach(s => assertEq(Object.keys(s.args).length, 0, '步骤不应预设参数:' + s.cmd));
+    assert(one.playbooks[0].steps.every(s => s.note), '每步应带步骤旁注(助手照注拼参数)');
+    // 校验面清单同表:面数与条数一律取单源面表,不在 MCP 侧另写一份
+    assertEq(one.checks.map(c => c.stage).join(','), Skills.preflightStages().join(','), '校验面应等于就绪检查单源面表');
+    one.checks.forEach(c => assertEq(c.items.join(','), [].concat(...Skills.list(c.stage).map(s => s.checks)).join(','), c.stage + ' 面校验项应取注册表实况'));
+    const all = JSON.parse(byId[3].result.content[0].text);
+    assertEq(all.playbooks.map(pb => pb.id).join(','), Skills.playbooks().map(pb => pb.id).join(','), '缺省应列出全部已落地编排 playbook');
+    assertEq(byId[4].result.isError, true, '未知 playbook id 应如实报错(不静默回空)');
+    assert(JSON.parse(byId[4].result.content[0].text).error.includes('core.playbookProjection'), '报错应给可用 id 清单');
+    // 只读工具不经 CLI:mcp.js 的 local 分支在 spawn 之前返回(源级封死"顺手改成走 CLI 再计费")
+    const mcpSrc = fs.readFileSync(path.join(ROOT, 'mcp.js'), 'utf8');
+    const call = mcpSrc.slice(mcpSrc.indexOf('async function callTool'));
+    const iLocal = call.indexOf('if (t.local)');
+    assert(iLocal >= 0 && iLocal < call.indexOf('await runCli(argv)'), '注册表只读工具应在 runCli 之前直接答复');
+    assert(/local: i => playbookView/.test(mcpSrc), '只读工具应由 Skills 投影答复,不拼 cli argv');
   } },
   { name: '命令面板(§3.5):Ctrl+K 绑定存在;条目=注册表命令+导航;缺路由上下文的命令置灰标注', fn() {
     const sb = makeSandbox();
@@ -3918,8 +4021,12 @@ const contractTests = [
     const ag = fs.readFileSync(path.join(ROOT, 'js/agent.js'), 'utf8');
     const keys = (ag.match(/\{ key: '([^']+)', ico:/g) || []).map(m => m.replace(/.*key: '([^']+)'.*/, '$1'));
     assertEq(keys.join(','), '导演,剧本,主体,分集,分镜,生成,审片,成片', 'AGENT_BOARDS 应含审片板块且落在生成与成片之间');
-    const pl = fs.readFileSync(path.join(ROOT, 'js/plans.js'), 'utf8');
-    assert(/rv:.*cmd: 'episode\.smartReview'/.test(pl), 'plans 审片步骤应映射已注册命令(headless 可执行)');
+    /* 计划步骤自 G-12 起由 SK-05 主线全链投影生成(plans.js 里不再有手写命令字面),故改钉行为:
+     * 未审集推出来的那一步就是已注册审片命令,且审片在计划层是登记在案的投影步 */
+    const plSb = loadPlans();
+    const rv = plSb.Plans.fromWorkflow({ id: 'p1', subjects: [], episodes: [cleanEp({ lastReview: null })] }).steps[0];
+    assertEq(rv.cmd, 'episode.smartReview', 'plans 审片步骤应映射已注册命令(headless 可执行)');
+    assert(plSb.Plans.projection().some(x => x.cmd === 'episode.smartReview' && x.occupies), '审片应是计划层占一步的投影步');
     const ao = fs.readFileSync(path.join(ROOT, 'js/agent-ops.js'), 'utf8');
     assert(ao.includes("'审片修订': 'episode.smartReview'"), 'Agent 动作词表应覆盖审片修订别名(协议文本由词表自动生成)');
     const sb2 = fs.readFileSync(path.join(ROOT, 'js/storyboard.js'), 'utf8');

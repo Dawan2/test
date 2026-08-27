@@ -3,44 +3,117 @@
  * 步骤映射统一领域命令(episode.generateStoryboard/generateVideos/compose…)或导航动作;
  * 执行经 Commands.execute(ui 模式:决策闸保留),回执驱动步骤状态(done/failed/blocked/pending),
  * 每步落定 emit Bus 'plan.step'(Agent 对话流/问题中心角标同源感知)。
- * 两种生成路径:本地推导 fromWorkflow(零成本,按 Domain 主线逐集推进)/ LLM 规划 generate(1 积分,按用户目标拆步)。
+ * 两种生成路径:本地推导 fromWorkflow(零成本,主线全链 playbook 投影 × Domain 状态)/
+ * LLM 规划 generate(1 积分,按用户目标拆步)。
  * 入口:项目页「计划」按钮(角标=进行中进度)。 */
 (function () {
 
   const online = () => !!(window.Media && Media.isReady && Media.isReady());
 
-  /* ================= 本地推导:按 Domain 主线逐集推进(零成本,推荐默认) =================
-   * 每集取其 episodeState 推荐动作(缺剧本→补剧本/未分镜→智能分镜/失败→重生成/待出→生成视频/
-   * 过期→重生成/待确认→确认/未审或判旧→整集审片/低分→审片修订/未合成→合成),主体缺图作前置步骤;上限 12 步。
-   * 审片是主线一等步骤(与 Domain.workflow 的 review 步同口径),映射已注册命令 episode.smartReview,
-   * headless 下可真实执行(不再是只能点开页面的导航步)。 */
+  /* ================= 本地推导:主线全链投影 × 各集状态(零成本,推荐默认) =================
+   * 命令名与步序一律现取 Skills 的主线全链 playbook(SK-05 core.playbookProjection),本层不写第二份命令链:
+   * 投影的每一步在 TODO_OF 里登记一个取材器,只回答「这一步在本项目/本集当下待不待办、步骤文案怎么写」,
+   * 判定一律现取 Domain.episodeState(状态口径与流程条/CLI workflow 同源)。
+   * 排法:项目级步(提取主体/主体生图/剧本拆集)按投影步序排在前,集级步逐集取该集在投影上的首个待办步;上限 12 步。
+   * args 照投影原样(主线全链一律留空):授权位(拆集 overwrite、全量生成 confirmAll)与子集位
+   * (shotIds/subjectIds)属人工决策,计划层不替用户预授权——需要授权或需要人工挑选的状态一律出导航步
+   * (补剧本/重新拆镜/重生成过期镜/确认镜头),让用户到页面上自己定,不拿假 args 冒充可执行。
+   * 审片是主线一等步骤(与 Domain.workflow 的 review 步同口径),headless 下可真实执行。 */
+  const CHAIN_ID = 'core.playbookProjection'; // 主线全链:主体→分集→分镜→生成→审片→成片
+  const chainOf = () => ((window.Skills && Skills.playbook(CHAIN_ID)) || { steps: [] }).steps;
+  /* 集级/项目级由命令元数据判定(needs 含 ep 即集级),本层不写第二份作用域表 */
+  const epScope = cmd => {
+    const m = window.CmdRegistry && CmdRegistry.byName[cmd];
+    return !!(m && (m.needs || []).indexOf('ep') >= 0);
+  };
+
+  /* 投影步取材器:cmd → (ctx)=>{key,label,goto?}|null(不待办);ctx 项目级 {p},集级另带 {ep, st, hash}。
+   * 登记为 null = 该投影步不占计划步(理由写在旁注)——投影加了新步而这里漏登记时,Plans.projection() 的契约断言先红。 */
+  const TODO_OF = {
+    'project.extractSubjects': ({ p }) => (String(p.script || '').trim() && !(p.subjects || []).length)
+      ? { key: 'extract', label: '提取主体:剧本已在库,主体库还空着' } : null,
+    'subject.generateImage': ({ p }) => {
+      const noImg = (p.subjects || []).filter(s => !s.image).length;
+      return noImg ? { key: 'subj', label: `补齐主体参考图(${noImg} 个缺图)` } : null;
+    },
+    'project.splitEpisodes': ({ p }) => (String(p.script || '').trim() && !(p.episodes || []).length)
+      ? { key: 'split', label: '剧本拆集:整本切成分集' } : null,
+    // 本集理解是智能分镜编排的内部第一步(已有理解可复用不重扣),不单独占一个计划步
+    'episode.understanding': null,
+    'episode.generateStoryboard': ({ ep, st, hash }) => {
+      if (!(ep.content || '').trim()) return { key: 'script:' + ep.id, label: '补充剧本:' + ep.title, goto: hash };
+      if (!st.counts.total) return { key: 'sb:' + ep.id, label: '智能分镜:' + ep.title };
+      // 重拆会整表覆盖已有分镜(含已出片镜):覆盖属人工决策,出导航步不代授权
+      if (st.shotsStale) return { key: 'reshoot:' + ep.id, label: '重新拆镜:' + ep.title + '(剧本/图谱已更新)', goto: hash };
+      return null;
+    },
+    // 就绪检查零 LLM 零计费、只报不拦,是各步的前置结论面(出片前置检查单屏与一键成片内部各自已跑),不占计划步
+    'episode.preflight': null,
+    'episode.generateVideos': ({ ep, st, hash }) => {
+      const c = st.counts;
+      if (c.failed) return { key: 'fix:' + ep.id, label: `重生成失败镜:${ep.title}(${c.failed} 镜)` };
+      if (c.done < c.total) return { key: 'gen:' + ep.id, label: `生成视频:${ep.title}(${c.total - c.done} 镜待出)` };
+      // 过期镜要按 shotIds 挑子集、未确认镜要过确认闸:两者都不用假 args 代办,出导航步
+      if (c.stale) return { key: 'regen:' + ep.id, label: `重生成过期镜:${ep.title}(${c.stale} 镜)`, goto: hash };
+      if (c.unconfirmed) return { key: 'cfm:' + ep.id, label: `确认镜头:${ep.title}(${c.unconfirmed} 镜)`, goto: hash };
+      return null;
+    },
+    'episode.smartReview': ({ ep, st }) => {
+      if (st.reviewAvg === null || st.reviewAvg === undefined) {
+        return { key: 'rv:' + ep.id, label: (st.reviewStale ? '重新审片:' : '整集审片:') + ep.title + (st.reviewStale ? '(记录已过期)' : '') };
+      }
+      if (st.reviewAvg < Domain.REVIEW_MIN) return { key: 'rv:' + ep.id, label: `审片修订:${ep.title}(均分 ${st.reviewAvg})` };
+      return null;
+    },
+    'episode.compose': ({ ep, st }) => st.composedReady ? null
+      : { key: 'cp:' + ep.id, label: (ep.composed ? '重新合成:' : '合成成片:') + ep.title },
+  };
+
   function fromWorkflow(p) {
     if (!p) return null;
+    const chain = chainOf();
+    if (!chain.length || !window.CmdRegistry) return null; // 投影或命令元数据缺位:如实不出计划,不拿手写链兜底
     const on = online();
     const steps = [];
-    const noImg = (p.subjects || []).filter(s => !s.image).length;
-    if (noImg) steps.push({ key: 'subj', label: `补齐主体参考图(${noImg} 个缺图)`, goto: '#/project/' + p.id + '/roles' });
-    (p.episodes || []).forEach(ep => {
-      const st = Domain.episodeState(p, ep, on);
-      const c = st.counts;
-      const hash = `#/project/${p.id}/episode/${ep.id}`;
-      if (!(ep.content || '').trim()) steps.push({ key: 'script:' + ep.id, label: '补充剧本:' + ep.title, goto: hash });
-      else if (!c.total) steps.push({ key: 'sb:' + ep.id, label: '智能分镜:' + ep.title, cmd: 'episode.generateStoryboard', epid: ep.id });
-      else if (st.shotsStale) steps.push({ key: 'reshoot:' + ep.id, label: '重新拆镜:' + ep.title + '(剧本/图谱已更新)', goto: hash });
-      else if (c.failed) steps.push({ key: 'fix:' + ep.id, label: `重生成失败镜:${ep.title}(${c.failed} 镜)`, cmd: 'episode.generateVideos', epid: ep.id });
-      else if (c.done < c.total) steps.push({ key: 'gen:' + ep.id, label: `生成视频:${ep.title}(${c.total - c.done} 镜待出)`, cmd: 'episode.generateVideos', epid: ep.id });
-      else if (c.stale) steps.push({ key: 'regen:' + ep.id, label: `重生成过期镜:${ep.title}(${c.stale} 镜)`, goto: hash });
-      else if (c.unconfirmed) steps.push({ key: 'cfm:' + ep.id, label: `确认镜头:${ep.title}(${c.unconfirmed} 镜)`, goto: hash });
-      else if (st.reviewAvg === null || st.reviewAvg === undefined) steps.push({ key: 'rv:' + ep.id, label: (st.reviewStale ? '重新审片:' : '整集审片:') + ep.title + (st.reviewStale ? '(记录已过期)' : ''), cmd: 'episode.smartReview', epid: ep.id });
-      else if (st.reviewAvg < Domain.REVIEW_MIN) steps.push({ key: 'rv:' + ep.id, label: `审片修订:${ep.title}(均分 ${st.reviewAvg})`, cmd: 'episode.smartReview', epid: ep.id });
-      else if (!st.composedReady) steps.push({ key: 'cp:' + ep.id, label: (ep.composed ? '重新合成:' : '合成成片:') + ep.title, cmd: 'episode.compose', epid: ep.id });
-    });
+    /* 投影步 + 取材结论 → 计划步:命令名/参数取投影,导航步不挂命令(没有可执行命令的人工动作) */
+    const push = (proj, todo, ctx) => {
+      const step = Object.assign({ status: 'pending' }, todo);
+      if (!step.goto) {
+        step.cmd = proj.cmd;
+        if (ctx.ep) step.epid = ctx.ep.id;
+        if (Object.keys(proj.args || {}).length) step.args = Object.assign({}, proj.args);
+      }
+      steps.push(step);
+    };
+    /* 按投影步序取待办:集级只取首个待办步(逐集一步,与流程条的"下一步"同粒度) */
+    const pick = (ctx, wantEp) => {
+      for (let i = 0; i < chain.length; i++) {
+        const proj = chain[i];
+        if (epScope(proj.cmd) !== wantEp || !TODO_OF[proj.cmd]) continue;
+        const todo = TODO_OF[proj.cmd](ctx);
+        if (!todo) continue;
+        push(proj, todo, ctx);
+        if (wantEp) return;
+      }
+    };
+    pick({ p }, false);
+    (p.episodes || []).forEach(ep => pick({
+      p, ep, st: Domain.episodeState(p, ep, on), hash: `#/project/${p.id}/episode/${ep.id}`,
+    }, true));
     if (!steps.length) return null;
     return {
       id: Store.uid('pl'), title: '主线推进计划', goal: '按创作主线逐集推进到成片',
-      steps: steps.slice(0, 12).map(s => Object.assign({ status: 'pending' }, s)),
-      createdAt: Store.now(), updatedAt: Store.now(),
+      steps: steps.slice(0, 12), createdAt: Store.now(), updatedAt: Store.now(),
     };
+  }
+
+  /* 投影自省(契约断言用):主线全链投影每一步 → 本层登记了取材器吗、它占不占计划步 */
+  function projection() {
+    return chainOf().map(x => ({
+      cmd: x.cmd, ep: epScope(x.cmd),
+      registered: Object.prototype.hasOwnProperty.call(TODO_OF, x.cmd),
+      occupies: !!TODO_OF[x.cmd],
+    }));
   }
 
   /* ================= LLM 规划:用户目标 → 步骤清单(1 积分,失败退费) =================
@@ -175,7 +248,7 @@
       bodyEl.innerHTML = `
       <div class="hint" style="margin-bottom:10px">制作计划跨会话持久保存:步骤映射统一领域命令(执行含确认闸/计费),完成状态自动推进;两种建立方式——</div>
       <div class="row" style="gap:8px;align-items:flex-start;margin-bottom:14px">
-        <div class="grow small">📋 <b>按主线生成</b>:本地按当前各集状态推导推进步骤(零成本,可随状态重建)</div>
+        <div class="grow small">📋 <b>按主线生成</b>:按主线全链步序与当前各集状态推导推进步骤(零成本,可随状态重建)</div>
         <button class="btn sm primary" data-x="fromwf">📋 按主线生成</button>
       </div>
       <div class="row" style="gap:8px;align-items:flex-start">
@@ -251,5 +324,5 @@
     return `📋 计划${sm ? (sm.pending ? ` ${sm.done}/${sm.total}` : ' ✓') : ''}`;
   }
 
-  window.Plans = { of, summary, fromWorkflow, generate, replace, execStep, runAll, openModal, badgeHTML };
+  window.Plans = { of, summary, fromWorkflow, projection, generate, replace, execStep, runAll, openModal, badgeHTML };
 })();
