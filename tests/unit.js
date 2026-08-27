@@ -1351,6 +1351,30 @@ const commandsTests = [
     assertEq(r.ok, true, 'riskyCompose 显式放行应完成合成');
     assert(sb.__called.includes('composeVideo'), '放行后应调合成');
   } },
+  { name: 'produce:审片关闭 → 步骤如实 skipped 且不静默消失,合成照常', fn: async () => {
+    const sb = loadCommands();
+    cmdCtx(sb);
+    const r = await sb.Commands.execute('episode.produce', { pid: 'p1', epid: 'ep1', smartReview: false });
+    assertEq(r.ok, true);
+    const rv = r.result.steps.find(x => x.step === 'smartReview');
+    assert(rv, '关闭审片也应留下 smartReview 步骤记录(不静默跳过)');
+    assertEq(rv.status, 'skipped');
+    assertEq(rv.error.code, 'disabled');
+    assert(sb.__called.includes('composeVideo'), '显式关闭审片不阻断合成');
+  } },
+  { name: 'produce:审片模块未加载 → skipped + blocked review-unavailable(riskyCompose 放行)', fn: async () => {
+    const sb = loadCommands();
+    cmdCtx(sb);
+    const keep = sb.Review;
+    sb.Review = null;
+    let r = await sb.Commands.execute('episode.produce', { pid: 'p1', epid: 'ep1' });
+    assertEq(r.ok, false); assertEq(r.status, 'blocked'); assertEq(r.error.code, 'review-unavailable');
+    assertEq(r.result.steps.find(x => x.step === 'smartReview').status, 'skipped');
+    assert(!sb.__called.includes('composeVideo'), '质量闸门无法执行时不应静默合成');
+    r = await sb.Commands.execute('episode.produce', { pid: 'p1', epid: 'ep1', riskyCompose: true });
+    assertEq(r.ok, true, 'riskyCompose 显式放行');
+    sb.Review = keep;
+  } },
   { name: 'understanding:regen 同源(成功 ok/失败 fail 已退费)', fn: async () => {
     const sb = loadCommands();
     cmdCtx(sb);
@@ -2048,6 +2072,36 @@ const pipelineTests = [
     const epR = makeEp({ content: '第一集剧本', composed: false, lastReview: { avg: 8 }, shots: [makeShot(0, { confirm: true }), makeShot(1, { confirm: true }), makeShot(2, { confirm: true })] }); // 全部出片已确认 → 合成成片分支(无尾注)
     assertEq(sb.Pipeline.nextForEp({ id: 'p1' }, epR).txt, '🎞 合成成片');
   } },
+  { name: 'nextForEp:全出片已确认但未审 → 先走审片步骤(判旧同样按未审处理)', fn() {
+    const sb = loadPipeline();
+    const shots = [makeShot(0, { confirm: true }), makeShot(1, { confirm: true }), makeShot(2, { confirm: true })];
+    const ep = makeEp({ content: '第一集剧本', composed: false, shots });
+    let r = sb.Pipeline.nextForEp({ id: 'p1' }, ep);
+    assertEq(r.key, 'review');
+    assertEq(r.txt, '🧐 整集审片');
+    ep.lastReview = { avg: 8, snapshotHash: 'bogus-stale' }; // 记录判旧
+    r = sb.Pipeline.nextForEp({ id: 'p1' }, ep);
+    assertEq(r.key, 'review');
+    assertEq(r.txt, '🧐 重新审片(记录已过期)');
+    ep.lastReview = { avg: 5 }; // 低分 → needs_human 审片修订
+    assertEq(sb.Pipeline.nextForEp({ id: 'p1' }, ep).key, 'review');
+  } },
+  { name: 'prevForEp:已审未合成时上一步=整集审片(未审时仍为生成视频)', fn() {
+    const sb = loadPipeline();
+    const shots = [makeShot(0, { confirm: true }), makeShot(1, { confirm: true }), makeShot(2, { confirm: true })];
+    const ep = makeEp({ content: '第一集剧本', composed: false, shots });
+    assertEq(sb.Pipeline.prevForEp({ id: 'p1' }, ep).key, 'gen', '未审片时上一步仍是生成视频');
+    ep.lastReview = { avg: 8 };
+    assertEq(sb.Pipeline.prevForEp({ id: 'p1' }, ep).key, 'review', '已审未合成时上一步是整集审片');
+  } },
+  { name: 'hashOf:审片步骤直达首个待审集(全部达标时退回首集)', fn() {
+    const sb = loadPipeline();
+    const mk = (id, over) => makeEp(Object.assign({ id, title: id, content: '剧本', composed: false, shots: [makeShot(0, { confirm: true })] }, over || {}));
+    const p = { id: 'p1', script: 'x', subjects: [], episodes: [mk('ep1', { lastReview: { avg: 8 } }), mk('ep2')] };
+    assertEq(sb.Pipeline.hashOf(p, 'review'), '#/project/p1/episode/ep2', '应直达未审的第二集');
+    p.episodes[1].lastReview = { avg: 8 };
+    assertEq(sb.Pipeline.hashOf(p, 'review'), '#/project/p1/episode/ep1', '全部达标退回首集(回看报告)');
+  } },
 ];
 
 /* ================= 套件 8:sb-views.js(镜头状态归一 shotStatusHTML,P1-4) ================= */
@@ -2260,6 +2314,47 @@ const domainTests = [
     const ep = { content: '剧本', shots: [s], contentRev: 0, graphRev: 0, lastReview: { avg: 8 }, composed: true, composedUrl: 'x', composedInputHash: sb.Domain.composedInputHash({ shots: [s], contentRev: 0, graphRev: 0, sbConfig: { subtitle: true, ratio: '16:9' } }, true), composedSourceRev: 0, composedGraphRev: 0, sbConfig: { subtitle: true, ratio: '16:9' } };
     const w = sb.Domain.workflow(Object.assign(makeP([ep], [{ id: 'sj1', name: '主角', image: 'u' }]), { script: 'x', extractDone: true }), true);
     assertEq(w.steps.find(st => st.key === 'film').status, 'done', '成片步应 done');
+  } },
+  { name: 'workflow:审片是主线一等步骤(gen 与 film 之间),未审 → 未完成+no-review 阻塞+推荐整集审片', fn: () => {
+    const sb = loadDomain();
+    const s = { id: 'a', order: 0, video: { status: 'done', url: 'http://x/v.mp4' }, confirm: true };
+    const ep = { id: 'ep1', title: '第一集', content: '剧本', shots: [s], contentRev: 0, graphRev: 0 };
+    const w = sb.Domain.workflow(Object.assign(makeP([ep], [{ id: 'sj1', name: '主角', image: 'u' }]), { script: 'x', extractDone: true }), true);
+    const mains = w.steps.filter(st => !st.side).map(st => st.key);
+    assertEq(mains.join(','), 'script,subjects,eps,shots,gen,review,film', '主线步骤序应为 剧本→主体→分集→分镜→剪辑→审片→成片');
+    const rv = w.steps.find(st => st.key === 'review');
+    assertEq(rv.name, '审片');
+    assertEq(rv.done, false, '未审片时审片步未完成');
+    assertEq((rv.blockers[0] || {}).code, 'no-review', '应报未审片阻塞项');
+    assertEq(w.recommendedAction.key, 'review', '审片未完成时项目级推荐动作应落审片');
+    assertEq(w.recommendedAction.label, '整集审片:第一集');
+    assertEq(w.recommendedAction.hash, '#/project/p1/episode/ep1', '推荐动作应直达该分集工作区');
+  } },
+  { name: 'workflow:审片达标 → review done 且推荐动作前进到合成;低分/判旧各自阻塞与文案', fn: () => {
+    const sb = loadDomain();
+    const s = { id: 'a', order: 0, video: { status: 'done', url: 'http://x/v.mp4' }, confirm: true };
+    const ep = { id: 'ep1', title: '第一集', content: '剧本', shots: [s], contentRev: 0, graphRev: 0, lastReview: { avg: 8 } };
+    const p = Object.assign(makeP([ep], [{ id: 'sj1', name: '主角', image: 'u' }]), { script: 'x', extractDone: true });
+    let w = sb.Domain.workflow(p, true);
+    assertEq(w.steps.find(st => st.key === 'review').done, true, '达标应 done');
+    assertEq(w.recommendedAction.key, 'compose', '审片完成后推荐动作前进到合成');
+    ep.lastReview = { avg: 5 };
+    w = sb.Domain.workflow(p, true);
+    const low = w.steps.find(st => st.key === 'review');
+    assertEq(low.done, false);
+    assertEq((low.blockers[0] || {}).code, 'low-review', '低分应报 low-review');
+    assertEq(w.recommendedAction.label, '审片修订:第一集');
+    ep.lastReview = { avg: 8, snapshotHash: 'bogus-stale' };
+    w = sb.Domain.workflow(p, true);
+    const st2 = w.steps.find(x => x.key === 'review');
+    assertEq((st2.blockers[0] || {}).code, 'review-stale', '快照失配应报 review-stale(判旧视为未审)');
+    assertEq(w.recommendedAction.label, '重新审片:第一集');
+  } },
+  { name: 'REVIEW_MIN:达标线单源,episodeState 与主线审片步骤同用一个常量', fn: () => {
+    const sb = loadDomain();
+    assertEq(sb.Domain.REVIEW_MIN, 7);
+    const src = fs.readFileSync(path.join(ROOT, 'js/domain.js'), 'utf8');
+    assert(!/reviewAvg < 7/.test(src), 'domain 不应再有硬编码 7 的审片达标线字面量');
   } },
   { name: 'understandingStale 挂 graphRev(二十三轮):无字段保持原语义/失配判旧/对齐恢复', fn: () => {
     const sb = loadDomain();
@@ -2501,6 +2596,25 @@ const plansTests = [
     assertEq(gen.cmd, 'episode.generateVideos', '有失败镜集应映射批量生成(失败镜在 pend 集合内)');
     assert(pl.steps.every(s => s.status === 'pending'), '新计划步骤应全部 pending');
     assertEq(sb.Plans.summary(p), null, '未落库前项目无计划');
+  } },
+  { name: 'fromWorkflow:未审/判旧/低分三态都映射 episode.smartReview(不再是只能跳页面的导航步)', fn() {
+    const sb = loadPlans();
+    const ep = cleanEp({ composed: true, composedInputHash: sb.Domain.composedInputHash(cleanEp(), false), composedSourceRev: 0, composedGraphRev: 0 });
+    delete ep.lastReview; // 未审
+    const p = { id: 'p1', subjects: [{ id: 'sj1', name: '主角', image: 'u' }], episodes: [ep] };
+    let s = sb.Plans.fromWorkflow(p).steps[0];
+    assertEq(s.cmd, 'episode.smartReview', '未审集应映射已注册审片命令');
+    assertEq(s.epid, 'ep1');
+    assertEq(s.label, '整集审片:第一集');
+    assert(!s.goto, '命令步骤不应再带 goto(headless 下可真实执行)');
+    ep.lastReview = { avg: 8, snapshotHash: 'bogus-stale' };
+    s = sb.Plans.fromWorkflow(p).steps[0];
+    assertEq(s.cmd, 'episode.smartReview');
+    assertEq(s.label, '重新审片:第一集(记录已过期)');
+    ep.lastReview = { avg: 5.5 };
+    s = sb.Plans.fromWorkflow(p).steps[0];
+    assertEq(s.cmd, 'episode.smartReview');
+    assertEq(s.label, '审片修订:第一集(均分 5.5)');
   } },
   { name: 'fromWorkflow:全齐备项目返回 null(无主线可推进)', fn() {
     const sb = loadPlans();
@@ -3022,6 +3136,25 @@ const contractTests = [
     assert(/confirm = false/.test(cli), 'cli shot-set 改内容字段应回落确认闸');
     const sv = fs.readFileSync(path.join(ROOT, 'js/sb-views.js'), 'utf8');
     assert(/bindInput\('narration', \(\) => \{ sel\.confirm = false; \}\)/.test(sv), 'UI 旁白编辑应回落确认闸');
+  } },
+  { name: '审片升为主线一等步骤(G-03):板块 Agent 有审片席;plans/工作区/CLI 都映射 episode.smartReview', fn() {
+    const D = require(path.join(ROOT, 'js/domain.js'));
+    const mains = D.workflow({ id: 'p1', episodes: [], subjects: [] }, true).steps.filter(s => !s.side).map(s => s.key);
+    assertEq(mains.indexOf('review'), mains.indexOf('gen') + 1, 'review 应紧随 gen');
+    assertEq(mains.indexOf('film'), mains.indexOf('review') + 1, 'film 应紧随 review');
+    const ag = fs.readFileSync(path.join(ROOT, 'js/agent.js'), 'utf8');
+    const keys = (ag.match(/\{ key: '([^']+)', ico:/g) || []).map(m => m.replace(/.*key: '([^']+)'.*/, '$1'));
+    assertEq(keys.join(','), '导演,剧本,主体,分集,分镜,生成,审片,成片', 'AGENT_BOARDS 应含审片板块且落在生成与成片之间');
+    const pl = fs.readFileSync(path.join(ROOT, 'js/plans.js'), 'utf8');
+    assert(/rv:.*cmd: 'episode\.smartReview'/.test(pl), 'plans 审片步骤应映射已注册命令(headless 可执行)');
+    const ao = fs.readFileSync(path.join(ROOT, 'js/agent-ops.js'), 'utf8');
+    assert(ao.includes("'审片修订': 'episode.smartReview'"), 'Agent 动作词表应覆盖审片修订别名(协议文本由词表自动生成)');
+    const sb2 = fs.readFileSync(path.join(ROOT, 'js/storyboard.js'), 'utf8');
+    assert(/nx\.key === 'review'/.test(sb2) && /pv\.key === 'review'/.test(sb2), '分集工作区上/下一步应承接审片步骤');
+    const cli = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    assert(cli.includes("status: 'skipped'") && cli.includes("'review-unavailable'"), 'CLI 一键成片缺审片应如实 skipped/blocked,不静默通过');
+    const cmds = fs.readFileSync(path.join(ROOT, 'js/commands.js'), 'utf8');
+    assert(cmds.includes("status: 'skipped'") && cmds.includes("'review-unavailable'"), '浏览器一键成片缺审片应如实 skipped/blocked');
   } },
   { name: '生成指纹不断链(§主线):发起即打指纹;落片沿用发起时指纹;regen-stale 有执行出口', fn() {
     const sg = fs.readFileSync(path.join(ROOT, 'js/sb-gen.js'), 'utf8');
