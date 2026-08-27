@@ -8,7 +8,7 @@
  * 本层只登记注册表答不出的三件事:投影每一步落在中段哪一主线步、它的待办由哪几个阻塞码判、
  * 跑砸了在哪一码上断点。零 LLM、零计费、无网络与存储副作用,产出可 JSON 序列化。
  * 环境差异(在线与否、MCP 工具名)经参数显式注入,本模块不碰 window,也不认识任何一端的工具表。
- * 消费点:cli.js `flow-template` 命令、mcp.js `hujing_flow_template` 工具与中段流程提示模板。 */
+ * 消费点:cli.js 的 `flow-template` 命令,以及 mcp.js 包装它的那个工具与中段流程提示模板。 */
 (function (root, factory) {
   const isNode = typeof module === 'object' && module.exports;
   const F = factory(
