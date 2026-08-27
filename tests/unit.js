@@ -4520,6 +4520,90 @@ const contractTests = [
     assert(eu.includes('WfCore.extractSystem()'), '提取步仍应经装配口取「人设句 + 主体参考」整条');
     assert(!/system: WfCore\.extractSystem\(\),[\s\S]{0,400}提取其中的主要人物/.test(eu), '小传步不应改取带方法论段的装配口');
   } },
+  { name: '剧本板块四步人设:四个独立键各自取值,缺省逐字节等于收编前的内联字面、覆盖只换对应那一键', fn() {
+    const Prompts = require('../js/prompts.js');
+    /* 收编前四步写死在 js/episodes.js 的四份 system 字面:缺省逐字节不得变 */
+    const FOUR = [
+      ['narration.system', '你是资深短剧解说编剧,擅长把短剧剧本改写成旁白解说体(解说模式)。', '旁白解说体改写'],
+      ['reading.system', '你是短剧导演组的剧本围读会,由编剧/导演/制片联合评审。', '剧本围读'],
+      ['concept.system', '你是资深短剧/漫剧导演,在项目开拍前做导演阐述(Director Treatment)。', '构思导演阐述'],
+      ['light.system', '你是影视摄影指导(DP),负责全剧光影总控。', '全剧光影总控'],
+    ];
+    FOUR.forEach(([k, def, name]) => {
+      assertEq(Prompts.get(k), def, k + ' 缺省人设句应与收编前的内联字面逐字节相同');
+      const it = Prompts.list().find(x => x.key === k);
+      assert(it && !it.vars.length && it.name.startsWith(name) && it.name.includes('系统人设'),
+        '注册表应登记 ' + k + ' 条目(无变量,可在全局默认值页在线改写)');
+      // 每句字面只在注册表里有一条:同 def 开两个键即红
+      assertEq(Prompts.list().filter(x => x.def === def).length, 1, k + ' 的人设句应恰好命中注册表一条');
+    });
+    /* 四步角色互不相同,所以是四个键不是一个:合成单键(或与既有导演类人设复用)会让其中几步的角色定位失真 */
+    assertEq(new Set(FOUR.map(x => x[1])).size, 4, '四步人设措辞互不相同(合成同一个键即失真)');
+    ['und.system', 'sb.reviewSystem', 'extract.system', 'split.system'].forEach(k =>
+      assert(!FOUR.some(x => x[1] === Prompts.get(k)), '四步人设不得与既有键 ' + k + ' 同字面(同字面才谈得上复用)'));
+    /* 覆盖只换对应那一键:写一条覆盖时另三条逐字节不动(串台即红) */
+    FOUR.forEach(([k]) => {
+      const ov = {}; ov[k] = '你是覆盖生效的人设。';
+      FOUR.forEach(([k2, def2]) => assertEq(Prompts.get(k2, ov), k2 === k ? '你是覆盖生效的人设。' : def2,
+        '覆盖 ' + k + ' 时 ' + k2 + ' 应' + (k2 === k ? '跟随' : '逐字节不动')));
+    });
+    /* 展示顺序按产品流程:剧本页两步 → 开拍前定调 → 制片光影(顺序就是「全局默认值」页的排列) */
+    const keys = Prompts.list().map(x => x.key);
+    assertEq(keys.filter(k => FOUR.some(x => x[0] === k)).join(','), FOUR.map(x => x[0]).join(','), '四条键的注册顺序应按产品流程排列');
+    /* 只收人设句:四步的返回 JSON 字段契约仍留在各自 user 半,不做成可覆盖变量 */
+    ['"narration"', '"statement"', '"scenes"', '"overall"'].forEach(f =>
+      assertEq(Prompts.list().filter(x => x.def.includes(f)).length, 0, '返回 JSON 契约不进注册表:' + f));
+  } },
+  { name: '剧本板块四步人设(源级):js/episodes.js 四步零内联、逐步配对取值口,SK-10 记账随实况改写', fn() {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const ep = fs.readFileSync(path.join(ROOT, 'js', 'episodes.js'), 'utf8');
+    /* 取值口逐步配对:键与它那一步的 user 半锚点绑定,四个键互换位置即红 */
+    const PAIRS = [
+      ['narration.system', '把以下短剧单集剧本改写为旁白解说体剧本'],
+      ['reading.system', '对以下短剧剧本做一次围读评审'],
+      ['concept.system', '为这部剧做开拍前的整体创作定调'],
+      ['light.system', '为以下短剧的每个场景制定光影色调控制方案'],
+    ];
+    PAIRS.forEach(([k, anchor]) => {
+      assert(new RegExp("system: Prompts\\.get\\('" + k.replace('.', '\\.') + "'\\),[\\s\\S]{0,600}" + anchor).test(ep),
+        k + ' 应就在它那一步的取值口上(浏览器隐式读 Store 覆盖表),且与该步 user 半锚点配对');
+    });
+    /* 收严:四句字面的持有者全仓扫一遍,恰好只剩 js/prompts.js —— 谁在别处抄第二份(哪怕原文件仍走注册表)当场红 */
+    const holders = f => ['server.js', 'cli.js', 'mcp.js', 'index.html']
+      .concat(fs.readdirSync(path.join(ROOT, 'js')).filter(n => n.endsWith('.js')).map(n => 'js/' + n))
+      .filter(rel => fs.readFileSync(path.join(ROOT, rel), 'utf8').includes(f)).sort();
+    PAIRS.forEach(([k]) => assertEq(holders(Prompts.get(k)).join(','), 'js/prompts.js',
+      k + ' 的人设句字面应只剩注册表一份(全仓持有者名单逐字节比对)'));
+    /* 纯浏览器链路:四步都没有服务端/CLI 对端,那两处不得长出第二份 user 半 */
+    ['server.js', 'cli.js'].forEach(rel => {
+      const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      PAIRS.forEach(([k, anchor]) => assert(!src.includes(anchor), rel + ' 不应出现 ' + k + ' 那一步的 user 半(该步只在浏览器链路上)'));
+    });
+    PAIRS.forEach(([k]) => assert(Skills.byId('core.personaCtx').prompts.includes(k), 'SK-03 应登记 ' + k));
+    /* 记账随实况:SK-10 本来就没有专属人设句,四步已收,「仍欠」段改指真正还在的那几处 */
+    const sk10 = Skills.byId('script.aiToneBan');
+    assert(!/人设句入注册表待 G-13/.test(sk10.note), 'SK-10 的 note 不得再写「人设句入注册表待 G-13」(那四步已收,且本条没有专属人设句)');
+    assert(sk10.note.includes('没有专属人设句'), 'SK-10 的 note 须写明本条注入走板块方法论通道、没有专属人设句');
+    PAIRS.forEach(([k]) => assert(sk10.note.includes(k), 'SK-10 的 note 须点名已收编的键 ' + k));
+    // 点名断言只认「仍欠」之后那段:锚点写在"已落地"那半里不算交账
+    const owed = sk10.note.split('仍欠').slice(1).join('仍欠');
+    assert(owed, 'SK-10 的 note 须写明仍欠什么(G-13 没闭合)');
+    ['js/episodes.js', 'js/episode-util.js'].forEach(f => assert(owed.includes(f), 'SK-10 的仍欠段须点名 ' + f));
+    /* 反向:仍欠段点名的那几处此刻确实还在内联(收编了不改记账当场红) */
+    assert(ep.includes("system: '你是短剧剧本结构分析师。'"), 'js/episodes.js 事件图谱拆解步应仍是内联人设(收编后须同步改 SK-10 的仍欠段)');
+    const eu = fs.readFileSync(path.join(ROOT, 'js', 'episode-util.js'), 'utf8');
+    assertEq((eu.match(/system: '你是资深短剧策划。'/g) || []).length, 3, 'js/episode-util.js 剧本摘要三步应仍是内联策划人设(同上)');
+    [require('../js/prompts.js')].forEach(P => assertEq(P.list().filter(x => x.def === '你是短剧剧本结构分析师。' || x.def === '你是资深短剧策划。').length, 0,
+      '仍欠那几处的人设句不该已在注册表里(在了就是记账没跟上)'));
+    /* G-13 没闭合:按关联索引口径一个标记不摘,投影逐字节不变 */
+    assert(sk10.gaps.includes('G-13'), 'G-13 仍开着,SK-10 的标记不摘');
+    const g = Skills.gaps();
+    assertEq(Object.keys(g).length, 20, '缺口投影键数应不变');
+    assertEq(g['G-13'].join(','), 'script.hookType,script.aiToneBan,subjects.refDiscipline,eps.structureStage,gen.videoTpl,film.rhythmInject',
+      'G-13 的六条关联索引逐字节不变(只收一面不摘标记)');
+    assertEq(Skills.validate({ Prompts }).join(' | '), '', '新键须被 skill 索引引用且引用键都存在');
+  } },
   { name: 'Agent 单轮人设:经 WfCore.buildAgentSystem(agent.system) 取值,缺省逐字节等于收编前的模板串', fn() {
     const Prompts = require('../js/prompts.js');
     const Skills = require('../js/skills.js');
