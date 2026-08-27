@@ -3426,9 +3426,12 @@ const server = http.createServer(async (req, res) => {
         if (!ep) return fail(res, 404, '分集不存在', 404);
         const st = (tree && tree.settings) || {};
         const ov = st.promptOverrides;
-        // 可审镜=已出片且非终稿非在飞(与 autoSmartReview 目标口径一致)
-        const targets = (ep.shots || []).filter(s => !s.final && Domain.shotVideoReady(s, true) && !(s.video && s.video.status === 'generating'));
-        if (!targets.length) return fail(res, 400, '没有可审片的已出片镜头(需先生成视频)', 400);
+        // 可审镜=已出片且非终稿非在飞(与 autoSmartReview 目标口径一致);
+        // shotIds 子集复审(CLI produce 修订重抽后只复审低分镜,结果合并进上次整集报告)
+        const subsetIds = Array.isArray(b.shotIds) && b.shotIds.length ? new Set(b.shotIds.map(String)) : null;
+        let targets = (ep.shots || []).filter(s => !s.final && Domain.shotVideoReady(s, true) && !(s.video && s.video.status === 'generating'));
+        if (subsetIds) targets = targets.filter(s => subsetIds.has(s.id));
+        if (!targets.length) return fail(res, 400, subsetIds ? '指定镜头均不可审(需已出片且非终稿)' : '没有可审片的已出片镜头(需先生成视频)', 400);
         const opBase = sanitizeOpId(b.operationId) || uid('wfrv');
         const reviewCtx = {
           kbReviewText: KB.reviewBlock(), tplReviewText: st.tplReview || '', directorNote: WfCore.directorNote(st.directorSetting), styleText: Domain.styleOf(p),
@@ -3490,30 +3493,45 @@ const server = http.createServer(async (req, res) => {
           reports.push({ shot: s, report });
         }
         if (!reports.length) return fail(res, 502, '全部镜头评审失败(已逐步退费):' + ((failed[0] || {}).error || '未知原因'), 502);
-        // 共性汇总 + 四维成片评审(单步失败不拖垮整单:该步已退费,如实标 null 并回执错误)
+        // 共性汇总 + 四维成片评审(单步失败不拖垮整单:该步已退费,如实标 null 并回执错误);
+        // 子集复审沿用上次整集共性/四维结论(只更新逐镜分,不重复扣汇总费)
+        const prev = subsetIds && ep.lastReview ? ep.lastReview : null;
         let common = null, cut = null, sumErr, cutErr;
-        try {
-          const r = await wfLLM(user.id, { action: 'llm.review', reason: '整集共性汇总(' + ep.title + ')', opId: opBase + '_sum', step: 'main', wfName: 'smart-review', model: st.defLLM || 'qwen-turbo', system: '你是短剧审片总监。', user: WfCore.buildSumUser(reports), temperature: 0.4, max_tokens: 1200, projectId: p.id, mockKind: 'sum' });
-          common = WfCore.normalizeSum(r.parsed);
-        } catch (e) { sumErr = e.message; }
-        try {
-          const r = await wfLLM(user.id, { action: 'llm.review', reason: '四维成片评审(' + ep.title + ')', opId: opBase + '_cut', step: 'main', wfName: 'smart-review', model: st.defLLM || 'qwen-turbo', system: Prompts.get('review.finalSystem', ov), user: WfCore.buildCutUser(WfCore.buildCutBrief(ep, reports)), temperature: 0.3, max_tokens: 1500, projectId: p.id, mockKind: 'cut' });
-          cut = WfCore.normalizeCut(r.parsed);
-        } catch (e) { cutErr = e.message; }
-        const avg = Math.round(reports.reduce((a, x) => a + x.report.score, 0) / reports.length * 10) / 10;
+        if (prev) { common = prev.common || null; cut = prev.cut || null; }
+        else {
+          try {
+            const r = await wfLLM(user.id, { action: 'llm.review', reason: '整集共性汇总(' + ep.title + ')', opId: opBase + '_sum', step: 'main', wfName: 'smart-review', model: st.defLLM || 'qwen-turbo', system: '你是短剧审片总监。', user: WfCore.buildSumUser(reports), temperature: 0.4, max_tokens: 1200, projectId: p.id, mockKind: 'sum' });
+            common = WfCore.normalizeSum(r.parsed);
+          } catch (e) { sumErr = e.message; }
+          try {
+            const r = await wfLLM(user.id, { action: 'llm.review', reason: '四维成片评审(' + ep.title + ')', opId: opBase + '_cut', step: 'main', wfName: 'smart-review', model: st.defLLM || 'qwen-turbo', system: Prompts.get('review.finalSystem', ov), user: WfCore.buildCutUser(WfCore.buildCutBrief(ep, reports)), temperature: 0.3, max_tokens: 1500, projectId: p.id, mockKind: 'cut' });
+            cut = WfCore.normalizeCut(r.parsed);
+          } catch (e) { cutErr = e.message; }
+        }
+        // 逐镜分合并:子集复审只替换被复审镜的条目,其余沿用上次(整集均分按合并后口径)
+        const newPer = reports.map(x => ({ shotId: x.shot.id, order: x.shot.order, score: x.report.score, reportId: x.report.id, videoInputHash: x.report.videoInputHash || '' }));
+        const perShot = prev
+          ? (prev.perShot || []).filter(x => !newPer.some(y => y.shotId === x.shotId) && (ep.shots || []).some(s2 => s2.id === x.shotId)).concat(newPer).sort((a, b2) => a.order - b2.order)
+          : newPer;
+        const avg = Math.round(perShot.reduce((a, x) => a + x.score, 0) / perShot.length * 10) / 10;
         // lastReview 与浏览器 openEpisodeReview 同构(快照哈希/sourceRev/graphRev 同口径判旧)
         ep.lastReview = {
           time: nowStr(), avg,
           snapshotHash: WfCore.reviewSnapshotHashOf(ep),
           sourceRev: ep.contentRev || 0,
           graphRev: ep.graphRev || 0,
-          perShot: reports.map(x => ({ shotId: x.shot.id, order: x.shot.order, score: x.report.score, reportId: x.report.id, videoInputHash: x.report.videoInputHash || '' })),
+          perShot,
           common, cut,
         };
         const rev = wfSave(user.id, cur, tree);
         return ok(res, {
           rev, avg, reviewed: reports.length, failed,
-          lowShots: reports.filter(x => x.report.score < 7).map(x => ({ order: x.shot.order + 1, score: x.report.score })),
+          // 低分镜带 shotId 与修正意见串(fixes):CLI produce 据此修订提示词后 shotIds 子集重抽+复审;
+          // 合并口径下未复审的历史低分镜同样在列(fixes 仅新报告可给)
+          lowShots: perShot.filter(x => x.score < 7).map(x => {
+            const fresh = reports.find(y => y.shot.id === x.shotId);
+            return { shotId: x.shotId, order: x.order + 1, score: x.score, fixes: fresh ? WfCore.reviewFixes(fresh.report) : undefined };
+          }),
           common, cut, sumErr: sumErr || undefined, cutErr: cutErr || undefined,
         });
       } catch (e) {

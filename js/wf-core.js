@@ -268,6 +268,18 @@ ${hasImage ? '附图是该分镜当前生成画面,请结合实际画面与 Prom
       issues, optimized: false,
     };
   };
+  /* 审片报告→修正意见串(自 review.js optimizeShot 下沉):issues 建议优先,否则匹配层建议 */
+  W.reviewFixes = r => ((r && r.issues) || []).map(it => it.suggestion).filter(Boolean).join('; ')
+    || String((r && r.dimensions && r.dimensions.matching && r.dimensions.matching.suggestion) || '');
+  /* 一键优化重写提示词(自 review.js optimizeShot 下沉,双端单一来源:浏览器审片闭环与 CLI produce 修订重抽共用) */
+  W.buildOptimizeUser = (styleText, prompt, fixes) => `根据以下审片意见重写分镜提示词,返回 {"prompt":"重写后的中文提示词","changes":"一句话说明改了什么"}。要求:保持原剧情与风格(${styleText}),逐条落实修正意见。
+原提示词:${prompt}
+审片意见:${fixes}`;
+  /* LLM 优化失败的本地规则回退(同下沉):提取意见中的英文修正词直接追加 */
+  W.localOptimizedPrompt = function (prompt, fixes) {
+    const enFix = (String(fixes || '').match(/'[^']+'/g) || []).join(', ');
+    return (prompt || '') + (enFix ? ',' + enFix.replace(/'/g, '') : ',加强时间轴控制,主体一致,电影感光影');
+  };
   /* 整集报告快照哈希(自 reviewSnapshotHashOf 下沉):镜头 ID 集顺序 + 每镜视频版本/地址——
    * 新增/删除/调序/重生成/后处理任一变化 → 整集报告判旧;服务端写 lastReview 与浏览器同函数字面 */
   W.reviewSnapshotHashOf = function (ep) {

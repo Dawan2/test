@@ -37,7 +37,7 @@
     {
       name: 'episode.smartReview', label: '智能审片', risk: 'exec', needs: ['p', 'ep'],
       desc: '整集逐镜评审+共性汇总+四维成片评审;不达标先修订提示词重抽,仍有待人工镜则回 needs_human(质量闸门)',
-      args: [PID, EPID, { name: 'quiet', type: 'boolean', desc: '评审过程不弹后台面板(headless 默认)' }, UI],
+      args: [PID, EPID, { name: 'shotIds', type: 'array', desc: '只复审指定镜头 id 子集(修订重抽后复检,结果合并整集报告)' }, { name: 'quiet', type: 'boolean', desc: '评审过程不弹后台面板(headless 默认)' }, UI],
     },
     {
       name: 'episode.compose', label: '合成成片', risk: 'exec', needs: ['p', 'ep'],

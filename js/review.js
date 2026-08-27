@@ -324,13 +324,13 @@
   async function optimizeShot(p, ep, s, r, main, autoApply) {
     const tk = Tasks.start({ type: '一键优化', model: API.isReady() ? '优化LLM' : '本地规则', target: `${ep.title}·镜头${s.order + 1}`, cost: COST.optimize, projectId: p.id, episodeId: ep.id, shotId: s.id });
     if (!U.charge(COST.optimize, `一键优化:镜头${s.order + 1}`, tk.id)) { Tasks.fail(tk, '积分不足'); return false; }
-    const fixes = r.issues.map(it => it.suggestion).filter(Boolean).join('; ') || r.dimensions.matching.suggestion;
+    const fixes = WfCore.reviewFixes(r); // 修正意见抽取与重写模板下沉 wf-core.js(CLI produce 修订重抽同源)
     let newPrompt = '', changes = '';
     try {
       if (!API.isReady()) throw new Error('LLM 未配置');
       const out = await API.chatJSON({
         system: '你是文生视频提示词专家。',
-        messages: [{ role: 'user', content: `根据以下审片意见重写分镜提示词,返回 {"prompt":"重写后的中文提示词","changes":"一句话说明改了什么"}。要求:保持原剧情与风格(${styleOf(p)}),逐条落实修正意见。\n原提示词:${s.prompt}\n审片意见:${fixes}` }],
+        messages: [{ role: 'user', content: WfCore.buildOptimizeUser(styleOf(p), s.prompt, fixes) }],
         temperature: 0.6, max_tokens: 900,
         billingAction: 'llm.optimize', operationId: tk.id,
       });
@@ -340,8 +340,7 @@
     } catch (e) {
       Tasks.fail(tk, 'LLM 优化失败,已回退本地规则:' + e.message);
       U.toast('LLM 优化失败:' + e.message + ',已回退本地规则优化', 'error', 3200);
-      const enFix = (fixes.match(/'[^']+'/g) || []).join(', ');
-      newPrompt = (s.prompt || '') + (enFix ? ',' + enFix.replace(/'/g, '') : ',加强时间轴控制,主体一致,电影感光影');
+      newPrompt = WfCore.localOptimizedPrompt(s.prompt, fixes);
       changes = '本地规则:追加审片建议修正词';
     }
     if (tk.status === 'running') Tasks.done(tk);
