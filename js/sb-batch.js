@@ -3,7 +3,7 @@
  * window.__retryShotTask(任务监控页 ↻ 重试入口)。
  * 加载顺序:storyboard.js 之后、sb-gen.js 之前(openConfirmGateModal 挂回 window.SB 供其解构)。 */
 (function () {
-  const { renderShots, onEpPage, ttsShot } = window.SB;
+  const { renderShots, onEpPage, ttsShot, markOfflineAudio } = window.SB;
 
   /* ================= 失败任务重试入口(任务监控页 ↻ 调用) ================= */
   window.__retryShotTask = function (t) {
@@ -181,7 +181,8 @@
       if (!pend.length) return U.toast('所有分镜均已有音频', 'info');
       // 逐条扣费统一走 Tasks.runBatch:每镜单独 登记→扣费→合成→失败/取消退该镜费用,
       // 余额不足仅该镜失败;取消时剩余镜不再扣费(替代原"整批预扣+手写逐镜退费")
-      const optsOf = s => ({ type: '生成音频', model: MODELS.tts[0] + '·' + Voice.label(Voice.norm(p.narration || s.voice || ep.sbConfig.narratorVoice)), target: `${ep.title}·镜头${s.order + 1}`, cost: COST.audio, actionName: '生成音频', projectId: p.id, episodeId: ep.id, shotId: s.id });
+      // 音色配置走 Domain.voiceCfgOf 单源(含镜头级声音设置,与 ttsShot 实际送上游的参数同一份)
+      const optsOf = s => ({ type: '生成音频', model: MODELS.tts[0] + '·' + Voice.label(Domain.voiceCfgOf(p, ep, s)), target: `${ep.title}·镜头${s.order + 1}`, cost: COST.audio, actionName: '生成音频', projectId: p.id, episodeId: ep.id, shotId: s.id });
       if (window.Media && Media.isReady()) {
         // 在线:豆包语音真实 TTS,逐镜合成;后台侧边栏逐镜状态
         const dock = U.bgDock({ title: `🔊 ${ep.title} · 批量配音(${pend.length} 镜)` });
@@ -212,9 +213,7 @@
       // 离线模式:同一生命周期逐条登记扣费(占位音频无失败路径)
       await U.delay(800);
       await Tasks.runBatch(optsOf, pend, async (s) => {
-        s.audio = true;
-        s.history = s.history || [];
-        s.history.unshift({ type: '音频', model: MODELS.tts[0] + '(离线模拟)', time: Store.now() });
+        markOfflineAudio(p, ep, s, Domain.voiceCfgOf(p, ep, s), MODELS.tts[0] + '(离线模拟)');
         Store.save();
       });
       Store.save(); U.toast('批量音频生成完成(离线模拟)', 'success');

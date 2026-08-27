@@ -2532,6 +2532,107 @@ const domainTests = [
     assertEq(st2.reviewStale, false, '快照匹配不判旧');
     assertEq(st2.status, 'needs_human', '有效低分仍卡 needs_human(质量闸门)');
   } },
+  /* ---- 配音渲染清单(音色配置单源 + audioMeta 凭据 + 判旧 + 成片去向) ---- */
+  { name: 'normVoiceCfg:字符串音色 → 结构化;越界数值钳回设置面板区间;空值取缺省', fn: () => {
+    const sb = loadDomain();
+    assertEq(JSON.stringify(sb.Domain.normVoiceCfg('高冷御姐')), JSON.stringify({ voice: '高冷御姐', rate: 1, volume: 5, pitch: 1, emotion: '平静' }), '旧字符串音色应补齐缺省参数');
+    const c = sb.Domain.normVoiceCfg({ voice: '甜心小美', rate: 9, volume: -3, pitch: 0, emotion: '开心' });
+    assertEq(c.rate, 1, '越界语速回缺省');
+    assertEq(c.volume, 5, '越界音量回缺省');
+    assertEq(c.pitch, 1, '越界语调回缺省');
+    assertEq(c.emotion, '开心', '情感原样保留');
+    assertEq(sb.Domain.normVoiceCfg(null).voice, '叙事氛围', '空值取缺省音色');
+  } },
+  { name: 'voiceCfgOf:优先级 镜头声音设置 → 项目旁白 → 镜头人物音色 → 本集旁白音色', fn: () => {
+    const sb = loadDomain();
+    const ep = { sbConfig: { narratorVoice: '少年音' } };
+    const s = { id: 'a', order: 0, voice: '清晰解说' };
+    assertEq(sb.Domain.voiceCfgOf(makeP([ep]), ep, s).voice, '清晰解说', '无项目旁白时取镜头人物音色');
+    const p2 = Object.assign(makeP([ep]), { narration: { voice: '温柔细腻', rate: 1.2, emotion: '温柔' } });
+    assertEq(sb.Domain.voiceCfgOf(p2, ep, s).voice, '温柔细腻', '项目旁白设置优先于镜头人物音色');
+    s.voiceCfg = { voice: '威严男声', rate: 0.9 };
+    const c = sb.Domain.voiceCfgOf(p2, ep, s);
+    assertEq(c.voice, '威严男声', '镜头声音设置最高优先');
+    assertEq(c.rate, 0.9);
+    assertEq(sb.Domain.voiceCfgOf(makeP([ep]), ep, { id: 'b', order: 1 }).voice, '少年音', '都没有时回落本集旁白音色');
+  } },
+  { name: 'audioMetaOf:未配音 null;旧布尔数据补最小结构标 legacy(有 URL=真实/无 URL=离线);结构化凭据原样返回', fn: () => {
+    const sb = loadDomain();
+    assertEq(sb.Domain.audioMetaOf({ id: 'a' }), null, '从未配音应为 null(不臆造凭据)');
+    const legacyReal = sb.Domain.audioMetaOf({ id: 'a', audio: true, audioUrl: '/uploads/gen/tts_1.mp3' });
+    assertEq(legacyReal.legacy, true, '旧数据标 legacy');
+    assertEq(legacyReal.offline, false, '旧数据有 URL = 真实音轨');
+    assertEq(legacyReal.params, null, '旧数据参数未落库,留空不臆造');
+    assertEq(sb.Domain.audioMetaOf({ id: 'a', audio: true }).offline, true, '旧数据仅布尔标记 = 离线占位');
+    const meta = { voice: '叙事氛围', params: { rate: 1, volume: 5, pitch: 1, emotion: '平静' }, sig: 'x', offline: false, url: '/u/a.mp3', voiceId: 'zh_male_dayi_saturn_bigtts' };
+    assertEq(sb.Domain.audioMetaOf({ id: 'a', audio: true, audioUrl: '/u/a.mp3', audioMeta: meta }).voiceId, 'zh_male_dayi_saturn_bigtts', '结构化凭据优先原样返回');
+  } },
+  { name: 'audioMetaWrite:真实回执落 url/duration/上游音色 id;离线占位标 offline 且不写 url;未拿到的字段一律不写', fn: () => {
+    const sb = loadDomain();
+    const cfg = { voice: '甜心小美', rate: 1.2, volume: 6, pitch: 1, emotion: '开心' };
+    const real = sb.Domain.audioMetaWrite(cfg, '一句旁白', { url: '/uploads/gen/tts_2.mp3', duration: 3.2, voiceId: 'zh_female_vv_uranus_bigtts', time: 't' });
+    assertEq(real.offline, false);
+    assertEq(real.url, '/uploads/gen/tts_2.mp3');
+    assertEq(real.duration, 3.2);
+    assertEq(real.voiceId, 'zh_female_vv_uranus_bigtts');
+    assertEq(JSON.stringify(real.params), JSON.stringify({ rate: 1.2, volume: 6, pitch: 1, emotion: '开心' }));
+    assertEq(real.sig, sb.Domain.audioSig(cfg, '一句旁白'), 'sig 与参数+文本签名一致');
+    const off = sb.Domain.audioMetaWrite(cfg, '一句旁白', { offline: true });
+    assertEq(off.offline, true);
+    assert(!('url' in off) && !('duration' in off) && !('voiceId' in off), '离线占位不写音轨/时长/上游音色 id,got ' + JSON.stringify(off));
+  } },
+  { name: 'audioTrackOf:真实音轨可混入;离线占位不混音;旧数据有 URL 行为不变', fn: () => {
+    const sb = loadDomain();
+    const cfg = { voice: '叙事氛围' };
+    const real = { id: 'a', audio: true, audioUrl: '/u/a.mp3', audioMeta: sb.Domain.audioMetaWrite(cfg, 't', { url: '/u/a.mp3' }) };
+    assertEq(sb.Domain.audioTrackOf(real), '/u/a.mp3');
+    const off = { id: 'b', audio: true, audioMeta: sb.Domain.audioMetaWrite(cfg, 't', { offline: true }) };
+    assertEq(sb.Domain.audioTrackOf(off), '', '离线占位不混入成片音轨');
+    assertEq(sb.Domain.audioTrackOf({ id: 'c', audio: true, audioUrl: '/u/c.mp3' }), '/u/c.mp3', '旧布尔数据按 URL 混音(兼容,不改行为)');
+    assertEq(sb.Domain.audioTrackOf({ id: 'd' }), '', '未配音无音轨');
+  } },
+  { name: 'audioStale:旧数据无 sig 不判旧;参数匹配不判旧;改音色/改配音文本判旧', fn: () => {
+    const sb = loadDomain();
+    const ep = { sbConfig: { narratorVoice: '叙事氛围' }, shots: [] };
+    const p = makeP([ep]);
+    const s = { id: 'a', order: 0, narration: '夜色渐深', audio: true, audioUrl: '/u/a.mp3' };
+    ep.shots.push(s);
+    assertEq(sb.Domain.audioStale(p, ep, s), false, '旧布尔数据无 sig 记录,不一夜判旧');
+    s.audioMeta = sb.Domain.audioMetaWrite(sb.Domain.voiceCfgOf(p, ep, s), sb.Domain.audioTextOf(s), { url: '/u/a.mp3' });
+    assertEq(sb.Domain.audioStale(p, ep, s), false, '凭据与当前参数一致不判旧');
+    s.voiceCfg = { voice: '高冷御姐' };
+    assertEq(sb.Domain.audioStale(p, ep, s), true, '换音色后已渲染音轨应判旧');
+    delete s.voiceCfg;
+    assertEq(sb.Domain.audioStale(p, ep, s), false, '换回原音色恢复');
+    s.narration = '夜色渐深,风更冷了';
+    assertEq(sb.Domain.audioStale(p, ep, s), true, '改配音文本后应判旧(念的还是旧稿)');
+  } },
+  { name: 'audioRenderList:逐镜清单 + summary 计数;mixed 仅算真进成片的镜(无素材镜不在列)', fn: () => {
+    const sb = loadDomain();
+    const ep = { sbConfig: { narratorVoice: '叙事氛围', subtitle: true, ratio: '16:9' }, shots: [] };
+    const p = makeP([ep]);
+    const mk = (id, order, extra) => Object.assign({ id, order, narration: '旁白' + order, characters: [], props: [], scene: '' }, extra);
+    const s1 = mk('s1', 0, { image: 'img1', audio: true, audioUrl: '/u/1.mp3' }); // 旧布尔数据 + 有底图 → 混音
+    const s2 = mk('s2', 1, { image: 'img2', audio: true, audioMeta: sb.Domain.audioMetaWrite({ voice: '叙事氛围' }, '旁白1', { offline: true }) }); // 离线占位
+    const s3 = mk('s3', 2, { audio: true, audioUrl: '/u/3.mp3', audioMeta: sb.Domain.audioMetaWrite({ voice: '叙事氛围' }, '不是当前文本', { url: '/u/3.mp3' }) }); // 判旧且无素材(不进成片)
+    const s4 = mk('s4', 3, { image: 'img4', narration: '', dialogue: '', plot: '' }); // 无文本未配音
+    ep.shots.push(s1, s2, s3, s4);
+    const list = sb.Domain.audioRenderList(p, ep, true);
+    assertEq(list.rows.length, 4);
+    assertEq(list.rows[0].order, 1, 'order 从 1 起(与镜头号一致)');
+    assertEq(list.rows[0].mixed, true, '旧数据真实音轨且在列 → 混入成片');
+    assertEq(list.rows[1].mixed, false, '离线占位不混音');
+    assertEq(list.rows[2].inFilm, false, '无视频也无底图的镜不在成片序列');
+    assertEq(list.rows[2].mixed, false, '不在成片序列的镜不算混入');
+    assertEq(list.rows[2].stale, true, '文本失配判旧');
+    assertEq(list.rows[3].rendered, false, '未配音');
+    assertEq(list.rows[3].hasText, false, '无旁白/台词/剧情 → 无配音文本');
+    const sm = list.summary;
+    assertEq(sm.total, 4); assertEq(sm.rendered, 3); assertEq(sm.mixed, 1);
+    assertEq(sm.offline, 1); assertEq(sm.legacy, 1); assertEq(sm.stale, 1);
+    assertEq(sm.missing, 0, '未配音但有文本的镜数(s4 无文本不计)');
+    assertEq(sm.noText, 1);
+  } },
 ];
 
 /* ================= 套件 12:bus.js(管线事件总线,第三阶段) ================= */
@@ -3422,14 +3523,35 @@ const contractTests = [
       assert(src.includes('shotsGraphRev = '), f + ' 应同步记录 shotsGraphRev');
     });
   } },
-  { name: 'CLI 与浏览器同口径(§主线):合成走 composeSeqOf+audioUrl;生成走 buildVideoRequest;失败写回 failed+resumable', fn() {
+  { name: 'CLI 与浏览器同口径(§主线):合成走 composeSeqOf+audioTrackOf;生成走 buildVideoRequest;失败写回 failed+resumable', fn() {
     const src = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
     assert(src.includes('Domain.composeSeqOf('), 'CLI 合成序列应走 canonical composeSeqOf(含 tlOrder/tlTrims)');
-    assert(src.includes('s.audioUrl'), 'CLI 合成配音应读 s.audioUrl(UI 写字段)');
+    assert(src.includes('audioUrl'), 'CLI 结构规范化应保留 audioUrl 字段(UI 写字段,透传不丢音轨)');
+    assert(src.includes('Domain.audioTrackOf('), 'CLI 合成配音应走 Domain.audioTrackOf(离线占位不混音,与浏览器同一判定)');
     assert(!src.includes('s.audio.url'), 'CLI 不应再读 s.audio.url(该字段是布尔,音轨曾静默丢失)');
     assert(src.includes('Domain.buildVideoRequest('), 'CLI 生成请求应走 Domain.buildVideoRequest(与指纹同口径)');
     assert(src.includes("resumable"), 'CLI 生成失败应写回 resumable(对账可续查,不再产孤儿任务)');
     assert(src.includes('composedDialogueSig'), 'CLI 合成写回应含字幕文本指纹(与主应用同口径)');
+  } },
+  { name: '配音渲染清单(§主线):凭据写点唯一 + 双端同读 + 计费走 Tasks.run + 旧布尔数据兼容', fn() {
+    const sb2 = fs.readFileSync(path.join(ROOT, 'js/storyboard.js'), 'utf8');
+    assert(sb2.includes('Domain.audioMetaWrite('), 'ttsShot/离线占位应经 Domain.audioMetaWrite 写 s.audioMeta(凭据形态唯一)');
+    assert(sb2.includes('Domain.voiceCfgOf(') && sb2.includes('Domain.audioTextOf('), '配音的音色配置与文本取值应走 Domain 单源');
+    const genAudioSrc = sb2.slice(sb2.indexOf('async function genAudio('), sb2.indexOf('/* ================= 智能分镜'));
+    assert(genAudioSrc.includes('Tasks.run('), 'genAudio 计费应走 Tasks.run(登记→扣费→执行→失败退费)');
+    assert(!/U\.charge\(|U\.refund\(/.test(genAudioSrc), 'genAudio 不应再手写扣费/退费五件套');
+    ['js/sb-gen.js', 'js/sb-batch.js'].forEach(f => {
+      assert(fs.readFileSync(path.join(ROOT, f), 'utf8').includes('markOfflineAudio('), f + ' 离线配音应走 markOfflineAudio(凭据如实标 offline,不冒充真实音轨)');
+    });
+    ['js/sb-io.js', 'cli.js'].forEach(f => {
+      const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+      assert(src.includes('Domain.audioTrackOf('), f + ' 合成取音轨应走 Domain.audioTrackOf(两端同一判定)');
+      assert(src.includes('composedAudio = Domain.audioRenderList('), f + ' 合成写回应落配音渲染凭据 composedAudio');
+    });
+    const vo = fs.readFileSync(path.join(ROOT, 'js/voice.js'), 'utf8');
+    assert(vo.includes('Domain.normVoiceCfg('), 'voice.js 的 norm 应委托 Domain.normVoiceCfg(缺省与钳制不写两份)');
+    const dom = fs.readFileSync(path.join(ROOT, 'js/domain.js'), 'utf8');
+    assert(/if \(s\.audioMeta && typeof s\.audioMeta === 'object'\) return s\.audioMeta;/.test(dom), 'audioMetaOf 应优先结构化凭据,缺失时按旧布尔数据兜底');
   } },
   { name: '审片闭环(§主线):autoSmartReview 写回 lastReview;重抽前快照;G3 判旧视为未审', fn() {
     const prod = fs.readFileSync(path.join(ROOT, 'js/produce.js'), 'utf8');

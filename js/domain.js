@@ -248,6 +248,115 @@
     if (D.shotAssetVer(p, s) > (s.video.assetVer || 0)) return true;
     return !!(s.video.inputHash && s.video.inputHash !== D.shotInputHash(p, s));
   };
+  /* ================= 镜头配音(TTS 渲染清单) =================
+   * 配音的唯一解释:哪套音色配置生效、已渲染音轨用的是什么参数、能否混入成片。
+   * 浏览器(storyboard/sb-gen/sb-batch)渲染后写回 s.audioMeta,合成侧(sb-io.js / cli.js)据此取音轨并落清单凭据;
+   * 旧数据(s.audio 布尔 + s.audioUrl,参数只在 s.history 文案里)按已知事实读出,未知参数留空不臆造。 */
+  D.VOICE_DEFAULT = { voice: '叙事氛围', rate: 1.0, volume: 5, pitch: 1.0, emotion: '平静' };
+  /* 音色配置规范化(旧数据兼容:字符串音色名 → 结构化;越界数值钳到声音设置面板同区间) */
+  D.normVoiceCfg = function (v) {
+    const num = (x, lo, hi, dft) => { const n = +x; return Number.isFinite(n) && n >= lo && n <= hi ? n : dft; };
+    const c = Object.assign({}, D.VOICE_DEFAULT, typeof v === 'string' ? { voice: v } : (v || null));
+    return {
+      voice: String(c.voice || D.VOICE_DEFAULT.voice),
+      rate: num(c.rate, 0.5, 2, D.VOICE_DEFAULT.rate),
+      volume: num(c.volume, 0, 10, D.VOICE_DEFAULT.volume),
+      pitch: num(c.pitch, 0.5, 2, D.VOICE_DEFAULT.pitch),
+      emotion: String(c.emotion || D.VOICE_DEFAULT.emotion),
+    };
+  };
+  /* 该镜生效音色配置(优先级:镜头声音设置 → 项目旁白设置 → 镜头人物音色 → 本集旁白音色) */
+  D.voiceCfgOf = function (p, ep, s) {
+    return D.normVoiceCfg((s && s.voiceCfg) || (p && p.narration) || (s && s.voice) || (ep && ep.sbConfig && ep.sbConfig.narratorVoice) || null);
+  };
+  /* 配音文本(与送上游同一取值:旁白优先,其次台词,兜底剧情) */
+  D.audioTextOf = function (s) {
+    return String((s && s.narration) || (s && s.dialogue) || '').trim() || String((s && s.plot) || '').trim();
+  };
+  /* 配音参数签名:音色+语速+音量+语调+情感+配音文本(任一项变化 → 已渲染音轨判旧) */
+  D.audioSig = function (cfg, text) {
+    const c = D.normVoiceCfg(cfg);
+    return [c.voice, c.rate, c.volume, c.pitch, c.emotion, String(text || '')].join('|');
+  };
+  D.audioSigOf = function (p, ep, s) {
+    return D.audioSig(D.voiceCfgOf(p, ep, s), D.audioTextOf(s));
+  };
+  /* 渲染凭据构造(唯一写点口径):out 取渲染回执——真实 TTS 传 {url, duration, voiceId(上游音色 id)},
+   * 离线占位传 {offline:true}(无音轨,不混入成片);未拿到的字段一律不写,不用缺省值冒充 */
+  D.audioMetaWrite = function (cfg, text, out) {
+    out = out || {};
+    const c = D.normVoiceCfg(cfg);
+    const m = {
+      voice: c.voice,
+      params: { rate: c.rate, volume: c.volume, pitch: c.pitch, emotion: c.emotion },
+      sig: D.audioSig(c, text),
+      offline: !!out.offline,
+    };
+    if (out.voiceId) m.voiceId = String(out.voiceId);
+    if (out.url) m.url = String(out.url);
+    if (+out.duration > 0) m.duration = +out.duration;
+    if (out.time) m.time = String(out.time);
+    return m;
+  };
+  /* 渲染凭据读取:结构化 audioMeta 优先;旧布尔数据补最小结构并标 legacy(参数未落库,凭据不全);
+   * 从未配音返回 null */
+  D.audioMetaOf = function (s) {
+    if (!s || !(s.audio || s.audioUrl)) return null;
+    if (s.audioMeta && typeof s.audioMeta === 'object') return s.audioMeta;
+    return { legacy: true, voice: '', params: null, sig: '', offline: !s.audioUrl, url: s.audioUrl || '' };
+  };
+  /* 可混入成片的真实音轨地址(离线占位/无音轨不混音;旧数据有 URL 即真实音轨,行为不变) */
+  D.audioTrackOf = function (s) {
+    const m = D.audioMetaOf(s);
+    return (m && m.url && !m.offline) ? String(m.url) : '';
+  };
+  /* 已渲染音轨与当前生效参数/文本不符 → 建议重配音;
+   * 无 sig 记录的旧数据不判旧(参数当时未落库,无法证明失配,存量不一夜变红) */
+  D.audioStale = function (p, ep, s) {
+    const m = D.audioMetaOf(s);
+    if (!m || !m.sig) return false;
+    return m.sig !== D.audioSigOf(p, ep, s);
+  };
+  /* 配音渲染清单(成片可追溯凭据):逐镜列出渲染参数与去向,summary 供合成前提示与写回落库 */
+  D.audioRenderList = function (p, ep, online) {
+    const inFilm = new Set(D.composeSeqOf(ep, online).map(s => s.id));
+    const rows = ((ep && ep.shots) || []).map(s => {
+      const m = D.audioMetaOf(s);
+      const track = D.audioTrackOf(s);
+      return {
+        shotId: s.id,
+        order: (+s.order || 0) + 1,
+        rendered: !!m,
+        offline: !!(m && m.offline),
+        legacy: !!(m && m.legacy),
+        voice: (m && m.voice) || '',
+        voiceId: (m && m.voiceId) || '',
+        params: (m && m.params) || null,
+        url: (m && m.url) || '',
+        duration: (m && +m.duration > 0) ? +m.duration : null,
+        cfgNow: D.voiceCfgOf(p, ep, s),
+        stale: D.audioStale(p, ep, s),
+        hasText: !!D.audioTextOf(s),
+        inFilm: inFilm.has(s.id),
+        mixed: !!track && inFilm.has(s.id),
+      };
+    });
+    const n = f => rows.filter(f).length;
+    return {
+      rows,
+      summary: {
+        total: rows.length,
+        rendered: n(r => r.rendered),
+        mixed: n(r => r.mixed),
+        offline: n(r => r.offline),
+        legacy: n(r => r.legacy),
+        stale: n(r => r.stale),
+        missing: n(r => !r.rendered && r.hasText),
+        noText: n(r => !r.hasText),
+      },
+    };
+  };
+
   /* 分镜表是否拆自当前剧本与事件图谱(shotsSourceRev/shotsGraphRev 在拆镜发布时记录;无记录的旧数据视为当前) */
   D.shotsStale = function (ep) {
     if (!ep || !ep.shots || !ep.shots.length) return false;
