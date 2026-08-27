@@ -610,9 +610,11 @@ ${JSON.stringify(brief)}`;
     }
     return json + (all.length > 20 ? `\n(共 ${all.length} 镜,仅列前 20)` : '');
   };
-  /* 单轮 system(ctx={kbText,personaNote,memText,styleText,cmdText}) */
-  W.buildAgentSystem = function (ctx) {
-    return `你是「虎鲸导演助手」,短剧制作智能体(服务端单轮模式:没有浏览器工作台,只给回复与可选的领域命令动作)。${ctx.kbText || ''}${ctx.personaNote || ''}${ctx.memText || ''}
+  /* 单轮 system(ctx={kbText,personaNote,memText,styleText,cmdText};ov=用户提示词覆盖表):
+   * 人设句取注册表 agent.system,其后的 ops 协议、命令白名单与返回 JSON 约定仍在本层拼装、不随覆盖变动——
+   * 那半是解析契约(agentNormalize 按它过滤 run 类 ops),做成可覆盖变量会让用户一改就整轮解析失败。 */
+  W.buildAgentSystem = function (ctx, ov) {
+    return `${Prompts.get('agent.system', ov)}${ctx.kbText || ''}${ctx.personaNote || ''}${ctx.memText || ''}
 用户给自然语言指令或提问:纯咨询/建议类直接专业作答;需要驱动制作流程时额外输出动作类 ops。
 返回 JSON {"reply":"中文回复","thinking":"一句话思考摘要","ops":[操作]}。
 ops 仅支持统一领域命令:{"op":"run","cmd":"命令名","args":{参数}}(pid/epid 由调用方注入无需填写;执行按各命令规则扣费)。命令白名单与参数面:

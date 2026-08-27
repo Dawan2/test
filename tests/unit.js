@@ -4063,11 +4063,48 @@ const contractTests = [
     assertEq((eu.match(/你是专业的短剧剧本分析助手/g) || []).length, 1, 'js/episode-util.js 里该字面应只剩人物小传步那一处');
     assert(!srv.includes('你是专业的短剧剧本分析助手'), 'server.js 不应出现人设句字面');
     assert(Skills.byId('core.personaCtx').prompts.includes('extract.system'), 'SK-03 应登记 extract.system');
-    // SK-03 note 点名的剩余余量属实:Agent 单轮的人设句与 ops 协议同在一个模板串里,注册表没有它的键
+    // W45 在此点名的 Agent 单轮已收编:人设句进注册表 agent.system、装配口收覆盖表(字面与取值口由下一条钉住),
+    // 此处只反向钉住不许退回内联——模板串里从此不写第二份人设句
     const agentSys = WfCore.buildAgentSystem({});
-    assert(agentSys.startsWith('你是「虎鲸导演助手」,短剧制作智能体'), 'Agent 单轮人设句应仍内联在 wf-core 模板里');
-    assertEq(Prompts.list().filter(x => agentSys.includes(x.def)).length, 0, 'Agent 单轮 system 尚未登记提示词键(SK-03 仍欠段点名的那一处)');
-    assertEq(WfCore.buildAgentSystem.length, 1, 'buildAgentSystem 只收 ctx 不收覆盖表参数(收编它时本条与 note 一并改)');
+    assert(agentSys.startsWith(Prompts.get('agent.system')), 'Agent 单轮人设句应取自注册表(不再内联在 wf-core 模板里)');
+    assertEq(Prompts.list().filter(x => agentSys.includes(x.def)).length, 1, 'Agent 单轮 system 应恰好命中注册表里它自己那一条');
+    assertEq(WfCore.buildAgentSystem.length, 2, 'buildAgentSystem 应收覆盖表参数(有键可取)');
+  } },
+  { name: 'Agent 单轮人设:经 WfCore.buildAgentSystem(agent.system) 取值,缺省逐字节等于收编前的模板串', fn() {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const WfCore = require('../js/wf-core.js');
+    const PERSONA = '你是「虎鲸导演助手」,短剧制作智能体(服务端单轮模式:没有浏览器工作台,只给回复与可选的领域命令动作)。';
+    // 缺省不变:收编前写死在模板串开头的人设句,收编后仍逐字节相同(协议半一字未动)
+    assertEq(Prompts.get('agent.system'), PERSONA, '缺省人设句应与收编前的内联字面逐字节相同');
+    assertEq(WfCore.buildAgentSystem({}), PERSONA + `
+用户给自然语言指令或提问:纯咨询/建议类直接专业作答;需要驱动制作流程时额外输出动作类 ops。
+返回 JSON {"reply":"中文回复","thinking":"一句话思考摘要","ops":[操作]}。
+ops 仅支持统一领域命令:{"op":"run","cmd":"命令名","args":{参数}}(pid/epid 由调用方注入无需填写;执行按各命令规则扣费)。命令白名单与参数面:
+(无可用命令)
+纯咨询类 ops 返回 [];不确定是否该执行时不要输出 ops,在 reply 里说明建议与代价。项目风格:。`, '缺省单轮 system 应与收编前逐字节相同');
+    const item = Prompts.list().find(x => x.key === 'agent.system');
+    assert(item && !item.vars.length && item.name.includes('Agent 单轮'), '注册表应登记 Agent 单轮人设条目(无变量,可在全局默认值页在线改写)');
+    // 只抽人设句:覆盖只换开头那一句,ops 协议/命令白名单/返回 JSON 约定逐字节不受影响
+    const ctx = { kbText: '[KB]', personaNote: '[专家]', memText: '[记忆]', styleText: '悬疑', cmdText: '· episode.compose(合成成片): 无参数' };
+    const def = WfCore.buildAgentSystem(ctx);
+    const ovd = WfCore.buildAgentSystem(ctx, { 'agent.system': '你是单轮编排助手。' });
+    assert(def.startsWith(PERSONA + '[KB][专家][记忆]\n'), '注入段顺序(KB→专家方法论→协作记忆)应仍接在人设句之后');
+    assertEq(ovd, '你是单轮编排助手。' + def.slice(PERSONA.length), '覆盖只换人设句,协议半逐字节不变');
+    assertEq(Prompts.list().filter(x => x.def.includes('"reply"')).length, 0, '返回 JSON 约定不做成可覆盖变量(注册表里不该出现它)');
+    assert(ovd.includes('ops 仅支持统一领域命令') && ovd.endsWith('项目风格:悬疑。'), '覆盖后命令协议与风格尾注仍在');
+    // 消费口:服务端显式传覆盖表(Node 无 window 读不到 Store),人设句字面只剩注册表一份
+    const wf = fs.readFileSync(path.join(ROOT, 'js', 'wf-core.js'), 'utf8');
+    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    assert(/\}, st\.promptOverrides\)/.test(srv), '服务端 Agent 单轮应给装配口显式传覆盖表');
+    [['js/wf-core.js', wf], ['server.js', srv]].forEach(([f, src]) => {
+      assert(!src.includes('短剧制作智能体'), f + ' 不应再写第二份人设句(注册表 def 为唯一来源)');
+    });
+    assert(Skills.byId('core.personaCtx').prompts.includes('agent.system'), 'SK-03 应登记 agent.system');
+    // SK-03 note 点名的剩余余量属实:浏览器多轮三份人设仍各写一份,注册表里没有它们的键
+    const multi = ['js/agent.js', 'js/agent-global.js', 'js/agent-ops.js'].map(f => fs.readFileSync(path.join(ROOT, f), 'utf8'));
+    assert(multi[0].includes('短剧分镜编辑智能体') && multi[1].includes('短剧创作智能体') && multi[2].includes('短剧创作智能体'), '浏览器多轮三份人设应各自仍在(措辞与单轮不同,不合并成同一个键)');
+    multi.forEach((src, i) => assertEq(Prompts.list().filter(x => src.includes(x.def)).length, 0, '浏览器多轮第 ' + (i + 1) + ' 份人设仍不在注册表内(SK-03 仍欠段点名的那一处)'));
   } },
   { name: '审片升为主线一等步骤(G-03):板块 Agent 有审片席;plans/工作区/CLI 都映射 episode.smartReview', fn() {
     const D = require(path.join(ROOT, 'js/domain.js'));
@@ -5767,7 +5804,7 @@ const skillsTests = [
     const wfSteps = DomainMod.workflow({ id: 'p1', episodes: [], subjects: [] }).steps.map(x => x.key);
     // 每条:缺口出口的实况判据 + note 里必须点名的那几处余量(接上了就要同步改 note,不许静默扩面)
     const facts = {
-      'core.personaCtx': ['G-01', /function wfPersonaNote\(/.test(srv), ['Agent 单轮', '未收进提示词注册表']],
+      'core.personaCtx': ['G-01', /function wfPersonaNote\(/.test(srv), ['浏览器多轮', '未收进提示词注册表']],
       'core.memoryDual': ['G-02', typeof W.memRecall === 'function' && typeof W.memBlock === 'function', ['memAll', 'SK-26']],
       'review.stage': ['G-03', wfSteps.includes('review'), ['SK-24', '未审片']],
     };

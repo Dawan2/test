@@ -882,7 +882,7 @@
     {
       id: 'core.personaCtx', sk: 'SK-03', name: '生效人设经 ctx 过服务端', stage: CROSS, wave: 'W3',
       kinds: ['infra'],
-      prompts: ['split.system', 'extract.system', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem'],
+      prompts: ['split.system', 'extract.system', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem', 'agent.system'],
       cmds: ['episode.understanding', 'episode.generateStoryboard', 'episode.smartReview'], gaps: ['G-01'],
       note: 'G-01 已落地:服务端 /api/wf/* 各端点经唯一装配口 wfPersonaNote 注入生效人设(板块雇佣 > 全局雇佣),'
         + '浏览器同装配口;infra 面的 pending 已按实况清空(gaps() 只投影 gaps 字段、不看 pending,清账动不到投影),'
@@ -891,10 +891,12 @@
         + '三步的 user 模板经 WfCore.reviewCtxNote 统一拼注入段,两端同口径且未雇佣时逐字节不变;'
         + '共性汇总与剧本拆集的人设句都已收进注册表,两端同经 Prompts.get 取值、缺省逐字节不变;'
         + '主体提取的人设句同形收编为 extract.system,装配口 WfCore.extractSystem 随之收覆盖表参数,'
-        + '五条工作流(拆集/本集理解/智能分镜/智能审片/提取主体)的 system 半至此全部可被用户覆盖。'
-        + '仍欠:Agent 单轮对话步的系统人设未收进提示词注册表(人设句与 ops 协议同写在 '
-        + 'WfCore.buildAgentSystem 一个模板串里,双端各一份措辞、用户在全局默认值页覆盖不到,'
-        + '故该装配口只收 ctx 不收覆盖表参数)',
+        + '五条工作流(拆集/本集理解/智能分镜/智能审片/提取主体)的 system 半至此全部可被用户覆盖;'
+        + 'Agent 单轮对话步的人设句同形收编为 agent.system,装配口 WfCore.buildAgentSystem 随之收覆盖表参数,'
+        + '/api/wf/* 六个 LLM 端点的人设句至此全部在注册表内。'
+        + '仍欠:浏览器多轮对话面板的系统人设未收进提示词注册表(分集面板/全局抽屉/预排模式三份措辞各写一份,'
+        + '与服务端单轮那句不是同一句话,用户在全局默认值页覆盖不到);'
+        + '单轮那处也只收了人设句,ops 协议/命令白名单/返回 JSON 约定仍由 wf-core 拼、不开放覆盖(改坏即整轮解析失败)',
     },
     {
       id: 'core.memoryDual', sk: 'SK-04', name: '长期记忆双端与召回纯函数', stage: CROSS, wave: 'W3',

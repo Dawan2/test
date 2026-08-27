@@ -3679,7 +3679,7 @@ const server = http.createServer(async (req, res) => {
             memText: WfCore.memBlock(tree.agentMemory, text, scope),
             styleText: Domain.styleOf(p),
             cmdText: WfCore.agentCmdProtocol(CmdRegistry.META),
-          }),
+          }, st.promptOverrides), // Node 无 window,人设覆盖表须显式传(与同文件 und.system 取值口同纪律)
           user: WfCore.buildAgentUser({
             stateText: WfCore.agentStateText(p, ep || null, true),
             scriptBrief: String((ep ? ep.content : p.script) || '').slice(0, 500),

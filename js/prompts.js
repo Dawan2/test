@@ -53,6 +53,11 @@
       key: 'review.finalSystem', name: '成片审片 · 系统人设', vars: [],
       def: '你是资深短剧剪辑审片总监,以四维标准评审成片:镜头语言自然度/衔接流畅度/景别合理性/剪辑节奏适配。',
     },
+    {
+      // 只收人设句:ops 协议/命令白名单/返回 JSON 约定仍由 WfCore.buildAgentSystem 拼,不开放覆盖(改坏约定即整轮解析失败)
+      key: 'agent.system', name: 'Agent 单轮对话 · 系统人设', vars: [],
+      def: '你是「虎鲸导演助手」,短剧制作智能体(服务端单轮模式:没有浏览器工作台,只给回复与可选的领域命令动作)。',
+    },
   ];
   const byKey = {};
   REG.forEach(r => byKey[r.key] = r);
