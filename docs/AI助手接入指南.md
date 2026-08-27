@@ -58,6 +58,7 @@ node cli.js shot-confirm $PID <epid> 1                     # 逐镜确认(批量
 node cli.js exec episode.generateVideos --args "{\"pid\":\"$PID\",\"epid\":\"<epid>\"}"   # 批量出片(未确认跳过)
 node cli.js exec episode.smartReview --args "{\"pid\":\"$PID\",\"epid\":\"<epid>\"}"      # 整集审片
 node cli.js compose $PID <epid>                            # 合成成片
+node cli.js issues $PID                                    # 问题中心:全项目待处理问题聚合(只读零计费)
 node cli.js release-check $PID --with-billing              # 发布门 10 项检查
 node cli.js release $PID --note "首版"                      # 打版本
 node cli.js export $PID <epid> --out ./dist                # 下载 mp4+srt
