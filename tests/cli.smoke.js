@@ -143,6 +143,32 @@ async function main() {
   r = cli('exec', 'episode.bogus', '--pid', pid, '--epid', epid);
   report('exec 未知命令 → exit 2', r.code === 2 && /未注册命令|可用/.test(String(r.out && r.out.error || r.err)), 'exit=' + r.code);
 
+  // ---- 主线前段 headless 起跑(G-04):整部剧本 → 拆集 → 分镜表(全程零浏览器) ----
+  {
+    const scriptFile = CFG_DIR + '/script.txt';
+    fs.writeFileSync(scriptFile, '第一集 宴会羞辱\n女主在宴会上被当众羞辱,众人哄笑不止。\n第二集 反击\n女主当场揭穿对方伪装,全场哗然失色。');
+    r = cli('project-create', '--name', '冒烟剧C·拆集');
+    const pidC = r.out && r.out.id;
+    r = cli('project-script', pidC, '--script-file', scriptFile);
+    report('project-script 写入剧本原文(拆集输入就位)', r.code === 0 && r.out && r.out.chars > 20 && r.out.episodes === 0, JSON.stringify(r.out || {}).slice(0, 60));
+    r = cli('exec', 'project.splitEpisodes', '--pid', pidC);
+    report('exec project.splitEpisodes 标记切分 → ok+2 集(零 LLM)', r.code === 0 && r.out && r.out.ok && r.out.result.count === 2 && r.out.result.mode === 'markers', 'exit=' + r.code + ' ' + JSON.stringify(r.out && r.out.result || r.out).slice(0, 90));
+    report('拆集后 next 指向下一步(Domain 重推)', !!(r.out && r.out.next && r.out.next.key), JSON.stringify((r.out && r.out.next) || {}).slice(0, 60));
+    await sleep(1100); // wf 端点限流:单用户每秒 ≤2 次(与前端/集成测试同口径)
+    r = cli('exec', 'project.splitEpisodes', '--pid', pidC);
+    report('已有分集未授权 → blocked has-episodes exit 2(不覆盖已有分镜数据)', r.code === 2 && r.out && r.out.error && r.out.error.code === 'has-episodes', 'exit=' + r.code + ' ' + JSON.stringify((r.out && r.out.error) || {}).slice(0, 70));
+    await sleep(1100);
+    r = cli('exec', 'project.splitEpisodes', '--pid', pidC, '--overwrite', '--local');
+    report('--overwrite --local 授权覆盖并强制段落均分', r.code === 0 && r.out && r.out.ok && r.out.result.mode === 'even' && r.out.result.overwritten === 2, 'exit=' + r.code + ' ' + JSON.stringify(r.out && r.out.result || r.out).slice(0, 90));
+    r = cli('project-show', pidC);
+    const epC = r.out && (r.out.episodes || [])[0];
+    report('拆集分集带正文(下游理解/分镜可直接接续)', r.code === 0 && !!epC && epC.content > 10, JSON.stringify(epC || {}).slice(0, 80));
+    await sleep(1100);
+    r = cli('exec', 'episode.generateStoryboard', '--pid', pidC, '--epid', epC && epC.id);
+    report('剧本→拆集→智能分镜 headless 链路贯通(分镜表已存在)', r.code === 0 && r.out && r.out.ok && r.out.result && r.out.result.shots >= 1, 'exit=' + r.code + ' ' + JSON.stringify(r.out && r.out.result || r.out).slice(0, 80));
+    await sleep(1100);
+  }
+
   // ---- 工具层 ----
   r = cli('llm', '--user', '你好', '--json');
   report('llm --json mock 链路', r.code === 0 && r.out && typeof r.out.content === 'string', (r.out && String(r.out.content).slice(0, 24)) || r.err);

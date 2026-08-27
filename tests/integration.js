@@ -427,6 +427,50 @@ async function main() {
     report('wf/smart-review 无已出片镜 400', rvNone.status === 400, 'HTTP ' + rvNone.status);
   }
 
+  /* ============ 测试 22(G-04):剧本拆集工作流 /api/wf/split-episodes(headless 主线起点) ============
+   * 覆盖:标记切分(零 LLM)/LLM 锚点分集(MOCK)/local 强制均分/覆盖保护 409/缺剧本 400/项目不存在 404。 */
+  {
+    const spMark = 'it_p_sp1', spPlain = 'it_p_sp2';
+    const markScript = '第一集 开场\n女主在宴会上被当众羞辱,众人哄笑不止。\n第二集 反击\n女主当场揭穿对方伪装,全场哗然失色。';
+    const plainScript = '开场:女主在宴会上被当众羞辱,众人哄笑不止。\n转折:女主当场揭穿对方伪装,全场哗然失色。';
+    const sS = await req('GET', '/api/state', null, token);
+    const putS = await req('PUT', '/api/state', { rev: +(sS.data && sS.data.rev || 0), changes: { projects: {
+      [spMark]: { id: spMark, name: '拆集项目·标记', style: '漫剧', script: markScript, episodes: [] },
+      [spPlain]: { id: spPlain, name: '拆集项目·无标记', style: '漫剧', script: plainScript, episodes: [] },
+    } } }, token);
+    report('拆集项目种子 PUT 成功', putS.status === 200, 'HTTP ' + putS.status);
+    const balBeforeSplit = (await req('GET', '/api/wallet', null, token)).data.balance;
+
+    await sleep(1100);
+    const sp1 = await req('POST', '/api/wf/split-episodes', { pid: spMark, operationId: 'it.wf.sp1' }, token);
+    report('wf/split-episodes 标记切分 200(mode=markers,零 LLM)', sp1.status === 200 && sp1.data && sp1.data.mode === 'markers' && sp1.data.count === 2, 'HTTP ' + sp1.status + ' ' + JSON.stringify(sp1.data || sp1.msg));
+    const sp1State = (await req('GET', '/api/state', null, token)).data.state.projects.find(x => x.id === spMark) || {};
+    report('拆集写回 state(标题取标记行,正文逐字保留)', (sp1State.episodes || []).length === 2 && sp1State.episodes[0].title === '第一集 开场' && sp1State.episodes[1].content.includes('揭穿对方伪装'), JSON.stringify((sp1State.episodes || []).map(e => e.title + ':' + (e.content || '').length)));
+
+    await sleep(1100);
+    const sp2 = await req('POST', '/api/wf/split-episodes', { pid: spMark, operationId: 'it.wf.sp2' }, token);
+    report('已有分集未授权覆盖 409(防误删分镜数据)', sp2.status === 409, 'HTTP ' + sp2.status + ' ' + sp2.msg);
+    await sleep(1100);
+    const sp3 = await req('POST', '/api/wf/split-episodes', { pid: spMark, operationId: 'it.wf.sp3', overwrite: true }, token);
+    report('overwrite 授权后重新分集 200(overwritten 如实回报)', sp3.status === 200 && sp3.data && sp3.data.overwritten === 2, 'HTTP ' + sp3.status + ' ' + JSON.stringify(sp3.data));
+
+    await sleep(1100);
+    const sp4 = await req('POST', '/api/wf/split-episodes', { pid: spPlain, operationId: 'it.wf.sp4' }, token);
+    report('无标记走 LLM 锚点分集(MOCK,mode=llm,正文按锚点切原文)', sp4.status === 200 && sp4.data && sp4.data.mode === 'llm' && sp4.data.count === 2, 'HTTP ' + sp4.status + ' ' + JSON.stringify(sp4.data || sp4.msg));
+    await sleep(1100);
+    const sp5 = await req('POST', '/api/wf/split-episodes', { pid: spPlain, operationId: 'it.wf.sp5', overwrite: true, local: true }, token);
+    report('local 强制段落均分(mode=even,零 LLM 零计费)', sp5.status === 200 && sp5.data && sp5.data.mode === 'even' && sp5.data.count >= 2, 'HTTP ' + sp5.status + ' ' + JSON.stringify(sp5.data));
+
+    await sleep(1100);
+    const sp6 = await req('POST', '/api/wf/split-episodes', { pid: demoPid }, token);
+    report('缺剧本原文 400', sp6.status === 400, 'HTTP ' + sp6.status + ' ' + sp6.msg);
+    await sleep(1100);
+    const sp7 = await req('POST', '/api/wf/split-episodes', { pid: 'ghost_pid' }, token);
+    report('项目不存在 404', sp7.status === 404, 'HTTP ' + sp7.status);
+    const balAfterSplit = (await req('GET', '/api/wallet', null, token)).data.balance;
+    report('MOCK_LLM 下拆集不扣费(计费链路由 wfLLM 统一负责)', balAfterSplit === balBeforeSplit, '前 ' + balBeforeSplit + ' 后 ' + balAfterSplit);
+  }
+
   console.log(`\n===== ${PASS}/${PASS + FAIL} PASS, ${FAIL} FAIL =====`);
 }
 
