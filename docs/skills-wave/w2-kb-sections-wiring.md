@@ -91,3 +91,11 @@ KB.block()/reviewBlock() 只按键拼装 DIGESTS,函数体内不再写正文
   skill 层落地时直接引用同一批键即可,不需要再改这些消费点。
 - G-07 词表归一、G-05 `tplVideo` 定性、`Prompts.REG` 收编内联提示词(G-13):不在本文范围。
 - `agent-global.js` 里板块协作那句系统提示词在预排/主回复两处各写了一份(与知识库无关的既有重复),未合并。
+
+## 7. 与并行分支的关系
+
+- `origin/cursor/agent-flow-sota-analysis-736a` 做的是**人设/记忆经 ctx 过服务端**(G-01/G-02),未动 `js/knowledge.js`,
+  与本文改动不重叠;该分支的 `js/wf-core.js` 改动片段把 `sbSystem` 那两行当上下文带进了 hunk,
+  与本文改的同两行相邻,合并时 `js/wf-core.js` 会有一处**平凡冲突**——保留本文的 `KB.pick('景别运镜', '轴线匹配')`
+  与该分支的 `buildSBUser` 注释即可(试合并已验证只此一处,`js/agent.js` / `tests/unit.js` 自动合并干净)。
+- `js/skills.js`(W2 注册表)由并行槽落地,本文未创建也未改动该文件。
