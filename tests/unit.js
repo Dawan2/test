@@ -2397,6 +2397,8 @@ function loadIssues() {
   const sb = makeSandbox();
   installCommon(sb);
   loadFile(sb, 'domain.js');
+  loadFile(sb, 'knowledge.js'); // skill 索引的加载期依赖(与 index.html 同顺序:domain → knowledge → skills → issues)
+  loadFile(sb, 'skills.js');    // 问题中心消费的跨镜主体一致性校验项
   loadFile(sb, 'issues.js');
   return sb;
 }
@@ -2478,6 +2480,24 @@ const issuesTests = [
     assert(kinds.includes('composed-stale') && list.find(x => x.kind === 'composed-stale').cmd === 'episode.compose', '成片过期应可一键重新合成');
     assertEq(list[0].kind, 'no-script', '高危(缺剧本)排最前');
     assertEq(sb.Issues.count(p), list.length, 'count 与 collect 同源');
+  } },
+  { name: 'collect:跨镜主体参考不一致 → 低危提醒(不进高/中危,不改发布门 G2)', fn() {
+    const sb = loadIssues();
+    const done = cleanEp().shots[0];
+    const ep = cleanEp({
+      composed: false,
+      shots: [Object.assign({}, done, { characters: ['主角'] }), Object.assign({}, done, { id: 'sh1', order: 1, characters: ['主角-战损'] })],
+      lastReview: { avg: 8, perShot: [{ shotId: 'sh0', order: 0, score: 8 }, { shotId: 'sh1', order: 1, score: 8 }] },
+    });
+    const p = { id: 'p1', subjects: [{ id: 'sj1', name: '主角', kind: 'character', image: 'u', forms: [{ id: 'fm1', name: '战损', image: 'u2' }] }], episodes: [ep] };
+    const list = sb.Issues.collect(p);
+    const it = list.find(x => x.kind === 'subject-inconsistent');
+    assert(it, '同一主体跨镜锁到不同参考图应入清单');
+    assertEq(it.sev, 'low', '一致性风险是提醒级(发布门 G2 只数高/中危)');
+    assertEq(it.count, 1);
+    assert(it.detail.includes('镜头2') && it.detail.includes('主角-战损'), '明细应定位到镜号与主体名,实际:' + it.detail);
+    assert(it.goto && !it.cmd, '一致性问题走导航自查,不挂命令处置(不触发任何生成)');
+    assertEq(list.filter(x => x.sev !== 'low').length, 0, '一致性提醒不得产出高/中危(门禁状态不变)');
   } },
   { name: 'collect:素材更新过期镜(assetVer 抬升)→ stale-shots 带镜头号', fn() {
     const sb = loadIssues();
@@ -3229,6 +3249,9 @@ function refP(over) {
 }
 const refShot = (order, over) => Object.assign({ id: 'sh' + order, order, characters: [], scene: '', props: [] }, over || {});
 const refIntegrity = (p, ep) => Skills.check('subjects', { p, ep }).find(x => x.skill === 'subjects.refIntegrity');
+const crossShot = (p, shots) => Skills.check('subjects', { p, ep: { id: 'ep1', shots } }).find(x => x.skill === 'subjects.crossShot');
+/* 主体带真实图的项目夹具:n 个角色各有权威图(参考图组 5 张上限用例) */
+const manySubjP = n => ({ id: 'p1', subjects: Array.from({ length: n }, (_, i) => ({ id: 'c' + i, name: '角色' + i, kind: 'character', image: '/uploads/a/c' + i + '.png' })) });
 
 const skillsTests = [
   { name: 'refIntegrity:干净夹具全 pass(引用齐备且有真实参考图 → info 无命中)', fn() {
@@ -3295,6 +3318,77 @@ const skillsTests = [
     const meta = require('../js/cmd-registry.js').byName['episode.preflight'];
     assertEq(meta.risk, 'read', '就绪检查应仍是 read 类');
     assert(!/meter: true/.test(cmdSrc.slice(cmdSrc.indexOf("reg('episode.preflight'"), cmdSrc.indexOf("reg('episode.generateStoryboard'"))), '就绪检查不得开计费');
+  } },
+  { name: 'crossShot:同一主体跨镜锁同一张图 → info;只在一镜出场的主体不判一致性', fn() {
+    const p = refP();
+    const r = crossShot(p, [
+      refShot(0, { characters: ['林小满'], props: ['玉佩'] }), // 玉佩缺图但只出场一镜:归 SK-12,不判一致性
+      refShot(1, { characters: ['林小满'] }),
+    ]);
+    assertEq(r.pass, true); assertEq(r.level, 'info'); assertEq(r.hits.length, 0, '跨镜锁同一张参考图不应产出命中');
+    assert(refIntegrity(p, { id: 'ep1', shots: [refShot(0, { props: ['玉佩'] })] }).hits.length === 1, '单镜缺图仍由完备性面如实报告');
+  } },
+  { name: 'crossShot:权威图与形态图混用 → ref-image-drift(基准取跨镜多数派)', fn() {
+    const p = refP();
+    const r = crossShot(p, [
+      refShot(0, { characters: ['林小满'] }),
+      refShot(1, { characters: ['林小满-战损'] }), // 少数派:喂到形态图,与其余镜不是同一张
+      refShot(2, { characters: ['林小满'] }),
+    ]);
+    assertEq(r.pass, false); assertEq(r.level, 'warn', '形态切换可能是有意换装,只判提醒级');
+    assertEq(r.hits.map(h => h.code + '@' + h.order).join(','), 'ref-image-drift@2');
+    assertEq(r.hits[0].name, '林小满-战损'); assertEq(r.hits[0].shotId, 'sh1', 'hits 应带镜头 id 供调用方跳转');
+    assertEq(crossShot(p, [refShot(0, { characters: ['林小满-战损'] }), refShot(1, { characters: ['林小满-战损'] })]).hits.length, 0, '全镜统一用形态图不算漂移');
+  } },
+  { name: 'crossShot:形态取不到真实图 → ref-lock-gap(no-image),与完备性面各报各的', fn() {
+    const subs = refP().subjects.map(s => (s.id === 'sj3' ? Object.assign({}, s, { forms: [{ id: 'fm2', name: '碎裂', image: '/uploads/a/sj3-f1.png' }] }) : s));
+    const p = refP({ subjects: subs }); // 玉佩:权威图缺,只有「碎裂」形态有图
+    const shots = [refShot(0, { props: ['玉佩'] }), refShot(1, { props: ['玉佩-碎裂'] })];
+    const r = crossShot(p, shots);
+    assertEq(r.level, 'warn');
+    assertEq(r.hits.map(h => h.code + '@' + h.order + ':' + h.reason).join(','), 'ref-lock-gap@1:no-image', '别的镜锁得住这镜锁不住');
+    assertEq(refIntegrity(p, { id: 'ep1', shots }).hits.map(h => h.code).join(','), 'no-ref-image', '完备性面照报该镜缺图,两条结论互不吞并');
+  } },
+  { name: 'crossShot:被参考图组上限挤出 → ref-lock-gap(over-cap)', fn() {
+    const p = manySubjP(6);
+    const names = p.subjects.map(s => s.name);
+    const shots = [refShot(0, { characters: names }), refShot(1, { characters: ['角色5'] })];
+    assertEq(DomainMod.shotRefImages(p, shots[0]).refImages.length, 5, '参考图组上限 5 张(第 6 个主体进不去真实生成请求)');
+    const r = crossShot(p, shots);
+    assertEq(r.hits.map(h => h.code + '@' + h.order + ':' + h.reason + ':' + h.name).join(','), 'ref-lock-gap@1:over-cap:角色5', '有图却被上限挤出的镜应如实命中');
+    assertEq(refIntegrity(p, { id: 'ep1', shots }).hits.length, 0, '主体有图,完备性面无话可说——上限挤出只有一致性面看得见');
+  } },
+  { name: 'crossShot:曾用名与现名混用 → alias-drift(完备性面解析得到,不报)', fn() {
+    const p = refP();
+    const shots = [refShot(0, { characters: ['林小满'] }), refShot(1, { characters: ['林小满'] }), refShot(2, { characters: ['小满'] })];
+    const r = crossShot(p, shots);
+    assertEq(r.hits.map(h => h.code + '@' + h.order).join(','), 'alias-drift@3');
+    assertEq(r.hits[0].name, '小满'); assertEq(r.hits[0].base, '林小满', 'hits 应给出基准名供回填');
+    assertEq(refIntegrity(p, { id: 'ep1', shots }).hits.length, 0, '曾用名解析得到,完备性面判通过——一致性半才看得见改名未回填');
+  } },
+  { name: 'crossShot:纯函数(不改入参、同输入同结论);单镜与无项目上下文不产出结论', fn() {
+    const p = refP();
+    const shots = [refShot(0, { characters: ['林小满'] }), refShot(1, { characters: ['小满'] })];
+    const ep = { id: 'ep1', shots };
+    const snap = JSON.stringify([p, ep]);
+    const a = crossShot(p, shots), b = crossShot(p, shots);
+    assertEq(JSON.stringify(a), JSON.stringify(b), '同输入应给同结论(无隐藏状态)');
+    assertEq(JSON.stringify([p, ep]), snap, '校验项不得改动领域对象');
+    assertEq(crossShot(p, [refShot(0, { characters: ['林小满'] })]).level, 'info', '单镜无跨镜可比,不冒充通过判定');
+    assertEq(Skills.check('subjects', { p, s: shots[1] }).find(x => x.skill === 'subjects.crossShot').hits.length, 0, '镜级入口无跨镜输入');
+    assertEq(crossShot(null, shots).hits.length, 0, '无项目上下文不产出结论');
+  } },
+  { name: 'crossShot:消费点——就绪检查两条结论 + 问题中心低危(不改门禁、不新增计费)', fn() {
+    const p = refP();
+    const conc = Skills.check('subjects', { p, ep: { id: 'ep1', shots: [refShot(0, { characters: ['林小满'] }), refShot(1, { characters: ['小满'] })] } });
+    assertEq(conc.map(x => x.skill).join(','), 'subjects.refIntegrity,subjects.crossShot', '主体面现有两条已落地校验项(完备性 + 一致性)');
+    assertEq(conc[1].id, 'subjects.crossShotConsistency', '结论应同时给实现 id 与能力 id');
+    const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
+    assert(/Skills\.check\('subjects'/.test(isrc), '问题中心应复用同一校验项,不写第二份判定');
+    assert(isrc.includes("kind: 'subject-inconsistent', sev: 'low'"), '一致性提醒须挂低危');
+    const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
+    assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 只数高/中危 —— 低危提醒不改门禁状态');
+    ['episode.generateVideos', 'shot.generateVideo'].forEach(n => assert(!Skills.byId('subjects.crossShot').cmds.includes(n), '生成侧消费待 G-06,条目不得挂未接的命令面:' + n));
   } },
 ];
 
