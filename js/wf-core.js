@@ -677,13 +677,11 @@ ${ctx.personaNote ? ctx.personaNote.replace(/^。/, '') + '\n' : ''}${ctx.memTex
 ${t}`;
     return { user, truncated: trunc };
   };
-  /* 提取人设句(浏览器解析向导与 /api/wf/extract-subjects 同一句;方法论块由 extractSystem 接) */
-  W.EXTRACT_SYSTEM = '你是专业的短剧剧本分析助手。';
-  /* 主体步系统人设(主体装配口,与 sbSystem/genPromptSystem 同形态):人设句 + 「主体参考」按键整条注入。
-   * 该条目治的正是提取产出要成为可用参考的形状——名称唯一稳定(供生成时「将图片N定义为「名字」」)、
-   * 人物 prompt 按大头照+全身照写而非三视图、参考人物数有上限;正文只从 KB 取,本层不写第二份。
-   * 人设句尚未入 Prompts 注册表(G-13),故本装配口不收覆盖表参数。 */
-  W.extractSystem = () => W.EXTRACT_SYSTEM + KB.pick('主体参考');
+  /* 主体步系统人设(主体装配口,与 sbSystem/genPromptSystem 同形态;ov=用户提示词覆盖表):
+   * 注册表人设 extract.system + 「主体参考」按键整条注入。该条目治的正是提取产出要成为可用参考的形状——
+   * 名称唯一稳定(供生成时「将图片N定义为「名字」」)、人物 prompt 按大头照+全身照写而非三视图、
+   * 参考人物数有上限;正文只从 KB 取,本层不写第二份,方法论段不随人设覆盖变动。 */
+  W.extractSystem = ov => Prompts.get('extract.system', ov) + KB.pick('主体参考');
   /* 提取结果规整:逐字段白名单 + 可信性校验(拦截台词碎片) + 别名合并去重 → {character,scene,prop} */
   W.normalizeExtracted = function (out) {
     out = out || {};

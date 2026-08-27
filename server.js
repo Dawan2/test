@@ -3642,7 +3642,7 @@ const server = http.createServer(async (req, res) => {
         });
         const r = await wfLLM(user.id, {
           action: 'llm.extract', reason: '提取主体(' + p.name + ')', opId: sanitizeOpId(b.operationId) || uid('wfex'), step: 'main', wfName: 'extract-subjects',
-          model: st.defLLM || 'qwen-turbo', system: WfCore.extractSystem(), user: bu.user,
+          model: st.defLLM || 'qwen-turbo', system: WfCore.extractSystem(st.promptOverrides), user: bu.user,
           temperature: 0.3, max_tokens: 4000, projectId: p.id, mockKind: 'extract',
         });
         const found = WfCore.normalizeExtracted(r.parsed);
