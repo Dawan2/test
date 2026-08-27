@@ -103,6 +103,8 @@
   /* 命中展示文案:判据一律在校验项里,本层只把 hits 译成人话(不写第二份口径) */
   const CHECK_TXT = {
     'long-line': h => `台词单句 ${h.len} 字超上限:「${h.name}…」`,
+    'ai-cliche': h => `台词里有 AI 套话「${h.name}」`,
+    'spoken-formal': h => `台词写成了书面腔「${h.name}」,口语里不这么说`,
     'unknown-subject': h => `引用「${h.name}」在主体库解析不到`,
     'no-ref-image': h => `主体「${h.name}」无真实参考图,生成时不进参考图组`,
     'no-subject-ref': () => '本镜未引用任何主体,无形象锁定(易换脸)',

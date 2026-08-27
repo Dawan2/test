@@ -1355,7 +1355,7 @@ const commandsTests = [
     const r = await sb.Commands.execute('episode.preflight', { pid: 'p1', epid: 'ep1' });
     const checks = r.result.checks || [];
     assertEq(checks.map(x => x.skill).join(','),
-      'script.hookStrength,script.faceslapFour,script.dialogueRule,subjects.refIntegrity,subjects.crossShot,'
+      'script.hookStrength,script.faceslapFour,script.dialogueRule,script.aiToneBan,subjects.refIntegrity,subjects.crossShot,'
       + 'eps.structureStage,eps.payoffPoint,shots.sizeProgression,film.subtitleQC',
       'result.checks 应是五面并集,按主线步序 script → subjects → eps → shots → film');
     const cap = checks.find(x => x.skill === 'film.subtitleQC');
@@ -4032,6 +4032,9 @@ const scriptCheck = (skill, ep, p) => Skills.check('script', { p: p || { id: 'p1
 const hookOf = (ep, p) => scriptCheck('script.hookStrength', ep, p);
 const slapOf = ep => scriptCheck('script.faceslapFour', ep);
 const lineOf = ep => scriptCheck('script.dialogueRule', ep);
+const aiOf = ep => scriptCheck('script.aiToneBan', ep);
+/* 修饰副词密度夹具:每段 22 字带三个叠词副词,拼够判密度的最短正文即远超每千字上限 */
+const ADV = '她缓缓抬头,轻轻叹了口气,静静看着窗外的雨。';
 /* 分集段夹具:六集起判(集数少于六段时按比例缩放必把某段摊成零集,不产出结论)。
  * EP_OK = 集首立刻兑现上一集卡点(亮出证据/揭穿/道歉)+ 集尾卡在情绪最高拍(致命危机)+ 带反转信号;
  * FILL 是不含任何信号的中性填充,长度超过集尾窗口(120),接在集尾即把卡点挤出窗口。 */
@@ -4157,13 +4160,77 @@ const skillsTests = [
     // 拆集前只有项目剧本原文:同一套判据照跑(剧本步本身就是这几条的作用面)
     assertEq(hookOf(null, { id: 'p1', script: BG + '她被人嘲笑。' }).hits.map(h => h.code).join(','), 'late-hook', '无分集上下文时取项目剧本原文');
     const empty = Skills.check('script', {});
-    assertEq(empty.length, 3, '剧本步现有三条已落地校验项');
-    assertEq(empty.filter(x => x.level === 'info' && !x.hits.length).length, 3, '无判定输入时三条一律不产出命中');
+    assertEq(empty.length, 4, '剧本步现有四条已落地校验项');
+    assertEq(empty.filter(x => x.level === 'info' && !x.hits.length).length, 4, '无判定输入时四条一律不产出命中');
+  } },
+  { name: 'aiVoice:套话硬禁词逐次命中 → ai-cliche(带词与位置);不写套话的正文 → info', fn() {
+    const r = aiOf(scriptEp('她深吸一口气,眼里闪过一丝复杂。' + BG));
+    assertEq(r.pass, false); assertEq(r.level, 'warn', 'AI 味是提醒级,不升 fail(好坏优劣仍归审片)');
+    assertEq(r.hits.map(h => h.code + ':' + h.name).join(','), 'ai-cliche:深吸一口气,ai-cliche:闪过一丝', '同段多处套话逐次报出');
+    assertEq(r.hits[0].at, 1, 'hits 应定位到去空白正文中的位置');
+    assertEq(r.hits[0].where, 'script', 'hits 应标明载体');
+    assertEq(aiOf(scriptEp('林晚推开门,桌上那份文件的签名是她自己的笔迹,她的手僵住了。' + BG)).level, 'info', '不写套话的正文无命中');
+    assertEq(aiOf(scriptEp('她深吸一口气。')).hits.length, 0, '短于判定下限的片段不产出结论');
+  } },
+  { name: 'aiVoice:书面腔只判台词载体(正文引号台词 + 分镜 s.dialogue),叙述里用书面词不报', fn() {
+    const r = aiOf(scriptEp('然而她还是去了。「因此我必须走,值得注意的是他已经知道了。」' + BG));
+    assertEq(r.hits.map(h => h.code + ':' + h.name).join(','), 'spoken-formal:因此,spoken-formal:值得注意的是',
+      '叙述里的「然而」不报——书面词出现在人物嘴里才是 AI 腔');
+    assert(r.hits[0].at > 0, '正文台词命中应定位到去空白正文中的位置');
+    const r2 = aiOf(scriptEp(BG, [{ id: 'sh0', order: 0, dialogue: '快走别回头' }, { id: 'sh1', order: 1, dialogue: '综上所述,我们只能这样' }]));
+    assertEq(r2.hits.map(h => h.code + '@' + h.order).join(','), 'spoken-formal@2', '分镜台词按镜定位(镜号 = order + 1)');
+    assertEq(r2.hits[0].shotId, 'sh1', 'hits 应带镜头 id 供调用方跳转');
+    assertEq(r2.hits[0].where, 'shot');
+    const s = { id: 'sh1', order: 1, dialogue: '综上所述,我们只能这样' };
+    assertEq(Skills.check('script', { p: { id: 'p1' }, s }).find(x => x.skill === 'script.aiToneBan').hits.length, 1, '镜级入口只判传入的那一镜');
+  } },
+  { name: 'aiVoice:修饰副词密度超上限 → adverb-flood 整段一条;正文过短与低密度不下断言', fn() {
+    const r = aiOf(scriptEp(ADV.repeat(10)));
+    assertEq(r.hits.map(h => h.code).join(','), 'adverb-flood', '密度命中整段只报一条,不逐词重复报');
+    assertEq(r.hits[0].count + '/' + r.hits[0].limit, '30/10', 'hits 应带命中数与每千字上限');
+    assertEq(r.hits[0].name, '缓缓', 'hits 应给出首个命中词');
+    assertEq(r.hits[0].at, 1, 'hits 应定位到首个命中词的位置');
+    assertEq(aiOf(scriptEp(ADV.repeat(3))).hits.length, 0, '短段落里几个叠词副词是常态,不足判密度的正文不下断言');
+    assertEq(aiOf(scriptEp(BG + BG + '她默默走开。')).hits.length, 0, '密度不到上限不报');
+  } },
+  { name: 'aiVoice:纯函数与消费点(就绪检查/问题中心/审片报告只读消费,不拦生成、不改门禁、不开计费)', fn: async () => {
+    const sk = Skills.byId('script.aiToneBan');
+    assertEq(sk.pending.join(','), 'inject', '校验面已落地;注入面的条目正文尚未进 KB 单源,pending 如实留着不假清');
+    assertEq(sk.checks.join(','), 'script.aiVoiceTrace');
+    assert(sk.gaps.includes('S-02') && sk.gaps.includes('G-10'), '注入面缺口(S-02)与语义面缺口(G-10)都仍记账');
+    assertEq(Skills.block('script', { ids: ['script.aiToneBan'] }), '', '注入面未落地不进拼块');
+    const ep = scriptEp('她深吸一口气,眼里闪过一丝复杂。' + BG, [{ id: 'sh0', order: 0, dialogue: '因此我必须走' }]);
+    const p = { id: 'p1' };
+    const snap = JSON.stringify([p, ep]);
+    assertEq(JSON.stringify(aiOf(ep)), JSON.stringify(aiOf(ep)), '同输入应给同结论(无隐藏状态)');
+    assertEq(JSON.stringify([p, ep]), snap, '校验项不得改动领域对象');
+    assertEq(aiOf(scriptEp('')).hits.length, 0, '缺剧本正文不产出结论');
+    assertPreflightFace('script', '剧本面'); // 面表由登记推导:新增本条校验项,两端就绪检查实现一行未改
+    assert(sk.cmds.includes('episode.preflight') && sk.cmds.includes('episode.smartReview'), '两处真实消费点都要如实登记');
+    /* 记账反查(另一向):结论确实进了就绪检查回执的条目,cmds 必须如实登记该消费点——
+     * 面已在表里时漏登记不会少报一条结论,只会让登记侧悄悄失真,故这条断言由本层钉住 */
+    Skills.list().filter(s => !s.pending.includes('check') && s.checks.length && Skills.preflightStages().includes(s.stage))
+      .forEach(s => assert(s.cmds.includes('episode.preflight'), s.id + ' 的结论已进就绪检查回执,cmds 须如实登记该消费点'));
+    const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
+    ['ai-cliche', 'spoken-formal', 'adverb-flood'].forEach(c => assert(isrc.includes("'" + c + "':"), '问题中心应给命中码展示文案:' + c));
+    // 审片路径:镜级命中如实附报告独立字段,集级结论(正文套话)不混进单镜报告
+    const sb = loadReview();
+    const s = rvShot({ characters: ['林小满'], dialogue: '因此我必须走' });
+    const rv = await sb.Review.reviewShot(refP({ script: '她深吸一口气。' + BG }), rvEp(s), s);
+    assertEq(rv.checks.map(c => c.skill).join(','), 'script.aiToneBan', '本镜台词的书面腔应进报告 checks');
+    assertEq(rv.checks[0].hits.map(h => h.code).join(','), 'spoken-formal');
+    assertEq(rv.checks[0].hits[0].shotId, 'sh0', '只留本镜命中(正文套话是集级结论,归就绪检查与问题中心)');
+    assertEq(rv.issues.filter(i => i.code).length, 0, '命中不得并入 issues(达标线/重抽判定口径不动)');
+    assertEq(sb.__charges.length, 1, '校验项纯本地零 LLM,不新增计费动作');
+    assertEq(require('../js/cmd-registry.js').byName['episode.preflight'].risk, 'read', '就绪检查应仍是 read 类零计费');
+    const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
+    assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 只数高/中危 —— 低危提醒不改门禁状态');
   } },
   { name: '剧本段消费点:就绪检查按主线步序附结论 + 问题中心低危(不改门禁、不新增计费)', fn() {
     const conc = Skills.check('script', { p: { id: 'p1' }, ep: scriptEp(BG) });
-    assertEq(conc.map(x => x.skill).join(','), 'script.hookStrength,script.faceslapFour,script.dialogueRule', '剧本面三条已落地校验项');
-    assertEq(conc.map(x => x.id).join(','), 'script.openingHookAnchor,script.faceslapStepOrder,script.dialogueLineLength', '结论应同时给实现 id 与能力 id');
+    assertEq(conc.map(x => x.skill).join(','), 'script.hookStrength,script.faceslapFour,script.dialogueRule,script.aiToneBan', '剧本面四条已落地校验项');
+    assertEq(conc.map(x => x.id).join(','),
+      'script.openingHookAnchor,script.faceslapStepOrder,script.dialogueLineLength,script.aiVoiceTrace', '结论应同时给实现 id 与能力 id');
     assertPreflightFace('script', '剧本面');
     assertPreflightOrder('script', 'subjects', '剧本在主体之前');
     const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
@@ -4459,8 +4526,8 @@ const skillsTests = [
     Skills.list().filter(s => s.pending.includes('check') && s.cmds.includes('episode.preflight'))
       .forEach(s => assert(!stages.includes(s.stage) || consumers.some(x => x.stage === s.stage),
         '校验面未落地的条目不应把 ' + s.stage + ' 面单独带进表:' + s.id));
-    // 表现在跑出来就是九条结论(面表 + 各面已落地校验项数,与行为断言的期望串同一口径)
-    assertEq(stages.reduce((n, st) => n + Skills.check(st, {}).length, 0), 9, '五面共九条已落地校验项');
+    // 表现在跑出来就是十条结论(面表 + 各面已落地校验项数,与行为断言的期望串同一口径)
+    assertEq(stages.reduce((n, st) => n + Skills.check(st, {}).length, 0), 10, '五面共十条已落地校验项');
     /* 两端只读该表:段内那条 checks 表达式必须取表,且不得再出现任何面字面量;
      * 取表 + concat 的写法两端逐字节相同(同表同口径,一端改写法即红)。 */
     const FRAG = 'Skills.preflightStages().reduce((all, stage) => all.concat(Skills.check(stage, { p, ep }, ck)), [])';
@@ -4487,7 +4554,7 @@ const skillsTests = [
           Skills.check('shots', { p, ep }, ck), Skills.check('film', { p, ep }, ck));
       const byTable = Skills.preflightStages().reduce((all, stage) => all.concat(Skills.check(stage, { p, ep }, ck)), []);
       assertEq(JSON.stringify(byTable), JSON.stringify(legacy), '读表 concat 应逐字节等于五面写死并集(online=' + ck.online + ')');
-      assertEq(byTable.length, 9, '并集仍是九条结论');
+      assertEq(byTable.length, 10, '并集仍是十条结论');
     });
     // 表是纯函数:同输入同表,且调用方拿到的是副本(改返回值不污染下次取表)
     assertEq(Skills.preflightStages().join(','), Skills.preflightStages().join(','), '同输入应给同表');
