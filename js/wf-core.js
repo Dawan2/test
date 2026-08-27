@@ -144,6 +144,16 @@
     const m = W.memRecall(mem, input, scope);
     return m.length ? '\n历史协作记忆(用户过往的偏好与已确认的修改决定,参考以保持一致):\n' + m.map(t => '- ' + t.text).join('\n') : '';
   };
+  /* 审片侧三步(分镜评审/整集共性汇总/四维成片评审)的人设+记忆注入段:
+   * 这三步的 user 模板是纯指令 + JSON 清单,注入段独立成段拼在提示词最前(不进模板变量,不受用户覆盖影响);
+   * personaNote 以「。」起头(与 directorNote 同通道口径),独立成行时去掉句首标点。
+   * 两者都空即返回空串——未雇佣专家且无沉淀记忆时提示词与接通道前逐字节一致 */
+  W.reviewCtxNote = function (ctx) {
+    ctx = ctx || {};
+    const persona = String(ctx.personaNote || '').replace(/^。/, '').trim();
+    const mem = String(ctx.memText || '').trim();
+    return (persona ? persona + '\n' : '') + (mem ? mem + '\n' : '');
+  };
   /* 导演设定五维文本(understanding.js DIMS_DIR 下沉) */
   W.dimsText = ds => W.DIR_DIMS.filter(d => ds && ds[d]).map(d => `${d}:${ds[d]}`).join('\n');
   /* 章节事件图谱(自 understanding.js 下沉):sourceRev 失配(或旧数据无 sourceRev 且正文改过)不注入,防"新正文+旧图谱" */
@@ -368,9 +378,10 @@ ${ctx.content}`;
     if (tweet && ctx.phImage) s.image = ctx.phImage(s);
     return s;
   };
-  /* 五角色评审(自 llmReview 下沉):brief 构造 + 结果钳制;user 文本经 Prompts.fill('sb.reviewUser') */
+  /* 五角色评审(自 llmReview 下沉):brief 构造 + 结果钳制;user 文本经 Prompts.fill('sb.reviewUser')。
+   * ctx={personaNote,memText} 分镜板块生效专家方法论与协作记忆,两端经同一装配口传入(空 ctx 逐字节等同三参调用) */
   W.sbReviewBrief = shots => shots.map((s, i) => ({ 镜号: i + 1, 剧情: s.plot, 运镜: s.camera, 景别: (s.cameraSpec && s.cameraSpec.shotSize) || '中景', 出场: s.characters, 旁白: s.narration, 台词: s.dialogue, 提示词: (s.prompt || '').slice(0, 80) }));
-  W.sbReviewUser = (shots, styleText, ov) => Prompts.fill('sb.reviewUser', { style: styleText, brief: JSON.stringify(W.sbReviewBrief(shots)) }, ov);
+  W.sbReviewUser = (shots, styleText, ov, ctx) => W.reviewCtxNote(ctx) + Prompts.fill('sb.reviewUser', { style: styleText, brief: JSON.stringify(W.sbReviewBrief(shots)) }, ov);
   W.sbReviewNormalize = function (out) {
     out = out || {};
     out.score = Math.max(60, Math.min(99, parseInt(out.score, 10) || 75));
@@ -445,10 +456,10 @@ ${hasImage ? '附图是该分镜当前生成画面,请结合实际画面与 Prom
     for (let i = 0; i < sig.length; i++) h = ((h << 5) + h + sig.charCodeAt(i)) >>> 0;
     return 'r:' + h.toString(36);
   };
-  /* 共性汇总(自 openEpisodeReview 汇总段下沉) */
-  W.buildSumUser = reports => {
+  /* 共性汇总(自 openEpisodeReview 汇总段下沉);ctx={personaNote,memText} 成片板块生效专家方法论与协作记忆 */
+  W.buildSumUser = function (reports, ctx) {
     const brief = reports.map(x => ({ 镜号: x.shot.order + 1, 得分: x.report.score, 问题: x.report.issues.map(i => i.type) }));
-    return `根据以下整集各镜审片结果,汇总整集级共性问题(如主体一致性/色调统一性/时间线连贯性),返回 {"summary":"整集总评(2-3句)","issues":[{"type":"共性问题","detail":"涉及镜号与说明","suggestion":"整集级修复建议"}]},最多 3 条:\n${JSON.stringify(brief)}`;
+    return W.reviewCtxNote(ctx) + `根据以下整集各镜审片结果,汇总整集级共性问题(如主体一致性/色调统一性/时间线连贯性),返回 {"summary":"整集总评(2-3句)","issues":[{"type":"共性问题","detail":"涉及镜号与说明","suggestion":"整集级修复建议"}]},最多 3 条:\n${JSON.stringify(brief)}`;
   };
   W.normalizeSum = out => ({ summary: String((out && out.summary) || ''), issues: (Array.isArray(out && out.issues) ? out.issues : []).slice(0, 3) });
   /* 四维成片评审(自 reviewEpisodeCut 下沉):brief/提示词/规整;本地启发式 fallback 留在浏览器 */
@@ -457,7 +468,8 @@ ${hasImage ? '附图是该分镜当前生成画面,请结合实际画面与 Prom
     时长: (Domain && Domain.estShotDuration ? Domain.estShotDuration(x.shot) : (x.shot.duration || 5)), 剧情: (x.shot.plot || '').slice(0, 30), 单镜得分: x.report.score,
     问题: x.report.issues.map(i => i.type),
   }));
-  W.buildCutUser = brief => `按四维标准评审以下整集分镜(好例子:上镜抬手下镜手摸到脸=衔接好;吵架给特写=景别对;坏例子:镜头乱抖=不自然;人物瞬间换位置=衔接崩坏;激烈打架十秒不切=节奏错)。返回 JSON:
+  /* ctx={personaNote,memText}:同共性汇总步(成片板块),集级召回口径也同(输入取集标题) */
+  W.buildCutUser = (brief, ctx) => W.reviewCtxNote(ctx) + `按四维标准评审以下整集分镜(好例子:上镜抬手下镜手摸到脸=衔接好;吵架给特写=景别对;坏例子:镜头乱抖=不自然;人物瞬间换位置=衔接崩坏;激烈打架十秒不切=节奏错)。返回 JSON:
 {"natural":{"score":0-10,"comment":"评语"},"continuity":{"score":...,"comment":...},"framing":{"score":...,"comment":...},"pacing":{"score":...,"comment":...},"overall":"整集剪辑总评(1-2句)"}
 分镜清单:
 ${JSON.stringify(brief)}`;

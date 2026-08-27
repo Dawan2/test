@@ -451,6 +451,15 @@
     return lr.snapshotHash !== reviewSnapshotHashOf(ep);
   }
 
+  /* 集级两步(共性汇总/四维评审)的注入 ctx:成片板块生效专家方法论 + 按集标题召回的协作记忆
+   * (逐镜步按该镜 plot 召回);与服务端 /api/wf/smart-review 同一装配口 */
+  function episodeReviewCtx(p, ep) {
+    return {
+      personaNote: window.personaNoteFor ? personaNoteFor(p, WfCore.WF_BOARD['smart-review']) : '',
+      memText: WfCore.memBlock(Store.state.agentMemory, ep.title || '', '成片'),
+    };
+  }
+
   async function reviewEpisodeCut(p, ep, reports, opId, onLLMFail) {
     const brief = WfCore.buildCutBrief(ep, reports); // 二十一轮:brief 构造下沉 wf-core.js(时长经 Domain.estShotDuration 双端同口径)
     const fallback = () => {
@@ -470,7 +479,7 @@
       if (!cutTried) throw new Error('LLM 未配置');
       const out = await API.chatJSON({
         system: Prompts.get('review.finalSystem'),
-        messages: [{ role: 'user', content: WfCore.buildCutUser(brief) }], // 二十一轮:user 模板下沉 wf-core.js
+        messages: [{ role: 'user', content: WfCore.buildCutUser(brief, episodeReviewCtx(p, ep)) }], // 二十一轮:user 模板下沉 wf-core.js
         temperature: 0.3, max_tokens: 1500,
         billingAction: 'llm.review', operationId: opId,
       });
@@ -548,7 +557,7 @@
       if (!sumTried) throw new Error('LLM 未配置');
       const out = await API.chatJSON({
         system: '你是短剧审片总监。',
-        messages: [{ role: 'user', content: WfCore.buildSumUser(reports) }], // 二十一轮:共性汇总 user 模板下沉 wf-core.js
+        messages: [{ role: 'user', content: WfCore.buildSumUser(reports, episodeReviewCtx(p, ep)) }], // 二十一轮:共性汇总 user 模板下沉 wf-core.js
         temperature: 0.4, max_tokens: 1200,
         billingAction: 'llm.review', operationId: tk.id + '_sum',
       });

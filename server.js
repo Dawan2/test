@@ -3438,7 +3438,7 @@ const server = http.createServer(async (req, res) => {
           const r = await wfLLM(user.id, {
             action: 'llm.smartSB', reason: '分镜评审(' + ep.title + ')', opId, step: stepTag, wfName: 'smart-storyboard',
             model: c.sbModel || st.defLLM || 'qwen-turbo', system: Prompts.get('sb.reviewSystem', ov),
-            user: WfCore.sbReviewUser(shots, ctxBase.styleText, ov),
+            user: WfCore.sbReviewUser(shots, ctxBase.styleText, ov, ctxBase), // 评审步与拆镜步同 ctx(分镜板块人设+记忆),不另开装配口
             temperature: 0.4, max_tokens: 1800, projectId: p.id, mockKind: 'sbReview',
           });
           return WfCore.sbReviewNormalize(r.parsed);
@@ -3574,12 +3574,14 @@ const server = http.createServer(async (req, res) => {
         let common = null, cut = null, sumErr, cutErr;
         if (prev) { common = prev.common || null; cut = prev.cut || null; }
         else {
+          // 集级两步(共性汇总/四维评审)复用逐镜步的成片板块人设,记忆按集标题召回(逐镜步按该镜 plot 召回)
+          const epCtx = { personaNote: reviewCtx.personaNote, memText: WfCore.memBlock(tree.agentMemory, ep.title || '', '成片') };
           try {
-            const r = await wfLLM(user.id, { action: 'llm.review', reason: '整集共性汇总(' + ep.title + ')', opId: opBase + '_sum', step: 'main', wfName: 'smart-review', model: st.defLLM || 'qwen-turbo', system: '你是短剧审片总监。', user: WfCore.buildSumUser(reports), temperature: 0.4, max_tokens: 1200, projectId: p.id, mockKind: 'sum' });
+            const r = await wfLLM(user.id, { action: 'llm.review', reason: '整集共性汇总(' + ep.title + ')', opId: opBase + '_sum', step: 'main', wfName: 'smart-review', model: st.defLLM || 'qwen-turbo', system: '你是短剧审片总监。', user: WfCore.buildSumUser(reports, epCtx), temperature: 0.4, max_tokens: 1200, projectId: p.id, mockKind: 'sum' });
             common = WfCore.normalizeSum(r.parsed);
           } catch (e) { sumErr = e.message; }
           try {
-            const r = await wfLLM(user.id, { action: 'llm.review', reason: '四维成片评审(' + ep.title + ')', opId: opBase + '_cut', step: 'main', wfName: 'smart-review', model: st.defLLM || 'qwen-turbo', system: Prompts.get('review.finalSystem', ov), user: WfCore.buildCutUser(WfCore.buildCutBrief(ep, reports)), temperature: 0.3, max_tokens: 1500, projectId: p.id, mockKind: 'cut' });
+            const r = await wfLLM(user.id, { action: 'llm.review', reason: '四维成片评审(' + ep.title + ')', opId: opBase + '_cut', step: 'main', wfName: 'smart-review', model: st.defLLM || 'qwen-turbo', system: Prompts.get('review.finalSystem', ov), user: WfCore.buildCutUser(WfCore.buildCutBrief(ep, reports), epCtx), temperature: 0.3, max_tokens: 1500, projectId: p.id, mockKind: 'cut' });
             cut = WfCore.normalizeCut(r.parsed);
           } catch (e) { cutErr = e.message; }
         }
