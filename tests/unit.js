@@ -977,6 +977,47 @@ const expertsTests = [
     assert(mk(D.projTypeOf('ex_sweet')).includes('剧情模式(重台词表演)'), '其余雇佣应为剧情模式');
     assert(mk(D.projTypeOf(undefined)).includes('剧情模式(重台词表演)'), '未雇佣应为剧情模式');
   } },
+  { name: 'wf-core.personaFor:板块雇佣专家 > 全局雇佣专家 > 不注入', fn() {
+    const D = require('../js/experts-data.js');
+    const WfCore = require('../js/wf-core.js');
+    const experts = D.allOf([{ id: 'cx_1', name: '我的分镜专家', persona: '自定义方法论' }]);
+    const sb = boards => WfCore.personaFor({ experts, hiredId: 'ex_suspense', boards, board: '分镜' });
+    assertEq(WfCore.personaFor({ experts, board: '分镜' }), '', '无任何雇佣不注入(提示词与未雇佣时逐字节一致)');
+    assert(sb(null).startsWith('。专家方法论(冷峻悬疑导演):'), '仅全局雇佣时取全局专家');
+    assertEq(sb({ 分镜: { expert: 'cx_1' } }), '。专家方法论(我的分镜专家·分镜板块):自定义方法论', '板块雇佣优先并标注板块');
+    assert(sb({ 分镜: { expert: 'cx_404' } }).includes('冷峻悬疑导演'), '板块专家 id 失效应回退全局雇佣');
+    assert(sb({ 成片: { expert: 'cx_1' } }).includes('冷峻悬疑导演'), '其他板块的雇佣不串到本板块');
+    assertEq(WfCore.personaFor({ experts: [{ id: 'e0', name: '空人设', persona: '  ' }], hiredId: 'e0' }), '', '空 persona 不注入');
+    const long = WfCore.personaFor({ experts: [{ id: 'e1', name: '长人设', persona: '方'.repeat(300) }], hiredId: 'e1' });
+    assertEq(long, '。专家方法论(长人设):' + '方'.repeat(200), 'persona 截断 ≤200 字');
+  } },
+  { name: '专家 persona 进三条工作流提示词:缺省输出不变,注入后三处均带方法论段', fn() {
+    const WfCore = require('../js/wf-core.js');
+    const note = '。专家方法论(测试专家·分镜板块):方法论正文';
+    const und = c => WfCore.buildUndUser(Object.assign({ dsText: '', styleText: '漫剧', eventsText: '', content: '剧本' }, c));
+    const sbu = c => WfCore.buildSBUser({ subjects: [] }, {}, { count: 8 }, Object.assign({ styleText: '漫剧', projType: 'drama', content: '剧本' }, c));
+    const shot = { id: 'sh1', plot: '对峙', camera: '固定镜头', prompt: 'p', duration: 5 };
+    const rev = c => WfCore.buildReviewPrompt({ style: '漫剧' }, { shots: [shot] }, shot, false, Object.assign({ styleText: '漫剧' }, c));
+    [[und, '项目风格:漫剧'], [sbu, '剧情模式(重台词表演)'], [rev, '- 项目风格:漫剧']].forEach(([mk, anchor]) => {
+      assertEq(mk({ personaNote: '' }), mk({}), '缺省 personaNote 与空串输出应一致');
+      assertEq(mk({ personaNote: note }), mk({}).replace(anchor, anchor + note), '注入位应紧随「' + anchor + '」且只改这一处');
+    });
+  } },
+  { name: '双端同源:浏览器 personaNoteFor 与服务端 wf 装配口输出逐字节一致', fn() {
+    const D = require('../js/experts-data.js');
+    const WfCore = require('../js/wf-core.js');
+    const sb = loadExperts();
+    sb.WfCore = WfCore; // 浏览器侧 experts.js 运行时经 window.WfCore 取用(index.html 中 wf-core.js 先于 experts.js 加载)
+    const customs = [{ id: 'cx_1', name: '我的剪辑指导', persona: '节奏方法论' }];
+    const p = { id: 'p1', boards: { 分镜: { expert: 'ex_dp' }, 成片: { expert: 'cx_1' } } };
+    sb.Store.state.customExperts.push(customs[0]);
+    sb.Store.state.settings.hiredExpert = 'ex_suspense';
+    // 服务端装配口(server.js wfPersonaNote 同参数面):专家表/雇佣 id/板块表均由调用方注入
+    const srv = board => WfCore.personaFor({ experts: D.allOf(customs), hiredId: 'ex_suspense', boards: p.boards, board });
+    ['导演', '分镜', '成片'].forEach(board => assertEq(sb.personaNoteFor(p, board), srv(board), board + ' 板块两端注入串应逐字节一致'));
+    assert(sb.personaNoteFor(p, '分镜').includes('摄影指导·分镜板块'), '分镜板块应取板块雇佣的功能专家');
+    assert(sb.personaNoteFor(p, '导演').includes('冷峻悬疑导演'), '未雇佣板块专家的板块回退全局雇佣');
+  } },
   { name: 'normExpertDraft:style 草稿补齐 dims 五维与 tpl 三件套(缺省回退)', fn() {
     const sb = loadExperts();
     const e = sb.Experts.normExpertDraft({ name: '测试专家', role: '导演', kind: 'style', style: '漫剧', persona: '你是测试', dims: { 光影: '高对比硬光' }, tags: ['a', 'b', 'c', 'd', 'e', 'f'], desc: '描述' });
@@ -2935,6 +2976,19 @@ const contractTests = [
     const mcpSrc = fs.readFileSync(path.join(ROOT, 'mcp.js'), 'utf8');
     assert(mcpSrc.includes("require('./js/cmd-registry.js')"), 'mcp.js 应 require 注册表');
     assert(mcpSrc.includes('CmdRegistry.names()'), 'mcp.js hujing_exec 词表应由 CmdRegistry.names() 生成');
+  } },
+  { name: '专家人设单源:/api/wf/* 三条工作流均经 wfPersonaNote 注入,板块键取自 WF_BOARD', fn() {
+    const WfCore = require('../js/wf-core.js');
+    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    const agentSrc = fs.readFileSync(path.join(ROOT, 'js', 'agent.js'), 'utf8');
+    assertEq(Object.keys(WfCore.WF_BOARD).join(','), 'understanding,smart-storyboard,smart-review', 'WF_BOARD 应覆盖三条服务端工作流');
+    Object.values(WfCore.WF_BOARD).forEach(b => assert(agentSrc.includes("key: '" + b + "'"), 'WF_BOARD 板块「' + b + '」应是 AGENT_BOARDS 已有板块'));
+    assert(srv.includes('function wfPersonaNote('), 'server.js 应有唯一的生效专家装配口 wfPersonaNote');
+    assert(srv.includes('WfCore.WF_BOARD.understanding'), '/api/wf/understanding 未注入生效专家方法论');
+    assert(srv.includes("WfCore.WF_BOARD['smart-storyboard']"), '/api/wf/smart-storyboard 未注入生效专家方法论');
+    assert(srv.includes("WfCore.WF_BOARD['smart-review']"), '/api/wf/smart-review 未注入生效专家方法论');
+    // 1 定义 + 4 调用(理解 / 分镜 / 分镜内部理解步 / 审片):新增 LLM 步漏注入时此断言先红
+    assertEq((srv.match(/wfPersonaNote\(/g) || []).length, 5, 'wfPersonaNote 调用点数应与 wf 工作流 LLM 步一致');
   } },
   { name: 'MCP resources/prompts(§2.7):initialize 声明能力;list/get 实跑;模板参数代入与流程序列', fn() {
     const { spawnSync } = require('child_process');

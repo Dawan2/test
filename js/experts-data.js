@@ -129,13 +129,19 @@
     },
   ];
 
+  /* 全部专家 = 平台预置 + 自定义:浏览器 allExperts() 与服务端 /api/wf/* 解析生效专家同一合并口径。
+   * customs = state.customExperts(可空) */
+  function allOf(customs) {
+    return EXPERTS.concat(Array.isArray(customs) ? customs : []);
+  }
+
   /* 项目生产类型:默认剧情模式;雇佣带 projType:'narration' 的专家(预置或自定义)后按解说模式(重旁白)生产。
    * hiredId = settings.hiredExpert;customs = state.customExperts(可空) */
   function projTypeOf(hiredId, customs) {
     if (!hiredId) return 'drama';
-    const ex = EXPERTS.concat(Array.isArray(customs) ? customs : []).find(e => e && e.id === hiredId);
+    const ex = allOf(customs).find(e => e && e.id === hiredId);
     return ex && ex.projType === 'narration' ? 'narration' : 'drama';
   }
 
-  return { EXPERTS, projTypeOf };
+  return { EXPERTS, allOf, projTypeOf };
 });

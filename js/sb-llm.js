@@ -14,6 +14,8 @@
       projType: window.projType ? projType() : 'drama',
       directorNote: window.directorInject ? directorInject(p.style) : '',
       conceptNote: window.conceptInject ? conceptInject(p) : '',
+      // 生效专家方法论(分镜板块雇佣 > 全局雇佣):与服务端 /api/wf/smart-storyboard 同一装配口
+      personaNote: window.personaNoteFor ? personaNoteFor(p, WfCore.WF_BOARD['smart-storyboard']) : '',
       langText: (window.langOf ? langOf(p) : WfCore.langOf(p)),
       genres: p.genres,
       understandingText: ep.understanding && window.Understanding ? Understanding.toText(ep.understanding) : '',

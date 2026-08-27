@@ -29,8 +29,12 @@
         model: (Store.state.settings || {}).defLLM || API.getConfig().model,
         system: Prompts.get('und.system'),
         billingAction: bAction || 'llm.understanding', operationId: opId, step,
-        // 二十一轮:user 模板拼装下沉 wf-core.js(双端单一来源,逐字节一致)
-        user: WfCore.buildUndUser({ dsText, styleText: styleOf(p), eventsText: eventsOfEpisode(p, ep), content: (ep.content || '').slice(0, 6000) }),
+        // 二十一轮:user 模板拼装下沉 wf-core.js(双端单一来源,逐字节一致);
+        // 生效专家方法论(导演板块雇佣 > 全局雇佣)与服务端 /api/wf/understanding 同一装配口
+        user: WfCore.buildUndUser({
+          dsText, styleText: styleOf(p), eventsText: eventsOfEpisode(p, ep), content: (ep.content || '').slice(0, 6000),
+          personaNote: window.personaNoteFor ? personaNoteFor(p, WfCore.WF_BOARD.understanding) : '',
+        }),
         temperature: 0.5, max_tokens: 1500,
       });
       if (!out || !out.剧情脉络) throw new Error('返回结构不完整');

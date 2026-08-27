@@ -28,6 +28,8 @@
       kbReviewText: (window.KB && KB.reviewBlock) ? KB.reviewBlock() : '',
       tplReviewText: (window.getSettings && getSettings().tplReview) || '',
       directorNote: window.directorInject ? directorInject(p.style) : '',
+      // 生效专家方法论(成片板块雇佣 > 全局雇佣):与服务端 /api/wf/smart-review 同一装配口
+      personaNote: window.personaNoteFor ? personaNoteFor(p, WfCore.WF_BOARD['smart-review']) : '',
       styleText: styleOf(p),
     });
   }
