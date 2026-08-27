@@ -109,18 +109,23 @@
       });
       Store.save();
     }
-    /* 知识库沉淀(js/knowledge.js):编剧/导演/AI抽卡三域核心,召回时按关键词命中自动注入 */
+    /* 知识库沉淀(js/knowledge.js):按 KB.SECTIONS 键取条目正文种入长期记忆,召回时按关键词命中自动注入。
+     * keys=取用键(条目正文唯一权威,此处不留第二份措辞);kb=同键沉淀标识,条目正文改过后自动跟随;
+     * legacy=旧手抄版的识别标记(老数据已沉淀过则保留用户既有条目,不重复种) */
     const KB_SEEDS = [
-      ['钩子六型', '钩子六型(每集开头):身份反转钩/误会揭穿钩/致命危机钩/情感极限钩/秘密曝光钩/打脸预备钩;前3秒冲突锚定(直接进冲突背景后补);结尾15秒必留新悬念,跨集悬念链不断裂', '剧本'],
-      ['打脸四步', '打脸四步:羞辱(40%,话越狠越好)→隐忍→反击(30%,身份/真相揭露瞬间逆转)→释放(30%,众人震惊主角淡然);爽点分布:每3集小爽/每5集新变量/每10集大反转;前3集砸最大爆点;付费卡点卡在爽点兑现前一秒,卡后立刻兑现', '剧本'],
-      ['对话铁律', '对话铁律:单句≤30字,每句必须推冲突/揭信息/升情感;潜台词代替直白;打脸戏节奏=短句→反问→留白→致命一击;禁说明文式台词与纯闲聊;长独白全剧≤3处;改稿先删后改', '剧本'],
-      ['景别即情绪', '景别即情绪:大全景定场/全景关系/中景叙事/近景共情/特写炸点;运镜即态度:推=逼近/拉=抽离/跟=陪伴/环绕=审视/手持=不安/固定=凝视;先定视点再调度;节奏=镜头长度分布,爽点兑现卡点硬切,声音J/L-cut做过渡', '分镜'],
-      ['抽卡五条军规', 'AI视频抽卡五条军规(Seedance):①动作写慢写连续②运镜写稳写简单(一次一个)③必加"五官稳定不变形/人体结构正常/动作不僵硬"④画质风格最后补⑤不写剧烈/复杂多人/模糊词;八维公式:主体+动作+场景+光影+镜头语言+风格+画质+约束', '分镜'],
+      [['钩子六型'], '剧本', '钩子六型'],
+      [['打脸四步', '付费卡点'], '剧本', '打脸四步'],
+      [['对话铁律'], '剧本', '对话铁律'],
+      [['景别运镜', '场面调度', '剪辑节奏'], '分镜', '景别即情绪'],
+      [['抽卡军规', '抽卡公式'], '分镜', '抽卡五条军规'],
     ];
-    KB_SEEDS.forEach(([mark, text, scope]) => {
-      if (!Store.state.agentMemory.some(m => (m.text || '').includes(mark))) {
-        Store.state.agentMemory.push({ text, time: Store.now(), scope });
-      }
+    if (window.KB) KB_SEEDS.forEach(([keys, scope, legacy]) => {
+      const kb = keys.join('+');
+      const text = KB.pick(...keys);
+      const seeded = Store.state.agentMemory.find(m => m.kb === kb);
+      if (seeded) { seeded.text = text; return; } // 条目正文改过:同键沉淀跟随更新
+      if (Store.state.agentMemory.some(m => (m.text || '').includes(legacy))) return;
+      Store.state.agentMemory.push({ text, kb, time: Store.now(), scope });
     });
     Store.save();
     return Store.state.agentMemory;

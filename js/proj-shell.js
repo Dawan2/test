@@ -133,7 +133,7 @@
       try {
         const out = await API.chatJSON({
           model: (Store.state.settings || {}).defLLM || API.getConfig().model,
-          system: '你是短剧发行运营专家,精通平台投稿与投流文案。' + (window.KB ? KB.WR_HOOKS + KB.WR_PAYOFF : ''),
+          system: '你是短剧发行运营专家,精通平台投稿与投流文案。' + (window.KB ? KB.pick('钩子六型', '付费卡点') : ''),
           messages: [{ role: 'user', content: `为以下短剧写发行文案包,返回严格 JSON {"logline":"一句话卖点(≤25字,带钩子)","introLong":"长简介(≤200字,平台详情页风格)","introShort":"短简介(≤40字)","topics":"话题标签(3-5个,#开头空格分隔)","announce":"定档官宣文案(≤80字)","promo":"投流文案3条,每条一行,不同角度(悬念/爽点/情感)"}。剧名:${p.name};风格:${p.style};卖点:${p.shell.selling || '(无)'};题材:${(p.genres || []).join('/') || '未设'};剧情节选:${(p.script || p.episodes.map(e2 => e2.content || '').join('\n')).slice(0, 1500)}` }],
           temperature: 0.7, max_tokens: 1200,
           billingAction: 'llm.agent', operationId: tk.id,
