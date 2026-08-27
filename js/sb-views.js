@@ -1106,7 +1106,7 @@
           try {
             U.toast('AI 改写提示词中…', 'info');
             const out = await API.chatJSON({
-              system: '你是短剧分镜改图专家。按用户指令改写文生图提示词:保留原提示词中与指令无关的画面要素与风格约定,只落实指令要求的变更;输出中文提示词,不超过120字。',
+              system: Prompts.get('gen.editSystem'), // 注册表人设(js/prompts.js 单源,浏览器隐式读全局默认值页的覆盖表)
               messages: [{ role: 'user', content: `镜头剧情:${s.plot || '(无)'}\n场景:${s.scene || '(无)'}\n出场:${(s.characters || []).join('、') || '(无)'}\n项目风格:${p.style || ''}\n当前提示词:${s.prompt || '(空,请据剧情与指令撰写)'}\n\n修改指令:${inst}\n\n返回 {"prompt":"改写后的完整提示词"}` }],
               temperature: 0.7, max_tokens: 500, billingAction: 'llm.optimize',
             });

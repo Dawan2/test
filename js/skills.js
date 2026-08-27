@@ -884,7 +884,7 @@
       kinds: ['infra'],
       prompts: ['split.system', 'extract.system', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem',
         'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem',
-        'narration.system', 'reading.system', 'concept.system', 'light.system'],
+        'narration.system', 'reading.system', 'concept.system', 'light.system', 'gen.editSystem'],
       cmds: ['episode.understanding', 'episode.generateStoryboard', 'episode.smartReview'], gaps: ['G-01'],
       note: 'G-01 已落地:服务端 /api/wf/* 各端点经唯一装配口 wfPersonaNote 注入生效人设(板块雇佣 > 全局雇佣),'
         + '浏览器同装配口;infra 面的 pending 已按实况清空(gaps() 只投影 gaps 字段、不看 pending,清账动不到投影),'
@@ -903,6 +903,8 @@
         + '剧本模块四步(旁白解说体改写 narration.system/剧本围读 reading.system/构思导演阐述 concept.system/'
         + '全剧光影总控 light.system——四步角色互不相同,四条独立键)同形收编,取值口都在 js/episodes.js 经 Prompts.get,'
         + '这四条与多轮那三条同口径:只有浏览器一个消费点,收编解决的是可覆盖不是可 headless。'
+        + '镜头「按指令改」那步的人设同形收编为 gen.editSystem(取值口在 js/sb-views.js 经 Prompts.get),'
+        + '与同层四策略优化的 gen.promptSystem 有意不合并——那条经装配口还要接 KB 抽卡块,复用即改变缺省。'
         + '仍欠:四处的 ops 协议/字段面/命令白名单/返回 JSON 约定仍由各自装配口拼、不开放覆盖'
         + '(那半是 ops 解析契约,用户改坏即整轮无 ops);'
         + '多轮那三份没有 Node 第二消费点,两端只落在取值口(同一注册表键 + Prompts.get 读覆盖),不是两个消费点',
