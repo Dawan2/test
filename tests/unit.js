@@ -1216,6 +1216,8 @@ function loadCommands() {
   sb.Understanding = { regen: async () => { sb.__called.push('undRegen'); return sb.__undOk !== false; } };
   sb.Review = { reviewShot: async () => ({ score: 8 }) };
   loadFile(sb, 'domain.js');
+  loadFile(sb, 'knowledge.js'); // skill 索引的加载期依赖(与 index.html 同顺序:domain → knowledge → skills)
+  loadFile(sb, 'skills.js');    // 就绪检查附带的主体面校验项(result.checks)
   loadFile(sb, 'cmd-registry.js'); // 命令元数据单源(与 index.html 同顺序:commands.js 之前)
   loadFile(sb, 'commands.js');
   return sb;
@@ -1248,6 +1250,26 @@ const commandsTests = [
     cmdCtx(sb);
     r = await sb.Commands.execute('episode.preflight', { pid: 'p1', epid: 'ep1' });
     assertEq(r.ok, true); assertEq(r.status, 'ready');
+  } },
+  { name: 'preflight:附带主体面校验项结论(pass/level/hits),只报不拦不进 blockers', fn: async () => {
+    const sb = loadCommands();
+    /* 镜1 引用主体库不存在的名字,镜2 引用齐备(夹具主体「主角」带权威图) */
+    const { ep } = cmdCtx(sb, { shots: [makeShot(0, { confirm: true, characters: ['路人甲'] }), makeShot(1, { confirm: true, characters: ['主角'] })] });
+    const r = await sb.Commands.execute('episode.preflight', { pid: 'p1', epid: 'ep1' });
+    const chk = (r.result.checks || []).find(x => x.skill === 'subjects.refIntegrity');
+    assert(chk, '就绪检查结果应附带分镜引用主体完备性校验项');
+    assertEq(chk.pass, false); assertEq(chk.level, 'fail', '引用不存在的主体应判 fail');
+    assertEq(chk.hits.length, 1, '仅镜1 应命中');
+    assertEq(chk.hits[0].code, 'unknown-subject');
+    assertEq(chk.hits[0].order, 1, 'hit 应带镜头号');
+    assertEq(chk.hits[0].name, '路人甲');
+    assertEq(r.ok, true, '校验结论只报不拦,不改就绪判定');
+    assert(!(r.result.blockers || []).some(b => /主体|引用/.test(b.label)), '校验结论不得混进 Domain 阻塞项');
+    // 引用补齐(改名回填到主体库)后同一集校验全通过
+    ep.shots[0].characters = ['主角'];
+    const r2 = await sb.Commands.execute('episode.preflight', { pid: 'p1', epid: 'ep1' });
+    const chk2 = (r2.result.checks || []).find(x => x.skill === 'subjects.refIntegrity');
+    assertEq(chk2.pass, true); assertEq(chk2.level, 'info'); assertEq(chk2.hits.length, 0);
   } },
   { name: 'generateVideos:全未确认 blocked unconfirmed+skipped 清单(不发起生成)', fn: async () => {
     const sb = loadCommands();
@@ -2960,7 +2982,9 @@ const contractTests = [
     assertEq(Skills.block('shots', { ids: ['shots.shotLanguage'] }), KB.DR_SHOT + KB.DR_AXIS, '分镜注入块应逐字节等于 KB 条目拼接');
     assertEq(Skills.block('review'), KB.reviewBlock(), '审片注入块应逐字节等于 KB.reviewBlock()');
     const src = fs.readFileSync(path.join(ROOT, 'js', 'skills.js'), 'utf8');
-    const body = src.slice(src.indexOf('function (KB) {')); // 只查 factory 体(UMD 头与文件头注释不计)
+    const iBody = src.indexOf('function (KB, Domain) {'); // 加载期依赖只有 KB 与 Domain 两件双端纯模块
+    assert(iBody > 0, 'skills.js factory 签名应为 (KB, Domain)');
+    const body = src.slice(iBody); // 只查 factory 体(UMD 头与文件头注释不计)
     ['window', 'Store', 'document', 'location', 'fetch'].forEach(w => assert(!body.includes(w), 'skills.js 模块体不得出现环境句柄:' + w));
     // 编排型步骤只引用已注册命令(playbook 不内联新命令语义)
     const names = require('../js/cmd-registry.js').names();
@@ -3010,9 +3034,15 @@ const contractTests = [
       if (s.pending.includes('orchestrate')) assertEq(s.steps.length, 0, s.id + ' 编排面未落地不得登记步骤');
       if (s.pending.includes('orchestrate')) assertEq(Skills.playbook(s.id), null, s.id + ' 编排面未落地不应给 playbook');
     });
-    // CHECKS 尚为空表 → 任一步的 check() 都是空数组(不产出未实现的校验结论)
-    assertEq(Object.keys(Skills.CHECKS).length, 0, '本轮尚无校验项实现,CHECKS 应为空表');
-    Skills.stages().forEach(st => assertEq(Skills.check(st, {}).length, 0, st + ' 步不应产出未实现的校验结论'));
+    // CHECKS 与条目登记双向对齐:登记的校验项必有实现,实现也必被某条目引用(不留孤儿实现);
+    // 每步 check() 的结论数 = 该步已落地校验项数(pending 的面既不登记也不产出结论)
+    const declared = [].concat(...list.map(s => (s.pending.includes('check') ? [] : s.checks)));
+    Object.keys(Skills.CHECKS).forEach(id => assert(declared.includes(id), '校验项实现未被任何条目引用(孤儿实现):' + id));
+    declared.forEach(id => assert(typeof Skills.CHECKS[id] === 'function', '条目登记的校验项无实现:' + id));
+    Skills.stages().forEach(st => {
+      const n = Skills.list(st).reduce((m, s) => m + (s.pending.includes('check') ? 0 : s.checks.length), 0);
+      assertEq(Skills.check(st, {}).length, n, st + ' 步结论数应等于该步已落地校验项数');
+    });
     // 注入面未落地(如 tplVideo 零消费)的条目不进拼块
     const KB = require('../js/knowledge.js');
     assertEq(Skills.block('gen'), '', '生成步注入面待 G-05 定性,现不产出拼块');
@@ -3021,8 +3051,10 @@ const contractTests = [
   { name: 'skill 索引加载点成对:index.html(knowledge 之后 wf-core 之前)+ server/cli/mcp require', fn() {
     const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
     const iKB = html.indexOf('js/knowledge.js'), iSk = html.indexOf('js/skills.js'), iWf = html.indexOf('js/wf-core.js');
+    const iDom = html.indexOf('js/domain.js');
     assert(iSk > 0, 'index.html 应挂载 js/skills.js');
     assert(iKB < iSk && iSk < iWf, 'skills.js 须在 knowledge.js 之后、wf-core.js 之前(依赖 KB,且供 wf-core 取块)');
+    assert(iDom > 0 && iDom < iSk, 'skills.js 须在 domain.js 之后(校验型条目的领域判定现取 Domain)');
     ['server.js', 'cli.js', 'mcp.js'].forEach(f => {
       const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
       assert(src.includes("require('./js/skills.js')"), f + ' 应 require skill 索引(四端同一份注册表)');
@@ -3179,7 +3211,94 @@ const tasksTests = [
   } },
 ];
 
-const SUITES = { 'agent-ops': agentOpsTests, experts: expertsTests, produce: produceTests, commands: commandsTests, store: storeTests, 'sb-gen': sbGenTests, pipeline: pipelineTests, 'sb-views': sbViewsTests, 'sb-io': sbIoTests, understanding: understandingTests, billing: billingTests, domain: domainTests, bus: busTests, issues: issuesTests, plans: plansTests, continuity: continuityTests, release: releaseTests, contract: contractTests, tasks: tasksTests };
+/* ================= 套件 19:skills.js 校验型扩展点(W4 校验闸门) =================
+ * 每个校验项:干净夹具全 pass、脏夹具命中且 level 分级正确、hits 定位到镜与名字;
+ * 纯本地零 LLM 零计费,判定口径一律现取 Domain(不在 skill 层写第二份主体解析/取图)。 */
+const Skills = require('../js/skills.js');
+const DomainMod = require('../js/domain.js');
+/* 主体库夹具:主角(带权威图 + 战损形态自带图 + 曾用名)/ 客厅(仅 data: 内联图,不喂模型)/ 玉佩(缺图) */
+function refP(over) {
+  return Object.assign({
+    id: 'p1',
+    subjects: [
+      { id: 'sj1', name: '林小满', kind: 'character', image: '/uploads/a/sj1.png', formerNames: ['小满'], forms: [{ id: 'fm1', name: '战损', image: '/uploads/a/sj1-f1.png' }] },
+      { id: 'sj2', name: '客厅', kind: 'scene', image: 'data:image/png;base64,AAA' },
+      { id: 'sj3', name: '玉佩', kind: 'prop', image: '' },
+    ],
+  }, over || {});
+}
+const refShot = (order, over) => Object.assign({ id: 'sh' + order, order, characters: [], scene: '', props: [] }, over || {});
+const refIntegrity = (p, ep) => Skills.check('subjects', { p, ep }).find(x => x.skill === 'subjects.refIntegrity');
+
+const skillsTests = [
+  { name: 'refIntegrity:干净夹具全 pass(引用齐备且有真实参考图 → info 无命中)', fn() {
+    const p = refP();
+    const ep = { id: 'ep1', shots: [
+      refShot(0, { characters: ['林小满'], scene: '' }),
+      refShot(1, { characters: ['林小满-战损'] }), // 多形态全称
+      refShot(2, { characters: ['小满'] }),        // 曾用名(改名后旧引用仍解析)
+    ] };
+    const r = refIntegrity(p, ep);
+    assertEq(r.pass, true); assertEq(r.level, 'info'); assertEq(r.hits.length, 0, '齐备引用不应产出命中');
+  } },
+  { name: 'refIntegrity:引用主体库不存在的名字 → fail,hits 带镜号与名字', fn() {
+    const p = refP();
+    const ep = { id: 'ep1', shots: [refShot(0, { characters: ['林小满'] }), refShot(1, { characters: ['林小满', '路人甲'], props: ['无名剑'] })] };
+    const r = refIntegrity(p, ep);
+    assertEq(r.pass, false); assertEq(r.level, 'fail', '解析不到的引用是确定性错误');
+    assertEq(r.hits.length, 2, '仅镜2 的两个未知名字命中');
+    assertEq(r.hits.map(h => h.code).join(','), 'unknown-subject,unknown-subject');
+    assertEq(r.hits.map(h => h.order).join(','), '2,2', 'hits 应定位到镜号');
+    assertEq(r.hits.map(h => h.name).join(','), '路人甲,无名剑');
+    assertEq(r.hits[0].shotId, 'sh1', 'hits 应带镜头 id 供调用方跳转');
+  } },
+  { name: 'refIntegrity:缺真实参考图/零主体引用 → warn(不升 fail)', fn() {
+    const p = refP();
+    const ep = { id: 'ep1', shots: [
+      refShot(0, { characters: ['林小满'], scene: '客厅', props: ['玉佩'] }), // 客厅只有 data: 内联图,玉佩缺图
+      refShot(1, {}), // 零主体引用
+    ] };
+    const r = refIntegrity(p, ep);
+    assertEq(r.pass, false); assertEq(r.level, 'warn', '缺图与零引用是提醒级,不与未知引用同级');
+    assertEq(r.hits.map(h => h.code + '@' + h.order).join(','), 'no-ref-image@1,no-ref-image@1,no-subject-ref@2');
+    assertEq(r.hits.filter(h => h.code === 'no-ref-image').map(h => h.name).join(','), '客厅,玉佩');
+  } },
+  { name: 'refIntegrity:缺图判定与真实生成请求同一取图口径(Domain.shotRefImages 对齐)', fn() {
+    const p = refP();
+    const s = refShot(0, { characters: ['林小满-战损'], scene: '客厅', props: ['玉佩'] });
+    const r = Skills.check('subjects', { p, s }).find(x => x.skill === 'subjects.refIntegrity');
+    const fed = DomainMod.shotRefImages(p, s).refImages.map(x => x.name); // 真实喂模型的参考图名单
+    assertEq(fed.join(','), '林小满-战损', '只有形态图是可喂模型的真实图');
+    r.hits.forEach(h => assert(!fed.includes(h.name), '进了参考图组的主体不应被判缺图:' + h.name));
+    assertEq(r.hits.map(h => h.name).join(','), '客厅,玉佩', '未进参考图组的解析名应逐个命中');
+    assertEq(Skills.check('subjects', { p, s: refShot(1, { characters: ['林小满'] }) })[0].hits.length, 0, '镜级入口只判传入的那一镜');
+  } },
+  { name: 'refIntegrity:纯函数(不改入参、同输入同结论)且无判定输入时不产出结论', fn() {
+    const p = refP();
+    const ep = { id: 'ep1', shots: [refShot(0, { characters: ['路人甲'] })] };
+    const snap = JSON.stringify([p, ep]);
+    const a = refIntegrity(p, ep), b = refIntegrity(p, ep);
+    assertEq(JSON.stringify(a), JSON.stringify(b), '同输入应给同结论(无隐藏状态)');
+    assertEq(JSON.stringify([p, ep]), snap, '校验项不得改动领域对象');
+    const empty = refIntegrity(p, { id: 'ep2', shots: [] });
+    assertEq(empty.pass, true); assertEq(empty.level, 'info'); assertEq(empty.hits.length, 0, '无镜头即无判定输入,不产出命中');
+    assertEq(refIntegrity(null, ep).level, 'info', '无项目上下文不产出结论(不冒充通过判定)');
+  } },
+  { name: 'refIntegrity:双端消费点同口径——就绪检查附 result.checks,不进 blockers/不计费', fn() {
+    const cmdSrc = fs.readFileSync(path.join(ROOT, 'js', 'commands.js'), 'utf8');
+    const cliSrc = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    [['js/commands.js', cmdSrc], ['cli.js', cliSrc]].forEach(([f, src]) => {
+      assert(/Skills\.check\('subjects'/.test(src), f + ' 就绪检查应跑主体面校验项');
+      assert(/result: Object\.assign\(\{\}, st, \{ checks \}\)/.test(src), f + ' 校验结论应附在 result.checks(不并入 Domain 推导结果)');
+    });
+    // 就绪检查是 read 类零计费命令(校验项不新增计费动作与标签)
+    const meta = require('../js/cmd-registry.js').byName['episode.preflight'];
+    assertEq(meta.risk, 'read', '就绪检查应仍是 read 类');
+    assert(!/meter: true/.test(cmdSrc.slice(cmdSrc.indexOf("reg('episode.preflight'"), cmdSrc.indexOf("reg('episode.generateStoryboard'"))), '就绪检查不得开计费');
+  } },
+];
+
+const SUITES = { 'agent-ops': agentOpsTests, experts: expertsTests, produce: produceTests, commands: commandsTests, store: storeTests, 'sb-gen': sbGenTests, pipeline: pipelineTests, 'sb-views': sbViewsTests, 'sb-io': sbIoTests, understanding: understandingTests, billing: billingTests, domain: domainTests, bus: busTests, issues: issuesTests, plans: plansTests, continuity: continuityTests, release: releaseTests, contract: contractTests, skills: skillsTests, tasks: tasksTests };
 (async () => {
   const filter = process.argv[2];
   let passed = 0, failed = 0;
