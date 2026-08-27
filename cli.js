@@ -1118,6 +1118,7 @@ async function reviseLowShots(args, f, low) {
   const { state } = await stateGet(f);
   const p = (state.projects || []).find(x => x.id === args.pid);
   const ep0 = p && (p.episodes || []).find(e => e.id === args.epid);
+  const ov = (state.settings || {}).promptOverrides; // Node 侧无 window,覆盖表须显式传入
   for (const x of low) {
     try {
       const s = ep0 && (ep0.shots || []).find(sh => sh.id === x.shotId);
@@ -1126,7 +1127,7 @@ async function reviseLowShots(args, f, low) {
       if (x.fixes) {
         try {
           const j = await POST('/api/llm/chat', {
-            messages: [{ role: 'system', content: '你是文生视频提示词专家。' }, { role: 'user', content: WfCore.buildOptimizeUser(Domain.styleOf(p), s.prompt, x.fixes) }],
+            messages: [{ role: 'system', content: WfCore.optimizeSystem(ov) }, { role: 'user', content: WfCore.buildOptimizeUser(Domain.styleOf(p), s.prompt, x.fixes) }],
             jsonMode: true, temperature: 0.6, billingAction: 'llm.optimize', operationId: crypto.randomUUID(),
           }, f, { timeoutMs: 180000, fullBody: true });
           if (!j.parsed || !j.parsed.prompt) throw new CliError('LLM 返回为空', 5);
