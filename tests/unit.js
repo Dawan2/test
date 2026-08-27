@@ -3871,6 +3871,34 @@ function digestProject() {
 function personaSubject() {
   return { name: '林晚晴', prompt: '', persona: { 五官: '剑眉星目', 发型: '银色长直发及腰', 身材: '', 服饰: '墨色风衣', 性格: '外冷内热', 特技: '', 弱点: '', 语气: '' } };
 }
+/* 节拍板拆解步(beatboard.js 的 aiFillBeats)的 system 表达式:按源码原文取出,
+ * 在装好注册表与 KB 的沙箱里求值——被求值的就是生产源码那一行,取值口改坏即红。
+ * (aiFillBeats 是模块内私有函数,只经 BeatBoard.render 的按钮绑定触发,DOM 重交互归 e2e) */
+function beatSystemOf(ov) {
+  const src = fs.readFileSync(path.join(ROOT, 'js', 'beatboard.js'), 'utf8');
+  const m = src.match(/\n\s*system: (.+?),?\s*\/\/[^\n]*\n\s*user: `把本集剧本拆解到 5 段式节拍板/);
+  assert(m, 'js/beatboard.js 应有节拍拆解步的 system 字段(字段位置变了要同步本夹具)');
+  const sb = makeSandbox();
+  installCommon(sb);
+  if (ov) sb.Store.state.settings.promptOverrides = ov;
+  loadFile(sb, 'prompts.js');
+  loadFile(sb, 'knowledge.js');
+  return vm.runInContext('(' + m[1] + ')', sb);
+}
+/* 全仓「系统人设位上的内联人设」持有者名单:文件 → 处数(按路径升序)。
+ * 判据是 system: / (role=system 的) content: / 赋给模板变量 之后紧跟的 你是… 字面。
+ * 有意不在此口径内:js/prompts.js 的注册表 def、js/experts-data.js 的专家人设数据(走生效人设通道)、
+ * js/api.js 调用方不给 system 时的层内兜底、js/wf-core.js 单镜审片的 user 半。 */
+function inlinePersonaHolders() {
+  const files = fs.readdirSync(path.join(ROOT, 'js')).filter(f => f.endsWith('.js')).map(f => 'js/' + f)
+    .concat(['server.js', 'cli.js', 'mcp.js', 'billing.js']).sort();
+  const out = [];
+  files.forEach(f => {
+    const n = (fs.readFileSync(path.join(ROOT, f), 'utf8').match(/(?:system\s*:|content\s*:|=)\s*['`]你是/g) || []).length;
+    if (n) out.push(f + ':' + n);
+  });
+  return out;
+}
 /* 全脏项目夹具:过期镜(done+旧指纹)/失败镜/未确认镜各一 + 低分审片 + 主体缺图 → G1-G6/G9 同时触发 */
 function contractDirtyP() {
   const mk = (id, order, over) => Object.assign({
@@ -5256,6 +5284,59 @@ action 二选一:
     // 这条链路没有服务端对端:收编解决的是可覆盖,不是可 headless(别处冒出第二个消费点即红)
     assert(!fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8').includes('把该集剧本拆成结构化事件序列'),
       'server.js 不应出现事件图谱拆解步(该步只在浏览器分集页链路上)');
+  } },
+  { name: '节拍板拆解人设:独立键 beat.system,缺省逐字节等于内联原字面、覆盖只换人设句', fn() {
+    const Prompts = require('../js/prompts.js');
+    const KB = require('../js/knowledge.js');
+    const Skills = require('../js/skills.js');
+    const PERSONA = '你是短剧节拍拆解专家,精通 5 段式黄金结构(开篇钩子→矛盾建立→打压升级→反转蓄力→断集留客)。';
+    // 缺省不变:收编前写死在 system 字段上的人设句,收编后仍逐字节相同
+    assertEq(Prompts.get('beat.system'), PERSONA, '缺省人设句应与收编前的内联字面逐字节相同');
+    assertEq(Prompts.get('beat.system', { 'beat.system': '节拍拆解员。' }), '节拍拆解员。', '覆盖 beat.system 时取值跟随');
+    const item = Prompts.list().find(x => x.key === 'beat.system');
+    assert(item && !item.vars.length && item.name.includes('节拍板拆解'), '注册表应登记节拍板拆解人设条目(无变量,可在全局默认值页在线改写)');
+    // 独立键而不是复用既有键:这句人设是另一个角色(节拍拆解),不是任何既有条目的第二份拷贝
+    assertEq(Prompts.list().filter(x => x.def === PERSONA).length, 1, '该人设句在注册表里应恰好一条(同 def 不许开两个键)');
+    /* 注册表里唯一一组同 def 的键是音色推荐那两条(W73 有意留成两键:键位是持久化面,
+     * 且批量那步要顾角色间的音色区分度)。除它以外再冒出第二份拷贝即红,把那两条合成一键也红。 */
+    const byDef = {};
+    Prompts.list().forEach(x => { (byDef[x.def] = byDef[x.def] || []).push(x.key); });
+    assertEq(Object.values(byDef).filter(v => v.length > 1).map(v => v.join('+')).join(','),
+      'voice.recommendSystem+voice.recommendBatchSystem', '注册表里同 def 的键只许是音色推荐那一组(别处再抄一份即红)');
+    // 取用点缺省逐字节:人设句之后仍按键接 KB 方法论段(六阶段结构 → 打脸四步,次序与收编前相同)
+    const def = beatSystemOf();
+    assertEq(def, PERSONA + KB.pick('六阶段结构', '打脸四步'), '取用点缺省 system 应与收编前逐字节相同');
+    // 覆盖只换人设句:方法论段逐字节不动;覆盖别的键不串台
+    const OV = '你是节拍拆解员(覆盖生效)。';
+    assertEq(beatSystemOf({ 'beat.system': OV }), OV + def.slice(PERSONA.length), '覆盖只换人设句,KB 方法论段逐字节不变');
+    assertEq(beatSystemOf({ 'und.system': '你是导演。' }), def, '覆盖别的键不应串到本步');
+    // 契约半不开放覆盖:5 段式返回 JSON 约定与宫格数不做成注册表变量(改坏即整步拆不出节拍板)
+    assertEq(Prompts.list().filter(x => /"beats"|"frames"|"transition"|宫格/.test(x.def)).length, 0,
+      '5 段式返回 JSON 约定应仍留在该步 user 半(注册表里不该出现)');
+    assert(Skills.byId('eps.structureStage').prompts.includes('beat.system'), 'SK-14 应登记 beat.system(该注入点的人设句归它的登记面)');
+  } },
+  { name: '节拍板拆解人设(源级):js/beatboard.js 零内联;全仓内联人设持有者名单', fn() {
+    const bb = fs.readFileSync(path.join(ROOT, 'js', 'beatboard.js'), 'utf8');
+    assert(bb.includes("Prompts.get('beat.system')"), '节拍板拆解步应经注册表取人设(浏览器隐式读 Store 覆盖表)');
+    assertEq((bb.match(/你是短剧节拍拆解专家/g) || []).length, 0, 'js/beatboard.js 不应再有该人设句的内联字面(注册表 def 为唯一来源)');
+    // 契约半仍由源码拼:user 半的 5 段式 JSON 约定与宫格数原样保留,不随人设句一起进注册表
+    assert(bb.includes('返回严格 JSON') && bb.includes('各段 frames 数量固定为'), '该步 user 半的 5 段式 JSON 契约应仍写在源码里');
+    // 这一处没有服务端对端:三个 Node 端都不该长出第二份(收编只解决"可覆盖",没解决"可 headless")
+    ['server.js', 'cli.js', 'mcp.js'].forEach(f => {
+      const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+      assert(!src.includes('5 段式节拍板') && !src.includes('你是短剧节拍拆解专家'), f + ' 不应出现节拍板拆解步(该步只在浏览器)');
+    });
+    /* 全仓内联人设持有者名单:收编一处就要在这张名单上少一处,任何文件新长出一处即多一处。
+     * G-13 的余量到此有了唯一判据——不再只是散文里的一个数字(口径与例外见 inlinePersonaHolders 注释) */
+    const holders = inlinePersonaHolders();
+    assertEq(holders.join(' '),
+      'js/agent-global.js:1 js/agent-ops.js:2 js/editors.js:1 js/experts.js:2 js/gsettings.js:1 '
+      + 'js/plans.js:1 js/proj-planner.js:2 js/proj-shell.js:1 js/proj-upload.js:1 '
+      + 'js/role-editor.js:1 js/sb-views.js:1',
+      '全仓内联人设持有者名单(文件:处数)');
+    assert(!holders.some(x => x.startsWith('js/beatboard.js:')), 'js/beatboard.js 应已退出持有者名单(本处已收编)');
+    assertEq(holders.length, 11, '持有者文件数');
+    assertEq(holders.reduce((n, x) => n + Number(x.split(':')[1]), 0), 14, '全仓内联人设处数');
   } },
   { name: '审片升为主线一等步骤(G-03):板块 Agent 有审片席;plans/工作区/CLI 都映射 episode.smartReview', fn() {
     const D = require(path.join(ROOT, 'js/domain.js'));
