@@ -8,15 +8,17 @@
  * 未实现的面一律不挂假出口:pending 含 check 的条目 checks 必须为空,pending 含 orchestrate 的 steps 必须为空,
  * pending 含 inject 的条目不进 block() 拼块。
  * 约束(与 domain.js/wf-core.js/prompts.js 同纪律):模块内不碰浏览器环境句柄与前端状态桶;
- * 环境差异经 ctx 显式注入;引用键的存在性由 Skills.validate(deps) 自检——除 KB 外的注册表在浏览器
- * 加载顺序里晚于本文件,故一律由调用方注入,本模块不做加载期绑定。
- * 加载点成对:index.html 在 knowledge.js 之后、wf-core.js 之前;server.js/cli.js/mcp.js 同处 require。
+ * 环境差异经 ctx 显式注入;引用键的存在性由 Skills.validate(deps) 自检——除 KB 与 Domain 外的注册表
+ * 在浏览器加载顺序里晚于本文件,故一律由调用方注入,本模块不做加载期绑定。
+ * 加载期依赖两件双端纯模块:KB(条目正文)与 Domain(校验型条目的领域判定,如主体按名查找),
+ * 判定口径一律现取 Domain,本层不写第二份。
+ * 加载点成对:index.html 在 domain.js/knowledge.js 之后、wf-core.js 之前;server.js/cli.js/mcp.js 同处 require。
  */
 (function (root, factory) {
   const isNode = typeof module === 'object' && module.exports;
-  const S = factory(isNode ? require('./knowledge.js') : root.KB);
+  const S = factory(isNode ? require('./knowledge.js') : root.KB, isNode ? require('./domain.js') : root.Domain);
   if (isNode) module.exports = S; else root.Skills = S;
-})(typeof self !== 'undefined' ? self : globalThis, function (KB) {
+})(typeof self !== 'undefined' ? self : globalThis, function (KB, Domain) {
   'use strict';
 
   /* 主线七步:key 与 Domain.workflow 主线步骤键同词表(审片尚未进 workflow 步骤集合,wfStep=false) */
@@ -34,8 +36,39 @@
   const WAVES = ['W2', 'W3', 'W4']; // 落地波次:W2 单源打底 / W3 双端贯通 / W4 校验闸门
 
   /* 校验型扩展点:id → (obj, ctx) => {pass, level:'info'|'warn'|'fail', hits:[]};纯本地、零 LLM、零计费。
-   * 未注册的校验项不得被 skill 引用(validate 会报),因此本表为空时不存在可跑的 check 面。 */
+   * obj 是领域对象包 {p, ep, s}(镜级校验项收 s,集级收 ep),ctx 收调用侧差异(如 online);
+   * hits 逐条记命中位置与原因码,供调用方如实展示,不在本层拼文案。
+   * 结论只报不拦:任何校验项都不改既有阻塞项(Domain.episodeState.blockers)、发布门口径与计费动作。
+   * 未注册的校验项不得被 skill 引用(validate 会报),尚无实现的校验面一律留在条目 pending 里。 */
   const CHECKS = {};
+
+  /* SK-12 分镜引用主体完备性(S-03 的完备性半):逐镜看 characters/scene/props 的引用名能否落到主体库,
+   * 落到的主体(含形态)有没有可喂模型的真实参考图。主体按名查找与取图优先级一律走 Domain
+   * (findSubject 含多形态全称与曾用名兜底;subjectRefImage 与真实生成请求同一取图口径),本层不写第二份。
+   *   unknown-subject 引用名在主体库解析不到 → fail(该名字无参考可注,必是错字、漏提取或改名未回填)
+   *   no-ref-image    解析到主体但无真实参考图 → warn(生成时该主体不进参考图组)
+   *   no-subject-ref  该镜一个主体都不引用 → warn(无主体锁定,易换脸)
+   * 同一名字在多镜命中即多条 hit(按镜计位),调用方自行聚合展示。 */
+  CHECKS['subjects.shotRefIntegrity'] = function (obj) {
+    const o = obj || {};
+    const p = o.p;
+    const shots = o.s ? [o.s] : ((o.ep && o.ep.shots) || []);
+    if (!p || !shots.length) return { pass: true, level: 'info', hits: [] };
+    const hits = [];
+    shots.forEach(s => {
+      const order = (+s.order || 0) + 1;
+      const names = [].concat(s.characters || [], s.scene ? [s.scene] : [], s.props || [])
+        .map(n => String(n === null || n === undefined ? '' : n).trim()).filter(Boolean);
+      if (!names.length) { hits.push({ code: 'no-subject-ref', shotId: s.id, order, name: '' }); return; }
+      names.forEach(name => {
+        const r = Domain.findSubject(p, name);
+        if (!r) { hits.push({ code: 'unknown-subject', shotId: s.id, order, name }); return; }
+        if (!Domain.subjectRefImage(r)) hits.push({ code: 'no-ref-image', shotId: s.id, order, name: Domain.subjectFullName(r) });
+      });
+    });
+    const level = hits.some(h => h.code === 'unknown-subject') ? 'fail' : hits.length ? 'warn' : 'info';
+    return { pass: !hits.length, level, hits };
+  };
 
   /* 短名单 30 条内部能力(SK-01…SK-30):id 取 `stage.name` 形态,与 SK 编号一一对应。
    * covers 写该能力实际作用到的主线步骤(缺省=stage 本身);gaps 记该条已知贯通缺口编号(G-xx 图谱既有,S-xx 本轮新登记)。 */
@@ -112,9 +145,10 @@
     },
     {
       id: 'subjects.refIntegrity', sk: 'SK-12', name: '分镜引用主体完备性校验', stage: 'subjects',
-      covers: ['subjects', 'shots'], wave: 'W4', kinds: ['check'], pending: ['check'],
-      kb: ['GC_REFS'], cmds: ['episode.preflight'], gaps: ['S-03'],
-      note: '主体按名查找(含多形态全称)复用 Domain,不在本层再写一份',
+      covers: ['subjects', 'shots'], wave: 'W4', kinds: ['check'],
+      kb: ['GC_REFS'], checks: ['subjects.shotRefIntegrity'], cmds: ['episode.preflight'], gaps: ['S-03'],
+      note: '主体按名查找(含多形态全称)与取图口径复用 Domain,不在本层再写一份;'
+        + '校验项经就绪检查(episode.preflight)双端消费,结论只报不拦;S-03 的一致性半仍在 SK-13',
     },
     {
       id: 'subjects.crossShot', sk: 'SK-13', name: '跨镜头主体一致性校验', stage: 'subjects',
