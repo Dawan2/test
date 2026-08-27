@@ -1595,6 +1595,11 @@ function wfMockOut(kind) {
   if (kind === 'sum') return { summary: 'mock 整集总评', issues: [] };
   if (kind === 'cut') return { natural: { score: 8, comment: 'mock' }, continuity: { score: 8, comment: 'mock' }, framing: { score: 8, comment: 'mock' }, pacing: { score: 8, comment: 'mock' }, overall: 'mock 整集剪辑总评' };
   if (kind === 'agent') return { reply: 'mock 回复:当前状态已同步,建议按工作台状态推进下一步。', thinking: 'mock 思考', ops: [] };
+  if (kind === 'extract') return {
+    characters: [{ name: '林晚晴', aliases: ['晚晴'], description: 'mock 女主', prompt: 'mock 人物提示词', persona: { 五官: 'mock', 性格: 'mock' } }],
+    scenes: [{ name: '宴会厅', description: 'mock 场景', prompt: 'mock 场景提示词' }],
+    items: [{ name: '玉佩', description: 'mock 道具', prompt: 'mock 道具提示词' }],
+  };
   return { reply: 'mock' };
 }
 async function wfLLM(userId, opt) {
@@ -3550,6 +3555,40 @@ const server = http.createServer(async (req, res) => {
         });
       } catch (e) {
         return fail(res, e.httpStatus || 502, e.message || '智能审片失败', e.httpStatus || 502);
+      } finally { rateLimitDone(user.id); }
+    }
+
+    /* 提取主体(项目级工作流):{pid,mode?,types?} → 服务端读项目剧本(无则各集正文)→ LLM 语义提取角色/场景/道具。
+     * 与三条分集工作流同一注入口:主体板块生效专家方法论(wfPersonaNote)+ 协作记忆(WF_BOARD['extract-subjects']);
+     * 计费 llm.extract 服务端定死,失败退费并如实报错。只出候选不写回 state——入库口径归调用方
+     * (浏览器解析向导按用户勾选合并,CLI headless 全量合并),避免同一端点两套入库语义。 */
+    if (pathname === '/api/wf/extract-subjects' && req.method === 'POST') {
+      if (!CONFIG.apiKey && !(process.env.MOCK_LLM === '1' || CONFIG.mockLlm)) return fail(res, 503, '服务端未配置 LLM key,请创建 config.json 并填入 apiKey', 503);
+      if (!rateLimitOk(user.id)) return fail(res, 429, '请求过于频繁,请稍候', 429);
+      try {
+        const b = await readJSONBody(req, 1024 * 1024);
+        const { tree, p } = wfLoadCtx(user.id, String(b.pid || ''), '');
+        if (!p) return fail(res, 404, '项目不存在', 404);
+        const text = String(p.script || '').trim() || (p.episodes || []).map(e => e.content || '').filter(Boolean).join('\n').trim();
+        if (!text) return fail(res, 400, '项目暂无剧本内容,请先上传剧本', 400);
+        const t = b.types && typeof b.types === 'object' ? b.types : {};
+        const types = b.types ? { character: !!t.character, scene: !!t.scene, prop: !!t.prop } : { character: true, scene: true, prop: true };
+        if (!types.character && !types.scene && !types.prop) return fail(res, 400, '至少选择一类主体', 400);
+        const st = (tree && tree.settings) || {};
+        const board = WfCore.WF_BOARD['extract-subjects'];
+        const bu = WfCore.buildExtractUser(text, b.mode === 'fine' ? 'fine' : 'normal', types, {
+          personaNote: wfPersonaNote(tree, p, board),
+          memText: WfCore.memBlock(tree.agentMemory, p.name || '', board),
+        });
+        const r = await wfLLM(user.id, {
+          action: 'llm.extract', reason: '提取主体(' + p.name + ')', opId: sanitizeOpId(b.operationId) || uid('wfex'), step: 'main', wfName: 'extract-subjects',
+          model: st.defLLM || 'qwen-turbo', system: WfCore.EXTRACT_SYSTEM, user: bu.user,
+          temperature: 0.3, max_tokens: 4000, projectId: p.id, mockKind: 'extract',
+        });
+        const found = WfCore.normalizeExtracted(r.parsed);
+        return ok(res, { found, truncated: bu.truncated, model: r.model || 'mock-llm' });
+      } catch (e) {
+        return fail(res, e.httpStatus || 502, e.message || '提取主体失败', e.httpStatus || 502);
       } finally { rateLimitDone(user.id); }
     }
 

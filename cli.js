@@ -1243,19 +1243,17 @@ EXEC['subject.generateImage'] = { needs: ['p'], meter: true, run: async (args, f
   return r;
 } };
 
-/* 提取主体(exec):项目剧本(无则各集正文)→ LLM 语义提取合并入库(同名同类不覆盖,缺提示词/人设的补齐);
- * 提示词/规整 wf-core 单源(与浏览器解析向导同源),计费 llm.extract;headless 无离线回退——LLM 失败如实报错(服务端已退费) */
+/* 提取主体(exec):服务端工作流 /api/wf/extract-subjects 出候选 → 本地合并入库(同名同类不覆盖,缺提示词/人设的补齐);
+ * 走 wf 通道而非 /api/llm/chat:提示词由服务端按主体板块注入生效专家方法论与协作记忆(与浏览器解析向导同源),
+ * 计费 llm.extract 服务端定死;headless 无离线回退——LLM 失败如实报错(服务端已退费) */
 EXEC['project.extractSubjects'] = { needs: ['p'], meter: true, run: async (args, f) => {
   const { p } = await execCtx(args, f);
   const text = String(p.script || '').trim() || (p.episodes || []).map(e => e.content || '').filter(Boolean).join('\n').trim();
-  if (!text) return execBlocked('no-script', '项目暂无剧本内容,请先上传剧本');
-  const b = WfCore.buildExtractUser(text, args.mode === 'fine' ? 'fine' : 'normal', { character: true, scene: true, prop: true });
-  const j = await POST('/api/llm/chat', {
-    messages: [{ role: 'system', content: '你是专业的短剧剧本分析助手。' }, { role: 'user', content: b.user }],
-    jsonMode: true, temperature: 0.3, max_tokens: 4000, billingAction: 'llm.extract', operationId: crypto.randomUUID(),
-  }, f, { timeoutMs: 240000, fullBody: true });
-  if (!j.parsed) throw new CliError('LLM 返回无法解析', 5);
-  const found = WfCore.normalizeExtracted(j.parsed);
+  if (!text) return execBlocked('no-script', '项目暂无剧本内容,请先上传剧本'); // 前置拦截零调用零计费(剧本正文由服务端重读)
+  const b = await POST('/api/wf/extract-subjects', {
+    pid: args.pid, mode: args.mode === 'fine' ? 'fine' : 'normal', operationId: crypto.randomUUID(),
+  }, f, { timeoutMs: 240000 });
+  const found = b.found || {};
   const stat = { added: 0, skipped: 0, total: 0 };
   await withProject(args.pid, f, projLive => {
     projLive.subjects = projLive.subjects || [];
