@@ -57,10 +57,11 @@
 | [w29-integration-log.md](./w29-integration-log.md) | W26 SK-19 稳定词、W27 SK-10 注入半与 W28 SK-22 生成凭据收敛到集成分支的记录:两侧同处各插一块校验实现的解法、长行文档「取一侧 + 按 word-diff 折回对侧」的合并口径、面表首次从五面变六面时两端实现零改动的实测、用例名集合比对证明没删测 | 想知道主干现在是什么状态 |
 | [w30-kb-skill-cover.md](./w30-kb-skill-cover.md) | KB 条目登记面契约收紧:并集断言对索引宿主那一向为什么是盲的、`SK-01.kb` 与 `KB.SECTIONS` 双向逐条对齐 + 不重复登记 + 不得有第二个全库宿主、六条变异实测、`剧本诊断`/`场面调度` 的步条目归属为什么留后续 | 往 `KB.SECTIONS` 加条目,或改索引宿主 SK-01 的 `kb` 前 |
 | [w31-sk16-playbook.md](./w31-sk16-playbook.md) | SK-16 主线前段编排补齐拆集与主体提取(playbook 2 步 → 4 步):步序为什么取 `Domain.workflow` 同源、`cmds` 为什么改由 `steps` 推出、`args` 为什么一律留空(不替调用方预授权 `overwrite`) | 改编排型条目的 `steps`/`playbook` 产出前 |
+| [w34-integration-log.md](./w34-integration-log.md) | W30 KB 登记面契约与 W31 SK-16 前段编排收敛到集成分支的记录:分支自测全绿为什么不等于并入主干全绿(契约覆盖面随基线走)、`cmds` 由 `steps` 推出的零实现改动实测、用例名集合比对证明没删测、README 对账钉的是用例数而非断言数 | 想知道主干现在是什么状态 |
 
 ## 一分钟摘要(周期 2 收敛后)
 
-- 资产不缺,缺索引:知识在 `js/knowledge.js`(18 条目)、提示词在 `js/prompts.js`(7 条)、人设在 `js/experts-data.js`(16 专家)、编排在 `js/cmd-registry.js`,层与层之间的按主线步骤索引由 `js/skills.js`(30 条内部能力)承担。
+- 资产不缺,缺索引:知识在 `js/knowledge.js`(18 条目)、提示词在 `js/prompts.js`(7 条)、人设在 `js/experts-data.js`(16 专家)、编排在 `js/cmd-registry.js`,层与层之间的按主线步骤索引由 `js/skills.js`(30 条内部能力)承担。**KB 条目的登记面已收成契约**:`KB.SECTIONS` 与索引宿主 SK-01 的 `kb` 双向逐条对齐、宿主内不重复登记、不得出现第二个全库宿主,新增条目漏登即红并点名缺哪个键(见 [w30-kb-skill-cover.md](./w30-kb-skill-cover.md))。
 - 主线七步在代码里齐了:`Domain.workflow` 已含"审片"步(G-03),`js/skills.js` 的 `STAGES` 七步全部 `wfStep: true`。
 - 贯通缺口已收口的部分:专家人设(G-01)与协作记忆(G-02 由 agent-flow 覆盖)进 `/api/wf/*`,CLI/MCP 同链路吃到;剧本拆集(G-04)补上机读入口,headless 可从"一份整部剧本"起跑,其 LLM 步也已接入同一注入链(见 [w8-split-episodes-inject.md](./w8-split-episodes-inject.md))。
 - 空挂已清:`settings.tplVideo`(G-05)与 `KB.SECTIONS`(G-15/G-08 的 KB 侧)都有了消费方,并有断言防回退。生成步的注入面亦已出块——`Skills.block('gen')` 逐字节等于提示词改写人设 `WfCore.genPromptSystem` 的方法论段(抽卡公式+抽卡军规),SK-21 的 `pending` 随之清空(见 [w15-gen-block.md](./w15-gen-block.md))。G-06 的**注入半到此闭合**:残留两条也已进主线提示词构造点——「多镜头写法」进拆镜人设 `WfCore.sbSystem`、「主体参考」进主体提取人设 `WfCore.extractSystem`,两处缺省提示词随之变长,拼块逐字节对账与兼容影响见 [w19-g06-inject.md](./w19-g06-inject.md)。**G-06 的校验半随后也闭上**:主体参考纪律(SK-11 `subjects.genRefDiscipline`:参考人物超上限 / 有图被参考图组上限挤出 / 三视图当视频参考)与多镜头写法(SK-13 `subjects.multiShotPrompt`:图生视频缺一致性声明 / 首尾帧写大幅动作 / 一镜切太碎)以生成前 warn 落地,判定输入是 `Domain.buildVideoRequest` 那份真实请求,经就绪检查双端消费、只报不拦,`Skills.gaps()['G-06']` 随之归空(见 [w22-g06-check.md](./w22-g06-check.md))。该人设键的取值口已收编到底:审片一键优化与 CLI 修订重抽改经 `WfCore.optimizeSystem` 只取人设句(缺省逐字节不变),覆盖两端一并跟随(见 [w18-gen-prompt-unify.md](./w18-gen-prompt-unify.md))。
