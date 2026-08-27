@@ -235,6 +235,7 @@ const normShot = (raw, i, baseOrder) => ({
   video: raw.video && typeof raw.video === 'object' ? raw.video : { status: 'none' },
   audio: raw.audio || false,
   audioUrl: raw.audioUrl || '', // 逐镜 TTS 配音轨(透传保留,合成时混入成片音轨)
+  audioMeta: (raw.audioMeta && typeof raw.audioMeta === 'object') ? raw.audioMeta : null, // 配音渲染凭据(音色/参数/上游音色 id;旧数据为 null)
   history: Array.isArray(raw.history) ? raw.history : [],
   transition: raw.transition || null,
   reviews: Array.isArray(raw.reviews) ? raw.reviews : [],
@@ -321,7 +322,7 @@ async function composeItems(ep, flags) {
     const s = seq[idx];
     const it = { text: subtitle ? String(s.dialogue || s.narration || '').slice(0, 120) : '' };
     let segDur = 0; // 该段在成片时间轴上的时长(SRT 用)
-    if (s.audioUrl) it.audio = s.audioUrl; // 逐镜 TTS 配音混入成片音轨
+    const track = Domain.audioTrackOf(s); if (track) it.audio = track; // 逐镜真实 TTS 音轨混入成片(离线占位不混音)
     if (idx > 0 && s.transition) it.transition = { type: String(s.transition).slice(0, 12) }; // 转场记在后一镜
     if (Domain.shotVideoReady(s, true) && s.video.url) {
       it.video = s.video.url;
@@ -704,7 +705,8 @@ CMD.shots = async (a, f) => {
   const p = (state.projects || []).find(x => x.id === a[0]);
   if (!p) throw new CliError('项目不存在:' + a[0], 4);
   const ep = findEp(p, a[1]);
-  return { episode: ep.title, count: (ep.shots || []).length, shots: ep.shots || [] };
+  // audio:配音渲染清单(逐镜音色/参数/上游音色 id/是否离线占位/是否判旧/是否混入成片,与主应用同一份推导)
+  return { episode: ep.title, count: (ep.shots || []).length, shots: ep.shots || [], audio: Domain.audioRenderList(p, ep, true) };
 };
 CMD['shots-import'] = async (a, f) => {
   need(a[0] && a[1] && f.file, '用法:hujing shots-import <pid> <epid> --file shots.json [--append] (数组,字段:plot/camera/characters/scene/props/narration/dialogue/prompt/duration)');
@@ -733,13 +735,13 @@ const SHOT_PATCH_RULES = {
   final: v => !!v, confirm: v => !!v,
   order: v => { const n = +v; need(Number.isInteger(n), 'order 需为整数'); return n; },
 };
-const SHOT_PROTECTED = ['id', 'video', 'audio', 'history', 'reviews', 'promptHistory'];
+const SHOT_PROTECTED = ['id', 'video', 'audio', 'audioUrl', 'audioMeta', 'history', 'reviews', 'promptHistory'];
 CMD['shot-set'] = async (a, f) => {
   need(a[0] && a[1] && a[2] && f.patch, '用法:hujing shot-set <pid> <epid> <sid> --patch \'{"prompt":"新提示词","duration":8}\'');
   const patch = JSON.parse(f.patch);
   need(patch && typeof patch === 'object' && !Array.isArray(patch), '--patch 需为 JSON 对象');
   const bad = Object.keys(patch).filter(k => SHOT_PROTECTED.includes(k));
-  need(!bad.length, '受管字段不允许 shot-set 直写:' + bad.join(',') + '(video 用 gen-shot-video,reviews 用 review-note)');
+  need(!bad.length, '受管字段不允许 shot-set 直写:' + bad.join(',') + '(video 用 gen-shot-video,reviews 用 review-note,配音字段由配音路径写回)');
   return (await withProject(a[0], f, async proj => {
     const s = findShot(findEp(proj, a[1]), a[2]);
     const applied = [];
@@ -931,7 +933,8 @@ async function composeCore(pid, epid, f) {
     epLive.composedDialogueSig = Domain.composedDialogueSig(epLive, true); // 字幕文本/时长指纹:改台词/旁白 → 判未就绪(与主应用同口径)
     epLive.composedSourceRev = epLive.contentRev || 0; // 合成时剧本版本
     epLive.composedGraphRev = epLive.graphRev || 0;    // 合成时图谱版本
-    return { episode: epLive.id, url: d.url, count: items.length, skipped: missing, srt: !!srt, transitions: d.transitions };
+    epLive.composedAudio = Domain.audioRenderList(projLive, epLive, true).summary; // 配音渲染凭据(与主应用 doCompose 同字段同口径)
+    return { episode: epLive.id, url: d.url, count: items.length, skipped: missing, srt: !!srt, transitions: d.transitions, audio: epLive.composedAudio };
   })).ret;
 }
 CMD.compose = async (a, f) => {

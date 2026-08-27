@@ -458,6 +458,10 @@
     // 未生成(none/generating/离线模拟占位)镜头维持原语义:以分镜图代替/无素材则跳过;quiet 模式无前置确认弹窗,toast 提示
     const notReady = ep.shots.filter(s => !Store.shotVideoReady(s));
     if (quiet && notReady.length) U.toast(`${notReady.length} 个未生成(含离线模拟)镜头将以分镜图代替(无素材的跳过)`, 'info', 3000);
+    // 配音渲染清单:离线占位音轨不混入成片、参数/文本改动后的音轨已判旧——合成前如实提示,不静默带病成片
+    const auList = Domain.audioRenderList(p, ep, !!(window.Media && Media.isReady()));
+    const auWarn = [auList.summary.offline ? `${auList.summary.offline} 镜为离线占位音轨(不混入成片)` : '', auList.summary.stale ? `${auList.summary.stale} 镜配音参数/文本已变更(建议重配音)` : ''].filter(Boolean);
+    if (auWarn.length) U.toast('配音清单:' + auWarn.join(';'), 'info', 3500);
     const tk = Tasks.start({ type: '合成成片', model: '本地合成', target: ep.title, cost: COST.compose, projectId: p.id, episodeId: ep.id });
     if (opts && opts.onTask) opts.onTask(tk); // 跑批轮询句柄:调用方据此等待本次任务(而非按 episodeId 误抓旧任务)
     if (!U.charge(COST.compose, '合成成片(' + ep.title + ')')) { Tasks.fail(tk, '积分不足'); return; }
@@ -484,7 +488,7 @@
         for (const s of shotList) {
           const it = { text: ep.sbConfig.subtitle ? String(s.dialogue || s.narration || '').slice(0, 120) : '' };
           let segDur = 0; // 该段在成片时间轴上的时长(SRT 用)
-          if (s.audioUrl) it.audio = s.audioUrl; // 逐镜 TTS 配音混入成片音轨
+          const track = Domain.audioTrackOf(s); if (track) it.audio = track; // 逐镜真实 TTS 音轨混入成片(离线占位不混音)
           // 真实转场(2026-08 六轮):转场记在后一镜 s.transition(该镜与前一镜之间),随段传给服务端 xfade/acrossfade
           if (itemIdx > 0 && s.transition) it.transition = { type: String(s.transition).slice(0, 12) };
           if (Store.shotVideoReady(s) && s.video.url) { // 统一就绪判定:模拟占位镜走分镜图分支
@@ -523,6 +527,7 @@
         ep.composedAt = Store.now();
         ep.composedUrl = r.url; // 真实成片(服务端 mp4)
         ep.composedSrt = buildSrt(srtSegs) || null; // SRT 软字幕与成片同时间轴同步产出(导出▾「导出字幕 SRT」;无对白/旁白则为 null)
+        ep.composedAudio = Domain.audioRenderList(p, ep, true).summary; // 配音渲染凭据:本次成片混入了几镜真实音轨、几镜离线占位/判旧(CLI 同字段)
         ep.composedVia = 'shots'; // 来源轨:分镜合成(成片库据此标「分镜表」)
         ep.composedInputHash = Store.composedInputHash(ep); // 七轮:记录合成输入指纹,之后调序/裁剪/换素材/改转场 → 自动失效
         ep.composedDialogueSig = Store.composedDialogueSig(ep); // 二十三轮:记录字幕文本/时长指纹,之后改台词/旁白 → 成片判未就绪

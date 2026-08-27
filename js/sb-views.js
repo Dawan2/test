@@ -455,6 +455,17 @@
       <div class="kv" style="margin-bottom:10px">
         <span class="k">同步语音</span><span class="tag ${ep.sbConfig.syncVoice ? 'green' : ''}">${ep.sbConfig.syncVoice ? '已开启' : '已关闭'}</span>
         <span class="k">合成字幕</span><span class="tag ${ep.sbConfig.subtitle ? 'green' : ''}">${ep.sbConfig.subtitle ? '已开启' : '已关闭'}</span>
+        ${(() => { // 配音渲染凭据:本镜音轨用的是什么音色参数、能否混入成片(旧数据无参数记录时如实标注)
+          const m = Domain.audioMetaOf(sel);
+          if (!m) return '';
+          const pm = m.params;
+          const desc = m.legacy || !pm ? '旧数据(参数未落库)' : `${m.voice}·${pm.rate}x·音量${pm.volume}·${pm.emotion}`;
+          const state = m.offline ? '<span class="tag yellow">离线占位(不混入成片)</span>'
+            : Domain.audioStale(p, ep, sel) ? '<span class="tag yellow">参数/文本已变更,建议重配音</span>'
+              : '<span class="tag green">可混入成片</span>';
+          return `<span class="k">已配音</span><span>${U.esc(desc)}${m.voiceId ? `<span class="small muted" title="上游音色 id"> ${U.esc(m.voiceId)}</span>` : ''}</span>
+        <span class="k">配音状态</span><span>${state}</span>`;
+        })()}
       </div>
       <button class="btn sm primary" data-ract="audio" ${sel.final ? 'disabled' : ''}>🔊 生成音频(-${COST.audio}积分)</button>
     </div>`}
