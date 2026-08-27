@@ -49,7 +49,7 @@ function req(method, p, body, token, headers) {
       res.on('end', () => {
         let j = null;
         try { j = JSON.parse(buf); } catch (_) {}
-        resolve({ status: res.statusCode, code: j && j.code, msg: j && j.msg || j && j.error, data: j && j.data, raw: buf, headers: res.headers });
+        resolve({ status: res.statusCode, code: j && j.code, msg: j && (j.msg || j.error || j.message), data: j && j.data, raw: buf, headers: res.headers });
       });
     });
     r.on('error', reject);
@@ -481,6 +481,81 @@ async function main() {
     report('项目不存在 404', sp7.status === 404, 'HTTP ' + sp7.status);
     const balAfterSplit = (await req('GET', '/api/wallet', null, token)).data.balance;
     report('MOCK_LLM 下拆集不扣费(计费链路由 wfLLM 统一负责)', balAfterSplit === balBeforeSplit, '前 ' + balBeforeSplit + ' 后 ' + balAfterSplit);
+  }
+
+  /* ============ 测试 23(G-12 第三个落点):发布留痕 /api/wf/release(成片主线收尾的 headless 出口) ============
+   * 覆盖:齐备项目过门打版本(留痕入 state + 记忆回流)/未过门 409 不留痕/force 强打标 forced/
+   * 空项目 400/项目不存在 404/全程零计费。判定与写回都在服务端走 js/release-core.js 双端单源。 */
+  {
+    const Domain = require('../js/domain.js');
+    const relOK = 'it_p_rel1', relBad = 'it_p_rel2', relEmpty = 'it_p_rel3';
+    /* 齐备项目:已确认 + 已出片 + 已合成 + 审片达标(指纹现取 Domain,与主应用逐字节一致——
+     * 生成指纹带项目风格,故必须在项目建好之后按 p 算,不能拿裸分集算) */
+    const donePid = () => {
+      const p = { id: relOK, name: '发布项目·齐备', style: '漫剧',
+        subjects: [{ id: 'sj1', name: '女主', kind: 'character', image: '/uploads/a.png' }],
+        episodes: [{ id: 'ep1', title: '第一集', content: '剧本正文', shots: [{
+          id: 'sh0', order: 0, plot: 'p', prompt: 'q', camera: '固定镜头', duration: 5,
+          characters: [], scene: '', props: [], confirm: true, video: { status: 'done', url: '/uploads/v.mp4' },
+        }], lastReview: { avg: 8.5, perShot: [{ shotId: 'sh0', order: 0, score: 8.5 }] } }] };
+      const ep = p.episodes[0];
+      ep.shots[0].video.inputHash = Domain.shotInputHash(p, ep.shots[0], true);
+      ep.composed = true;
+      ep.composedUrl = '/uploads/final.mp4';
+      ep.composedInputHash = Domain.composedInputHash(ep, true);
+      ep.composedSourceRev = 0; ep.composedGraphRev = 0;
+      return p;
+    };
+    const sR = await req('GET', '/api/state', null, token);
+    const putR = await req('PUT', '/api/state', { rev: +(sR.data && sR.data.rev || 0), changes: { projects: {
+      [relOK]: donePid(),
+      [relBad]: { id: relBad, name: '发布项目·未过门', style: '漫剧', subjects: [{ id: 'sj2', name: '男主', kind: 'character', image: '' }], episodes: [{ id: 'ep1', title: '第一集', content: '正文', shots: [] }] },
+      [relEmpty]: { id: relEmpty, name: '发布项目·空', style: '漫剧', subjects: [], episodes: [] },
+    } } }, token);
+    report('发布项目种子 PUT 成功', putR.status === 200, 'HTTP ' + putR.status);
+    const balBeforeRel = (await req('GET', '/api/wallet', null, token)).data.balance;
+
+    const rl1 = await req('POST', '/api/wf/release', { pid: relOK, note: '首版' }, token);
+    report('wf/release 齐备项目过门 200(打版本 + 留痕)',
+      rl1.status === 200 && rl1.data && /^RLS_/.test(rl1.data.release.digest) && rl1.data.release.ver === 1 && rl1.data.gateOverall === 'cond-pass',
+      'HTTP ' + rl1.status + ' ' + JSON.stringify(rl1.data && { d: rl1.data.release && rl1.data.release.digest, v: rl1.data.release && rl1.data.release.ver, o: rl1.data.gateOverall } || rl1.msg));
+    report('发布门是端点自己算的七项核心门(warn 不升 fail)',
+      rl1.status === 200 && (rl1.data.gate.gates || []).length === 7 && rl1.data.gate.fails === 0 && rl1.data.gate.warns === 1,
+      JSON.stringify(rl1.data && rl1.data.gate && { n: rl1.data.gate.gates.length, f: rl1.data.gate.fails, w: rl1.data.gate.warns }));
+    const relState = (await req('GET', '/api/state', null, token)).data.state;
+    const pRel = (relState.projects || []).find(x => x.id === relOK) || {};
+    report('留痕写回 state(p.releases 追加一条 + __ver 对齐)',
+      (pRel.releases || []).length === 1 && pRel.releases[0].note === '首版' && pRel.__ver === pRel.releases[0].ver && !pRel.releases[0].forced,
+      JSON.stringify({ n: (pRel.releases || []).length, ver: pRel.__ver }));
+    report('发布闭环结论按板块回流既有记忆桶(随同一次落盘,不另起接口)',
+      (relState.agentMemory || []).some(m => m && m.fb === 'release:' + relOK && /发布门 cond-pass/.test(m.text || '')),
+      JSON.stringify((relState.agentMemory || []).map(m => m && m.fb)));
+
+    const rl2 = await req('POST', '/api/wf/release', { pid: relBad }, token);
+    report('未过门 409 且不留痕(force 可强制,提示写在报错里)', rl2.status === 409 && /发布门未通过/.test(rl2.msg || '') && /force/.test(rl2.msg || ''), 'HTTP ' + rl2.status + ' ' + rl2.msg);
+    const pBadState = (await req('GET', '/api/state', null, token)).data.state.projects.find(x => x.id === relBad) || {};
+    report('被拦下的项目一条留痕都不该有', !(pBadState.releases || []).length, JSON.stringify(pBadState.releases || []));
+
+    const rl3 = await req('POST', '/api/wf/release', { pid: relBad, force: true, note: '强制上线' }, token);
+    report('force 授权后 200 且如实标 forced(回滚对账看得出这一版没过门)',
+      rl3.status === 200 && rl3.data.release.forced === true && rl3.data.gateOverall === 'fail',
+      'HTTP ' + rl3.status + ' ' + JSON.stringify(rl3.data && rl3.data.release));
+
+    const rl4 = await req('POST', '/api/wf/release', { pid: relEmpty }, token);
+    report('空项目(无分集)400:没有成片就没有可留痕的交付物', rl4.status === 400 && /暂无分集/.test(rl4.msg || ''), 'HTTP ' + rl4.status + ' ' + rl4.msg);
+    const rl5 = await req('POST', '/api/wf/release', { pid: 'ghost_rel' }, token);
+    report('项目不存在 404', rl5.status === 404, 'HTTP ' + rl5.status);
+
+    const rl6 = await req('POST', '/api/wf/release', { pid: relOK, note: '第二版' }, token);
+    const pRel2 = (await req('GET', '/api/state', null, token)).data.state.projects.find(x => x.id === relOK) || {};
+    report('反复发布逐条累加、版本号递增(留痕可回滚定位)',
+      rl6.status === 200 && rl6.data.release.ver === 2 && (pRel2.releases || []).length === 2 && pRel2.releases[1].checksum !== pRel2.releases[0].checksum,
+      JSON.stringify((pRel2.releases || []).map(r => r.ver + ':' + r.checksum)));
+    report('反复发布记忆桶仍只留最新一条(原地更新,不刷满上限)',
+      ((await req('GET', '/api/state', null, token)).data.state.agentMemory || []).filter(m => m && m.fb === 'release:' + relOK).length === 1);
+
+    const balAfterRel = (await req('GET', '/api/wallet', null, token)).data.balance;
+    report('发布留痕零计费(不是计费动作,也不进 wfLLM)', balAfterRel === balBeforeRel, '前 ' + balBeforeRel + ' 后 ' + balAfterRel);
   }
 
   console.log(`\n===== ${PASS}/${PASS + FAIL} PASS, ${FAIL} FAIL =====`);
