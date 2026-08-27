@@ -59,7 +59,7 @@
 | [w31-sk16-playbook.md](./w31-sk16-playbook.md) | SK-16 主线前段编排补齐拆集与主体提取(playbook 2 步 → 4 步):步序为什么取 `Domain.workflow` 同源、`cmds` 为什么改由 `steps` 推出、`args` 为什么一律留空(不替调用方预授权 `overwrite`) | 改编排型条目的 `steps`/`playbook` 产出前 |
 | [w32-cycle4-audit.md](./w32-cycle4-audit.md) | 周期 4(W21–W31)逐项目独立核验报告:锚定 SHA、逐支成熟度 M0–M4、独立 worktree 重跑的测试数字、阻塞与下一目标 | 想知道某条分支做到哪一步;开集成槽前 |
 | [w33-next-pending-check.md](./w33-next-pending-check.md) | SK-20 镜头动态感准入校验面落地(动作幅度/运镜条数/整集镜长分布三码):判定输入为什么分两段取、与 SK-13 首尾帧插值面的归属边界、S-04 为什么不清账,附短名单里剩余 pending 面的交接清单 | 加分镜面校验项、想知道大幅动作与多运镜怎么被判定,或要接手剩下那几面 pending 时 |
-| [w34-integration-log.md](./w34-integration-log.md) | W30 KB 登记面契约、W31 SK-16 前段编排与 W33 SK-20 动态感准入收敛到集成分支的记录:分支自测全绿为什么不等于并入主干全绿(契约覆盖面随基线走)、`cmds` 由 `steps` 推出的零实现改动实测、面内新增项两端实现零改动的实测、长行 README 按 word-diff 折回对侧的合并口径、用例名集合比对证明没删测 | 想知道主干现在是什么状态 |
+| [w34-integration-log.md](./w34-integration-log.md) | W30 KB 登记面契约、W31 SK-16 前段编排、W33 SK-20 动态感准入与 W32 周期 4 核验收敛到集成分支的记录:分支自测全绿为什么不等于并入主干全绿(契约覆盖面随基线走)、`cmds` 由 `steps` 推出的零实现改动实测、面内新增项两端实现零改动的实测、长行 README 按 word-diff 折回对侧的合并口径、"每推一版就重查一次包含性"连着救回两条分支的实测 | 想知道主干现在是什么状态 |
 
 ## 一分钟摘要(周期 2 收敛后)
 
