@@ -25,6 +25,7 @@ const WfCore = require('./js/wf-core.js'); // 工作流提示词单源:produce �
 const Skills = require('./js/skills.js'); // 主线 skill 索引(按七步索引 KB/Prompts/命令/专家的引用键;与浏览器、server.js 同一份注册表)
 const Issues = require('./js/issues.js'); // 问题中心投影(与浏览器 🩺 问题中心同一份推导;环境差异经 ctx.online 注入)
 const FlowTpl = require('./js/flow-tpl.js'); // 主线中段流程模板单源(步序取 SK-05 投影、参数面取 cmd-registry、状态取 Domain)
+const ReleaseCore = require('./js/release-core.js'); // 发布留痕单源:headless 七项核心门与打版本准入判定(写回由服务端 /api/wf/release 同一份 stamp 执行)
 
 /* ================= 基础设施:配置 / 参数 / 输出 ================= */
 const CFG_DIR = process.env.HUJING_CONFIG_DIR || path.join(os.homedir(), '.hujing');
@@ -430,56 +431,9 @@ CMD.issues = async (a, f) => {
   };
 };
 
-/* ---------- 交付检查:发布门 10 项(与前端 Release.collect 同口径) ---------- */
-function _releaseGates(p, minScore) {
-  minScore = +minScore; if (!isFinite(minScore) || minScore < 0) minScore = 7;
-  const eps = (p && p.episodes) || [];
-  const gate = (code, label, status, info) => ({ code, label, status, info: info || '' });
-  const list = [];
-  let fails = 0, warns = 0;
-  // G1 workflow 每集 status === 'done'
-  try {
-    const blockers = [];
-    eps.forEach(ep => {
-      const st = Domain.episodeState(p, ep, true);
-      if (st.status !== 'done') blockers.push({ ep: ep.title || ep.id, status: st.status, action: (st.action && st.action.label) || '' });
-    });
-    if (blockers.length) { list.push(gate('g1-workflow', '主线步骤全完成', 'fail', blockers.map(b => b.ep + '(' + b.status + (b.action ? ':' + b.label : '') + ')').join('；'))); fails++; }
-    else list.push(gate('g1-workflow', '主线步骤全完成', 'pass', eps.length + ' 集 done'));
-  } catch (e) { list.push(gate('g1-workflow', '主线步骤', 'warn', 'Domain 异常:' + e.message)); warns++; }
-  // G3 审片(每集都必须有审片记录且达标:无记录集=fail,与前端 Release.collect 同口径)
-  const noRev = eps.filter(ep => !(ep.lastReview && typeof ep.lastReview.avg === 'number'));
-  const lowRev = eps.filter(ep => ep.lastReview && typeof ep.lastReview.avg === 'number' && ep.lastReview.avg < minScore);
-  if (!eps.length) list.push(gate('g3-review', '审片均分 ≥ ' + minScore, 'pass', '0 集'));
-  else if (noRev.length || lowRev.length) {
-    const parts = noRev.map(ep => (ep.title || ep.id) + ':未审片')
-      .concat(lowRev.map(ep => (ep.title || ep.id) + ':' + ep.lastReview.avg.toFixed(2)));
-    list.push(gate('g3-review', '审片均分 ≥ ' + minScore, 'fail', parts.join('；'))); fails++;
-  } else list.push(gate('g3-review', '审片均分 ≥ ' + minScore, 'pass', eps.length + ' 集'));
-  // G4/G5/G6 counts 聚合
-  const agg = { stale: 0, unconfirmed: 0, failed: 0 };
-  try {
-    eps.forEach(ep => {
-      const st = Domain.episodeState(p, ep, true);
-      ['stale', 'unconfirmed', 'failed'].forEach(k => { agg[k] += (st.counts && +st.counts[k]) || 0; });
-    });
-  } catch (_) {}
-  list.push(gate('g4-stale', '过期镜=0', agg.stale ? 'fail' : 'pass', agg.stale + ' 镜')); if (agg.stale) fails++;
-  list.push(gate('g5-unconfirmed', '未确认镜=0', agg.unconfirmed ? 'fail' : 'pass', agg.unconfirmed + ' 镜')); if (agg.unconfirmed) fails++;
-  list.push(gate('g6-failed', '失败镜=0', agg.failed ? 'fail' : 'pass', agg.failed + ' 镜')); if (agg.failed) fails++;
-  // G9 主体缺图
-  const noImg = (p.subjects || []).filter(s => !s.image).length;
-  list.push(gate('g9-subjects', '主体图齐全=0缺图', noImg ? 'fail' : 'pass', noImg ? noImg + ' 缺图' : (p.subjects || []).length + ' 位就位'));
-  if (noImg) fails++;
-  // G10 计费账目(服务端有接口时真正对账:项目 usage.net 与 jobs 完成总量吻合——CLI 在此只跑接口,不硬判)
-  list.push(gate('g10-billing', '计费账目核对(净消耗 vs 生成资产数)', 'warn', '--with-billing 时会调用 /api/billing/usage 与 /api/jobs 交叉验证'));
-  warns++;
-  let overall = 'pass';
-  if (fails > 0) overall = 'fail';
-  else if (warns > 1) overall = 'warn';
-  else if (warns === 1) overall = 'cond-pass';
-  return { overall, gates: list, fails, warns, score: 10 - fails - warns, minReviewScore: minScore, at: Date.now() };
-}
+/* ---------- 交付检查:headless 七项核心门(判据/计数/overall 口径由 js/release-core.js 双端单源出) ----------
+ * Domain 与在线位显式注入;G2 问题清零 / G7 合规 / G8 真人素材需浏览器模块,headless 不假装判(与前端十项门的差集) */
+function _releaseGates(p, minScore) { return ReleaseCore.gates(p, { minScore, online: true, Domain }); }
 CMD['release-check'] = async (a, f) => {
   need(a[0], '用法:hujing release-check <pid> [--min-score 7] [--with-billing] (10 项发布门,结果 JSON)');
   const { state } = await stateGet(f);
@@ -511,7 +465,7 @@ CMD['release-check'] = async (a, f) => {
       g.fails = g.gates.filter(x => x.status === 'fail').length;
       g.warns = g.gates.filter(x => x.status === 'warn').length;
       g.score = 10 - g.fails - g.warns;
-      g.overall = (g.fails > 0) ? 'fail' : (g.warns > 1 ? 'warn' : (g.warns === 1 ? 'cond-pass' : 'pass'));
+      g.overall = ReleaseCore.overallOf(g.fails, g.warns);
       g.netCost = netCost; g.totalJobs = total; g.completedJobs = completed;
     } catch (e) {
       const g10 = g.gates.find(x => x.code === 'g10-billing');
@@ -528,47 +482,26 @@ CMD['release-check'] = async (a, f) => {
     netCost: g.netCost, totalJobs: g.totalJobs, completedJobs: g.completedJobs,
   };
 };
-/* 打 release 版本:先跑 release-check,通过/条件通过才写 releases 入 state,最后 PUT state 到云端(登录时) */
+/* 发布留痕(打 release 版本):准入判定走 js/release-core.js 双端单源,写回走服务端 /api/wf/release
+ * (端点自己重算七项核心门并 stamp——客户端结论不作数)。本层只做本地前置以给出精确 exit:
+ * 项目不存在 4 / 空项目(无分集)2 / 未过门 5;--force 授权位透传,强制打的版本留痕标 forced。
+ * 与 `hujing exec project.release` 同一条链路,只是回执面保留本子命令的历史字段名。 */
 CMD.release = async (a, f) => {
   need(a[0], '用法:hujing release <pid> [--note 发布说明] [--min-score 7] [--force]');
-  const { state, rev } = await stateGet(f);
+  const { state } = await stateGet(f);
   const p = (state.projects || []).find(x => x.id === a[0]);
   if (!p) throw new CliError('项目不存在:' + a[0], 4);
   const score = f['min-score'] !== undefined ? +f['min-score'] : (state.settings && state.settings.releaseMinReviewScore) || 7;
-  const gate = _releaseGates(p, score);
-  if (!f.force && gate.overall !== 'pass' && gate.overall !== 'cond-pass') {
-    throw new CliError('发布门未通过 (fail=' + gate.fails + ',warn=' + gate.warns + '),加 --force 可强制打版本', 5);
+  const chk = ReleaseCore.precheck(p, _releaseGates(p, score), { force: !!f.force });
+  if (!chk.ok) {
+    throw new CliError(chk.message + (chk.code === 'gate-blocked' ? ',加 --force 可强制打版本' : ''),
+      chk.code === 'gate-blocked' ? 5 : chk.code === 'not-found' ? 4 : 2);
   }
-  const djb = s => { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0; return h; };
-  const sig = JSON.stringify({ name: p.name, epCount: (p.episodes || []).length, eps: (p.episodes || []).slice(0, 10).map(e => ({ id: e.id, title: e.title, shots: (e.shots || []).length, composed: !!e.composed, reviewAvg: e.lastReview && e.lastReview.avg })) });
-  p.releases = p.releases || [];
-  const rel = {
-    digest: 'RLS_' + Date.now().toString(36) + '_' + crypto.randomBytes(2).toString('hex'),
-    ver: (p.__ver || 0) + 1,
-    checksum: 'v' + ((p.__ver || 0) + 1) + '_' + djb(sig).toString(36),
-    when: new Date().toLocaleString('zh-CN', { hour12: false }),
-    who: f.username || 'cli',
-    note: String(f.note || '').slice(0, 500),
-    gate: { overall: gate.overall, fails: gate.fails, warns: gate.warns, score: gate.score, at: gate.at },
-    snapshotAt: Date.now(),
-    snapshotVer: (p.__ver || 0) + 1,
-  };
-  p.releases.push(rel);
-  p.__ver = rel.ver;
-  p.__lastSaved = Date.now();
-  // 写回 state:项目桶 + meta 桶(发布闭环结论按板块回流协作记忆,派生与浏览器 stampRelease 同一份 WfCore;
-  // meta 整组替换走 memory add 同通道,同一次 PUT 里带上,不新增接口也不新增计费)
-  const meta = {};
-  for (const k in state) if (k !== 'projects') meta[k] = state[k];
-  meta.agentMemory = WfCore.memWrite(state.agentMemory, WfCore.memFeedback({ p, gate, rel }, { now: () => rel.when }));
-  const tree = {
-    projects: { [p.id]: p },
-    meta,
-  };
-  const resp = await PUT('/api/state', { rev: rev || 0, changes: tree }, f);
+  const d = await POST('/api/wf/release', { pid: p.id, note: f.note, minScore: score, force: !!f.force }, f);
+  const rel = d.release || {};
   return {
     ok: true, projectId: p.id, digest: rel.digest, ver: rel.ver, checksum: rel.checksum,
-    gateOverall: gate.overall, forced: !!f.force, rev: (resp && resp.data && resp.data.rev) || rev,
+    gateOverall: d.gateOverall, forced: !!rel.forced, rev: d.rev,
   };
 };
 
@@ -1368,22 +1301,48 @@ EXEC['project.extractSubjects'] = { needs: ['p'], meter: true, run: async (args,
   return execOk({ added: stat.added, skipped: stat.skipped, total: stat.total, truncated: b.truncated });
 } };
 
+/* 发布留痕(exec,项目级):成片主线收尾——过发布门后打版本号并写一条 releases 留痕。
+ * 薄封装服务端 /api/wf/release:门禁判定与写回都在端点里走 js/release-core.js 同一份 stamp
+ * (与浏览器 Release.stampRelease 双端单源),CLI 只做本地前置以给出精确 blocked code。
+ * 零 LLM 零上游零计费(发布留痕本来就不是计费动作),故 meter:false。 */
+EXEC['project.release'] = { needs: ['p'], meter: false, run: async (args, f) => {
+  const { p } = await execCtx(args, f);
+  const { state } = await stateGet(f);
+  const score = args.minScore !== undefined ? +args.minScore : (state.settings && state.settings.releaseMinReviewScore) || ReleaseCore.DEFAULT_MIN_SCORE;
+  const gate = _releaseGates(p, score);
+  const chk = ReleaseCore.precheck(p, gate, { force: !!args.force });
+  if (!chk.ok) return execBlocked(chk.code, chk.message + (chk.code === 'gate-blocked' ? '(force 可强制打版本)' : ''), { gate: ReleaseCore.brief(gate) });
+  try {
+    const d = await POST('/api/wf/release', { pid: args.pid, note: args.note, minScore: score, force: !!args.force }, f);
+    const rel = d.release || {};
+    return execOk({ digest: rel.digest, ver: rel.ver, checksum: rel.checksum, forced: !!rel.forced, gate: ReleaseCore.brief(d.gate), rev: d.rev });
+  } catch (e) {
+    if (e instanceof CliError && e.exit === 7) return execBlocked('gate-blocked', e.message, { gate: ReleaseCore.brief(gate) });
+    throw e;
+  }
+} };
+
 /* needs 校验面与注册表单源对齐(执行体各端自治;contract 套件锁死 EXEC 键集 = 注册表词表) */
 CmdRegistry.META.forEach(m => { if (EXEC[m.name]) EXEC[m.name].needs = m.needs.slice(); });
 
 CMD.exec = async (a, f) => {
   const name = a[0];
-  need(name, '用法:hujing exec <command> [--args \'{"pid":".."}\'] [--confirm-all] [--no-image] [--timeout 分钟/镜]\n'
+  need(name, '用法:hujing exec <command> [--args \'{"pid":".."}\'] [--confirm-all] [--no-image] [--timeout 分钟/镜] [--note 说明] [--force] [--min-score 7]\n'
     + '  统一领域命令(与前端 Commands.execute 同名同结构,cmd-registry.js 单源):\n'
     + CmdRegistry.META.map(m => `    ${m.name} ${CmdRegistry.usageOf(m)} — ${m.label}`).join('\n'));
   need(EXEC[name], '未注册命令:' + name + ';可用:' + CmdRegistry.names().join(', '));
   const cmd = EXEC[name];
-  const args = Object.assign(f.args ? JSON.parse(f.args) : {}, {
-    pid: f.pid, epid: f.epid, sid: f.sid,
-    confirmAll: !!f['confirm-all'], noImage: !!f['no-image'], timeout: f.timeout,
-    overwrite: f.overwrite ? true : undefined, local: f.local ? true : undefined, // 缺省留 undefined,--args 的同名值不被覆盖
-  });
-  Object.keys(args).forEach(k => args[k] === undefined && delete args[k]);
+  /* 参数合流:--args 的 JSON 打底,命令行 flag 覆盖同名项。
+   * 未给的 flag 留 undefined 并**跳过赋值**——Object.assign 会把 undefined 也写进去覆盖掉 --args 里的同名值
+   * (MCP 各工具正是只传 --args,pid 就此被抹掉),故这里逐键判定后再写。 */
+  const flags = {
+    pid: f.pid, epid: f.epid, sid: f.sid, timeout: f.timeout, note: f.note,
+    confirmAll: !!f['confirm-all'], noImage: !!f['no-image'], // 布尔开关恒定义:缺省 false 即"未授权"
+    overwrite: f.overwrite ? true : undefined, local: f.local ? true : undefined,
+    force: f.force ? true : undefined, minScore: f['min-score'] !== undefined ? +f['min-score'] : undefined,
+  };
+  const args = f.args ? JSON.parse(f.args) : {};
+  Object.keys(flags).forEach(k => { if (flags[k] !== undefined) args[k] = flags[k]; });
   if (cmd.needs.includes('p')) need(args.pid, '缺 --pid');
   if (cmd.needs.includes('ep')) need(args.epid, '缺 --epid');
   if (cmd.needs.includes('s')) need(args.sid, '缺 --sid(镜头 id 或序号)');
@@ -1588,11 +1547,11 @@ const HELP = `虎鲸漫剧 CLI —— 面向 AI 助手与人工的全链路命�
   release-check <pid> [--min-score 7] [--with-billing]
                                                    发布门 10 项检查(同 UI 口径;--with-billing 跑服务端账目对账)
   release <pid> [--note 发布说明] [--min-score 7] [--force]
-                                                   打发布版本(留痕 releases 入 state;通过/条件通过才执行,--force 强制)
+                                                   打发布版本(同 exec project.release:留痕 releases 入 state;通过/条件通过才执行,--force 强制)
 
 统一领域命令(与前端 Commands.execute 同名同结构 {ok,status,result,error,cost,next};词表/参数面由 js/cmd-registry.js 单源生成)
 ${CmdRegistry.META.map(m => '  exec ' + (m.name + (CmdRegistry.usageOf(m) ? ' ' + CmdRegistry.usageOf(m) : '')).padEnd(58) + m.label + ':' + m.desc).join('\n')}
-  (exit 映射:ok→0 | blocked→2/6/4 | failed→5;--args '{"pid":".."}' 可整体传参;拆集另支持 --overwrite / --local)
+  (exit 映射:ok→0 | blocked→2/6/4 | failed→5;--args '{"pid":".."}' 可整体传参;拆集另支持 --overwrite / --local,发布留痕另支持 --note / --force / --min-score)
 
 工具
   agent "自然语言指令" --pid X [--epid Y] [--scope 板块] [--apply]

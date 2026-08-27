@@ -3382,6 +3382,7 @@ function loadRelease() {
   loadFile(sb, 'knowledge.js');    // 与 index.html 同顺序:wf-core 的浏览器侧依赖(KB/Prompts)
   loadFile(sb, 'prompts.js');
   loadFile(sb, 'wf-core.js');      // stampRelease 的发布闭环结论回流走 WfCore.memFeedback/memWrite
+  loadFile(sb, 'release-core.js'); // 发布留痕准入判定/写回双端单源(与服务端 /api/wf/release 同一个 stamp)
   loadFile(sb, 'release.js');
   return sb;
 }
@@ -3520,6 +3521,144 @@ const releaseTests = [
     epOld.lastReview = { avg: 8 }; // 旧数据无快照/rev 记录
     const g3old = sb.Release.collect({ id: 'p2', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [epOld] }, { online: false }).gates.find(g => g.code === 'g3-review');
     assertEq(g3old.status, 'pass', '无快照/rev 记录的旧数据保持原语义(迁移兼容,不一次性全量 fail)');
+  } },
+  /* ---- 发布留痕双端单源 + 命令化出口(G-12 的第三个落点) ----
+   * 判定与写回只此一份 js/release-core.js:浏览器 Release.stampRelease 与服务端 /api/wf/release
+   * (CLI exec project.release / release、MCP hujing_release 同链路)都调它;
+   * 门禁判据、fail/warn 计数与 overall 四级口径一个字不动(不抬门、不把 warn 变 fail)。 */
+  { name: 'release-core · headless 七项核心门:Domain/在线位经参数注入,overall 四级与前端逐字同口径', fn() {
+    const RC = require('../js/release-core.js');
+    const D = require('../js/domain.js');
+    const ep = releaseReadyEp({ composed: true, composedInputHash: D.composedInputHash(releaseReadyEp(), true), composedSourceRev: 0, composedGraphRev: 0 });
+    const p = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [ep] };
+    const g = RC.gates(p, { Domain: D, online: true });
+    assertEq(g.gates.length, 7, 'headless 是七项核心门(G2/G7/G8 依赖浏览器模块,不假装判)');
+    assertEq(g.gates.map(x => x.code).join(','), 'g1-workflow,g3-review,g4-stale,g5-unconfirmed,g6-failed,g9-subjects,g10-billing');
+    assertEq(g.fails, 0, '齐备项目零 fail');
+    assertEq(g.warns, 1, '只剩 G10 账目一条 warn(CLI 不带 --with-billing 时不硬判)');
+    assertEq(g.overall, 'cond-pass', '零 fail + 单 warn = 条件通过(warn 不升 fail)');
+    assertEq(g.gates.find(x => x.code === 'g10-billing').status, 'warn', 'G10 仍是 warn,本轮不抬门');
+    // overall 四级映射:与既有实现逐字一致
+    assertEq(RC.overallOf(1, 0), 'fail'); assertEq(RC.overallOf(0, 2), 'warn');
+    assertEq(RC.overallOf(0, 1), 'cond-pass'); assertEq(RC.overallOf(0, 0), 'pass');
+    // 低分/缺图/失败镜照旧 fail(判据一字未改)
+    const bad = RC.gates({ id: 'p2', subjects: [{ id: 's', name: '主' }], episodes: [releaseReadyEp({ lastReview: { avg: 3 } })] }, { Domain: D, online: true });
+    assertEq(bad.overall, 'fail');
+    assert(bad.fails >= 2, '低分审片 + 主体缺图应至少两门 fail,实际 ' + bad.fails);
+  } },
+  { name: 'release-core · precheck:空项目 / 缺门禁结论 / 未过门各给明确错误码;force 授权位放行且如实标 forced', fn() {
+    const RC = require('../js/release-core.js');
+    const pass = { overall: 'cond-pass', fails: 0, warns: 1, score: 9, at: 1, gates: [] };
+    assertEq(RC.precheck(null, pass).code, 'not-found', '项目不存在');
+    assertEq(RC.precheck({ id: 'p1', episodes: [] }, pass).code, 'no-episodes', '空项目没有可留痕的交付物');
+    const withEp = () => ({ id: 'p1', episodes: [releaseReadyEp()] });
+    assertEq(RC.precheck(withEp(), null).code, 'no-gate', '不允许跳过门禁判定直接留痕');
+    const failGate = { overall: 'fail', fails: 3, warns: 1, score: 6, at: 1, gates: [] };
+    const blk = RC.precheck(withEp(), failGate);
+    assertEq(blk.code, 'gate-blocked');
+    assert(blk.message.startsWith('发布门未通过'), '未过门文案:' + blk.message);
+    assertEq(RC.precheck(withEp(), failGate, { force: true }).ok, true, 'force 是授权位:未过门仍可强打');
+    assertEq(RC.precheck(withEp(), pass).ok, true);
+    // 空项目那条在门禁之前:它是发布留痕这个动作的前置,不是发布门的一项(门禁计数一字不动)
+    assertEq(RC.precheck({ id: 'p1', episodes: [] }, failGate, { force: true }).code, 'no-episodes', 'force 也不能给空项目留痕');
+    // stamp:强打的版本如实标 forced,过门的不标
+    const pF = withEp();
+    const rF = RC.stamp(pF, { gate: failGate, force: true, note: '强制', who: 'u', when: 'T', rand: () => 'zzzz' });
+    assertEq(rF.ok, true); assertEq(rF.release.forced, true, '未过门强打须留痕可辨');
+    const pP = withEp();
+    const rP = RC.stamp(pP, { gate: pass, note: '首版', who: 'u', when: 'T', rand: () => 'zzzz' });
+    assertEq(rP.release.forced, undefined, '过门的版本不标 forced');
+    assertEq(pP.__ver, 1, '缺 bumpVer 时默认 __ver+1');
+    assertEq(rP.release.ver, pP.__ver, 'release.ver 与 p.__ver 对齐');
+    assertEq(rP.release.gate.overall, 'cond-pass', '留痕带门禁快照');
+    assertEq(RC.stamp({ id: 'p9', episodes: [] }, { gate: pass }).code, 'no-episodes', 'stamp 前置与 precheck 同一份');
+  } },
+  { name: 'release-core · 两端同一份 stamp:浏览器 stampRelease 与直调 ReleaseCore 的 checksum 逐字节相同', fn() {
+    const RC = require('../js/release-core.js');
+    const sb = loadRelease();
+    const mk = () => ({ id: 'p1', name: '剧', __ver: 3,
+      subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [releaseReadyEp()] });
+    const g = { overall: 'cond-pass', fails: 0, warns: 1, score: 9, at: 1, gates: [] };
+    const pBrowser = mk();
+    const r = sb.Release.stampRelease(pBrowser, '首版', { gateResult: g, online: false });
+    assertEq(r.ok, true);
+    const pNode = mk();
+    const r2 = RC.stamp(pNode, { gate: g, note: '首版' });
+    assertEq(r.release.checksum, r2.release.checksum, '同一项目同一状态两端算出同一个 checksum(留痕可跨端核对)');
+    assertEq(r.release.ver, r2.release.ver, '版本号推进两端同口径');
+    // 浏览器侧未过门仍回 {ok:false, code, reason}(调用方按 code 分流)
+    const bad = sb.Release.stampRelease(mk(), '', { gateResult: { overall: 'fail', fails: 2, warns: 1, gates: [] } });
+    assertEq(bad.ok, false); assertEq(bad.code, 'gate-blocked');
+    assertEq(sb.Release.stampRelease({ id: 'p2', episodes: [] }, '', { gateResult: g }).code, 'no-episodes');
+  } },
+  { name: 'project.release 命令:浏览器命令表执行(齐备打版本 / 未过门 blocked / 空项目 blocked),零计费', fn: async () => {
+    const sb = loadRelease();
+    loadFile(sb, 'cmd-registry.js');
+    loadFile(sb, 'commands.js');
+    const D = sb.Domain;
+    const ep = releaseReadyEp({ composed: true, composedInputHash: D.composedInputHash(releaseReadyEp(), false), composedSourceRev: 0, composedGraphRev: 0 });
+    const p = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [ep] };
+    sb.Store.state.projects = [p];
+    const before = sb.Store.credits ? sb.Store.credits() : 0;
+    const r = await sb.Commands.execute('project.release', { pid: 'p1', note: '首版' });
+    assertEq(r.ok, true, '齐备项目应打出版本:' + JSON.stringify(r.error || {}));
+    assert(/^RLS_/.test(r.result.digest), 'digest 形态');
+    assertEq(r.result.ver, p.__ver, 'ver 与项目版本对齐');
+    assertEq(r.result.forced, false, '过门的版本不标 forced');
+    assertEq(r.result.gate.overall, 'cond-pass', '回执带门禁摘要');
+    assertEq(r.cost, undefined, '发布留痕零计费(meter:false,不进 metered 也不出 cost)');
+    assertEq((p.releases || []).length, 1, '留痕真的写进了 p.releases');
+    if (sb.Store.credits) assertEq(sb.Store.credits(), before, '钱包余额不动');
+    // 未过门:blocked 不留痕
+    const pBad = { id: 'p2', name: '未过', subjects: [{ id: 's', name: '主' }], episodes: [releaseReadyEp({ lastReview: { avg: 3 } })] };
+    sb.Store.state.projects.push(pBad);
+    const rb = await sb.Commands.execute('project.release', { pid: 'p2' });
+    assertEq(rb.ok, false); assertEq(rb.status, 'blocked'); assertEq(rb.error.code, 'gate-blocked');
+    assert((rb.result.gate.blockers || []).length, 'blocked 回执应点名未过门项');
+    assertEq((pBad.releases || []).length, 0, '未过门不得留痕');
+    // 空项目:明确错误码
+    sb.Store.state.projects.push({ id: 'p3', name: '空', subjects: [], episodes: [] });
+    const re = await sb.Commands.execute('project.release', { pid: 'p3' });
+    assertEq(re.error.code, 'no-episodes', '空项目应给明确错误码而不是空成功');
+  } },
+  { name: 'project.release 命令化出口四端齐备:注册表/浏览器/CLI EXEC/服务端端点/MCP 工具同名同结构(绕过命令表即红)', fn() {
+    const CR = require('../js/cmd-registry.js');
+    const m = CR.byName['project.release'];
+    assert(m, '领域命令注册表须登记 project.release');
+    assertEq(m.needs.join(','), 'p', '项目级命令');
+    assertEq(m.risk, 'exec');
+    ['note', 'minScore', 'force'].forEach(a => assert(m.args.some(x => x.name === a), '注册表须登记参数 ' + a));
+    const rel = fs.readFileSync(path.join(ROOT, 'js/release.js'), 'utf8');
+    const cmds = fs.readFileSync(path.join(ROOT, 'js/commands.js'), 'utf8');
+    const cli = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    const mcp = fs.readFileSync(path.join(ROOT, 'mcp.js'), 'utf8');
+    // 浏览器按钮不得绕过命令表直调实现(变异:改回 stampRelease(p, note, …) 直调即红)
+    assert(/Commands\.execute\('project\.release'/.test(rel), '交付检查「打版本」按钮须走领域命令表');
+    assert(/reg\('project\.release'/.test(cmds), 'js/commands.js 须注册 project.release 处理器');
+    assert(/reg\('project\.release',[^)]*meter: false/.test(cmds), '发布留痕不计费:命令层须 meter:false');
+    // headless 三处:CLI EXEC 键、服务端端点、MCP 工具的 cmd 字段
+    assert(/EXEC\['project\.release'\]/.test(cli), 'cli.js 须有 exec project.release');
+    assert(/meter: false/.test(cli.slice(cli.indexOf("EXEC['project.release']"), cli.indexOf("EXEC['project.release']") + 200)), 'CLI 侧同样不计费');
+    assert(srv.includes("pathname === '/api/wf/release'"), 'server.js 须有发布留痕端点');
+    assert(/cmd: 'project\.release', build: i => \['exec', 'project\.release'/.test(mcp), 'MCP 工具须登记 cmd 并真的拼 exec project.release');
+    // 双端单源:两端都不再各写一份摘要算法与版本号推进
+    [['js/release.js', rel], ['server.js', srv]].forEach(([f, src]) =>
+      assert(/ReleaseCore\.stamp\(/.test(src), f + ' 须委托 ReleaseCore.stamp(不各写一份写回)'));
+    assert(!/function _checksum/.test(rel), '浏览器不得留第二份 checksum 实现');
+    assert(!/djb\(sig\)/.test(cli), 'CLI 不得留第二份 checksum 实现');
+    assert(/ReleaseCore\.gates\(/.test(cli) && /ReleaseCore\.gates\(/.test(srv), 'headless 两处发布门也现取单源');
+    /* MCP 各工具只传 --args(不拼 --pid),故 exec 的参数合流必须逐键判定:
+     * Object.assign 会把未给的 flag 当 undefined 一并写进去,把 --args 里的 pid 抹掉(MCP 侧一律"缺 --pid") */
+    const execSeg = cli.slice(cli.indexOf('CMD.exec = async'), cli.indexOf('CMD.upload'));
+    assert(!/Object\.assign\(f\.args/.test(execSeg), 'exec 参数合流不得用 Object.assign 平铺(未给的 flag 会覆盖 --args 同名值)');
+    assert(/if \(flags\[k\] !== undefined\)/.test(execSeg), '未给的 flag 应跳过赋值,--args 打底值保留');
+    // UMD 双端:模块内不碰环境句柄(state 与时钟/随机数/落库一律经参数注入)
+    const core = fs.readFileSync(path.join(ROOT, 'js/release-core.js'), 'utf8');
+    ['window.', 'Store.', 'localStorage', 'fetch(', 'require('].forEach(t =>
+      assert(!core.includes(t), 'release-core.js 不得引用环境句柄:' + t));
+    assert(!/Tasks\.run/.test(core) && !/Tasks\.run/.test(rel.slice(rel.indexOf('function stampRelease'), rel.indexOf('function releaseList'))),
+      '发布留痕不是计费动作:两端都不进 Tasks.run');
   } },
 ];
 
@@ -3827,10 +3966,16 @@ const contractTests = [
       assert(!chain.steps.some(s => s.cmd === n), n + ' 不应串进主线全链(断点补拍 / 三步聚合各有归属)');
       assert(Skills.list().some(s => s.id !== 'core.playbookProjection' && s.cmds.includes(n)), n + ' 应仍被其他条目登记');
     });
-    /* 编排面落地不摘缺口标记:计划步骤(见 plans 套件)与 MCP 中段流程模板(见 flow 套件)都已接本投影,
-     * 但 G-12 里发布留痕的命令化出口仍未接(SK-25 note 点名),故关联索引仍在 */
-    assert(Skills.byId('core.playbookProjection').gaps.includes('G-12'), 'G-12 的关联索引应仍在(落地一面不等于整条清账)');
+    /* 编排面三个落点都已接本投影/命令表(计划步骤见 plans 套件、MCP 中段流程模板见 flow 套件、
+     * 发布留痕的命令化出口见 release 套件),按关联索引口径缺口标记不摘 */
+    assert(Skills.byId('core.playbookProjection').gaps.includes('G-12'), 'G-12 的关联索引应仍在(落地不摘标记)');
     assert(Skills.byId('core.playbookProjection').note.includes('js/flow-tpl.js'), 'note 须写明中段流程模板也由本投影切片(实况同步)');
+    /* 发布留痕有意不串进主线全链:它是主线跑完之后的收尾动作,note 须写明"为什么不在链里",
+     * 否则读者会把"链里没有"读成"还没命令化"(计划层与中段模板都只切本投影,口径自动跟随) */
+    assert(!chain.steps.some(s => s.cmd === 'project.release'), '发布留痕不应串进主线全链(收尾动作,不是主线第七步)');
+    assert(Skills.byId('core.playbookProjection').note.includes('project.release'), 'note 须写明发布留痕已命令化且为何不进本链');
+    ['review.reviseLoop', 'review.memoryFeedback'].forEach(id =>
+      assert(Skills.byId(id).cmds.includes('project.release'), id + ' 应登记发布留痕这一步(编排层现在挂得出命令名)'));
     // 校验型扩展点:登记的校验项必须有实现(不挂空项),check 结果数与该步登记数一致
     [].concat(...Skills.list().map(s => s.checks)).forEach(id => assert(typeof Skills.CHECKS[id] === 'function', '校验项未注册实现:' + id));
     assertEq(Skills.check('review', {}).length, Skills.list('review').reduce((n, s) => n + s.checks.length, 0), 'check 结果数应等于该步已登记校验项数');
@@ -6676,19 +6821,24 @@ const memoryTests = [
     const W = require('../js/wf-core.js');
     const files = { 'js/review.js': null, 'server.js': null, 'js/release.js': null, 'cli.js': null };
     Object.keys(files).forEach(f => { files[f] = fs.readFileSync(path.join(ROOT, f), 'utf8'); });
-    // 派生面单源:四个调用方一律 WfCore.memFeedback + WfCore.memWrite,不得自己拼回流文本
-    Object.keys(files).forEach(f => {
+    // 派生面单源:有回流写入点的调用方一律 WfCore.memFeedback + WfCore.memWrite,不得自己拼回流文本
+    ['js/review.js', 'server.js', 'js/release.js'].forEach(f => {
       assert(/WfCore\.memWrite\(/.test(files[f]) && /WfCore\.memFeedback\(/.test(files[f]), f + ' 应委托 WfCore 派生回流条目');
-      assert(!files[f].includes('闭环回流·'), f + ' 不得内联回流文案(文案只在 wf-core 一处)');
     });
+    Object.keys(files).forEach(f => assert(!files[f].includes('闭环回流·'), f + ' 不得内联回流文案(文案只在 wf-core 一处)'));
     // 落点仍是既有记忆桶:浏览器/服务端/CLI 各按自己的通道存回,不新建存储桶
     assert(/Store\.state\.agentMemory = WfCore\.memWrite\(Store\.state\.agentMemory,/.test(files['js/review.js']), '浏览器审片闭环应写回 Store.state.agentMemory');
     assert(/tree\.agentMemory = WfCore\.memWrite\(tree\.agentMemory,/.test(files['server.js']), '服务端审片闭环应写回 state 树的 agentMemory');
     assert(/Store\.state\.agentMemory = WfCore\.memWrite\(Store\.state\.agentMemory,/.test(files['js/release.js']), '浏览器发布留痕应写回 Store.state.agentMemory');
-    assert(/meta\.agentMemory = WfCore\.memWrite\(state\.agentMemory,/.test(files['cli.js']), 'CLI 发布应经 meta 桶写回 agentMemory(与 memory add 同通道)');
-    // CLI 不为回流另开一次请求:仍是 release 原来那一次 PUT /api/state
+    /* headless 侧的发布回流自 W58 起归服务端发布端点(CLI/MCP 同链路):CLI 不再自己拼 meta 桶,
+     * 回流仍与打版本同一次落盘,派生仍是 WfCore 那一份——写入点换了端,单源与"不新增接口"两条纪律不变 */
+    const relEp = files['server.js'].slice(files['server.js'].indexOf("pathname === '/api/wf/release'"));
+    const iRelMem = relEp.indexOf('tree.agentMemory = WfCore.memWrite(');
+    assert(iRelMem > 0 && iRelMem < relEp.indexOf('const rev = wfSave(user.id, cur, tree);'), '发布端点回流应在 wfSave 落盘之前(不另起一次 state 写)');
+    // CLI 不为回流另开一次请求:发布留痕仍是 release 原来那一次写入调用
     const relSeg = files['cli.js'].slice(files['cli.js'].indexOf('CMD.release ='), files['cli.js'].indexOf("/* ---- 项目结构"));
     assertEq((relSeg.match(/await (PUT|GET|POST)\(/g) || []).length, 1, 'CLI release 仍只发一次 state 写入请求(回流不新增接口调用)');
+    assert(!/WfCore\.memWrite\(/.test(files['cli.js']), 'CLI 侧不再自己派生发布回流(写入点已归服务端发布端点,免得两端各写一份)');
     // 上限/截断/低分线三个口径:wf-core 常量与两端既有写入面字面一致(任一侧漂移即红)
     const ag = fs.readFileSync(path.join(ROOT, 'js', 'agent.js'), 'utf8');
     assertEq(W.MEM_MAX, 50, 'MEM_MAX 应与两端写入面的 50 条上限同数');
@@ -6746,11 +6896,11 @@ const memoryTests = [
     assert(sk.steps.length, '编排面已落地须有步骤(playbook 不给空步)');
     const names = require('../js/cmd-registry.js').names();
     sk.steps.forEach(st => assert(names.includes(st.cmd), '步骤命令须已注册:' + st.cmd));
-    assertEq(sk.cmds.join(','), 'episode.smartReview', '命令面由 steps 推出:发布留痕两端不在命令注册表,不挂假命令名');
+    assertEq(sk.cmds.join(','), 'episode.smartReview,project.release', '命令面由 steps 推出:发布留痕已是注册命令,两个回流闭环各占一步');
     assert(Skills.playbooks().some(x => x.id === sk.id), '已落地编排面应进 playbooks 投影');
     ['G-11', 'G-02'].forEach(g => assert(sk.gaps.includes(g), '缺口标记按关联索引口径保留:' + g));
     assert(sk.note.includes('仍欠(G-11)') && sk.note.includes('evolveExpert'), 'note 须点名仍欠的自进化面(清 pending 不等于这条没有余量)');
-    assert(sk.note.includes('待 G-12'), '发布留痕的命令化出口仍待 G-12,note 须写明');
+    assert(sk.note.includes('project.release') && sk.note.includes('release-core.js'), 'note 须写明发布留痕的命令化出口与双端单源落点');
     assert(sk.note.includes('不新建存储桶') && sk.note.includes('不改发布门'), 'note 须写明沿用既有桶、不动发布门');
     // 自进化仍是手动那一半:evolveExpert 读记忆不按板块过滤、只对自定义专家开放(接上了 note 先失效)
     const ex = fs.readFileSync(path.join(ROOT, 'js', 'experts.js'), 'utf8');

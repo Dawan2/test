@@ -273,6 +273,22 @@
     return r;
   }));
 
+  /* 发布留痕(exec,项目级):过发布门后打版本 + 写一条 releases 留痕。
+   * 判定与写回走 js/release-core.js 双端单源(与服务端 /api/wf/release、CLI 同一份 stamp);
+   * 门禁结论仍由 Release.collect 出(浏览器十项门,判据与计数口径一字未动),本层不另判一遍;
+   * 未过门一律 blocked(force 授权位由调用方明示),空项目 blocked;零 LLM 零计费,故 meter:false。 */
+  reg('project.release', { label: '发布留痕', needs: ['p'], meter: false }, ({ p, args }) => {
+    if (!window.Release || !Release.stampRelease) return fail('unavailable', '交付检查模块未加载');
+    const gate = args.gateResult || Release.collect(p, { online: online() });
+    const r = Release.stampRelease(p, args.note, {
+      gateResult: gate, online: online(), force: !!args.force, minScore: args.minScore,
+    });
+    if (!r.ok) return blocked(r.code || 'gate-blocked', r.reason, { gate: ReleaseCore.brief(r.gate || gate) });
+    const out = ok({ digest: r.release.digest, ver: r.release.ver, checksum: r.release.checksum, forced: !!r.release.forced, gate: ReleaseCore.brief(gate) });
+    out.next = nextOf(p);
+    return out;
+  });
+
   /* 一键成片(exec,编排):就绪检查 → 批量生成 → 智能审片(质量闸门) → 合成成片;
    * 待人工镜头默认阻断合成(riskyCompose 放行);审片被关闭/模块缺失时步骤如实登记 skipped
    * (模块缺失=质量闸门无法执行,默认 blocked,riskyCompose 放行);onStep(stepKey) 供跑批行内状态回报;

@@ -301,6 +301,50 @@ async function main() {
   r = cli('release', 'p_not_exist_xyz', '--force');
   report('release 不存在 pid → exit 4', r.code === 4, 'exit=' + r.code);
 
+  // ---- 发布留痕的命令化出口:exec project.release(与上面 release 子命令同一条链路)+ MCP 工具 ----
+  {
+    r = cli('exec');
+    report('exec 用法清单含 project.release(词表由 cmd-registry 单源生成)',
+      /project\.release/.test(String((r.out && r.out.error) || r.err || '')), 'exit=' + r.code);
+    r = cli('exec', 'project.release');
+    report('exec project.release 缺 --pid → exit 2', r.code === 2 && /缺 --pid/.test(String((r.out && r.out.error) || r.err || '')), 'exit=' + r.code);
+    r = cli('exec', 'project.release', '--pid', 'p_not_exist_xyz');
+    report('exec project.release 不存在项目 → blocked not-found exit 4', r.code === 4 && r.out && r.out.error && r.out.error.code === 'not-found', 'exit=' + r.code);
+    r = cli('exec', 'project.release', '--pid', pid); // 基线项目门未过
+    report('exec project.release 未过门 → blocked gate-blocked exit 2(回执带未过门项)',
+      r.code === 2 && r.out && r.out.error && r.out.error.code === 'gate-blocked' && ((r.out.result.gate || {}).blockers || []).length > 0,
+      'exit=' + r.code + ' ' + JSON.stringify((r.out && r.out.error) || {}).slice(0, 70));
+    r = cli('exec', 'project.release', '--pid', pid, '--force', '--note', '冒烟命令化打版本 v2');
+    report('exec project.release --force → ok + digest/ver 递增 + forced=true + 零计费(无 cost 字段)',
+      r.code === 0 && r.out && r.out.ok === true && /^RLS_/.test(r.out.result.digest) && r.out.result.ver === 2 && r.out.result.forced === true && r.out.cost === undefined,
+      'exit=' + r.code + ' ' + JSON.stringify((r.out && r.out.result) || r.out).slice(0, 90));
+    r = cli('release-check', pid);
+    report('两条出口写的是同一份留痕(releases 累加到 2 条,ver 逐条递增)',
+      r.code === 0 && (r.out.releases || []).length === 2 && r.out.releases[1].ver === r.out.releases[0].ver + 1 && r.out.releases[1].note === '冒烟命令化打版本 v2',
+      JSON.stringify((r.out && r.out.releases || []).map(x => x.ver + ':' + x.note)));
+    r = cli('exec', 'project.release', '--pid', pidB); // pidB 无分集
+    report('exec project.release 空项目 → blocked no-episodes exit 2(明确错误码,不空成功)',
+      r.code === 2 && r.out && r.out.error && r.out.error.code === 'no-episodes', 'exit=' + r.code + ' ' + JSON.stringify((r.out && r.out.error) || {}).slice(0, 70));
+    // MCP:hujing_release 是同一条链路的薄包装(build 拼 exec project.release,不另走第二条实现)
+    const reqs = [
+      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'hujing_release', arguments: { pid: pidB } } },
+      { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'hujing_release', arguments: { pid, note: 'MCP 打版本 v3', force: true } } },
+    ];
+    const mcp = spawnSync(process.execPath, [ROOT + '/mcp.js'], { input: reqs.map(x => JSON.stringify(x)).join('\n') + '\n', encoding: 'utf8', env: CLI_ENV, timeout: 30000 });
+    const byId = {};
+    String(mcp.stdout || '').trim().split('\n').filter(Boolean).forEach(l => { try { const m = JSON.parse(l); byId[m.id] = m; } catch (_) {} });
+    const tools = ((byId[1] && byId[1].result || {}).tools || []).map(t => t.name);
+    report('MCP tools/list 含发布留痕工具', tools.includes('hujing_release'), tools.length + ' 工具');
+    report('MCP 空项目如实 isError(不静默成功)', !!(byId[2] && byId[2].result && byId[2].result.isError) && /no-episodes/.test(byId[2].result.content[0].text),
+      String((byId[2] && byId[2].result && byId[2].result.content[0].text) || mcp.stderr).slice(0, 80));
+    let mcpRel = null;
+    try { mcpRel = JSON.parse(byId[3].result.content[0].text); } catch (_) {}
+    report('MCP hujing_release 走 exec 同链路(结构与 CLI 逐字段同形,ver 继续递增)',
+      !!mcpRel && mcpRel.ok === true && /^RLS_/.test(mcpRel.result.digest) && mcpRel.result.ver === 3 && mcpRel.result.forced === true,
+      mcpRel ? JSON.stringify(mcpRel.result).slice(0, 90) : String(mcp.stderr || '').slice(-80));
+  }
+
   // ---- 错误路径语义 exit code ----
   r = cli('project-show', 'p_not_exist');
   report('不存在项目 → exit 4', r.code === 4, 'exit=' + r.code);

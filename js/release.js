@@ -20,6 +20,7 @@
  *
  * 依赖:window.Issues / window.Domain / window.Compliance / window.HumanReview / window.ZipUtil / window.Store
  *   / window.U / window.Bus / window.Exporter(exportSrt/buildMaterialFiles 等)/ window.WfCore(发布闭环结论回流记忆)
+ *   / window.ReleaseCore(发布留痕的准入判定与写回:与服务端 /api/wf/release、CLI 同一份双端单源)
  * 所有依赖缺失时安全降级(对应门 warn + '模块未加载') */
 (function () {
   /* ---------- 阈值(不侵入 gsettings.js DEFAULTS,fallback 7) ---------- */
@@ -215,55 +216,32 @@
     } catch (_) { return `<button class="tab-btn" data-x="prelease" data-pid="${p && p.id}" title="交付检查">📦</button>`; }
   }
 
-  /* ---------- Releases 版本留痕 ---------- */
-  function _checksum(p) {
-    // 快速内容摘要:JSON.stringify 前 10 集+主体的字段 + p.__ver + Date → 不做 crypto(浏览器无内置时)只用 djb2 数字
-    const sig = {
-      ver: p.__ver, name: p.name,
-      epCount: (p.episodes || []).length,
-      eps: (p.episodes || []).slice(0, 10).map(e => ({
-        id: e.id, title: e.title, shots: (e.shots || []).length,
-        composed: !!e.composed, reviewAvg: e.lastReview && e.lastReview.avg,
-      })),
-      subs: (p.subjects || []).map(s => ({ id: s.id, name: s.name, hasImg: !!s.image })),
-    };
-    const s = JSON.stringify(sig);
-    let h = 5381;
-    for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
-    return 'v' + (p.__ver || 0) + '_' + h.toString(36);
-  }
-  /** 打版本(只有 overall pass/cond-pass 才成功;否则返回 {ok:false, reason}) */
+  /* ---------- Releases 版本留痕 ----------
+   * 准入判定(空项目/缺门禁结论/未过门)与写回(打版本号 + 追加 releases 条目 + 内容摘要)
+   * 一律走 js/release-core.js 双端单源——与服务端 /api/wf/release(CLI exec project.release 同链路)
+   * 同一个 stamp();本层只负责浏览器这一端的环境注入(时钟/用户名/版本号推进器)与落库/广播。 */
+  /** 打版本(只有 overall pass/cond-pass 才成功;否则返回 {ok:false, code, reason}) */
   function stampRelease(p, note, opts) {
     opts = opts || {};
     const g = opts.gateResult || collect(p, { online: opts.online });
-    if (g.overall !== 'pass' && g.overall !== 'cond-pass') {
-      return { ok: false, reason: '发布门未通过: fail=' + g.fails + ' warn=' + g.warns, gate: g };
-    }
-    p.releases = p.releases || [];
-    if (window.Continuity && Continuity.bumpVer) Continuity.bumpVer(p);
-    else p.__ver = (p.__ver || 0) + 1;
-    const ver = (p.__ver || 0);
-    const rel = {
-      digest: 'RLS_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
-      ver,
-      checksum: _checksum(p),
-      when: Store.now(),
+    const r = ReleaseCore.stamp(p, {
+      gate: g, force: !!opts.force, note,
       who: ((Store.state && Store.state.user) || {}).username || ((Store.state && Store.state.session) ? 'local' : 'anonymous'),
-      note: String(note || '').slice(0, 500),
-      gate: { overall: g.overall, fails: g.fails, warns: g.warns, score: g.score, at: g.at },
-      snapshotAt: Date.now(),
-      snapshotVer: ver,       // 回滚目标:把 p 状态按 __ver 做回滚标记 — 实际回滚通过 Store 的 history 快照
-    };
-    p.releases.push(rel);
+      when: Store.now(),
+      // 版本号推进走既有协作续跑口径(200ms 窗口幂等),缺模块时退回 __ver+1
+      bumpVer: proj => { if (window.Continuity && Continuity.bumpVer) Continuity.bumpVer(proj); else proj.__ver = (proj.__ver || 0) + 1; },
+    });
+    if (!r.ok) return { ok: false, code: r.code, reason: r.message, gate: r.gate };
+    const rel = r.release;
     /* 发布闭环结论按板块回流协作记忆:门禁结果只读(overall/fails/warns 与未过门项的 label),
-     * 派生走 WfCore 双端单源(与 CLI release 同一份),写回既有 state.agentMemory;
+     * 派生走 WfCore 双端单源(与服务端发布端点同一份),写回既有 state.agentMemory;
      * 一个字不改 G1–G10 判据与 overall 计数口径,WfCore 未加载时静默跳过(与本模块其余降级同纪律) */
     if (window.WfCore && WfCore.memWrite) {
       Store.state.agentMemory = WfCore.memWrite(Store.state.agentMemory,
         WfCore.memFeedback({ p, gate: g, rel }, { now: Store.now }));
     }
     Store.save();
-    if (window.Bus) Bus.emit('release.stamped', { pid: p.id, digest: rel.digest, ver });
+    if (window.Bus) Bus.emit('release.stamped', { pid: p.id, digest: rel.digest, ver: rel.ver });
     return { ok: true, release: rel, gate: g };
   }
   function releaseList(p) { return (p && p.releases) || []; }
@@ -449,12 +427,14 @@ ${summary.stale.length ? summary.stale.map(s => ' - ' + s).join('\n') : ' (无)'
           gate = collect(p, { online: true }); renderGates();
           U.toast('审片均分阈值已设为 ' + nv, 'success');
         };
+        /* 打版本按钮走领域命令表(project.release):与 CLI `exec project.release`、MCP hujing_release
+         * 同名同结构同一条链路,按钮不再直调实现——绕过命令表就等于这个动作在 headless 侧不存在 */
         m.querySelector('[data-x=stamp]').onclick = async () => {
           const note = m.querySelector('#rls-note').value;
           if (gate.overall !== 'pass' && gate.overall !== 'cond-pass') return U.toast('发布门未通过,无法打版本', 'error');
-          const r = stampRelease(p, note, { gate });
-          if (r.ok) { U.toast('已发布版本:' + r.release.digest.slice(0, 16), 'success'); renderReleases(); }
-          else U.toast(r.reason, 'error');
+          const r = await Commands.execute('project.release', { pid: p.id, note, gateResult: gate, ui: true });
+          if (r.ok) { U.toast('已发布版本:' + String(r.result.digest).slice(0, 16), 'success'); renderReleases(); }
+          else U.toast((r.error && r.error.message) || '打版本失败', 'error');
         };
         m.querySelector('[data-x=pack]').onclick = async () => {
           const btn = m.querySelector('[data-x=pack]');
