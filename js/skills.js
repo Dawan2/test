@@ -637,6 +637,7 @@
     {
       id: 'review.reviseLoop', sk: 'SK-25', name: '审片修订闭环编排', stage: 'review',
       covers: ['review', 'gen', 'film'], wave: 'W3', kinds: ['orchestrate'], gaps: ['G-03', 'G-12'],
+      prompts: ['gen.promptSystem'], // 修订步的人设句:浏览器一键优化与 CLI 修订重抽同经 WfCore.optimizeSystem 取
       steps: [
         { cmd: 'episode.smartReview', args: { quiet: true }, note: '整集逐镜评审:低分镜与共性问题落 lastReview' },
         { cmd: 'episode.generateVideos', args: {}, note: '按审片问题修订提示词后只重跑低分镜(shotIds 传低分镜子集)' },

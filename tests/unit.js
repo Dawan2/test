@@ -3739,6 +3739,26 @@ const contractTests = [
     const dom = fs.readFileSync(path.join(ROOT, 'js', 'domain.js'), 'utf8');
     assert(!/KB\./.test(dom), 'domain.js 不应引用 KB(生成指纹口径与方法论文本解耦)');
   } },
+  { name: '提示词改写人设:一键优化/CLI 修订重抽两端同经 WfCore.optimizeSystem,缺省逐字节等于内联原字面', fn() {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const WfCore = require('../js/wf-core.js');
+    // 缺省不变:收编前两端写死的人设句字面,收编后仍逐字节相同(不接方法论块,不改这两条链路的 system 输入)
+    assertEq(WfCore.optimizeSystem(), '你是文生视频提示词专家。', '缺省人设句应与收编前的内联字面逐字节相同');
+    assertEq(WfCore.optimizeSystem({}), Prompts.get('gen.promptSystem', {}), '人设句应取自注册表 gen.promptSystem');
+    assertEq(WfCore.optimizeSystem({ 'gen.promptSystem': '改写器。' }), '改写器。', '覆盖 gen.promptSystem 时人设句跟随');
+    // 与生成步注入点同键:genPromptSystem 由本函数派生,人设句只有一处取值
+    assertEq(WfCore.genPromptSystem({ 'gen.promptSystem': '改写器。' }), WfCore.optimizeSystem({ 'gen.promptSystem': '改写器。' }) + Skills.block('gen'), '生成步人设应由 optimizeSystem 派生后接注入块');
+    // 双端消费点:两端都不留第二份人设句字面,且 CLI 侧显式传覆盖表(Node 无 window 读不到 Store)
+    const rv = fs.readFileSync(path.join(ROOT, 'js', 'review.js'), 'utf8');
+    const cli = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    assert(rv.includes('WfCore.optimizeSystem('), '浏览器一键优化应经 WfCore.optimizeSystem 取人设');
+    assert(cli.includes('WfCore.optimizeSystem(ov)'), 'CLI 修订重抽应经 WfCore.optimizeSystem 取人设并显式传覆盖表');
+    [['js/review.js', rv], ['cli.js', cli]].forEach(([f, src]) => {
+      assert(!src.includes('你是文生视频提示词专家'), f + ' 不应再内联人设句(覆盖不会跟过去)');
+      assert(src.includes('WfCore.buildOptimizeUser('), f + ' 的 user 半应沿用 wf-core 单源模板');
+    });
+  } },
   { name: '审片升为主线一等步骤(G-03):板块 Agent 有审片席;plans/工作区/CLI 都映射 episode.smartReview', fn() {
     const D = require(path.join(ROOT, 'js/domain.js'));
     const mains = D.workflow({ id: 'p1', episodes: [], subjects: [] }, true).steps.filter(s => !s.side).map(s => s.key);

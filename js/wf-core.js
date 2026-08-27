@@ -302,9 +302,13 @@ ${ctx.content}`;
   };
   /* 智能分镜系统人设(按 KB.SECTIONS 键取条目正文,知识库单一来源;ov=用户提示词覆盖表) */
   W.sbSystem = ov => Prompts.get('sb.system', ov) + KB.pick('景别运镜', '轴线匹配');
+  /* 视频提示词改写人设句(注册表单取,不接方法论块):一键优化/produce 修订重抽两端的 system 半,
+   * 与 buildOptimizeUser 配对使用——这两条链路的 user 半已给定原提示词与审片意见,方法论块会改写方向,
+   * 故只收人设句,缺省输出与收编前的内联字面逐字节相同;覆盖 gen.promptSystem 时两端一并跟随。 */
+  W.optimizeSystem = ov => Prompts.get('gen.promptSystem', ov);
   /* 视频提示词改写系统人设(生成步注入点):注册表人设 + 抽卡方法论两条按键整条注入,
    * 与 sbSystem 同形态——正文只从 KB 取,本层不写第二份;键与 skill 索引生成步(gen)登记的同一批。 */
-  W.genPromptSystem = ov => Prompts.get('gen.promptSystem', ov) + KB.pick('抽卡公式', '抽卡军规');
+  W.genPromptSystem = ov => W.optimizeSystem(ov) + KB.pick('抽卡公式', '抽卡军规');
   /* 拆镜 user 模板(自 genShotsLLM 下沉;o={count,mode,optimize,adv,feedback},ctx={styleText,projType,directorNote,conceptNote,personaNote,memText,langText,genres,understandingText,eventsText,content(截 12000),subjects,tplVideoText}) */
   W.buildSBUser = function (p, ep, o, ctx) {
     const withForms = sj => sj.name + ((sj.forms || []).length ? `(形态:${sj.forms.map(f => f.name).join('/')})` : '');

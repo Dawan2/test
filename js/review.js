@@ -366,7 +366,7 @@
     try {
       if (!API.isReady()) throw new Error('LLM 未配置');
       const out = await API.chatJSON({
-        system: '你是文生视频提示词专家。',
+        system: WfCore.optimizeSystem(), // 人设句走注册表单源(js/wf-core.js),与 CLI 修订重抽同字面
         messages: [{ role: 'user', content: WfCore.buildOptimizeUser(styleOf(p), s.prompt, fixes) }],
         temperature: 0.6, max_tokens: 900,
         billingAction: 'llm.optimize', operationId: tk.id,
