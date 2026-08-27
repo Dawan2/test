@@ -437,6 +437,35 @@ async function main() {
     await sleep(1100);
     const exNone = await req('POST', '/api/wf/extract-subjects', { pid: 'ghost_p' }, token);
     report('wf/extract-subjects 项目不存在 404', exNone.status === 404, 'HTTP ' + exNone.status);
+
+    /* 25(W61):理解/分镜两步的闭环结论按板块回流既有 state.agentMemory(与浏览器同一份 WfCore 派生)。
+     * 上文 understanding/smart-storyboard 都已成功跑过,此处只查记忆桶实况:各一条、按板块落位、
+     * 文案是可判定的数字与缺口;失败调用(404/400)一条不写。 */
+    const memW = ((await req('GET', '/api/state', null, token)).data.state.agentMemory) || [];
+    const fbOf = pre => memW.filter(m => String(m.fb || '').startsWith(pre + ':'));
+    report('理解闭环回流一条(导演板块,六维产出数可判定)',
+      fbOf('und').length === 1 && fbOf('und')[0].scope === '导演' && /^理解闭环回流·.+:六维产出 \d\/6/.test(fbOf('und')[0].text) && !!fbOf('und')[0].time,
+      JSON.stringify(fbOf('und')));
+    report('分镜闭环回流一条(分镜板块,镜数/时长/两处缺口可判定)',
+      fbOf('sb').length === 1 && fbOf('sb')[0].scope === '分镜'
+      && /^分镜闭环回流·.+:出 \d+ 镜约 \d+ 秒;缺提示词 \d+ 镜;未挂主体 \d+ 镜$/.test(fbOf('sb')[0].text),
+      JSON.stringify(fbOf('sb')));
+    report('回流条目落在既有 agentMemory 桶(state 顶层键未新增)',
+      !Object.keys((await req('GET', '/api/state', null, token)).data.state).some(k => /feedback|memoryFeed/i.test(k)), '');
+    // 幂等:同一集再跑一次智能分镜,两条仍各一条(fb 键原地更新,不把桶越跑越满)
+    await sleep(1100);
+    const sb2 = await req('POST', '/api/wf/smart-storyboard', { pid: wfPid, epid: 'ep_w1', operationId: 'it.wf.sb2' }, token);
+    const mem2 = ((await req('GET', '/api/state', null, token)).data.state.agentMemory) || [];
+    report('同一集重复分镜只更新不双写(记忆桶条数不变)',
+      sb2.status === 200 && mem2.length === memW.length && mem2.filter(m => String(m.fb || '').startsWith('sb:')).length === 1,
+      '前 ' + memW.length + ' 后 ' + mem2.length + ' ' + JSON.stringify(mem2.map(m => m.fb || '-')));
+    // 失败不写:分集不存在 / 无剧本正文的调用一条记忆都不留
+    await sleep(1100);
+    await req('POST', '/api/wf/understanding', { pid: wfPid, epid: 'ghost' }, token);
+    await sleep(1100);
+    await req('POST', '/api/wf/smart-storyboard', { pid: demoPid, epid: 'ep_c1' }, token);
+    const mem3 = ((await req('GET', '/api/state', null, token)).data.state.agentMemory) || [];
+    report('失败路径不写假成功(404/400 调用后记忆桶条数不变)', mem3.length === mem2.length, '前 ' + mem2.length + ' 后 ' + mem3.length);
   }
 
   /* ============ 测试 22(G-04):剧本拆集工作流 /api/wf/split-episodes(headless 主线起点) ============
@@ -481,6 +510,22 @@ async function main() {
     report('项目不存在 404', sp7.status === 404, 'HTTP ' + sp7.status);
     const balAfterSplit = (await req('GET', '/api/wallet', null, token)).data.balance;
     report('MOCK_LLM 下拆集不扣费(计费链路由 wfLLM 统一负责)', balAfterSplit === balBeforeSplit, '前 ' + balBeforeSplit + ' 后 ' + balAfterSplit);
+
+    /* W61:拆集闭环结论按板块回流(剧本板块)。上文两个项目各成功拆过(spMark 还拆了两次),
+     * 故记忆桶里应恰好各一条、按项目 id 分键;失败调用(缺剧本 400 / 项目不存在 404)一条不写。 */
+    const memSp = ((await req('GET', '/api/state', null, token)).data.state.agentMemory) || [];
+    const spEntries = memSp.filter(m => String(m.fb || '').startsWith('split:'));
+    report('拆集闭环按项目各回流一条(剧本板块,集数/模式/超长集可判定)',
+      spEntries.length === 2 && spEntries.every(m => m.scope === '剧本' && m.text.startsWith('拆集闭环回流·')
+        && /切出 \d+ 集/.test(m.text) && /最长 \d+ 字/.test(m.text)
+        && (m.text.endsWith('无超长集') || /\d+ 集超 \d+ 字建议再拆$/.test(m.text))),
+      JSON.stringify(spEntries.map(m => m.fb + '|' + m.text)));
+    report('同项目反复拆集只留最新一条(spMark 三次拆集,mode 记最后一次)',
+      (spEntries.find(m => m.fb === 'split:' + spMark) || {}).text.includes('切出 2 集(markers)')
+      && (spEntries.find(m => m.fb === 'split:' + spPlain) || {}).text.includes('(even)'),
+      JSON.stringify(spEntries.map(m => m.text)));
+    report('拆集失败路径不写假成功(缺剧本 400 / 项目不存在 404 后不多条目)',
+      !memSp.some(m => m.fb === 'split:' + demoPid || m.fb === 'split:ghost_pid'), JSON.stringify(memSp.map(m => m.fb || '-')));
   }
 
   /* ============ 测试 23(W53):协作记忆播种 /api/wf/memory-seed(headless 无 window 的补种与板块迁移) ============
@@ -526,7 +571,7 @@ async function main() {
     const sMg = (await req('GET', '/api/state', null, token)).data.state.agentMemory || [];
     report('迁移不丢不双写(条目数不变,旧板名清零,正文原样)',
       sMg.length === memBefore + 8 && !sMg.some(m => m.scope === '构思') && sMg.filter(m => m.text === '旧板名条目:夜戏偏冷色').length === 1
-      && sMg.filter(m => m.scope === '导演').length === 1, JSON.stringify(sMg.map(m => m.scope)));
+      && sMg.filter(m => m.text === '旧板名条目:夜戏偏冷色' && m.scope === '导演').length === 1, JSON.stringify(sMg.map(m => m.scope)));
     await sleep(1100);
     const mgEmpty = await req('POST', '/api/wf/memory-seed', { from: '构思', to: '导演' }, token);
     report('空板迁移 400(旧板名下已无条目,不回空成功)', mgEmpty.status === 400 && /没有记忆条目/.test(mgEmpty.raw || ''), 'HTTP ' + mgEmpty.status + ' ' + mgEmpty.raw);

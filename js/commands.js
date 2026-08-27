@@ -267,6 +267,11 @@
         image: null, status: 'pending',
       });
     }));
+    /* 提取主体闭环结论按板块回流协作记忆(主体板块):/api/wf/extract-subjects 只出候选不写回 state,
+     * 入库口径归调用方,故回流也挂在入库这一步(与 CLI exec project.extractSubjects 同一份 WfCore 派生);
+     * 记忆桶经参数注入后存回既有 state.agentMemory,挂在原本那次 Store.save() 之前 */
+    Store.state.agentMemory = WfCore.memWrite(Store.state.agentMemory,
+      WfCore.memFeedback({ extract: { p, added, skipped } }, { now: Store.now }));
     Store.save();
     const r = ok({ added, skipped, total: p.subjects.length, llm: usedLLM, truncated: !!found.truncated });
     r.next = nextOf(p);

@@ -298,9 +298,14 @@
     // 覆盖前旧分集快照进回收站(7 天可恢复),与确认文案一致
     (p.episodes || []).forEach(oldEp => Store.trashPut('episode', oldEp.title, { projectId: p.id, ep: oldEp }));
     p.episodes = eps.map((e, i) => ({ id: Store.uid('ep'), title: e.title, content: e.content, order: i, shots: [], status: 'draft' }));
+    const used = llmError ? 'even' : mode;
+    /* 拆集闭环结论按板块回流协作记忆(剧本板块):派生走 WfCore 双端单源(与服务端 /api/wf/split-episodes 同一份),
+     * 记忆桶经参数注入后存回既有 state.agentMemory;mode 传实际用上的那个(LLM 失败回退时如实记 even) */
+    Store.state.agentMemory = WfCore.memWrite(Store.state.agentMemory,
+      WfCore.memFeedback({ split: { p, mode: used } }, { now: Store.now }));
     Store.save();
     if (tk.status === 'running') Tasks.done(tk);
-    return { eps: p.episodes, mode: llmError ? 'even' : mode, llmError };
+    return { eps: p.episodes, mode: used, llmError };
   }
   function doSplitRun(p, scriptText, main, after) {
     U.runTask({

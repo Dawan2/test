@@ -200,16 +200,24 @@
   W.MEM_MAX = 50;       // 记忆桶条数上限(与浏览器 memRemember、CLI memory add 同口径)
   W.MEM_TEXT_MAX = 120; // 单条截断字数(同上)
   W.MEM_LOW_SCORE = 7;  // 待返工镜的分数线:与审片报告重抽入口、发布门 G3 默认阈值同数,本层只读不改门禁口径
-  /* o={ep(带 lastReview,审片闭环) | p+gate+rel(发布闭环)},ctx={now:取时间戳(函数或字符串)};
-   * 回 [{text,time,scope,fb}]:scope=回流板块(审片/发布同属成片板块,板块键取 WF_BOARD 单源),
-   * fb=回流键(同一集/同一项目反复闭环时 memWrite 按它原地更新,不无限追加) */
+  W.MEM_EP_LONG = 2000; // 单集建议字数上限:与分集列表「超 2000 字」标签、分集完成提示同数,本层只读不改建议口径
+  /* o 各分支互不影响,给哪支就回哪条(可同时给多支);ctx={now:取时间戳(函数或字符串)}:
+   *   {ep(带 lastReview)}           审片闭环
+   *   {p,gate,rel}                  发布闭环
+   *   {und:{ep}}                    本集理解闭环(前段四步,下同)
+   *   {sb:{ep}}                     智能分镜闭环
+   *   {split:{p,mode}}              剧本拆集闭环
+   *   {extract:{p,added,skipped}}   提取主体闭环
+   * 回 [{text,time,scope,fb}]:scope=回流板块(板块键一律取 WF_BOARD 单源,与该步提示词召回记忆时同键——
+   * 回流下去的结论,下一轮同一步按 memBlock 就吃得到),fb=回流键(同一集/同一项目反复闭环时
+   * memWrite 按它原地更新,不无限追加) */
   W.memFeedback = function (o, ctx) {
     o = o || {};
     const now = ctx && ctx.now;
     const time = typeof now === 'function' ? now() : String(now || '');
     const board = W.WF_BOARD['smart-review'];
     const out = [];
-    const add = (fb, text) => out.push({ text: String(text).slice(0, W.MEM_TEXT_MAX), time, scope: board, fb });
+    const add = (fb, text, sc) => out.push({ text: String(text).slice(0, W.MEM_TEXT_MAX), time, scope: sc || board, fb });
     const ep = o.ep, lr = ep && ep.lastReview;
     if (lr && typeof lr.avg === 'number') {
       const per = Array.isArray(lr.perShot) ? lr.perShot : [];
@@ -233,6 +241,46 @@
       add('release:' + (p.id || ''), '发布闭环回流·' + (p.name || p.id || '本项目') + ' v' + ((o.rel && o.rel.ver) || p.__ver || 0)
         + ':发布门 ' + g.overall + '(fail ' + (+g.fails || 0) + '/warn ' + (+g.warns || 0) + ')'
         + (open.length ? ';未过门 ' + open.join('、') : ';十门全过'));
+    }
+    /* 本集理解:六维产出数与缺的维名。维名取 UND_DIMS 单源(六维改名/增减时回流文案自动跟上);
+     * fallback 模板(浏览器 LLM 失败回退)不是理解结论——那一支不写,六维全空同理 */
+    const un = o.und && o.und.ep && o.und.ep.understanding;
+    if (un && !un.fallback) {
+      const miss = W.UND_DIMS.filter(d => !String(un[d] || '').trim());
+      if (miss.length < W.UND_DIMS.length) {
+        const e2 = o.und.ep;
+        add('und:' + e2.id, '理解闭环回流·' + (e2.title || e2.id) + ':六维产出 ' + (W.UND_DIMS.length - miss.length) + '/' + W.UND_DIMS.length
+          + (miss.length ? ';缺 ' + miss.join('、') : ';六维齐备'), W.WF_BOARD.understanding);
+      }
+    }
+    /* 智能分镜:镜数与预估总时长 + 两处缺口(缺提示词的镜、既无人物也无场景道具的空挂镜)。
+     * 时长走 Domain.estShotDuration 双端同口径,本层不另算第二份段时长 */
+    const sbEp = o.sb && o.sb.ep, shots = sbEp && Array.isArray(sbEp.shots) ? sbEp.shots : null;
+    if (shots && shots.length) {
+      const dur = s => (Domain && Domain.estShotDuration ? Domain.estShotDuration(s) : (s.duration || 5));
+      const secs = Math.round(shots.reduce((a, s) => a + dur(s), 0));
+      const noPrompt = shots.filter(s => !String(s.prompt || '').trim()).length;
+      const noSubj = shots.filter(s => !(s.characters || []).length && !s.scene && !(s.props || []).length).length;
+      add('sb:' + sbEp.id, '分镜闭环回流·' + (sbEp.title || sbEp.id) + ':出 ' + shots.length + ' 镜约 ' + secs + ' 秒'
+        + ';缺提示词 ' + noPrompt + ' 镜;未挂主体 ' + noSubj + ' 镜', W.WF_BOARD['smart-storyboard']);
+    }
+    /* 剧本拆集:集数与切分模式 + 超长集缺口(MEM_EP_LONG 与分集页「超 2000 字」标签同数,只读不改建议口径) */
+    const spP = o.split && o.split.p, eps = spP && Array.isArray(spP.episodes) ? spP.episodes : null;
+    if (eps && eps.length) {
+      const lens = eps.map(e => String((e && e.content) || '').length);
+      const over = lens.filter(n => n > W.MEM_EP_LONG).length;
+      add('split:' + (spP.id || ''), '拆集闭环回流·' + (spP.name || spP.id || '本项目') + ':切出 ' + eps.length + ' 集('
+        + (o.split.mode || 'even') + ');最长 ' + Math.max.apply(null, lens) + ' 字'
+        + (over ? ';' + over + ' 集超 ' + W.MEM_EP_LONG + ' 字建议再拆' : ';无超长集'), W.WF_BOARD['split-episodes']);
+    }
+    /* 提取主体:本轮新增/已有(入库口径由调用方给,同名同类不覆盖)+ 主体库总量与缺参考图缺口 */
+    const exP = o.extract && o.extract.p;
+    if (exP && Array.isArray(exP.subjects) && exP.subjects.length) {
+      const ex = o.extract;
+      const noImg = exP.subjects.filter(s => s && !s.image).length;
+      add('extract:' + (exP.id || ''), '提取主体闭环回流·' + (exP.name || exP.id || '本项目') + ':本轮新增 ' + (+ex.added || 0)
+        + ' 位、已有 ' + (+ex.skipped || 0) + ' 位;主体库共 ' + exP.subjects.length + ' 位,其中 ' + noImg + ' 位缺参考图',
+      W.WF_BOARD['extract-subjects']);
     }
     return out;
   };
