@@ -1013,12 +1013,12 @@ async function execNext(pid, epid, f) {
   } catch (_) { return null; }
 }
 
-/* 生产就绪检查(read):Domain.episodeState 单源推导;result.checks 附主体面校验项结论
+/* 生产就绪检查(read):Domain.episodeState 单源推导;result.checks 附剧本面与主体面校验项结论,按主线步序排列
  * (Skills.check,纯本地零 LLM 零计费,只报不拦——不进 blockers、不改 ok/status;与前端命令层同一份结论) */
 EXEC['episode.preflight'] = { needs: ['p', 'ep'], meter: false, next: false, run: async (args, f) => {
   const { p, ep } = await execCtx(args, f);
   const st = Domain.episodeState(p, ep, true);
-  const checks = Skills.check('subjects', { p, ep }, { online: true });
+  const checks = Skills.check('script', { p, ep }, { online: true }).concat(Skills.check('subjects', { p, ep }, { online: true }));
   return { ok: st.status !== 'blocked' && !st.shotsStale, status: st.status, result: Object.assign({}, st, { checks }) };
 } };
 

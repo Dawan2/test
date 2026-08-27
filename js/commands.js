@@ -44,11 +44,13 @@
   }
 
   /* 生产就绪检查(read):Domain.episodeState 单源推导,流程条/下一步/CLI 同口径;
-   * result.checks 附主体面校验项结论(Skills.check,纯本地零 LLM 零计费)——只报不拦:
+   * result.checks 附剧本面与主体面校验项结论(Skills.check,纯本地零 LLM 零计费),按主线步序排列——只报不拦:
    * 不进 blockers、不改 ok/status,与 CLI exec 同一份结论 */
   reg('episode.preflight', { risk: 'read', meter: false, label: '生产就绪检查' }, async ({ p, ep }) => {
     const st = Domain.episodeState(p, ep, online());
-    const checks = window.Skills ? Skills.check('subjects', { p, ep }, { online: online() }) : [];
+    const checks = window.Skills
+      ? Skills.check('script', { p, ep }, { online: online() }).concat(Skills.check('subjects', { p, ep }, { online: online() }))
+      : [];
     return { ok: st.status !== 'blocked' && !st.shotsStale, status: st.status, result: Object.assign({}, st, { checks }) };
   });
 

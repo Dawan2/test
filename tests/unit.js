@@ -2701,6 +2701,22 @@ const issuesTests = [
     assert(it.goto && !it.cmd, '一致性问题走导航自查,不挂命令处置(不触发任何生成)');
     assertEq(list.filter(x => x.sev !== 'low').length, 0, '一致性提醒不得产出高/中危(门禁状态不变)');
   } },
+  { name: 'collect:剧本方法论提醒 → 低危(未拆镜集也报,不吞后续问题、不改发布门 G2)', fn() {
+    const sb = loadIssues();
+    // 开篇 160 字纯背景铺陈,冲突信号落在开篇窗口之外(判据在 js/skills.js,本处只验消费)
+    const ep = { id: 'ep1', title: '第一集', content: '江城的春天多雨。'.repeat(20) + '她被人嘲笑,却默默忍住。', shots: [] };
+    const p = { id: 'p1', subjects: [{ id: 'sj1', name: '主角', kind: 'character', image: 'u' }], episodes: [ep] };
+    const list = sb.Issues.collect(p);
+    const it = list.find(x => x.kind === 'script-craft');
+    assert(it, '剧本文本面命中应入清单');
+    assertEq(it.sev, 'low', '剧本方法论提醒是提醒级(发布门 G2 只数高/中危)');
+    assert(it.detail.includes('开篇未直接进冲突'), '明细应给命中码的中文文案,实际:' + it.detail);
+    assert(it.goto && !it.cmd, '剧本问题走导航自查,不挂命令处置(不触发任何生成)');
+    assert(list.some(x => x.kind === 'no-shots'), '剧本刚写完还没拆镜时既要报提醒也不能吞掉未分镜这条中危');
+    assertEq(list.filter(x => x.sev === 'high').length, 0, '剧本提醒不得升高危');
+    assertEq(sb.Issues.collect({ id: 'p2', episodes: [{ id: 'ep1', title: '第一集', content: '剧本正文', shots: [] }] }).filter(x => x.kind === 'script-craft').length, 0,
+      '短于判定下限的片段不产出提醒(不给存量小样制造噪音)');
+  } },
   { name: 'collect:素材更新过期镜(assetVer 抬升)→ stale-shots 带镜头号', fn() {
     const sb = loadIssues();
     const ep = cleanEp({ shots: [Object.assign({}, cleanEp().shots[0], { characters: ['主角'], video: { status: 'done', url: 'http://x/v.mp4', assetVer: 1 } })], composed: false });
@@ -3614,8 +3630,94 @@ const refIntegrity = (p, ep) => Skills.check('subjects', { p, ep }).find(x => x.
 const crossShot = (p, shots) => Skills.check('subjects', { p, ep: { id: 'ep1', shots } }).find(x => x.skill === 'subjects.crossShot');
 /* 主体带真实图的项目夹具:n 个角色各有权威图(参考图组 5 张上限用例) */
 const manySubjP = n => ({ id: 'p1', subjects: Array.from({ length: n }, (_, i) => ({ id: 'c' + i, name: '角色' + i, kind: 'character', image: '/uploads/a/c' + i + '.png' })) });
+/* 剧本段夹具:正文一律 ≥30 字(短于此的片段不产出结论);BG 是无台词无冲突信号的背景铺陈填充 */
+const BG = '江城的春天多雨。'.repeat(20); // 160 字,开篇窗口(120)之外才出现冲突信号
+const scriptEp = (content, shots) => ({ id: 'ep1', title: '第一集', content, shots: shots || [] });
+const scriptCheck = (skill, ep, p) => Skills.check('script', { p: p || { id: 'p1' }, ep }).find(x => x.skill === skill);
+const hookOf = (ep, p) => scriptCheck('script.hookStrength', ep, p);
+const slapOf = ep => scriptCheck('script.faceslapFour', ep);
+const lineOf = ep => scriptCheck('script.dialogueRule', ep);
 
 const skillsTests = [
+  { name: 'hookAnchor:开篇直接进台词/冲突信号 → info;背景铺陈过长 → late-hook(带首个信号位置)', fn() {
+    assertEq(hookOf(scriptEp('「你们跪下求我的那一天,快了。」林晚站在宴会厅中央,众人哄笑,她没有回头。')).level, 'info', '开篇直接进台词即已冲突锚定');
+    assertEq(hookOf(scriptEp('林晚推开门,桌上那份文件的签名是她自己的笔迹,她的手僵住了,冷汗顺着背脊滑下来。')).hits.length, 0, '无台词但开篇命中冲突信号同样算锚定');
+    const r = hookOf(scriptEp(BG + '她被人嘲笑,却默默忍住。'));
+    assertEq(r.pass, false); assertEq(r.level, 'warn', '开篇钩子是提醒级,不升 fail');
+    assertEq(r.hits.length, 1);
+    assertEq(r.hits[0].code, 'late-hook');
+    assertEq(r.hits[0].name, '嘲笑', 'hits 应给出全文首个冲突信号');
+    assertEq(r.hits[0].at, BG.length + '她被人'.length, 'hits 应定位到该信号在去空白正文中的位置');
+    assert(r.hits[0].head.startsWith('江城的春天多雨'), 'hits 应带开篇摘要供展示');
+  } },
+  { name: 'hookAnchor:全文无冲突锚点 → no-hook-anchor;正文过短/缺正文不产出结论', fn() {
+    const r = hookOf(scriptEp('江城的春天多雨。'.repeat(6)));
+    assertEq(r.hits.map(h => h.code).join(','), 'no-hook-anchor');
+    assertEq(r.hits[0].at, -1, '全文无锚点时不冒充位置');
+    assertEq(hookOf(scriptEp('江城春天多雨。')).level, 'info', '短于判定下限的片段不产出结论');
+    assertEq(hookOf(scriptEp('')).hits.length, 0, '缺剧本正文不产出结论(缺剧本本就是高危问题,不在此重复报)');
+    assertEq(hookOf(null).hits.length, 0, '无分集上下文且无项目剧本时不产出结论');
+  } },
+  { name: 'faceslapSteps:四步齐备且顺序正确 → info;缺步 → missing-step 逐步定位', fn() {
+    const full = '众人哄笑,嘲讽她是废物。她沉默着低头,默默攥紧手心。片刻后她亮出证据,揭穿了这场骗局。全场哗然,反派脸色惨白,连连道歉。';
+    assertEq(slapOf(scriptEp(full)).level, 'info', '羞辱→隐忍→反击→释放齐备且顺序正确');
+    const r = slapOf(scriptEp('众人哄笑,嘲讽她是废物。片刻后她亮出证据,揭穿了这场骗局,她转身离开了宴会厅。'));
+    assertEq(r.pass, false); assertEq(r.level, 'warn');
+    assertEq(r.hits.map(h => h.code + ':' + h.step).join(','), 'missing-step:隐忍,missing-step:释放', '缺的步应逐条报出步名');
+    assertEq(r.hits[0].at, -1, '缺步没有位置可报');
+  } },
+  { name: 'faceslapSteps:步序倒置 → step-out-of-order 带基准步;命中步数不足视为非打脸段落', fn() {
+    const r = slapOf(scriptEp('众人哄笑,嘲讽她是废物。她揭穿了这场骗局,亮出证据。随后她沉默着低头,默默攥紧手心。全场哗然。'));
+    assertEq(r.hits.map(h => h.code + ':' + h.step + '<' + h.base).join(','), 'step-out-of-order:反击<隐忍', '反击写在隐忍之前应如实报步序倒置');
+    assert(r.hits[0].at > 0, '倒置命中应带位置');
+    assertEq(slapOf(scriptEp('众人哄笑着走开了。江城的春天多雨,她撑着伞走过长街,想起小时候母亲教她的那些事。')).level, 'info',
+      '只命中一步的段落本就不是打脸段落,不拿"没写打脸"当缺陷报');
+    assertEq(slapOf(scriptEp(BG)).hits.length, 0, '零命中同理不产出结论');
+  } },
+  { name: 'dialogueLength:剧本引号台词与分镜台词两处载体同判据,阈值取自 KB 条目正文', fn() {
+    const KB = require('../js/knowledge.js');
+    assert(/单句≤30字/.test(KB.section('对话铁律')), '阈值单源:KB「对话铁律」条目须仍写明单句≤30字(字面失配时校验项会回落默认值)');
+    assertEq(lineOf(scriptEp('「' + '好'.repeat(30) + '」' + BG)).hits.length, 0, '恰好 30 字不算超长');
+    const r = lineOf(scriptEp('「' + '好'.repeat(31) + '。' + '好'.repeat(31) + '」' + BG));
+    assertEq(r.level, 'warn');
+    assertEq(r.hits.map(h => h.where + ':' + h.len).join(','), 'script:31,script:31', '引号台词内部按句切分,逐句判长');
+    assertEq(r.hits[0].name, '好'.repeat(14), 'hits 应带句首摘要');
+    assertEq(r.hits.map(h => h.at).join(','), '1,33', 'hits 应逐句定位到去空白正文中的位置(跳过开引号与句号)');
+    const s = { id: 'sh0', order: 0, dialogue: '好'.repeat(31) };
+    const r2 = lineOf(scriptEp(BG, [{ id: 'shx', order: 0, dialogue: '短句可以' }, Object.assign({}, s, { id: 'sh1', order: 1 })]));
+    assertEq(r2.hits.map(h => h.where + '@' + h.order).join(','), 'shot@2', '分镜台词按镜定位(镜号 = order + 1)');
+    assertEq(r2.hits[0].shotId, 'sh1', 'hits 应带镜头 id 供调用方跳转');
+    assertEq(Skills.check('script', { p: { id: 'p1' }, s }).find(x => x.skill === 'script.dialogueRule').hits.length, 1, '镜级入口只判传入的那一镜');
+  } },
+  { name: '剧本段三条:纯函数(不改入参、同输入同结论);项目剧本原文可判;无输入不冒充结论', fn() {
+    const ep = scriptEp(BG + '她被人嘲笑,却默默忍住。', [{ id: 'sh0', order: 0, dialogue: '好'.repeat(31) }]);
+    const p = { id: 'p1' };
+    const snap = JSON.stringify([p, ep]);
+    assertEq(JSON.stringify(Skills.check('script', { p, ep })), JSON.stringify(Skills.check('script', { p, ep })), '同输入应给同结论(无隐藏状态)');
+    assertEq(JSON.stringify([p, ep]), snap, '校验项不得改动领域对象');
+    // 拆集前只有项目剧本原文:同一套判据照跑(剧本步本身就是这几条的作用面)
+    assertEq(hookOf(null, { id: 'p1', script: BG + '她被人嘲笑。' }).hits.map(h => h.code).join(','), 'late-hook', '无分集上下文时取项目剧本原文');
+    const empty = Skills.check('script', {});
+    assertEq(empty.length, 3, '剧本步现有三条已落地校验项');
+    assertEq(empty.filter(x => x.level === 'info' && !x.hits.length).length, 3, '无判定输入时三条一律不产出命中');
+  } },
+  { name: '剧本段消费点:就绪检查按主线步序附结论 + 问题中心低危(不改门禁、不新增计费)', fn() {
+    const conc = Skills.check('script', { p: { id: 'p1' }, ep: scriptEp(BG) });
+    assertEq(conc.map(x => x.skill).join(','), 'script.hookStrength,script.faceslapFour,script.dialogueRule', '剧本面三条已落地校验项');
+    assertEq(conc.map(x => x.id).join(','), 'script.openingHookAnchor,script.faceslapStepOrder,script.dialogueLineLength', '结论应同时给实现 id 与能力 id');
+    [['js/commands.js', fs.readFileSync(path.join(ROOT, 'js', 'commands.js'), 'utf8')], ['cli.js', fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8')]].forEach(([f, src]) => {
+      assert(/Skills\.check\('script'/.test(src), f + ' 就绪检查应跑剧本面校验项');
+      assert(src.indexOf("Skills.check('script'") < src.indexOf("Skills.check('subjects'"), f + ' 结论应按主线步序排列(剧本在主体之前)');
+    });
+    const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
+    assert(/Skills\.check\('script'/.test(isrc), '问题中心应复用同一校验项,不写第二份判定');
+    assert(isrc.includes("kind: 'script-craft', sev: 'low'"), '剧本方法论提醒须挂低危(发布门 G2 只数高/中危)');
+    // 审片报告与发布门的方法论维度仍是 G-10,条目不得挂未接的命令面
+    ['script.hookStrength', 'script.faceslapFour'].forEach(id => {
+      assert(Skills.byId(id).gaps.includes('G-10'), id + ' 的审片/发布门维度仍待 G-10');
+      assert(!Skills.byId(id).cmds.includes('episode.smartReview'), id + ' 不得挂未接的审片命令面');
+    });
+  } },
   { name: 'refIntegrity:干净夹具全 pass(引用齐备且有真实参考图 → info 无命中)', fn() {
     const p = refP();
     const ep = { id: 'ep1', shots: [
