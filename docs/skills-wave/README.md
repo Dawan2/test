@@ -52,6 +52,7 @@
 | [w24-sk10-ai-voice.md](./w24-sk10-ai-voice.md) | SK-10 文案 AI 味的校验半落地(套话硬禁词/台词书面腔/修饰副词密度三码词法命中):三张词表的取舍口径、为什么不冒充语义审片、注入半为什么仍挂 `pending` | 加剧本面校验项、改 AI 味判据,或想知道文案怎么被词法判定 |
 | [w25-integration-log.md](./w25-integration-log.md) | W22 G-06 校验半、W23 文档数字对账契约与 W24 SK-10 文案 AI 味收敛到集成分支的记录:长行文档的句级三方合并解法、合并后必须重对齐的断言逐条说明、用例名集合比对证明没删测 | 想知道主干现在是什么状态 |
 | [w28-sk22-gen-check.md](./w28-sk22-gen-check.md) | SK-22 生成凭据与确认失效校验落地(生成面从零到一):五个码各报既有机制的哪一处失效点、为什么不复述 `Domain` 已有计数、`preflightStages()` 由登记推导自动多出一面的实测(两端 preflight 实现零改动) | 加生成面校验项,或想验证「新增一面只改一处」前 |
+| [w31-sk16-playbook.md](./w31-sk16-playbook.md) | SK-16 主线前段编排补齐拆集与主体提取(playbook 2 步 → 4 步):步序为什么取 `Domain.workflow` 同源、`cmds` 为什么改由 `steps` 推出、`args` 为什么一律留空(不替调用方预授权 `overwrite`) | 改编排型条目的 `steps`/`playbook` 产出前 |
 
 ## 一分钟摘要(周期 2 收敛后)
 
@@ -64,7 +65,7 @@
 - 记账诚实位:`SK-03`/`SK-04`/`SK-23` 的 `infra` 面仍 `pending`(改 `pending` 会动 `Skills.gaps()` 投影,单列一轮),但三条 `note` 已一律写明 G-01/G-02/G-03 的已落地实况,并由断言钉在三处出口的实况上。
 - 人设/记忆注入面覆盖五条工作流:理解、分镜、审片、提取主体、剧本拆集(`WfCore.WF_BOARD` 五键单源,服务端唯一装配口 `wfPersonaNote` 由契约断言锁死调用点数)。
 - 词表分叉已收口:景别/运镜/视角/角度四张词表的单一来源在 `js/wf-core.js`,`camera.js`/`review.js`/`sb-io.js`/`agent.js` 全派生(G-07,见 `w4-shot-size-glossary.md`)。
-- 前段命令全过 wf 通道:剧本拆集(G-04)与提取主体都有服务端端点,人设与协作记忆按板块注入,headless 与浏览器同口径。
+- 前段命令全过 wf 通道:剧本拆集(G-04)与提取主体都有服务端端点,人设与协作记忆按板块注入,headless 与浏览器同口径。**编排层也已跟上**:`Skills.playbook('eps.frontPipeline')`(SK-16)从集内两步补成前段四步(提取主体 → 剧本拆集 → 本集理解 → 智能分镜,步序与 `Domain.workflow` 同源),条目 `cmds` 改由 `steps` 推出、四步 `args` 一律留空不预授权,见 [w31-sk16-playbook.md](./w31-sk16-playbook.md)。
 - `WfCore.memRecall/memBlock` 有了直接单测(memory 套件 6 条),不再是"实现存在但零断言"的模块。
 
 ## 阅读约定
