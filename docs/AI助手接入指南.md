@@ -10,7 +10,7 @@
 { "mcpServers": { "hujing": { "command": "node", "args": ["C:/Users/EDY/modelvideo-hujing/mcp.js"] } } }
 ```
 
-- 29 个工具(`hujing_*`),stdio 传输,零依赖;工具调用 = 包装 cli.js,计费/幂等/退费语义与 CLI 完全一致。
+- 31 个工具(`hujing_*`),stdio 传输,零依赖;工具调用 = 包装 cli.js,计费/幂等/退费语义与 CLI 完全一致。
 - 工具结果:stdout 纯 JSON 原样透传;非零 exit 时 `isError:true` 并附 exit code 语义。
 - resources:只读状态直读——`hujing://projects`、`hujing://project/{pid}/show`、`hujing://project/{pid}/workflow`、`hujing://project/{pid}/episode/{epid}/workflow`,不必记工具参数面。
 - prompts:`hujing_new_drama`(新剧开工流程)/`hujing_failed_shots`(失败镜排查流程)两个模板,一次拿到正确的工具调用序列。
@@ -45,7 +45,9 @@ node cli.js login --username u --password p # 登录,凭据存 ~/.hujing/config.
 ```bash
 PID=$(node cli.js project-create --name 我的剧 --script-file script.txt | node -pe "JSON.parse(require('fs').readFileSync(0)).pid")
 node cli.js workflow $PID                                  # 看下一步推荐(随时可查)
-node cli.js episode-script $PID <epid> --content-file ep1.txt   # 写剧本(contentRev+1,下游自动判旧)
+node cli.js project-script $PID --script-file script.txt   # 补写整部剧本原文(project-create 已带 --script-file 时可跳过)
+node cli.js exec project.splitEpisodes --args "{\"pid\":\"$PID\"}"   # 整部剧本一键拆集(已有分集要加 overwrite,加 local 强制段落均分零计费)
+node cli.js episode-script $PID <epid> --content-file ep1.txt   # 或逐集手写剧本(contentRev+1,下游自动判旧)
 node cli.js subject-add $PID --name 女主 --gen-image       # 建主体+生成参考图(空主体库=每镜换脸)
 node cli.js exec episode.generateStoryboard --args "{\"pid\":\"$PID\",\"epid\":\"<epid>\"}"  # 智能分镜(服务端工作流)
 node cli.js shots $PID <epid>                              # 检查分镜表
