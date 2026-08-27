@@ -25,6 +25,18 @@
   const craftLine = h => (CRAFT[h.code] || h.code)
     + (h.step ? `「${h.step}」` : h.name ? `「${h.name}」` : '')
     + (h.order ? `(镜头${h.order})` : '');
+  /* 分集面命中码 → 展示文案(同上:判据只在 js/skills.js 的校验项里一份) */
+  const EPSC = {
+    'stage-uncovered': '这一段弧线没有正文',
+    'stage-thin': '这一段被压成过场',
+    'early-no-reversal': '开篇期未见反转',
+    'flat-ending': '结尾平收,卡点没落在集尾',
+    'payoff-not-cashed': '卡点承诺未在下一集兑现',
+  };
+  /* 六阶段覆盖命中 → 一行明细:码文案 + 段名与集号区间 */
+  const stageLine = h => `${h.stage || ''}(第${h.from}-${h.to}集)${EPSC[h.code] || h.code}`;
+  /* 付费卡点命中 → 一行明细:码文案 + 兑现落空时点到下一集 */
+  const payoffLine = h => (EPSC[h.code] || h.code) + (h.next ? `(应在第${h.next}集兑现)` : '');
 
   /* ================= 问题清单推导(纯数据,可 vm 沙箱测试) =================
    * 条目:{ kind, sev(high|mid|low), count, label, detail, epid?, epTitle?, cmd?, shotIds?, goto? }
@@ -40,6 +52,16 @@
       label: `${noImg.length} 个主体缺权威参考图`,
       detail: '缺参考图的主体参与生成会触发防废片警示:' + noImg.slice(0, 6).map(s => s.name).join('、') + (noImg.length > 6 ? ` 等 ${noImg.length} 个` : ''),
       goto: '#/project/' + p.id + '/roles',
+    });
+    /* 项目级:六阶段结构覆盖(js/skills.js SK-14 校验项,纯本地零 LLM 零计费)——判定输入是整张分集表,
+     * 故按项目挂一条而不是逐集重复报;低危只报不拦,不改门禁状态也不进 Domain 的阻塞项 */
+    const arc = window.Skills ? (Skills.check('eps', { p }).find(x => x.skill === 'eps.structureStage') || {}).hits || [] : [];
+    if (arc.length) out.push({
+      kind: 'eps-structure', sev: 'low', count: arc.length,
+      label: `分集表 ${arc.length} 处六阶段结构提醒`,
+      detail: arc.slice(0, 4).map(stageLine).join(';') + (arc.length > 4 ? ` 等 ${arc.length} 处` : '')
+        + '——判据取自知识库条目,只提醒不拦生成',
+      goto: '#/project/' + p.id,
     });
     (p.episodes || []).forEach((ep, i) => {
       const st = window.Domain ? Domain.episodeState(p, ep, on) : { counts: {}, blockers: [] };
@@ -59,6 +81,15 @@
         label: `「${ep.title}」${craft.length} 处剧本方法论提醒`,
         detail: craft.slice(0, 4).map(craftLine).join(';') + (craft.length > 4 ? ` 等 ${craft.length} 处` : '')
           + '——判据取自知识库条目,只提醒不拦生成',
+        goto: `#/project/${p.id}/episode/${ep.id}`,
+      }));
+      /* 付费卡点位置(js/skills.js SK-15 校验项,同上纯本地零 LLM 零计费):集尾是不是情绪最高那一拍、
+       * 卡点承诺有没有在下一集兑现——与剧本面同为低危提醒,同样排在未拆镜等早退分支之前 */
+      const payoff = window.Skills ? (Skills.check('eps', { p, ep }).find(x => x.skill === 'eps.payoffPoint') || {}).hits || [] : [];
+      if (payoff.length) out.push(Object.assign({}, base, {
+        kind: 'eps-payoff', sev: 'low', count: payoff.length,
+        label: `「${ep.title}」${payoff.length} 处付费卡点提醒`,
+        detail: payoff.map(payoffLine).join(';') + '——判据取自知识库条目,只提醒不拦生成',
         goto: `#/project/${p.id}/episode/${ep.id}`,
       }));
       if (!c.total) { out.push(Object.assign({}, base, { kind: 'no-shots', sev: 'mid', count: 1, label: `「${ep.title}」未生成分镜`, detail: '已有剧本未拆镜,可直接智能分镜', cmd: 'episode.generateStoryboard' })); return; }

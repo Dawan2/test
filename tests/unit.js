@@ -2717,6 +2717,33 @@ const issuesTests = [
     assertEq(sb.Issues.collect({ id: 'p2', episodes: [{ id: 'ep1', title: '第一集', content: '剧本正文', shots: [] }] }).filter(x => x.kind === 'script-craft').length, 0,
       '短于判定下限的片段不产出提醒(不给存量小样制造噪音)');
   } },
+  { name: 'collect:分集方法论提醒 → 六阶段按项目挂一条 + 付费卡点按集挂,均低危不吞后续问题', fn() {
+    const sb = loadIssues();
+    // 判据在 js/skills.js(SK-14/SK-15),本处只验消费:第4集无正文摊在转折期,第2集集尾被中性填充挤平
+    const FILL2 = '江城的春天多雨。'.repeat(16);
+    const OK = '她原来早就知道那份文件是假的。她亮出证据当众揭穿骗局,众人哗然,反派连连道歉。'
+      + '门被推开,那个人竟然出现:「你老婆在我手上,一小时内拿东西来换。」';
+    const body = [OK, OK + FILL2, OK, '', OK, OK];
+    const p = { id: 'p1', subjects: [{ id: 'sj1', name: '主角', kind: 'character', image: 'u' }],
+      episodes: body.map((c, i) => ({ id: 'ep' + (i + 1), title: '第' + (i + 1) + '集', content: c, shots: [] })) };
+    const list = sb.Issues.collect(p);
+    const arc = list.find(x => x.kind === 'eps-structure');
+    assert(arc, '六阶段结构命中应入清单');
+    assertEq(arc.sev, 'low', '分集方法论提醒是提醒级(发布门 G2 只数高/中危)');
+    assert(arc.detail.includes('转折期(第4-4集)'), '明细应给段名与集号区间,实际:' + arc.detail);
+    assertEq(arc.epid, undefined, '判定输入是整张分集表,按项目挂一条而不是逐集重复报');
+    assertEq(list.filter(x => x.kind === 'eps-structure').length, 1);
+    const pay = list.filter(x => x.kind === 'eps-payoff');
+    assertEq(pay.length, 1, '只有集尾平收的那一集报卡点提醒');
+    assertEq(pay[0].epid, 'ep2');
+    assertEq(pay[0].sev, 'low');
+    assert(pay[0].detail.includes('卡点没落在集尾'), '明细应给命中码的中文文案,实际:' + pay[0].detail);
+    assert(arc.goto && !arc.cmd && pay[0].goto && !pay[0].cmd, '分集问题走导航自查,不挂命令处置(不触发任何生成)');
+    assert(list.some(x => x.kind === 'no-script' && x.epid === 'ep4'), '缺正文的那一集仍照报高危(分集提醒不吞既有问题)');
+    assert(list.some(x => x.kind === 'no-shots'), '未拆镜中危不被分集提醒吞掉');
+    assertEq(sb.Issues.collect({ id: 'p2', episodes: [{ id: 'ep1', title: '第一集', content: OK, shots: [] }] }).filter(x => x.kind.startsWith('eps-')).length, 0,
+      '单集项目摊不出六段、也没有下一集可兑现,不产出提醒(不给存量小样制造噪音)');
+  } },
   { name: 'collect:素材更新过期镜(assetVer 抬升)→ stale-shots 带镜头号', fn() {
     const sb = loadIssues();
     const ep = cleanEp({ shots: [Object.assign({}, cleanEp().shots[0], { characters: ['主角'], video: { status: 'done', url: 'http://x/v.mp4', assetVer: 1 } })], composed: false });
@@ -3637,6 +3664,16 @@ const scriptCheck = (skill, ep, p) => Skills.check('script', { p: p || { id: 'p1
 const hookOf = (ep, p) => scriptCheck('script.hookStrength', ep, p);
 const slapOf = ep => scriptCheck('script.faceslapFour', ep);
 const lineOf = ep => scriptCheck('script.dialogueRule', ep);
+/* 分集段夹具:六集起判(集数少于六段时按比例缩放必把某段摊成零集,不产出结论)。
+ * EP_OK = 集首立刻兑现上一集卡点(亮出证据/揭穿/道歉)+ 集尾卡在情绪最高拍(致命危机)+ 带反转信号;
+ * FILL 是不含任何信号的中性填充,长度超过集尾窗口(120),接在集尾即把卡点挤出窗口。 */
+const FILL = '江城的春天多雨。'.repeat(16);
+const EP_OK = '她原来早就知道那份文件是假的。她亮出证据当众揭穿骗局,众人哗然,反派连连道歉。'
+  + '门被推开,那个人竟然出现:「你老婆在我手上,一小时内拿东西来换。」';
+const epsP = list => ({ id: 'p1', episodes: list.map((c, i) => ({ id: 'ep' + (i + 1), title: '第' + (i + 1) + '集', content: c })) });
+const sixEps = (over) => epsP(Array.from({ length: 6 }, (_, i) => ((over || {})[i + 1] === undefined ? EP_OK : over[i + 1])));
+const arcOf = p => Skills.check('eps', { p }).find(x => x.skill === 'eps.structureStage');
+const payoffOf = (p, ep) => Skills.check('eps', { p, ep }).find(x => x.skill === 'eps.payoffPoint');
 
 const skillsTests = [
   { name: 'hookAnchor:开篇直接进台词/冲突信号 → info;背景铺陈过长 → late-hook(带首个信号位置)', fn() {
@@ -3853,6 +3890,89 @@ const skillsTests = [
     const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
     assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 只数高/中危 —— 低危提醒不改门禁状态');
     ['episode.generateVideos', 'shot.generateVideo'].forEach(n => assert(!Skills.byId('subjects.crossShot').cmds.includes(n), '生成侧消费待 G-06,条目不得挂未接的命令面:' + n));
+  } },
+  { name: 'stageCoverage:六段段名与集号区间取自 KB 条目正文,按比例摊到当前集数;干净分集表 → info', fn() {
+    const KB = require('../js/knowledge.js');
+    assert(/开篇期[((]1-10集[))]/.test(KB.section('六阶段结构')), '区间单源:KB「六阶段结构」须仍写明开篇期(1-10集)(字面失配时校验项不产出结论)');
+    assert(/前3集必须出现第一个大反转/.test(KB.section('六阶段结构')), '开篇期反转判据须仍在条目正文里');
+    const r = arcOf(sixEps());
+    assertEq(r.pass, true); assertEq(r.level, 'info'); assertEq(r.hits.length, 0, '六段各有正文且开篇有反转,不应产出命中');
+    // 六集时六段各摊一集(条目刻度 1-100 按累计边界四舍五入),命中定位到段名与集号区间
+    const spans = arcOf(sixEps({ 1: '', 2: '', 3: '', 4: '', 5: '', 6: '' })).hits;
+    assertEq(spans.map(h => h.stage + ':' + h.from + '-' + h.to).join(','), '开篇期:1-1,升温期:2-2,高潮期:3-3,转折期:4-4,冲刺期:5-5,结局期:6-6');
+    assertEq(arcOf(epsP(Array.from({ length: 12 }, () => EP_OK))).hits.length, 0, '十二集同样摊得动六段(集数少按比例缩放)');
+  } },
+  { name: 'stageCoverage:某段无正文 → stage-uncovered;某段被压成过场 → stage-thin(带段名与集号区间)', fn() {
+    const r = arcOf(sixEps({ 4: '' }));
+    assertEq(r.pass, false); assertEq(r.level, 'warn', '结构覆盖是提醒级,不升 fail');
+    assertEq(r.hits.map(h => h.code + ':' + h.stage + ':' + h.from + '-' + h.to).join(','), 'stage-uncovered:转折期:4-4');
+    assertEq(r.hits[0].len, 0, 'hits 应带该段实际字数供展示');
+    assertEq(arcOf(sixEps({ 4: '她' })).hits[0].code, 'stage-uncovered', '短于判定下限的占位正文不算覆盖到这一段');
+    // 其余五集各 200 字、结局期只有 40 字:有正文但不足按集数摊到的份额三分之一
+    const tail = '她原来站在门口,竟然一个字都没有说,转身走进了那场瓢泼大雨里,再没有回过头。';
+    const thin = arcOf(epsP([EP_OK + FILL, EP_OK + FILL, EP_OK + FILL, EP_OK + FILL, EP_OK + FILL, tail]));
+    assertEq(thin.hits.map(h => h.code + ':' + h.stage).join(','), 'stage-thin:结局期');
+    assertEq(thin.hits[0].len, tail.length, 'hits 的字数应是该段去空白正文字数');
+  } },
+  { name: 'stageCoverage:开篇期无反转信号 → early-no-reversal;集数少于六段不产出结论', fn() {
+    const r = arcOf(sixEps({ 1: '她抱着纸箱走进雨夜的街道,身后传来一声尖锐的刹车,救命声划破长街,危险就在眼前。' }));
+    assertEq(r.hits.map(h => h.code + ':' + h.stage).join(','), 'early-no-reversal:开篇期', '开篇有冲突但通篇无反转信号应如实报');
+    assertEq(arcOf(sixEps()).hits.length, 0, '开篇期命中反转信号即不报');
+    // 只约束开篇期:后段无反转不报(条目只写「前3集必须出现第一个大反转」)
+    assertEq(arcOf(sixEps({ 3: '她抱着纸箱走进雨夜的街道,身后传来一声尖锐的刹车,救命声划破长街,危险就在眼前。' })).hits.length, 0,
+      '条目只约束开篇期,不拿"后段没写反转"当缺陷报');
+    assertEq(arcOf(epsP(Array.from({ length: 5 }, () => EP_OK))).level, 'info', '五集摊不出六段,不冒充结论');
+    assertEq(arcOf({ id: 'p1', episodes: [] }).hits.length, 0, '空分集表无判定输入(未建分集本就是 workflow 的阻塞项)');
+  } },
+  { name: 'payoffPlacement:集尾卡在情绪最高拍 → info;集尾平收 → flat-ending(带全文最后一个信号位置)', fn() {
+    assertEq(payoffOf(sixEps()).level, 'info', '每集集尾都有卡点信号且下一集集首立刻兑现');
+    const r = payoffOf(sixEps({ 2: EP_OK + FILL })); // 卡点信号被 128 字中性填充挤出集尾窗口
+    assertEq(r.pass, false); assertEq(r.level, 'warn', '卡点位置是提醒级,不升 fail');
+    assertEq(r.hits.map(h => h.code + '@' + h.order).join(','), 'flat-ending@2');
+    assertEq(r.hits[0].epId, 'ep2', 'hits 应带分集 id 供调用方跳转');
+    assertEq(r.hits[0].name, '一小时');
+    assertEq(r.hits[0].at, (EP_OK + FILL).replace(/\s+/g, '').lastIndexOf('一小时'), 'hits 应定位到全文最后一个卡点信号(提示卡点该往后挪)');
+    assertEq(payoffOf(sixEps({ 2: FILL })).hits.filter(h => h.order === 2).length, 0, '全集一个信号都没有的段落归剧本段结论(SK-07),分集段不重复报');
+  } },
+  { name: 'payoffPlacement:卡点未在下一集兑现 → payoff-not-cashed;末集与集序外不判', fn() {
+    const r = payoffOf(sixEps({ 2: FILL }));
+    assertEq(r.hits.map(h => h.code + '@' + h.order + '→' + h.next).join(','), 'payoff-not-cashed@1→2', '第1集卡点后第2集集首找不到兑现信号');
+    assertEq(r.hits[0].name, '原来', 'hits 应带集尾那个卡点信号');
+    assertEq(payoffOf(sixEps({ 6: EP_OK + FILL })).hits.length, 0, '末集平收不判(全剧收束不需要再卡)');
+    assertEq(payoffOf(sixEps({ 2: '她' })).hits.length, 0, '下一集正文短于判定下限时不判兑现(无判定输入)');
+    const p = sixEps({ 2: EP_OK + FILL });
+    assertEq(payoffOf(p, { id: 'zzz', content: EP_OK + FILL }).hits.length, 0, '传入的集不在集序里即无判定输入');
+  } },
+  { name: '分集段两条:纯函数(不改入参、同输入同结论);集级入口只判传入那一集;无输入不冒充结论', fn() {
+    const p = sixEps({ 2: EP_OK + FILL, 4: '' });
+    const snap = JSON.stringify(p);
+    assertEq(JSON.stringify(Skills.check('eps', { p })), JSON.stringify(Skills.check('eps', { p })), '同输入应给同结论(无隐藏状态)');
+    assertEq(JSON.stringify(p), snap, '校验项不得改动领域对象');
+    assertEq(payoffOf(p, p.episodes[1]).hits.map(h => h.order).join(','), '2', '集级入口只判传入那一集');
+    assertEq(arcOf(p).hits.map(h => h.code + ':' + h.stage).join(','), 'stage-uncovered:转折期', '六阶段覆盖是整表判定');
+    assertEq(JSON.stringify(Skills.check('eps', { p, ep: p.episodes[1] })[0].hits), JSON.stringify(arcOf(p).hits), '就绪检查按集调用时结构结论仍是整表口径');
+    const empty = Skills.check('eps', {});
+    assertEq(empty.length, 2, '分集步现有两条已落地校验项');
+    assertEq(empty.filter(x => x.level === 'info' && !x.hits.length).length, 2, '无判定输入时两条一律不产出命中');
+  } },
+  { name: '分集段消费点:就绪检查按主线步序附结论 + 问题中心低危(不改门禁、不新增计费)', fn() {
+    const conc = Skills.check('eps', { p: sixEps() });
+    assertEq(conc.map(x => x.skill).join(','), 'eps.structureStage,eps.payoffPoint', '分集面两条已落地校验项');
+    assertEq(conc.map(x => x.id).join(','), 'eps.stageCoverage,eps.payoffPlacement', '结论应同时给实现 id 与能力 id');
+    [['js/commands.js', fs.readFileSync(path.join(ROOT, 'js', 'commands.js'), 'utf8')], ['cli.js', fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8')]].forEach(([f, src]) => {
+      assert(/Skills\.check\('eps'/.test(src), f + ' 就绪检查应跑分集面校验项');
+      assert(src.indexOf("Skills.check('subjects'") < src.indexOf("Skills.check('eps'"), f + ' 结论应按主线步序排列(分集在主体之后)');
+    });
+    const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
+    assert(/Skills\.check\('eps'/.test(isrc), '问题中心应复用同一校验项,不写第二份判定');
+    assert(isrc.includes("kind: 'eps-structure', sev: 'low'") && isrc.includes("kind: 'eps-payoff', sev: 'low'"), '分集面提醒须挂低危(发布门 G2 只数高/中危)');
+    // 审片报告与发布门的方法论维度仍是 G-10,条目不得挂未接的命令面
+    ['eps.structureStage', 'eps.payoffPoint'].forEach(id => {
+      assertEq(Skills.byId(id).pending.length, 0, id + ' 校验面已落地,pending 应清空');
+      assert(Skills.byId(id).cmds.includes('episode.preflight'), id + ' 应记真实消费点');
+      assert(!Skills.byId(id).cmds.includes('episode.smartReview'), id + ' 不得挂未接的审片命令面');
+    });
+    assert(Skills.byId('eps.payoffPoint').gaps.includes('G-10'), '卡点掐得准不准仍属审片维度,待 G-10');
   } },
 ];
 
