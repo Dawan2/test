@@ -882,7 +882,7 @@
     {
       id: 'core.personaCtx', sk: 'SK-03', name: '生效人设经 ctx 过服务端', stage: CROSS, wave: 'W3',
       kinds: ['infra'],
-      prompts: ['split.system', 'extract.system', 'digest.planSystem', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem',
+      prompts: ['split.system', 'extract.system', 'digest.planSystem', 'sb.boardSceneSystem', 'sb.boardDraftSystem', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem',
         'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem',
         'narration.system', 'reading.system', 'concept.system', 'light.system',
         'voice.recommendSystem', 'voice.recommendBatchSystem'],
@@ -910,6 +910,10 @@
         + '取值口就在调用点 Persona.recommendVoice/recommendVoicesBatch,浏览器隐式读全局默认值页的覆盖表。'
         + '剧本摘要链路(EpisodeUtil.aiScriptDigest)通读/汇总/集纲三步同一句策划人设,收编为一条 digest.planSystem 键、'
         + '三个 Prompts.get 取用口(三处字面逐字节相同,不拆三键),末步人物小传是另一个角色仍同 extract.system。'
+        + '分镜脚本创作层两步的人设句同形收编为两条独立键(场次节拍拆解 sb.boardSceneSystem/'
+        + '文字分镜拆解 sb.boardDraftSystem——编剧与分镜师两个角色,措辞与产物落点都不同,不合成一个键),'
+        + '两步在 js/sb-board.js 同经 Prompts.get 取值、缺省逐字节不变,'
+        + '与多轮那三份同为只有浏览器一个消费点的键(用户在「全局默认值」页改得到)。'
         + '仍欠:四处的 ops 协议/字段面/命令白名单/返回 JSON 约定仍由各自装配口拼、不开放覆盖'
         + '(那半是 ops 解析契约,用户改坏即整轮无 ops);'
         + '音色推荐两条同理只收人设句——音色库取值范围与返回 JSON 约定仍写在各自调用点、不开放覆盖'
