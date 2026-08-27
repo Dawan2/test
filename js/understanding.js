@@ -103,6 +103,7 @@
           clearInterval(crawl);
           ep.understanding = st.understanding;
           ep.understanding.sourceRev = ep.contentRev || 0; // 十轮:记录理解对应的剧本版本(剧本修改后判旧)
+          ep.understanding.graphRev = ep.graphRev || 0;    // 记录理解对应的事件图谱版本(图谱修订后判旧)
           Store.save();
           Tasks.done(tk);
           info(0, `<span style="color:var(--green)">✓ 本集理解已生成(${((Date.now() - t0) / 1000).toFixed(1)}s):${U.esc(st.understanding.剧情脉络.slice(0, 30))}…</span>`);
@@ -146,6 +147,7 @@
     }
     Tasks.done(tk);
     nu.sourceRev = ep.contentRev || 0; // 生成成功刷 sourceRev(对应器当前剧本版本,不判旧)
+    nu.graphRev = ep.graphRev || 0;    // 同步刷 graphRev(对应器当前图谱版本)
     ep.understanding = nu;
     Store.save();
     U.toast('本集理解已生成,将注入智能分镜/提示词优化/视频生成', 'success', 3000);
@@ -187,6 +189,7 @@
         m.querySelector('[data-x=ok]').onclick = () => {
           collect();
           u.sourceRev = ep.contentRev || 0; // 十一轮:手动保存视为用户确认对应当前剧本(不再判旧)
+          u.graphRev = ep.graphRev || 0;    // 手动保存同样认领当前图谱版本
           ep.understanding = u;
           Store.save(); close();
           U.toast('本集理解已保存,将注入分镜生成', 'success');

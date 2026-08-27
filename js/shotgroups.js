@@ -280,6 +280,7 @@
         const g = groupsOf(ep).find(x => x.id === b.dataset.gdel);
         U.confirm(`解散镜头组「${g.name}」?组内分镜保留,仅解除分组。`, () => {
           ep.shots.forEach(s => { if (s.groupId === g.id) s.groupId = null; });
+          (ep.beats || []).forEach(bt => { if (bt.groupId === g.id) bt.groupId = null; }); // 节拍板绑定一并解除,不留悬空 groupId
           ep.groups = groupsOf(ep).filter(x => x.id !== g.id);
           Store.save(); rerender();
         }, '解散');

@@ -37,8 +37,11 @@
     return wf.recommendedAction || null;
   }
 
-  /* ---- 命令注册 ---- */
-  function reg(name, meta, handler) { REG[name] = Object.assign({ name, risk: 'exec', meter: true, needs: ['p', 'ep'] }, meta, { handler }); }
+  /* ---- 命令注册:元数据默认值取自双端单源 cmd-registry.js,本地 meta(meter 等执行侧差异)覆盖 ---- */
+  function reg(name, meta, handler) {
+    const rm = (typeof CmdRegistry !== 'undefined' && CmdRegistry.byName[name]) || {};
+    REG[name] = Object.assign({ name, risk: 'exec', meter: true, needs: ['p', 'ep'] }, rm, meta, { handler });
+  }
 
   /* 生产就绪检查(read):Domain.episodeState 单源推导,流程条/下一步/CLI 同口径 */
   reg('episode.preflight', { risk: 'read', meter: false, label: '生产就绪检查' }, async ({ p, ep }) => {
@@ -256,9 +259,9 @@
     }
   }
 
-  /* 自省:list 供 Agent/CLI 发现可用命令(名称/语义/风险级/参数) */
+  /* 自省:list 供 Agent/CLI/MCP 发现可用命令(名称/语义/风险级/参数面;desc/args 来自 cmd-registry.js 单源) */
   function list() {
-    return Object.keys(REG).map(n => ({ name: n, label: REG[n].label || n, risk: REG[n].risk, needs: REG[n].needs }));
+    return Object.keys(REG).map(n => ({ name: n, label: REG[n].label || n, risk: REG[n].risk, needs: REG[n].needs, desc: REG[n].desc || '', args: REG[n].args || [] }));
   }
 
   /* ---- UI 调用方统一消化命令回执(第三阶段) ----

@@ -226,6 +226,7 @@
         else if (nx.key === 'gen') SB.runBatchOp(p, ep, main, 'video');
         else if (nx.key === 'film') Commands.execute('episode.compose', { pid: p.id, epid: ep.id, main, ui: true }).then(r => Commands.digest(r)); // 统一命令层(ui 模式)
         else if (nx.key === 'export') window.SB.openPlayer(p, ep, false); // 顶栏导出已并入预览:预览长视频内导出
+        else if (nx.run) nx.run(main); // 带执行动作的下一步(如 regen-stale 批量重生成过期镜)
       };
       const psb = main.querySelector('[data-x=prevstep]');
       if (psb) psb.onclick = () => {

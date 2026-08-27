@@ -3,6 +3,7 @@
  * 覆盖大文件拆分产出的领域文件 + 服务端计费核心:
  *   js/agent-ops.js —— ops 应用器/执行闭环验证/预排钳制/上下文压缩/工作台定位/动作执行器
  *   js/experts.js   —— 预置专家库/雇佣·解雇/自进化计费五件套/工坊草稿规范化
+ *   js/experts-data.js —— 专家注册表双端单源(projTypeOf 推导与浏览器 projType 同口径,二十二轮)
  *   js/produce.js   —— 智能审片闭环(达标/重试/积分不足/超限)与一键成片编排顺序
  *   js/store.js     —— 三方合并/输入指纹迁移/合成快照/成片就绪/fileFavs 合并
  *   js/sb-gen.js    —— 廉价改图验证 genShotValidate(文生/融合两档计价/终稿拦截/失败退费/离线占位)
@@ -15,7 +16,7 @@
  *      fs 读取真实源码 runInContext 加载,对 window.Xxx 暴露的成员做断言——被测代码即生产代码;
  *      billing.js 为纯模块直接 require(服务端与测试共享同一份推导逻辑)。
  * 用法:node tests/unit.js            全部套件
- *      node tests/unit.js agent-ops  单套件(agent-ops|experts|produce|store|sb-gen|pipeline|sb-views|sb-io|understanding|billing)
+ *      node tests/unit.js agent-ops  单套件(agent-ops|experts|produce|store|sb-gen|pipeline|sb-views|sb-io|understanding|billing|contract)
  * 约束:无网络、无服务、无浏览器;DOM 重交互(bindPrearr/bindChoices 卡片绑定等)不在本层覆盖,由 e2e 承担。 */
 'use strict';
 const fs = require('fs');
@@ -130,6 +131,7 @@ function loadAgentOps() {
     estShotDuration: s => s.duration || 5,
     renderShots() {}, composeVideo() {}, batchGenVideos: async () => {},
   });
+  loadFile(sb, 'cmd-registry.js'); // run 类 op 参数白名单/类型整形的数据源(与 index.html 同顺序)
   loadFile(sb, 'agent-ops.js');
   return sb;
 }
@@ -145,6 +147,7 @@ function loadExperts() {
     EXPERT_ROLES: ['导演', '编剧', '摄像', '策划', '其他'],
     dirFallback: () => ({ 光影: 'fb光影', 色调: 'fb色调', 情感氛围: 'fb氛围', 服化道审美: 'fb服化', 表演气质: 'fb表演' }),
   };
+  loadFile(sb, 'experts-data.js'); // 注册表双端单源(experts.js 消费其 EXPERTS/projTypeOf)
   loadFile(sb, 'experts.js');
   return sb;
 }
@@ -188,6 +191,7 @@ function loadProduce() {
   };
   loadFile(sb, 'domain.js'); // preflight 工作流状态单源(运行期引用)
   loadFile(sb, 'produce.js');
+  loadFile(sb, 'cmd-registry.js'); // 命令元数据单源(与 index.html 同顺序)
   loadFile(sb, 'commands.js'); // oneClickProduce/跑批经 Commands.execute('episode.produce') 编排(与浏览器同顺序:produce 之后)
   return sb;
 }
@@ -756,6 +760,97 @@ const agentOpsTests = [
     assert(done[0].includes('✓'), 'ok 回执应标 ✓');
   } },
 
+  /* ---- 二十二轮:cmd+args 动作协议(参数通道/白名单整形/回执带下一步/自修复重试) ---- */
+  { name: 'cmdProtocol:命令白名单与参数面由注册表生成(全命令+参数枚举)', fn() {
+    const sb = loadAgentOps(); const AO = sb.AgentOps;
+    const CR = require('../js/cmd-registry.js');
+    sb.Commands = { list: () => CR.META.map(m => ({ name: m.name, label: m.label, risk: m.risk, needs: m.needs, desc: m.desc, args: m.args })) };
+    const txt = AO.cmdProtocol();
+    CR.names().forEach(n => assert(txt.includes(n), '协议应含命令 ' + n));
+    assert(txt.includes('confirmAll') && txt.includes('shotIds') && txt.includes('maxRetry'), '协议应枚举参数面(confirmAll/shotIds/maxRetry)');
+    assert(!txt.includes('"ui"'), 'ui 为调用方语境参数,不开放给模型');
+  } },
+  { name: 'sanitizeCmdArgs:白名单键保留+类型整形,未声明键与 pid/epid/ui 一律丢弃', fn() {
+    const sb = loadAgentOps(); const AO = sb.AgentOps;
+    const r = AO.sanitizeCmdArgs('episode.generateVideos', { confirmAll: 1, shotIds: ['sh1', 2], nope: 'x', pid: 'hack', ui: true, maxRetry: 'abc' });
+    assertEq(r.confirmAll, true, 'boolean 应整形');
+    assertEq(r.shotIds.join(','), 'sh1,2', 'array 应元素字符串化');
+    assert(r.nope === undefined && r.pid === undefined && r.ui === undefined, '未声明键与注入键应丢弃');
+    const r2 = AO.sanitizeCmdArgs('episode.produce', { maxRetry: '3', riskyCompose: true });
+    assertEq(r2.maxRetry, 3, 'number 应整形');
+    assertEq(AO.sanitizeCmdArgs('not.a.cmd', { a: 1 }).bogus, undefined, '未知命令应得空参数');
+  } },
+  { name: 'runEpisodeActions cmd+args 新协议:参数透传命令层+白名单外 cmd 如实拒绝', fn: async () => {
+    const sb = loadAgentOps(); const AO = sb.AgentOps;
+    const p = { id: 'p1' };
+    const ep = makeEp(); // sh0/sh1
+    sb.__cmdCalls = [];
+    const CR = require('../js/cmd-registry.js');
+    sb.Commands = {
+      list: () => CR.META.map(m => ({ name: m.name, label: m.label, risk: m.risk, needs: m.needs, args: m.args })),
+      execute: async (cmd, args) => { sb.__cmdCalls.push({ cmd, args }); return { ok: true, status: 'done', result: { ok: 2, total: 2 }, next: { key: 'review', label: '智能审片' } }; },
+    };
+    const done = await AO.runEpisodeActions(p, ep, [
+      { op: 'run', cmd: 'episode.generateVideos', args: { confirmAll: true, shotIds: ['2'], bogus: 'x' } },
+      { op: 'run', cmd: 'episode.notExist' },
+    ], null);
+    const call = sb.__cmdCalls[0];
+    assertEq(call.cmd, 'episode.generateVideos');
+    assertEq(call.args.confirmAll, true, 'confirmAll 应透传(旧协议无参数通道)');
+    assertEq(call.args.bogus, undefined, '未声明参数应丢弃');
+    assertEq(call.args.shotIds.join(','), 'sh1', 'shotIds 镜号应归一为镜头 id(模型只见序号)');
+    assertEq(call.args.pid, 'p1');
+    assert(done[0].includes('✓') && done[0].includes('下一步:智能审片'), '回执应消化 r.next(Agent 自主推进依据)');
+    assert(done[1].includes('暂不支持自动执行:episode.notExist'), '白名单外 cmd 应如实拒绝');
+  } },
+  { name: 'cmdDigest:错误/成本/下一步三要素', fn() {
+    const sb = loadAgentOps(); const AO = sb.AgentOps;
+    assertEq(AO.cmdDigest('episode.compose', { ok: true, status: 'done', result: {}, cost: 3, next: { label: '导出成片' } }), '成片已归档,可预览导出(-3积分);下一步:导出成片');
+    assert(AO.cmdDigest('x', { ok: false, error: { code: 'e', message: '挂了' } }).includes('挂了'), '错误回执如实属');
+    assertEq(AO.cmdDigest('x', null), '无回执');
+  } },
+  { name: 'selfFixRound:数据修复+原命令重试白名单(仅回执失败过的命令可重试)', fn: async () => {
+    const sb = loadAgentOps(); const AO = sb.AgentOps;
+    const p = { id: 'p1' }, ep = makeEp();
+    sb.__apiReady = true;
+    sb.__retried = [];
+    const CR = require('../js/cmd-registry.js');
+    sb.Commands = {
+      list: () => CR.META.map(m => ({ name: m.name, label: m.label, risk: m.risk, needs: m.needs, args: m.args })),
+      execute: async (cmd, args) => { sb.__retried.push(cmd); return { ok: true, status: 'done', result: { ok: 1, total: 1 } }; },
+    };
+    // 模型输出:一条数据修复 + 重试失败过的命令(允许) + 重试未失败过的命令(应被白名单拦下)
+    sb.__chatJSONResult = { reply: '重试生成', ops: [
+      { op: 'update', shot: 1, fields: { 提示词: '更稳妥的提示词' } },
+      { op: 'run', cmd: 'episode.generateVideos' },
+      { op: 'run', cmd: 'episode.compose' },
+    ] };
+    const note = await AO.selfFixRound(p, ep, null, ['▶ 生成视频:✕ 2 镜生成失败(已退费),可修复后重试'], 'op_x');
+    assert(note.includes('自修复'), '应有自修复摘要');
+    assertEq(sb.__retried.join(','), 'episode.generateVideos', '只允许重试回执中失败过的命令(compose 未失败不可发起)');
+    assert(note.includes('自修复重试'), '重试回执应入摘要');
+    assert((ep.shots[0].prompt || '').includes('更稳妥'), '数据类修复应落地');
+  } },
+  { name: 'selfFixRound:重试仍失败限 2 轮(深度封顶递归一次后即停)', fn: async () => {
+    const sb = loadAgentOps(); const AO = sb.AgentOps;
+    const p = { id: 'p1' }, ep = makeEp();
+    sb.__apiReady = true;
+    const CR = require('../js/cmd-registry.js');
+    let calls = 0;
+    sb.Commands = {
+      list: () => CR.META.map(m => ({ name: m.name, label: m.label, risk: m.risk, needs: m.needs, args: m.args })),
+      execute: async () => ({ ok: false, status: 'failed', error: { code: 'gen-failed', message: '上游持续故障' }, result: {} }),
+    };
+    sb.__chatJSONResult = { reply: '再试', ops: [{ op: 'run', cmd: 'episode.generateVideos' }] };
+    const orig = AO.selfFixRound;
+    // 统计 LLM 调用轮数:chatJSONRobust 走 Understanding stub
+    const call0 = sb.Understanding.chatJSONRobust;
+    sb.Understanding.chatJSONRobust = async (...a) => { calls++; return call0(...a); };
+    const note = await AO.selfFixRound(p, ep, null, ['▶ 生成视频:✕ 失败'], 'op_y');
+    assertEq(calls, 2, '最多 2 轮(首轮+重试失败后再归因一轮),实际 ' + calls);
+    assert(note.includes('✕'), '最终仍失败应如实呈现');
+  } },
+
   /* ---- 第三阶段:按需查询(queryProtocol/answerQueries)与事件总线订阅(subscribeBus) ---- */
   { name: 'queryProtocol:协议文本含全部查询类型与续问上限', fn() {
     const sb = loadAgentOps();
@@ -853,6 +948,34 @@ const expertsTests = [
     assertEq(sb.projType(), 'narration', '解说剧导演应切解说模式');
     sb.Store.state.settings.hiredExpert = 'ex_sweet';
     assertEq(sb.projType(), 'drama');
+  } },
+  { name: 'experts-data 双端单源:浏览器 EXPERTS 与共享注册表同一引用;Node require 同数据', fn() {
+    const sb = loadExperts();
+    assert(sb.ExpertsData && sb.Experts.EXPERTS === sb.ExpertsData.EXPERTS, 'experts.js 应消费 experts-data.js 的同一数组');
+    const D = require('../js/experts-data.js');
+    assertEq(JSON.stringify(D.EXPERTS), JSON.stringify(sb.Experts.EXPERTS), 'Node 端 require 数据应与浏览器端一致');
+    assertEq(D.EXPERTS.length, 16);
+  } },
+  { name: 'experts-data.projTypeOf:预置/自定义/未知 id 三路与浏览器 projType 同口径', fn() {
+    const D = require('../js/experts-data.js');
+    assertEq(D.projTypeOf(undefined, []), 'drama', '未雇佣默认剧情模式');
+    assertEq(D.projTypeOf('ex_narration'), 'narration', '预置解说剧导演');
+    assertEq(D.projTypeOf('ex_sweet'), 'drama');
+    assertEq(D.projTypeOf('cx_9', [{ id: 'cx_9', name: '自定义解说', projType: 'narration' }]), 'narration', '自定义专家带 projType 也应生效');
+    assertEq(D.projTypeOf('cx_404', []), 'drama', '未知 id 回退剧情模式');
+    // 浏览器侧同路径:自定义专家经 projType() 同样命中
+    const sb = loadExperts();
+    sb.Store.state.customExperts.push({ id: 'cx_9', name: '自定义解说', projType: 'narration' });
+    sb.Store.state.settings.hiredExpert = 'cx_9';
+    assertEq(sb.projType(), 'narration');
+  } },
+  { name: 'experts-data → wf-core 联动:projType 决定智能分镜提示词的模式标注(服务端 wf 端点同一推导)', fn() {
+    const D = require('../js/experts-data.js');
+    const WfCore = require('../js/wf-core.js'); // UMD Node 侧 require(内部再 require domain/knowledge/prompts)
+    const mk = pt => WfCore.buildSBUser({ subjects: [] }, {}, { count: 8 }, { styleText: '漫剧', projType: pt, content: '剧本内容' });
+    assert(mk(D.projTypeOf('ex_narration')).includes('解说模式(重旁白叙述)'), '雇佣解说剧导演应带解说模式标注');
+    assert(mk(D.projTypeOf('ex_sweet')).includes('剧情模式(重台词表演)'), '其余雇佣应为剧情模式');
+    assert(mk(D.projTypeOf(undefined)).includes('剧情模式(重台词表演)'), '未雇佣应为剧情模式');
   } },
   { name: 'normExpertDraft:style 草稿补齐 dims 五维与 tpl 三件套(缺省回退)', fn() {
     const sb = loadExperts();
@@ -1093,6 +1216,7 @@ function loadCommands() {
   sb.Understanding = { regen: async () => { sb.__called.push('undRegen'); return sb.__undOk !== false; } };
   sb.Review = { reviewShot: async () => ({ score: 8 }) };
   loadFile(sb, 'domain.js');
+  loadFile(sb, 'cmd-registry.js'); // 命令元数据单源(与 index.html 同顺序:commands.js 之前)
   loadFile(sb, 'commands.js');
   return sb;
 }
@@ -1393,6 +1517,29 @@ const storeTests = [
     assert(String(h).startsWith('v3:'), '迁移后应为 v3 前缀,实际 ' + h);
     assertEq(h, sb.Store.shotInputHash(p, p.episodes[0].shots[0]), '迁移值应等于现算 v3');
   } },
+  { name: 'inputHash:无指纹存量 done 镜回填基线(此后输入变化即判过期;assetVer 同补防立刻误报)', fn: async () => {
+    const sb = loadStore();
+    // 无参照主体的镜头:assetVer 恒 0,隔离出 inputHash 缺失这一单一变量(§1.5 缺口)
+    const s0 = { id: 's1', prompt: 'P', dialogue: '', narration: '', characters: [], scene: '', props: [], video: { status: 'done', url: 'u' } };
+    const p = { id: 'p1', userId: 'u1', subjects: [], episodes: [{ id: 'e1', shots: [s0] }] };
+    sb.Store.state.projects = [p];
+    assertEq(sb.Store.shotVideoStale(p, s0), false, 'inputHash 缺失的存量镜回填前永不判过期(缺口复现)');
+    sb.Store.migrateInputHash();
+    assert(String(s0.video.inputHash).startsWith('v3:'), '回填后应有 v3 指纹');
+    assertEq(sb.Store.shotVideoStale(p, s0), false, '回填基线当下不误报(原生成输入不可考,不回溯)');
+    s0.prompt = 'P2'; // 此后输入变化
+    assertEq(sb.Store.shotVideoStale(p, s0), true, '输入变化后应判过期(§1.5 修复点)');
+    // 带参照主体的存量镜:assetVer 一并回填当前版本(不回填则迁移后立刻被 assetVer 维度误报)
+    const sub = { id: 'sj1', name: '主', kind: 'character', image: 'u', imgVer: 2 };
+    const s1 = { id: 's2', prompt: 'Q', dialogue: '', narration: '', characters: ['主'], scene: '', props: [], video: { status: 'done', url: 'u' } };
+    const p2 = { id: 'p2', userId: 'u1', subjects: [sub], episodes: [{ id: 'e1', shots: [s1] }] };
+    sb.Store.state.projects = [p2];
+    sb.Store.migrateInputHash();
+    assertEq(s1.video.assetVer, 2, 'assetVer 应回填当前主体版本');
+    assertEq(sb.Store.shotVideoStale(p2, s1), false, '基线对齐后不立刻误报');
+    sub.imgVer = 3; // 主体参考图换版
+    assertEq(sb.Store.shotVideoStale(p2, s1), true, '主体参考图换版应判过期');
+  } },
   { name: 'understandingStale(十一轮):旧数据无 sourceRev 且正文改过判旧;保存/重生成刷 sourceRev 恢复', fn: async () => {
     const sb = loadStore();
     const ep = { id: 'e1', content: 'v1', understanding: { 剧情脉络: 'x' } };
@@ -1424,7 +1571,7 @@ const storeTests = [
     const sb = loadStore();
     const sub = { id: 'sj_1', name: '林晚', kind: 'character', image: '/u/a.png', forms: [{ id: 'fm_1', name: '少年', image: '/u/b.png' }] };
     const other = { id: 'sj_2', name: '沈默', kind: 'character' };
-    const p = { id: 'p1', userId: 'u1', subjects: [sub, other], episodes: [{ id: 'e1', shots: [{ id: 's1', characters: ['林晚', '林晚-少年'], scene: '', props: ['怀表'] }], groups: [{ id: 'sg1', scene: '', chars: ['林晚'], assets: { '林晚': '/u/a.png', '林晚-少年': '/u/b.png' } }] }] };
+    const p = { id: 'p1', userId: 'u1', subjects: [sub, other], episodes: [{ id: 'e1', shots: [{ id: 's1', characters: ['林晚', '林晚-少年'], scene: '', props: ['怀表'] }], groups: [{ id: 'sg1', scene: '', chars: ['林晚'], assets: { '林晚': '/u/a.png', '林晚-少年': '/u/b.png' }, sig: '未知场景|林晚' }] }] };
     /* 1. 级联:镜头与镜头组的名称引用全部更新(含"名-形态"全称与 assets 键) */
     const r = sb.Store.renameSubject(p, sub, '林晚儿');
     assertEq(r.ok, true, '改名成功');
@@ -1434,6 +1581,7 @@ const storeTests = [
     assertEq(!!g1.assets['林晚儿'], true, '镜头组 assets 键级联');
     assertEq(!!g1.assets['林晚儿-少年'], true, '镜头组 assets 形态键级联');
     assertEq(!!g1.assets['林晚'], false, '旧键不再存在');
+    assertEq(g1.sig, '未知场景|林晚儿', '镜头组签名 sig 应随改名重算(二十三轮:否则自动分组找不到旧组,产生 0 镜幽灵组)');
     /* 2. formerNames 兜底:级联遗漏的旧名引用(跨端合并竞态/快照恢复)仍解析到主体 */
     assertEq(!!sb.Store.findSubject(p, '林晚'), true, '旧名经 formerNames 仍可解析');
     assertEq(sb.Store.findSubject(p, '林晚').s.id, 'sj_1', '旧名解析到同一主体');
@@ -2113,6 +2261,53 @@ const domainTests = [
     const w = sb.Domain.workflow(Object.assign(makeP([ep], [{ id: 'sj1', name: '主角', image: 'u' }]), { script: 'x', extractDone: true }), true);
     assertEq(w.steps.find(st => st.key === 'film').status, 'done', '成片步应 done');
   } },
+  { name: 'understandingStale 挂 graphRev(二十三轮):无字段保持原语义/失配判旧/对齐恢复', fn: () => {
+    const sb = loadDomain();
+    const ep = { content: 'v1', contentRev: 1, graphRev: 3, understanding: { 剧情脉络: 'x', sourceRev: 1 } };
+    assertEq(sb.Domain.understandingStale(ep), false, '无 graphRev 记录的旧理解保持原语义(不一次性全量判旧)');
+    ep.understanding.graphRev = 2;
+    assertEq(sb.Domain.understandingStale(ep), true, '图谱修订后理解应判旧(理解 prompt 消费 eventsText)');
+    ep.understanding.graphRev = 3;
+    assertEq(sb.Domain.understandingStale(ep), false, 'graphRev 对齐后恢复当前');
+  } },
+  { name: 'reviewStaleByScript 快照判据(二十三轮):无 snapshotHash 不判/匹配不判/镜头重抽失配判旧', fn: () => {
+    const sb = loadDomain();
+    const ep = { content: 'v', contentRev: 0, graphRev: 0, shots: [{ id: 'a', order: 0, video: { status: 'done', url: 'v1', inputHash: 'h1' } }],
+      lastReview: { avg: 8, sourceRev: 0, graphRev: 0 } };
+    assertEq(sb.Domain.reviewStaleByScript(ep), false, '无 snapshotHash 的旧记录保持原语义(迁移兼容)');
+    ep.lastReview.snapshotHash = sb.Domain.reviewSnapshotHashOf(ep);
+    assertEq(sb.Domain.reviewStaleByScript(ep), false, '快照匹配不判旧');
+    ep.shots[0].video = { status: 'done', url: 'v2', inputHash: 'h2' }; // 镜头重抽
+    assertEq(sb.Domain.reviewStaleByScript(ep), true, '镜头重抽后快照失配应判旧');
+  } },
+  { name: 'composedDialogueSig(二十三轮):无记录保持原语义;记录后改台词/时长判未就绪', fn: () => {
+    const sb = loadDomain();
+    const ep = { composed: true, shots: [{ id: 'a', order: 0, dialogue: '你好', narration: '', duration: 5, video: { status: 'done', url: 'v', inputHash: 'h' }, transition: null }] };
+    ep.composedInputHash = sb.Domain.composedInputHash(ep, true);
+    assertEq(sb.Domain.epComposedReady(ep, true), true, '无 composedDialogueSig 记录的旧数据保持原语义');
+    ep.composedDialogueSig = sb.Domain.composedDialogueSig(ep, true);
+    assertEq(sb.Domain.epComposedReady(ep, true), true, '记录匹配时应就绪');
+    ep.shots[0].dialogue = '改台词';
+    assertEq(sb.Domain.epComposedReady(ep, true), false, '改台词后成片应判未就绪(烧录字幕/SRT 失配)');
+    ep.shots[0].dialogue = '你好'; ep.shots[0].duration = 9;
+    assertEq(sb.Domain.epComposedReady(ep, true), false, '改时长后 SRT 时间轴失配应判未就绪');
+  } },
+  { name: 'episodeState:审片判旧时 reviewAvg=null 不卡 needs_human + reviewStale 透出(二十三轮)', fn: () => {
+    const sb = loadDomain();
+    const s = { id: 'a', order: 0, dialogue: '', narration: '', duration: 5, characters: [], scene: '', props: [], video: { status: 'done', url: 'v' }, confirm: true };
+    const ep = { content: '剧本', shots: [s], contentRev: 0, graphRev: 0 };
+    const p = makeP([ep]);
+    s.video.inputHash = sb.Domain.shotInputHash(p, s);
+    ep.lastReview = { avg: 5, sourceRev: 0, graphRev: 0, snapshotHash: 'bogus-stale' };
+    const st = sb.Domain.episodeState(p, ep, true);
+    assertEq(st.reviewStale, true, '快照失配应透出 reviewStale');
+    assertEq(st.reviewAvg, null, '判旧的旧分不再卡 needs_human');
+    assert(st.status !== 'needs_human', '判旧低分不应再卡 needs_human,实际:' + st.status);
+    ep.lastReview = { avg: 5, sourceRev: 0, graphRev: 0, snapshotHash: sb.Domain.reviewSnapshotHashOf(ep) };
+    const st2 = sb.Domain.episodeState(p, ep, true);
+    assertEq(st2.reviewStale, false, '快照匹配不判旧');
+    assertEq(st2.status, 'needs_human', '有效低分仍卡 needs_human(质量闸门)');
+  } },
 ];
 
 /* ================= 套件 12:bus.js(管线事件总线,第三阶段) ================= */
@@ -2189,6 +2384,32 @@ function cleanEp(over) {
   return Object.assign({ id: 'ep1', title: '第一集', content: '剧本正文', shots: [s], lastReview: { avg: 8, perShot: [{ shotId: 'sh0', order: 0, score: 8 }] } }, over || {});
 }
 const issuesTests = [
+  { name: 'Bus 通配订阅:事件风暴防抖合并 + 角标单轮一次 collect(§3.4)', fn: async () => {
+    const sb = makeSandbox();
+    installCommon(sb);
+    loadFile(sb, 'domain.js');
+    const handlers = [];
+    sb.Bus = { on: (n, fn) => handlers.push(fn), emit: (n, e) => handlers.forEach(fn => fn(e || { name: n })) };
+    loadFile(sb, 'issues.js');
+    // 项目页角标按钮桩(常驻)
+    const btn = { dataset: { pid: 'p1' }, innerHTML: '', isConnected: true };
+    sb.document.querySelector = sel => (sel === '[data-x=pissues][data-pid]' ? btn : null);
+    const p = { id: 'p1', subjects: [], episodes: [{ id: 'ep1', title: '一', content: '剧本', shots: [] }] };
+    sb.Store.getProject = id => (id === 'p1' ? p : null);
+    let calls = 0;
+    const orig = sb.Domain.episodeState;
+    sb.Domain.episodeState = (...a) => { calls++; return orig(...a); };
+    for (let i = 0; i < 10; i++) sb.Bus.emit('shots.changed'); // 事件风暴
+    await sleep(260);
+    assertEq(calls, 1, '10 事件应防抖合并为一轮重算(1 集=1 次 episodeState),实际 ' + calls);
+    assert(btn.innerHTML.includes('问题'), '角标应已刷新');
+    // 无消费者(无弹窗无角标)时:事件不再触发重算
+    sb.document.querySelector = () => null;
+    const c0 = calls;
+    for (let i = 0; i < 5; i++) sb.Bus.emit('shots.changed');
+    await sleep(260);
+    assertEq(calls, c0, '无消费者时应跳过重算');
+  } },
   { name: 'collect:干净项目返回空(全齐备零噪音)', fn() {
     const sb = loadIssues();
     const ep = cleanEp({ composed: true, composedInputHash: sb.Domain.composedInputHash(cleanEp(), false), composedSourceRev: 0, composedGraphRev: 0 });
@@ -2423,11 +2644,10 @@ function loadRelease() {
   sb.Store.getProject = id => sb.Store.state.projects.find(x => x.id === id);
   // Compliance 桩:checkText 返回按规则(含"违禁"字才命中)
   sb.Compliance = { checkText: t => { const hits = []; if (String(t).includes('违禁')) hits.push({ word: '违禁', cat: '暴力血腥' }); return { hits }; } };
-  // Issues 桩:collect 直接返回空(默认干净项目零问题;依赖 issuesTests 已单独覆盖 Issues.collect 逻辑,release 只测门组合)
-  sb.Issues = { collect: () => ({ list: [], high: 0, mid: 0, low: 0 }), count: () => 0, badgeHTML: () => '', openModal: () => {} };
   // HumanReview 桩:无 rejected
   sb.HumanReview = { guardAsync: async () => true };
   loadFile(sb, 'domain.js');
+  loadFile(sb, 'issues.js');      // 二十二轮:加载真实 Issues(原 stub 返回 {list:[]},掩盖了 G2 把数组当对象读的契约错误)
   loadFile(sb, 'continuity.js');   // stampRelease/rollbackTo 用 Continuity.bumpVer
   loadFile(sb, 'release.js');
   return sb;
@@ -2461,6 +2681,33 @@ const releaseTests = [
     const g6 = r.gates.find(g => g.code === 'g6-failed');
     assertEq(g6.status, 'fail');
     assert(g6.info.includes('1 镜'), '失败镜计数应入 info');
+    // 二十二轮:fix 命令落到真实注册命令 + 集级 epid + 失败镜子集(原 episode.fixFailed 未注册且缺 epid,一键处置 100% 不可用)
+    assertEq(g6.fix.cmd, 'episode.generateVideos');
+    assertEq(g6.fix.epid, 'ep1');
+    assertEq((g6.fix.shotIds || []).join(','), 'sh1');
+    const g3 = r.gates.find(g => g.code === 'g3-review');
+    assertEq(g3.fix.cmd, 'episode.smartReview', 'G3 应挂智能审片(原 episode.review 未注册)');
+    assertEq(g3.fix.epid, 'ep1');
+    const g9 = r.gates.find(g => g.code === 'g9-subjects');
+    assertEq(g9.fix.type, 'nav', '主体缺图无领域命令,应导航角色页');
+    assertEq(g9.fix.hash, '#/project/p1/roles');
+  } },
+  { name: 'G2 问题清零:真实 Issues 数组契约——脏项目 fail 挂问题中心导航,干净项目 pass', fn() {
+    const sb = loadRelease();
+    // 脏:失败镜(高危)→ G2 fail;原实现把 Issues.collect 返回的数组当 {list} 读,恒 pass 永久放行
+    const failShot = Object.assign({}, releaseReadyEp().shots[0], { id: 'sh1', order: 1, video: { status: 'failed', error: 'e' } });
+    const ep = releaseReadyEp({ shots: [releaseReadyEp().shots[0], failShot] });
+    const p = { id: 'p1', subjects: [{ id: 'sj1', name: '主', kind: 'character', image: 'u' }], episodes: [ep] };
+    const r = sb.Release.collect(p, { online: false });
+    const g2 = r.gates.find(g => g.code === 'g2-issues');
+    assertEq(g2.status, 'fail', '有高危问题(失败镜)G2 应 fail');
+    assert(g2.info.includes('高危'), 'fail info 应带高危计数');
+    assertEq(g2.fix.goto, 'issues', 'fix 应挂问题中心导航');
+    // 干净:releaseReadyEp 全齐备 → Issues 空 → pass
+    const epOK = releaseReadyEp({ composed: true, composedInputHash: sb.Domain.composedInputHash(releaseReadyEp(), false), composedSourceRev: 0, composedGraphRev: 0 });
+    const r2 = sb.Release.collect({ id: 'p2', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [epOK] }, { online: false });
+    const g2ok = r2.gates.find(g => g.code === 'g2-issues');
+    assertEq(g2ok.status, 'pass', '干净项目 G2 应 pass');
   } },
   { name: 'minReviewScore 配置:调高到 9 会把 8 分判 fail;setMinReviewScore 写回 Store.settings', fn() {
     const sb = loadRelease();
@@ -2517,9 +2764,330 @@ const releaseTests = [
     assert(h2.includes('release-fail'));
     assert(h2.includes('badge-num'));
   } },
+  { name: 'G3 每集必审(二十三轮):部分集无审片记录 fail(原部分覆盖漏洞:只查有记录的集)', fn() {
+    const sb = loadRelease();
+    const ep1 = releaseReadyEp({ id: 'ep1', title: '第一集', composed: true, composedInputHash: sb.Domain.composedInputHash(releaseReadyEp(), false), composedSourceRev: 0, composedGraphRev: 0 });
+    const ep2 = releaseReadyEp({ id: 'ep2', title: '第二集' });
+    delete ep2.lastReview; // 未审片
+    const p = { id: 'p1', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [ep1, ep2] };
+    const g3 = sb.Release.collect(p, { online: false }).gates.find(g => g.code === 'g3-review');
+    assertEq(g3.status, 'fail', '有集未审片 G3 应 fail(原实现只查有记录的集,蒙混放行)');
+    assert(g3.info.includes('第二集'), 'fail info 应点名未审集');
+    assertEq(g3.fix.cmd, 'episode.smartReview');
+  } },
+  { name: 'G3 判旧视为未审(二十三轮):审片快照失配(镜头重抽)的旧记录 fail;无快照旧记录保持原语义', fn() {
+    const sb = loadRelease();
+    const epStale = releaseReadyEp({ composed: true, composedInputHash: sb.Domain.composedInputHash(releaseReadyEp(), false), composedSourceRev: 0, composedGraphRev: 0 });
+    epStale.lastReview = { avg: 9, sourceRev: 0, graphRev: 0, snapshotHash: 'bogus-stale' }; // 高分但已判旧
+    const p = { id: 'p1', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [epStale] };
+    const g3 = sb.Release.collect(p, { online: false }).gates.find(g => g.code === 'g3-review');
+    assertEq(g3.status, 'fail', '判旧的审片记录应视为未审 fail(防止凭过期结论带病放行)');
+    const epOld = releaseReadyEp({ composed: true, composedInputHash: sb.Domain.composedInputHash(releaseReadyEp(), false), composedSourceRev: 0, composedGraphRev: 0 });
+    epOld.lastReview = { avg: 8 }; // 旧数据无快照/rev 记录
+    const g3old = sb.Release.collect({ id: 'p2', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [epOld] }, { online: false }).gates.find(g => g.code === 'g3-review');
+    assertEq(g3old.status, 'pass', '无快照/rev 记录的旧数据保持原语义(迁移兼容,不一次性全量 fail)');
+  } },
 ];
 
-const SUITES = { 'agent-ops': agentOpsTests, experts: expertsTests, produce: produceTests, commands: commandsTests, store: storeTests, 'sb-gen': sbGenTests, pipeline: pipelineTests, 'sb-views': sbViewsTests, 'sb-io': sbIoTests, understanding: understandingTests, billing: billingTests, domain: domainTests, bus: busTests, issues: issuesTests, plans: plansTests, continuity: continuityTests, release: releaseTests };
+/* ================= 套件 17:跨模块契约(二十二轮) =================
+ * 锁死发布门一轮四类静默缺陷的同类复发:
+ * ① Release/Issues 挂出的 fix.cmd 必须已在 Commands 注册表(且集级命令带真实 epid);
+ * ② Issues.collect 返回类型契约(数组;发布门 G2 曾把数组当 {list} 读,问题永久放行);
+ * ③ js 全量 location.hash 字面量/模板必须命中 app.js 路由表(防"前往处理"跳不存在路由)。 */
+function loadContract() {
+  const sb = makeSandbox();
+  installCommon(sb);
+  sb.Compliance = { checkText: () => ({ hits: [] }) };
+  sb.HumanReview = { guardAsync: async () => true };
+  loadFile(sb, 'domain.js');
+  loadFile(sb, 'issues.js');
+  loadFile(sb, 'cmd-registry.js'); // 命令元数据单源(与 index.html 同顺序:commands.js 之前)
+  loadFile(sb, 'commands.js'); // 注册表加载无副作用(全部依赖运行时 window 查找)
+  loadFile(sb, 'release.js');
+  return sb;
+}
+/* 全脏项目夹具:过期镜(done+旧指纹)/失败镜/未确认镜各一 + 低分审片 + 主体缺图 → G1-G6/G9 同时触发 */
+function contractDirtyP() {
+  const mk = (id, order, over) => Object.assign({
+    id, order, name: '', plot: 'p', prompt: 'q', camera: '固定镜头', duration: 5,
+    characters: [], scene: '', props: [], confirm: true, video: { status: 'done', url: 'http://x/v.mp4' },
+  }, over || {});
+  const ep = {
+    id: 'ep1', title: '第一集', content: '剧本正文',
+    shots: [
+      mk('sh1', 0, { video: { status: 'done', url: 'u', inputHash: 'v3:oldstale' } }),
+      mk('sh2', 1, { video: { status: 'failed', error: '上游超时' } }),
+      mk('sh3', 2, { confirm: false }),
+    ],
+    lastReview: { avg: 5, perShot: [{ shotId: 'sh1', order: 0, score: 5 }] },
+  };
+  return { id: 'p1', name: '脏剧', subjects: [{ id: 'sj1', name: '主', kind: 'character' }], episodes: [ep] };
+}
+/* app.js 路由表(从源码实况提取:match 正则 + startsWith 前缀 + 精确路由 + 正则静态前缀) */
+function appRoutes() {
+  const src = fs.readFileSync(path.join(ROOT, 'js', 'app.js'), 'utf8');
+  const res = [], prefixes = ['#/login'], regexPrefixes = [];
+  [...src.matchAll(/hash\.match\((\/.+?\/[a-z]*)\)/g)].forEach(m => {
+    const re = eval(m[1]); // 测试代码直取路由正则字面量,与 app.js 实况同步
+    res.push(re);
+    const staticPart = re.source.replace(/^\^/, '').split('(')[0].replace(/\\\//g, '/').replace(/\$$/, '');
+    if (staticPart) regexPrefixes.push(staticPart);
+  });
+  [...src.matchAll(/hash\.startsWith\('([^']+)'\)/g)].forEach(m => prefixes.push(m[1]));
+  const okRoute = v => res.some(re => re.test(v)) || prefixes.some(px => v.startsWith(px)) || regexPrefixes.some(px => v.startsWith(px));
+  return { res, prefixes, okRoute };
+}
+const contractTests = [
+  { name: 'Issues.collect 返回数组(发布门 G2 的消费契约)', fn() {
+    const sb = loadContract();
+    const r = sb.Issues.collect(contractDirtyP());
+    assert(Array.isArray(r), 'Issues.collect 必须返回数组,实际:' + typeof r);
+    assert(r.some(x => x.sev === 'high'), '脏项目应含高危条目(失败镜)');
+  } },
+  { name: 'Release 全脏项目:fix.cmd 均已注册 + 集级命令带真实 epid + shotIds 子集正确', fn() {
+    const sb = loadContract();
+    const r = sb.Release.collect(contractDirtyP(), { online: false });
+    const cmds = sb.Commands.list();
+    const names = cmds.map(c => c.name);
+    const withCmd = r.gates.filter(g => g.fix && g.fix.cmd);
+    assert(withCmd.length >= 4, '脏项目应至少挂出 G1/G3/G4/G6 四个命令类处置,实际 ' + withCmd.length);
+    withCmd.forEach(g => {
+      assert(names.includes(g.fix.cmd), g.code + ' 的 fix.cmd 未注册:' + g.fix.cmd);
+      const meta = cmds.find(c => c.name === g.fix.cmd);
+      if (meta.needs.includes('ep')) assertEq(g.fix.epid, 'ep1', g.code + ' 集级命令须带真实 epid');
+    });
+    assertEq(r.gates.find(g => g.code === 'g4-stale').fix.shotIds.join(','), 'sh1', 'G4 只带过期镜子集');
+    assertEq(r.gates.find(g => g.code === 'g6-failed').fix.shotIds.join(','), 'sh2', 'G6 只带失败镜子集');
+  } },
+  { name: 'Issues 命令类条目的 cmd 同样在注册表内(与 fixIssue 执行路径一致)', fn() {
+    const sb = loadContract();
+    const names = sb.Commands.list().map(c => c.name);
+    const list = sb.Issues.collect(contractDirtyP());
+    const withCmd = list.filter(x => x.cmd);
+    assert(withCmd.length >= 1, '脏项目问题中心应挂出命令类处置(失败镜重生成)');
+    withCmd.forEach(it => assert(names.includes(it.cmd), 'Issues 条目 cmd 未注册:' + it.cmd + '(' + it.kind + ')'));
+    // 同集多问题共存回归(原 Object.assign(base) 共享引用,条目互相覆盖成同一对象)
+    const kinds = list.map(x => x.kind);
+    ['failed-shots', 'stale-shots', 'unconfirmed', 'low-review'].forEach(k => assert(kinds.includes(k), '应包含 ' + k + ',实际:' + kinds.join(',')));
+    const fi = list.find(x => x.kind === 'failed-shots');
+    assertEq(fi.sev, 'high', '失败镜应高危(共享引用 bug 时会被后写的中危覆盖)');
+    assertEq((fi.shotIds || []).join(','), 'sh2', '失败镜条目应带失败 shotIds 子集');
+    assert(!list.find(x => x.kind === 'stale-shots').cmd, '过期镜条目是导航类,不应串上失败镜的 cmd');
+  } },
+  { name: 'Release fix.hash 命中 app.js 路由表', fn() {
+    const sb = loadContract();
+    const { okRoute } = appRoutes();
+    const r = sb.Release.collect(contractDirtyP(), { online: false });
+    const withHash = r.gates.filter(g => g.fix && g.fix.hash);
+    assert(withHash.length >= 2, '脏项目应挂出 G5/G9 导航类处置');
+    withHash.forEach(g => assert(okRoute(g.fix.hash), g.code + ' fix.hash 不是有效路由:' + g.fix.hash));
+  } },
+  { name: 'js 全量 location.hash 字面量/模板均命中 app.js 路由表', fn() {
+    const { okRoute } = appRoutes();
+    const dir = path.join(ROOT, 'js');
+    const bad = [];
+    fs.readdirSync(dir).filter(f => f.endsWith('.js')).forEach(f => {
+      const src = fs.readFileSync(path.join(dir, f), 'utf8');
+      [...src.matchAll(/location\.hash\s*=\s*('([^']*)'|`([^`]*)`)/g)].forEach(m => {
+        const raw = m[2] !== undefined ? m[2] : m[3];
+        const isPrefixConcat = src.slice(m.index + m[0].length).trimStart().startsWith('+'); // '#/project/' + id 形式按前缀处理
+        const v = raw.replace(/\$\{[^}]*\}/g, 'x1'); // 模板占位填哑值
+        if (!v) return;
+        if (okRoute(v)) return;
+        if (isPrefixConcat && [...appRoutes().prefixes, '#/project/'].some(px => (v + '/').startsWith(px) || px.startsWith(v + '/') || px.startsWith(v))) return;
+        bad.push(f + ' → ' + raw);
+      });
+    });
+    assertEq(bad.join('; '), '', '存在不命中路由表的 location.hash 字面量');
+  } },
+  { name: '侧栏任务角标契约:首渲染徽标与 tasks-changed 更新器同一 data-task-badge 标识(防重复叠加/归零残留)', fn() {
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'app.js'), 'utf8');
+    const shellBadge = src.match(/runningTasks\s*\?\s*`<span class="tag cyan"([^`]*)`/);
+    assert(shellBadge && shellBadge[1].includes('data-task-badge'), '首渲染徽标须带 data-task-badge(否则更新器查不到会再 append 一个,归零时残留)');
+    assert(src.includes("querySelector('.tag[data-task-badge]')"), 'tasks-changed 更新器须按 data-task-badge 查询');
+  } },
+  { name: '命令元数据单源:浏览器 REG 词表 === cmd-registry 词表(注册默认 needs/risk 一致)', fn() {
+    const sb = loadContract();
+    const CR = require('../js/cmd-registry.js');
+    assertEq(Object.keys(sb.Commands.REG).sort().join(','), CR.names().sort().join(','), '浏览器命令词表应与注册表一致');
+    const byName = CR.byName;
+    sb.Commands.list().forEach(c => {
+      assertEq(c.needs.join(','), byName[c.name].needs.join(','), c.name + ' needs 应与注册表一致');
+      assertEq(c.risk, byName[c.name].risk, c.name + ' risk 应与注册表一致');
+      assert(c.desc && Array.isArray(c.args), c.name + ' 应带注册表 desc/args(供 Agent/MCP 自省)');
+    });
+  } },
+  { name: '命令元数据单源:CLI EXEC 词表 === 注册表词表(源码扫描),help 实跑含全部命令', fn() {
+    const CR = require('../js/cmd-registry.js');
+    const cliSrc = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    const execKeys = [...cliSrc.matchAll(/EXEC\['([^']+)'\]/g)].map(m => m[1]).filter((v, i, a) => a.indexOf(v) === i);
+    assertEq(execKeys.sort().join(','), CR.names().sort().join(','), 'cli.js EXEC 词表应与注册表一致');
+    assert(cliSrc.includes("require('./js/cmd-registry.js')"), 'cli.js 应 require 注册表');
+    // 功能验证:node cli.js help 实跑,统一命令段由注册表生成且含全部命令
+    const { spawnSync } = require('child_process');
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'help'], { encoding: 'utf8' });
+    const txt = String(r.stdout || '') + String(r.stderr || '');
+    CR.names().forEach(n => assert(txt.includes(n), 'cli help 应含命令 ' + n));
+    CR.META.forEach(m => assert(txt.includes(m.label), 'cli help 应含命令中文名 ' + m.label));
+  } },
+  { name: '命令元数据单源:mcp.js 工具描述由注册表生成(hujing_exec 词表不再手抄)', fn() {
+    const CR = require('../js/cmd-registry.js');
+    const mcpSrc = fs.readFileSync(path.join(ROOT, 'mcp.js'), 'utf8');
+    assert(mcpSrc.includes("require('./js/cmd-registry.js')"), 'mcp.js 应 require 注册表');
+    assert(mcpSrc.includes('CmdRegistry.names()'), 'mcp.js hujing_exec 词表应由 CmdRegistry.names() 生成');
+  } },
+  { name: 'MCP resources/prompts(§2.7):initialize 声明能力;list/get 实跑;模板参数代入与流程序列', fn() {
+    const { spawnSync } = require('child_process');
+    const reqs = [
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+      { jsonrpc: '2.0', id: 2, method: 'resources/list' },
+      { jsonrpc: '2.0', id: 3, method: 'prompts/list' },
+      { jsonrpc: '2.0', id: 4, method: 'prompts/get', params: { name: 'hujing_failed_shots', arguments: { pid: 'p1', epid: 'e1' } } },
+      { jsonrpc: '2.0', id: 5, method: 'prompts/get', params: { name: 'hujing_failed_shots', arguments: { pid: 'p1' } } }, // 缺 epid 应报错
+      { jsonrpc: '2.0', id: 6, method: 'resources/read', params: { uri: 'hujing://bogus' } }, // 未知 URI 应报错
+    ];
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'mcp.js')], { input: reqs.map(x => JSON.stringify(x)).join('\n') + '\n', encoding: 'utf8', timeout: 30000 });
+    const byId = {};
+    String(r.stdout || '').trim().split('\n').filter(Boolean).forEach(l => { const m = JSON.parse(l); byId[m.id] = m; });
+    assert(byId[1] && byId[1].result.capabilities.resources && byId[1].result.capabilities.prompts, 'initialize 应声明 resources/prompts 能力');
+    const tpls = ((byId[2].result || {}).resourceTemplates || []).map(t => t.uriTemplate).join(',');
+    assert(tpls.includes('hujing://project/{pid}/workflow') && tpls.includes('hujing://project/{pid}/episode/{epid}/workflow'), 'resources 应含项目/分集 workflow 模板,实际:' + tpls);
+    const pnames = ((byId[3].result || {}).prompts || []).map(p => p.name).join(',');
+    assert(pnames.includes('hujing_new_drama') && pnames.includes('hujing_failed_shots'), 'prompts 应含新剧开工/失败镜排查模板,实际:' + pnames);
+    const txt = (((byId[4].result || {}).messages || []).map(m => m.content && m.content.text) || []).join('\n');
+    assert(txt.includes('p1') && txt.includes('e1'), 'prompts/get 应代入 pid/epid 参数');
+    assert(txt.includes('hujing_wait') && txt.includes('failedOnly'), '失败镜排查模板应含断点续查与 failedOnly 重跑');
+    assert(byId[5].error && byId[5].error.code === -32602, '缺必填参数应 -32602');
+    assert(byId[6].error && byId[6].error.code === -32602, '未知资源 URI 应 -32602');
+  } },
+  { name: '命令面板(§3.5):Ctrl+K 绑定存在;条目=注册表命令+导航;缺路由上下文的命令置灰标注', fn() {
+    const sb = makeSandbox();
+    installCommon(sb);
+    loadFile(sb, 'cmd-registry.js');
+    loadFile(sb, 'cmdpalette.js');
+    assert(sb.CmdPalette, 'cmdpalette.js 应暴露 window.CmdPalette');
+    // 无路由上下文:集级命令置灰,导航可用
+    sb.location.hash = '#/projects';
+    let es = sb.CmdPalette.entries();
+    const gen = es.find(e => e.name === 'episode.generateVideos');
+    assert(gen && gen.disabled && gen.why.includes('项目页'), '无项目上下文时集级命令应置灰标注,实际:' + (gen && gen.why));
+    const shot = es.find(e => e.name === 'shot.generateVideo');
+    assert(shot.disabled && shot.why.includes('镜头'), '需镜头参数的命令应标注');
+    assert(es.some(e => e.kind === 'nav' && !e.disabled), '导航条目应可用');
+    // 分集路由:集级命令解锁(shot 级仍置灰——面板不指定镜头)
+    sb.location.hash = '#/project/p1/episode/ep1';
+    es = sb.CmdPalette.entries();
+    assert(!es.find(e => e.name === 'episode.generateVideos').disabled, '分集路由下集级命令应可用');
+    assert(es.find(e => e.name === 'shot.generateVideo').disabled, 'shot 级仍置灰');
+    assertEq(sb.CmdPalette.routeCtx().pid + '/' + sb.CmdPalette.routeCtx().epid, 'p1/ep1');
+    // 绑定与挂载契约(源级)
+    const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+    assert(html.includes('js/cmdpalette.js'), 'index.html 应挂载 cmdpalette.js');
+  } },
+  /* ---- 二十三轮:主线断点闭环(剧本→主体→分集→分镜→生成→审片→成片) ---- */
+  { name: '拆镜入口 rev 闭环(§主线):CSV/文本/资产导入+分镜脚本+节拍板+CLI shots-import 均记录 shotsSourceRev/shotsGraphRev', fn() {
+    const pairs = [
+      ['js/sb-io.js', 3],   // CSV 覆盖/文本追加/资产库导入
+      ['js/sb-board.js', 1], // 分镜脚本确认为分镜表
+      ['js/beatboard.js', 1], // 节拍板转回分镜表
+      ['cli.js', 1],         // shots-import
+    ];
+    pairs.forEach(([f, min]) => {
+      const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+      const n = (src.match(/shotsSourceRev = /g) || []).length;
+      assert(n >= min, f + ' 应至少有 ' + min + ' 处 shotsSourceRev 记录(导入/转换=一次分镜发布),实际 ' + n);
+      assert(src.includes('shotsGraphRev = '), f + ' 应同步记录 shotsGraphRev');
+    });
+  } },
+  { name: 'CLI 与浏览器同口径(§主线):合成走 composeSeqOf+audioUrl;生成走 buildVideoRequest;失败写回 failed+resumable', fn() {
+    const src = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    assert(src.includes('Domain.composeSeqOf('), 'CLI 合成序列应走 canonical composeSeqOf(含 tlOrder/tlTrims)');
+    assert(src.includes('s.audioUrl'), 'CLI 合成配音应读 s.audioUrl(UI 写字段)');
+    assert(!src.includes('s.audio.url'), 'CLI 不应再读 s.audio.url(该字段是布尔,音轨曾静默丢失)');
+    assert(src.includes('Domain.buildVideoRequest('), 'CLI 生成请求应走 Domain.buildVideoRequest(与指纹同口径)');
+    assert(src.includes("resumable"), 'CLI 生成失败应写回 resumable(对账可续查,不再产孤儿任务)');
+    assert(src.includes('composedDialogueSig'), 'CLI 合成写回应含字幕文本指纹(与主应用同口径)');
+  } },
+  { name: '审片闭环(§主线):autoSmartReview 写回 lastReview;重抽前快照;G3 判旧视为未审', fn() {
+    const prod = fs.readFileSync(path.join(ROOT, 'js/produce.js'), 'utf8');
+    assert(prod.includes('lastReview =') || prod.includes('lastReview='), 'autoSmartReview 应写回 ep.lastReview(与服务端 wf 同名命令一致)');
+    assert(prod.includes('snapshotShot'), '审片重抽前应先快照(失败可从历史版本找回旧片)');
+    const rel = fs.readFileSync(path.join(ROOT, 'js/release.js'), 'utf8');
+    assert(rel.includes('reviewStaleByScript'), 'G3 应对判旧的审片记录视为未审');
+  } },
+  { name: '确认闸回落三通道(§主线):Agent/CLI/UI 改镜头内容字段均回落 confirm=false', fn() {
+    const ao = fs.readFileSync(path.join(ROOT, 'js/agent-ops.js'), 'utf8');
+    assert(ao.includes("'prompt'") && ao.includes('confirm = false'), 'agent-ops 改内容字段应回落确认闸');
+    const cli = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    assert(/confirm = false/.test(cli), 'cli shot-set 改内容字段应回落确认闸');
+    const sv = fs.readFileSync(path.join(ROOT, 'js/sb-views.js'), 'utf8');
+    assert(/bindInput\('narration', \(\) => \{ sel\.confirm = false; \}\)/.test(sv), 'UI 旁白编辑应回落确认闸');
+  } },
+  { name: '生成指纹不断链(§主线):发起即打指纹;落片沿用发起时指纹;regen-stale 有执行出口', fn() {
+    const sg = fs.readFileSync(path.join(ROOT, 'js/sb-gen.js'), 'utf8');
+    const genMark = sg.match(/status: 'generating'[^}]*/g) || [];
+    assert(genMark.some(m => m.includes('inputHash')), 'generating 写回应携带发起时 inputHash(断点续查不再用当前输入冒充)');
+    const pipe = fs.readFileSync(path.join(ROOT, 'js/pipeline.js'), 'utf8');
+    assert(pipe.includes('regen-stale') && pipe.includes('shotIds'), 'regen-stale 应带 shotIds 执行批量重生成(不再只跳页面)');
+    const sb2 = fs.readFileSync(path.join(ROOT, 'js/storyboard.js'), 'utf8');
+    assert(sb2.includes('nx.run'), 'storyboard 下一步按钮应承接 nx.run 动作');
+  } },
+];
+
+/* ================= 套件 18:tasks.js(任务中心:§3.1 桌面通知/标题角标,§3.2 进度模型) ================= */
+function loadTasks() {
+  const sb = makeSandbox();
+  installCommon(sb);
+  sb.Store.currentUser = () => ({ id: 'u1', username: 'tester' });
+  sb.document.title = '虎鲸漫剧 - AI 短漫剧全流程智能创作平台';
+  sb.document.hidden = false;
+  sb.__notices = [];
+  sb.Notification = function (t, o) { sb.__notices.push({ t, o }); };
+  sb.Notification.permission = 'default';
+  sb.Notification.requestPermission = () => { sb.Notification.permission = 'granted'; return Promise.resolve('granted'); };
+  loadFile(sb, 'tasks.js');
+  return sb;
+}
+const tasksTests = [
+  { name: '标题角标:任务 start→(N) 前缀,done 后还原基准标题', fn() {
+    const sb = loadTasks();
+    const t1 = sb.Tasks.start({ type: '文生视频', target: '第一集·镜头1' });
+    assertEq(sb.document.title.startsWith('(1) '), true, '在跑 1 个任务标题应带 (1) 前缀,实际:' + sb.document.title);
+    const t2 = sb.Tasks.start({ type: '文生视频', target: '第一集·镜头2' });
+    assert(sb.document.title.startsWith('(2) '), '两个在跑应为 (2)');
+    sb.Tasks.done(t1); sb.Tasks.done(t2);
+    assertEq(sb.document.title, '虎鲸漫剧 - AI 短漫剧全流程智能创作平台', '归零后标题应还原');
+  } },
+  { name: '桌面通知:首个任务申请授权一次;页面后台+已授权时落定弹通知', fn() {
+    const sb = loadTasks();
+    const t1 = sb.Tasks.start({ type: '文生视频', target: '第一集·镜头1' });
+    assertEq(sb.Notification.permission, 'granted', '首个任务应在手势链内申请授权');
+    assertEq(sb.__notices.length, 0, '前台(document.hidden=false)不弹通知');
+    sb.document.hidden = true;
+    sb.Tasks.done(t1);
+    assertEq(sb.__notices.length, 1, '后台+已授权应弹落定通知');
+    assert(sb.__notices[0].t.includes('文生视频') && sb.__notices[0].o.body.includes('第一集·镜头1'), '通知应带类型与目标');
+    sb.Tasks.start({ type: '文生视频', target: 'x' }); // 已 granted:不再重复申请
+    sb.Tasks.fail(sb.Store.state.tasks[0], '上游超时');
+    assertEq(sb.__notices.length, 2, '失败也应通知');
+    assert(sb.__notices[1].o.body.includes('上游超时'), '失败通知应带原因');
+  } },
+  { name: 'setProgress:progress 字段结构 + 终态忽略 + 1s 节流落库', fn() {
+    const sb = loadTasks();
+    const t1 = sb.Tasks.start({ type: '文生视频', target: '批' });
+    sb.Tasks.setProgress(t1, 3, 12, 240000);
+    assertEq(JSON.stringify([t1.progress.cur, t1.progress.total, t1.progress.etaMs]), '[3,12,240000]');
+    const saves = sb.Store._saves;
+    sb.Tasks.setProgress(t1, 4, 12, 200000); // 1s 内:字段更新但不重复落库
+    assertEq(t1.progress.cur, 4);
+    assertEq(sb.Store._saves, saves, '节流窗口内不重复 save');
+    sb.Tasks.done(t1);
+    sb.Tasks.setProgress(t1, 5, 12, 0);
+    assertEq(t1.progress.cur, 4, '终态任务忽略进度上报');
+  } },
+];
+
+const SUITES = { 'agent-ops': agentOpsTests, experts: expertsTests, produce: produceTests, commands: commandsTests, store: storeTests, 'sb-gen': sbGenTests, pipeline: pipelineTests, 'sb-views': sbViewsTests, 'sb-io': sbIoTests, understanding: understandingTests, billing: billingTests, domain: domainTests, bus: busTests, issues: issuesTests, plans: plansTests, continuity: continuityTests, release: releaseTests, contract: contractTests, tasks: tasksTests };
 (async () => {
   const filter = process.argv[2];
   let passed = 0, failed = 0;

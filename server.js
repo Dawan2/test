@@ -90,6 +90,12 @@ function writeJSON(file, obj) {
   try { if (fs.existsSync(file)) fs.copyFileSync(file, file + '.bak'); } catch (_) {}
   fs.renameSync(tmp, file);
 }
+/* 任意内容原子写(二十二轮):tmp + rename,写到一半崩溃/并发不写出半截文件(缓存音频/字幕临时文本/用量聚合共用) */
+function writeFileAtomic(file, data, opts) {
+  const tmp = file + '.tmp' + process.pid;
+  fs.writeFileSync(tmp, data, opts);
+  fs.renameSync(tmp, file);
+}
 function readJSON(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
   catch (_) {
@@ -356,7 +362,7 @@ function compactUsageFile(file) {
     const out = [...buckets.values()].sort((a, b) => a.ts - b.ts)
       .map(b => JSON.stringify({ ts: b.ts, model: b.model, pt: 0, ct: 0, tt: b.tt, calls: b.calls }))
       .join('\n') + '\n';
-    fs.writeFileSync(file, out);
+    writeFileAtomic(file, out); // 原子写:用量聚合重写不留半截文件
   } catch (_) {}
 }
 function aggregateUsage(userId) {
@@ -836,6 +842,7 @@ const Domain = require('./js/domain.js');
 const WfCore = require('./js/wf-core.js');
 const Prompts = require('./js/prompts.js');
 const KB = require('./js/knowledge.js');
+const ExpertsData = require('./js/experts-data.js'); // 专家注册表双端单源(二十二轮):wf 端点据 hiredExpert 推导 projType
 const BILLING_ACTIONS = Object.assign({}, BILLING.DEFAULT_ACTIONS, CONFIG.billingActions || {});
 /* 前端 COST 键 → 服务端动作(同步投影用;config 覆盖价格后前端自动跟随) */
 const COST_PROJECTION = {
@@ -922,10 +929,42 @@ function opMarkExecuting(userId, opId, action) {
   if (op && op.status === 'charged') { op.status = 'executing'; op.updatedAt = Date.now(); saveOps(db); }
 }
 /* 并发执行锁(十一轮 P0-4):同 (userId, opId, action, step) 的并发请求在首个执行期间直接 409——
- * 此前 LLM 走 replay-exec / 非 LLM 复用已有扣费后都会继续调上游,一次扣费可获得多次模型调用 */
-const EXEC_LOCKS = new Map();
-function execLock(key) { if (EXEC_LOCKS.has(key)) return false; EXEC_LOCKS.set(key, true); return true; }
-function execUnlock(key) { EXEC_LOCKS.delete(key); }
+ * 此前 LLM 走 replay-exec / 非 LLM 复用已有扣费后都会继续调上游,一次扣费可获得多次模型调用。
+ * 二十二轮:锁落盘 data/locks.json——进程崩溃/重启后,看门狗对「未正常解锁且仍在执行窗口内」的 opId 保持保守
+ * (不判崩溃残留、不退款;ffmpeg 子进程等可能存活过重启);正常解锁即除名,重启后重试不吃假 409。 */
+const LOCKS_FILE = path.join(DATA_DIR, 'locks.json');
+const LOCK_KEEP_MS = 30 * 60 * 1000; // 与看门狗 OP_EXECUTE_STALE_MS 同窗口
+const EXEC_LOCKS = new Map();   // 并发锁(仅本进程语义:重启后为空,重试不再 409)
+const RECENT_LOCKS = new Map(); // 崩溃残留保守集(key→at):未正常解锁的锁,窗口期内看门狗视为仍在执行
+try {
+  const ldb = readJSON(LOCKS_FILE, { list: [] });
+  (Array.isArray(ldb.list) ? ldb.list : []).forEach(x => { if (x && x.key && Date.now() - (x.at || 0) < LOCK_KEEP_MS) RECENT_LOCKS.set(x.key, x.at); });
+} catch (_) {}
+function locksPersist() { try { writeJSON(LOCKS_FILE, { list: [...RECENT_LOCKS.entries()].map(([key, at]) => ({ key, at })) }); } catch (_) {} }
+function execLock(key) {
+  if (EXEC_LOCKS.has(key)) return false;
+  EXEC_LOCKS.set(key, true);
+  RECENT_LOCKS.set(key, Date.now()); locksPersist();
+  return true;
+}
+function execUnlock(key) {
+  EXEC_LOCKS.delete(key);
+  if (RECENT_LOCKS.delete(key)) locksPersist(); // 正常解锁除名:不留保守窗口
+}
+/* 看门狗视角的在途 opId 集合:本进程持锁 ∪ 崩溃残留窗口内的未解锁锁(锁键 <域>:<uid>:<opId>[:<action>]);顺带清超期项 */
+function lockedOpIds() {
+  const now = Date.now();
+  const out = new Set();
+  const merge = m => { for (const k of m.keys()) { const opId = k.split(':')[2]; if (opId) out.add(opId); } };
+  merge(EXEC_LOCKS);
+  let pruned = false;
+  for (const [k, at] of RECENT_LOCKS) {
+    if (now - at >= LOCK_KEEP_MS) { RECENT_LOCKS.delete(k); pruned = true; continue; }
+    const opId = k.split(':')[2]; if (opId) out.add(opId);
+  }
+  if (pruned) locksPersist();
+  return out;
+}
 /* 某 operation 的全部扣费条目(idem: px_<uid>_<opId>@<action> 或 ~n 重试后缀)
  * R14:可选 action 维度——传 action 时只取该动作的扣费(退费归集与扣费登记的 (opId,action) 口径对齐,
  * 防同一 opId 跨端点复用时一个动作的失败退款误退另一动作的未交付扣费) */
@@ -1056,8 +1095,9 @@ function refundOperation(userId, opId, reason, clientInitiated, action) {
  * 残留走内部退款(refundPlan 判定;部分交付 blocked-ok-step 不退,只收敛为 failed 终态不再悬挂)。
  * 5 分钟周期 + 退款端点/任务中心入口触发(幂等)——executing 对客户端永久拒退后,
  * 崩溃残留的退款出口完全由本看门狗承担。
- * R14:退款前先查内存执行锁——EXEC_LOCKS 在进程内存中,进程崩溃/重启即清空,故"仍持锁"等价于
- * "本进程内仍在正常执行"(如 80 段合成合法跑 40+ 分钟),绝不清算;无锁的陈旧 executing 才是崩溃残留。
+ * R14+二十二轮:退款前先查执行锁——锁已落盘(data/locks.json),进程崩溃/重启后窗口期内仍保守视为
+ * "可能仍在执行"(如 80 段合成合法跑 40+ 分钟、ffmpeg 子进程存活过重启),绝不清算;
+ * 超过窗口且未正常解锁的陈旧 executing 才是崩溃残留。
  * 同时按 (opId,action) 归集退款,与扣费登记口径对齐。 */
 const OP_EXECUTE_STALE_MS = 30 * 60 * 1000;
 const RESULT_CLAIM_RETRY_MAX = 3;        // 结果领取失败自动重试次数(幂等 + 指数退避)
@@ -1084,7 +1124,7 @@ function sweepStaleOps(forceRefund) {
   if (!stale.length) return;
   const jdb = jobsDB();
   const activeOps = new Set(jdb.list.filter(j => j.status === 'running' || j.status === 'needs_reconcile').map(j => j.billingOperationId).filter(Boolean));
-  const locked = new Set([...EXEC_LOCKS.keys()].map(k => k.split(':')[2]).filter(Boolean)); // 锁键 <域>:<uid>:<opId>[:<action>] → 在途 opId 集合
+  const locked = lockedOpIds(); // 在途 opId 集合:本进程持锁 ∪ 崩溃残留窗口内未解锁锁(二十二轮锁落盘,重启不丢"仍在执行"判据)
   dirty = false;
   stale.forEach(o => {
     if (activeOps.has(o.opId) || locked.has(o.opId)) return; // 活动任务/本进程仍在执行:跳过,防误伤合法长任务
@@ -2787,7 +2827,7 @@ const server = http.createServer(async (req, res) => {
               const text = doSub ? String(it.text || '').trim() : '';
               if (text) {
                 const tf = path.join(GEN_CACHE_DIR, 'sub_' + Date.now().toString(36) + '_' + i + '.txt');
-                fs.writeFileSync(tf, text, 'utf8');
+                writeFileAtomic(tf, text, 'utf8'); // 原子写:drawtext 不读半截字幕文本
                 tmpFiles.push(tf);
                 vchain += `,drawtext=fontfile='${fontEsc}':textfile='${tf.replace(/\\/g, '/').replace(':', '\\:')}':fontcolor=white:fontsize=${Math.round(W / 26)}:box=1:boxcolor=black@0.45:boxborderw=12:line_spacing=6:x=(w-text_w)/2:y=h-text_h-${Math.round(H * 0.08)}`;
               }
@@ -2978,7 +3018,7 @@ const server = http.createServer(async (req, res) => {
           out = await callTts(false).catch(() => { throw e; }); // 情感参数不被该音色支持时降级重试
         }
         const name = 'tts_' + Date.now().toString(36) + crypto.randomBytes(3).toString('hex') + '.mp3';
-        fs.writeFileSync(path.join(GEN_CACHE_DIR, name), Buffer.from(out.audio, 'base64'));
+        writeFileAtomic(path.join(GEN_CACHE_DIR, name), Buffer.from(out.audio, 'base64')); // 原子写:半截 mp3 不被当有效缓存交付
         /* 十二轮交付守卫:已退款的 operation 不再回传音频地址(退款+白拿成品竞态) */
         if (!opDelivered(user.id, charge.opId, tAction)) return fail(res, 409, '该操作已退款,结果不再交付', 409);
         resultPut(user.id, charge.opId, tAction, 'volc/tts', { url: '/uploads/gen/' + name, duration: out.duration, voice: speaker }); // 十三轮:结果日志(重放恢复)
@@ -3252,6 +3292,7 @@ const server = http.createServer(async (req, res) => {
         if (!WfCore.undValid(r.parsed)) { if (r.charge) proxyRefund(user.id, r.charge, '理解结构不完整'); return fail(res, 502, '本集理解返回结构不完整(已退费)', 502); }
         ep.understanding = WfCore.undNormalize(r.parsed, nowStr);
         ep.understanding.sourceRev = ep.contentRev || 0; // 记录理解对应的剧本版本(剧本修改后判旧)
+        ep.understanding.graphRev = ep.graphRev || 0;    // 记录理解对应的事件图谱版本(图谱修订后判旧)
         const rev = wfSave(user.id, cur, tree);
         return ok(res, { rev, understanding: ep.understanding });
       } catch (e) {
@@ -3276,8 +3317,8 @@ const server = http.createServer(async (req, res) => {
         const opId = sanitizeOpId(b.operationId) || uid('wfsb');
         const ctxBase = {
           styleText: Domain.styleOf(p),
-          // 服务端无法解析浏览器专家雇佣注册表(experts.js)——解说剧(projType narration)项目的工作流提示词少一行模式标注,如实记录
-          projType: 'drama',
+          // 二十二轮:projType 与浏览器同源推导(experts-data.projTypeOf)——雇佣解说剧导演后服务端工作流提示词同样带「解说模式」标注
+          projType: ExpertsData.projTypeOf(st.hiredExpert, tree.customExperts),
           directorNote: WfCore.directorNote(st.directorSetting), conceptNote: WfCore.conceptInject(p),
           langText: WfCore.langOf(p), genres: p.genres, eventsText: WfCore.eventsOfEpisode(p, ep),
           content: (ep.content || '').slice(0, 12000),
@@ -3293,6 +3334,7 @@ const server = http.createServer(async (req, res) => {
           if (!WfCore.undValid(ru.parsed)) { if (ru.charge) proxyRefund(user.id, ru.charge, '理解结构不完整'); return fail(res, 502, '本集理解返回结构不完整(已退费)', 502); }
           ep.understanding = WfCore.undNormalize(ru.parsed, nowStr);
           ep.understanding.sourceRev = ep.contentRev || 0;
+          ep.understanding.graphRev = ep.graphRev || 0; // 记录理解对应的事件图谱版本(图谱修订后判旧)
         }
         ctxBase.understandingText = WfCore.undToText(ep.understanding);
         const genShots = async (feedback, stepTag) => {

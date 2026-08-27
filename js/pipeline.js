@@ -111,7 +111,15 @@
         return { key: 'film', txt: '🎞 合成成片' };
       case 'stale':
         if (st.action.key === 'reshoot') return { key: 'shots', txt: '🔄 重新拆镜(剧本/图谱已更新)' };
-        if (st.action.key === 'regen-stale') return { key: 'gen', txt: `🔄 重生成过期镜(${c.stale})` };
+        if (st.action.key === 'regen-stale') return {
+          key: 'regen-stale', txt: `🔄 重生成过期镜(${c.stale})`,
+          /* 过期 done 镜被所有批量入口(!shotVideoReady 过滤)排除,唯一出口=命令层 shotIds 子集重生成;
+           * 调用方(分集工作区「下一步」按钮)对带 run 的动作直接执行,不再映射批量入口 */
+          run: main => Commands.execute('episode.generateVideos', {
+            pid: p.id, epid: ep.id, main, ui: true,
+            shotIds: (ep.shots || []).filter(s => Domain.shotVideoStale(p, s, _online())).map(s => s.id),
+          }).then(r => Commands.digest(r)),
+        };
         return { key: 'film', txt: '🎞 重新合成(已过期)' };
       case 'running': return { key: 'gen', txt: `⏳ 生成中(${c.generating} 镜在飞)` };
       case 'blocked':

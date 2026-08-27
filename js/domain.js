@@ -249,17 +249,29 @@
     if (ep.shotsGraphRev !== undefined && ep.shotsGraphRev !== (ep.graphRev || 0)) return true;
     return false;
   };
-  /* 本集理解是否对应当前剧本 */
+  /* 本集理解是否对应当前剧本与事件图谱(理解 prompt 注入图谱;
+   * graphRev 为后加字段,旧数据无此字段保持原语义,不一次性全量判旧) */
   D.understandingStale = function (ep) {
     if (!ep || !ep.understanding) return false;
+    if (ep.understanding.graphRev !== undefined && ep.understanding.graphRev !== (ep.graphRev || 0)) return true;
     if (ep.understanding.sourceRev === undefined) return (ep.contentRev || 0) > 0;
     return ep.understanding.sourceRev !== (ep.contentRev || 0);
   };
-  /* 整集审片是否基于当前剧本与图谱 */
+  /* 整集审片快照哈希(与 wf-core.js reviewSnapshotHashOf 同字面:镜头 ID 集顺序 + 每镜视频指纹/地址)——
+   * 新增/删除/调序/任一镜重生成后整集报告判旧;写侧唯一来源仍在 wf-core,本函数供判旧只读(双端可用) */
+  D.reviewSnapshotHashOf = function (ep) {
+    const sig = ((ep && ep.shots) || []).map(s => [s.id, (s.video && s.video.inputHash) || '', (s.video && s.video.url) || ''].join('|')).join('‖');
+    let h = 5381;
+    for (let i = 0; i < sig.length; i++) h = ((h << 5) + h + sig.charCodeAt(i)) >>> 0;
+    return 'r:' + h.toString(36);
+  };
+  /* 整集审片是否基于当前剧本、图谱与镜头集快照(任一维度判旧 → 旧分不再驱动门禁/状态;
+   * 迁移兼容:无 sourceRev/graphRev/snapshotHash 记录的旧数据保持原语义,不判旧) */
   D.reviewStaleByScript = function (ep) {
     if (!ep || !ep.lastReview) return false;
     if (ep.lastReview.sourceRev !== undefined && ep.lastReview.sourceRev !== (ep.contentRev || 0)) return true;
     if (ep.lastReview.graphRev !== undefined && ep.lastReview.graphRev !== (ep.graphRev || 0)) return true;
+    if (ep.lastReview.snapshotHash !== undefined && ep.lastReview.snapshotHash !== D.reviewSnapshotHashOf(ep)) return true;
     return false;
   };
   /* 成片是否基于当前剧本与图谱(合成时记录 composedSourceRev/composedGraphRev) */
@@ -310,6 +322,16 @@
     for (let i = 0; i < full.length; i++) h = ((h << 5) + h + full.charCodeAt(i)) >>> 0;
     return 'c:' + h.toString(36);
   };
+  /* 成片字幕文本签名:在列镜头(与 composeSeqOf 同序列)dialogue||narration + 分镜时长的拼接散列——
+   * 烧录字幕与 SRT 取该文本(sb-io.js),时长影响 SRT 时间轴;合成写回时记录 ep.composedDialogueSig,
+   * 合成后改台词/时长 → 成片判旧。迁移兼容:该字段存在才比对,旧数据无记录保持原语义 */
+  D.composedDialogueSig = function (ep, online) {
+    if (!ep) return '';
+    const sig = D.composeSeqOf(ep, online).map(s => [s.id, s.dialogue || '', s.narration || '', s.duration || ''].join('|')).join('‖');
+    let h = 5381;
+    for (let i = 0; i < sig.length; i++) h = ((h << 5) + h + sig.charCodeAt(i)) >>> 0;
+    return 'd:' + h.toString(36);
+  };
   /* 成片就绪(真实):composed 且非离线模拟 且 合成输入未变化 且 剧本/图谱版本仍为合成时版本。
    * 剧本/图谱维度(原独立 composedStaleByScript)并入:技术上存在成片文件 ≠ 业务上仍是最新成片;
    * 无指纹/无 rev 记录的旧数据:无指纹判未就绪(无法证明输入未变),无 rev 记录保持原语义(迁移兼容)。 */
@@ -318,6 +340,7 @@
     if (ep.composedSimulated) return !online;
     if (!ep.composedInputHash) return false;
     if (ep.composedInputHash !== D.composedInputHash(ep, online)) return false;
+    if (ep.composedDialogueSig !== undefined && ep.composedDialogueSig !== D.composedDialogueSig(ep, online)) return false; // 字幕文本/时长在合成后变化(无记录的旧数据不比对)
     if (D.composedStaleByScript(ep)) return false;
     return true;
   };
@@ -358,7 +381,8 @@
     if (counts.failed) bl('failed-shots', counts.failed + ' 镜生成失败');
     if (counts.stale) bl('stale-shots', counts.stale + ' 镜素材已更新');
     if (counts.unconfirmed && counts.done === counts.total && counts.total > 0) bl('unconfirmed', counts.unconfirmed + ' 镜待确认');
-    const reviewAvg = ep.lastReview && typeof ep.lastReview.avg === 'number' ? ep.lastReview.avg : null;
+    const reviewStale = D.reviewStaleByScript(ep); // 剧本/图谱修订或镜头重抽后旧审片记录判旧
+    const reviewAvg = !reviewStale && ep.lastReview && typeof ep.lastReview.avg === 'number' ? ep.lastReview.avg : null; // 判旧的旧分不再卡 needs_human(旧版语义由展示层承接)
     const composedReady = D.epComposedReady(ep, online);
     if (ep.composed && !composedReady) bl('composed-stale', '成片已过期(输入或剧本已变化)');
 
@@ -376,7 +400,7 @@
       status = ep.composed ? 'stale' : 'ready';
       action = { key: 'compose', label: ep.composed ? '重新合成' : '合成成片' };
     } else status = 'done';
-    return { status, counts, blockers, action, reviewAvg, composedReady, shotsStale };
+    return { status, counts, blockers, action, reviewAvg, reviewStale, composedReady, shotsStale };
   };
 
   /* 项目级工作流:主线步骤(含支线标记),逐步 status/done/doing/blockers/recommendedAction */

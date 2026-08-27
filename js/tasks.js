@@ -7,11 +7,30 @@
     if (!Store.state.tasks) Store.state.tasks = [];
     return Store.state.tasks;
   }
-  const notify = () => { try { window.dispatchEvent(new Event('tasks-changed')); } catch (_) {} };
+  const notify = () => {
+    try { window.dispatchEvent(new Event('tasks-changed')); } catch (_) {}
+    /* 标题角标(§3.1):在跑任务数进 document.title,切走标签页也可见 */
+    try {
+      if (typeof document !== 'undefined') {
+        const n = list().filter(t => t.status === 'running').length;
+        document.title = n ? `(${n}) ${BASE_TITLE}` : BASE_TITLE;
+      }
+    } catch (_) {}
+  };
+  const BASE_TITLE = (typeof document !== 'undefined' && document.title) || '虎鲸漫剧';
+  let notifyAsked = false; // 桌面通知权限每会话只在首个任务发起时申请一次(用户手势链内)
+  const progAt = new WeakMap(); // setProgress 节流槽位(不落库)
 
   const Tasks = {
     /** 登记一个任务:返回 task 对象(调用方持有,结束时 done/fail) */
     start({ type, model, target, projectId, episodeId, shotId, cost, download }) {
+      /* 桌面通知授权(§3.1):任务发起处于用户手势链内,每会话仅申请一次;拒绝/忽略后不再打扰 */
+      try {
+        if (!notifyAsked && typeof Notification !== 'undefined' && Notification.permission === 'default') {
+          notifyAsked = true;
+          Promise.resolve(Notification.requestPermission()).catch(() => {});
+        }
+      } catch (_) {}
       const u = Store.currentUser();
       const t = {
         id: Store.uid('tk'), type, model: model || '本地', target: target || '',
@@ -35,6 +54,12 @@
       if (reason) t.reason = reason;
       Store.save();
       notify();
+      /* 桌面通知(§3.1):页面在后台且已授权时弹出落定消息(完成/失败/转后台续查) */
+      try {
+        if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && typeof document !== 'undefined' && document.hidden) {
+          new Notification(t.type + (status === 'done' ? ' 完成' : status === 'failed' ? ' 失败' : ' 转后台'), { body: (t.target || '') + (reason ? ' · ' + String(reason).slice(0, 60) : '') });
+        }
+      } catch (_) {}
     },
     done(t, download) {
       if (!t) return;
@@ -54,6 +79,14 @@
       this._fin(t, 'background', reason || '上游仍在生成,可续查');
     },
     running() { return list().filter(t => t.status === 'running').length; },
+    /** 进度上报(§3.2 统一进度模型):在飞任务携带 progress {cur,total,etaMs,at},任务中心统一渲染「批 3/12 · 约剩 N」。
+     * 高频轮询调用方安全:每任务 ≥1s 节流才落库+广播(防 save/重渲染风暴);终态任务忽略。 */
+    setProgress(t, cur, total, etaMs) {
+      if (!t || t.status !== 'running') return;
+      t.progress = { cur: Math.max(0, cur | 0), total: Math.max(0, total | 0), etaMs: Math.max(0, etaMs | 0), at: Date.now() };
+      const last = progAt.get(t) || 0;
+      if (Date.now() - last >= 1000) { progAt.set(t, Date.now()); Store.save(); notify(); }
+    },
     /** 服务端任务快照(十二轮):canDeleteScope/Media.reconcileJobs 每次拉取 /api/jobs 时刷新,
      * 供同步路径(runningInScope → Agent ops 应用器等无法 await 的删除点)共享远端在飞判定;
      * 快照 2 分钟内有效——UI 异步守卫仍是权威,缓存只是同步路径的保守补充 */
@@ -351,7 +384,7 @@
             <tr>
               <td class="small"><b>${U.esc(t.name)}</b></td>
               <td>${t.status === 'done' ? '<span class="tag green">已完成</span>'
-          : t.status === 'running' ? '<span class="tag cyan"><span class="spinner" style="width:9px;height:9px"></span> 进行中</span>'
+          : t.status === 'running' ? '<span class="tag cyan"><span class="spinner" style="width:9px;height:9px"></span> 进行中</span>' + (t.progress && t.progress.total ? `<div class="small muted" style="margin-top:2px">批 ${t.progress.cur}/${t.progress.total}${t.progress.etaMs ? ' · 约剩 ' + fmtDur(t.progress.etaMs) : ''}</div>` : '')
             : t.status === 'background' ? '<span class="tag yellow" title="前端已停止等待,上游任务仍在生成;重试可免费续查结果">⏳ 后台生成中</span>'
               : '<span class="tag red">失败</span>'}</td>
               <td class="small" style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${U.esc(t.reason || '')}">${U.esc(t.reason || '—')}</td>

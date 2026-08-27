@@ -155,6 +155,9 @@
           if (v.firstFrame) s.firstFrame = v.firstFrame; // 版本带首/尾帧快照则一并恢复
           if (v.lastFrame) s.lastFrame = v.lastFrame;
           syncFrames(ep, p);
+          // 历史条目未存生成时指纹:回滚后 prompt/画面/首尾帧即该版本输入,现算指纹写入(不留空——
+          // 否则当次会话永不判旧,reload 后 migrateInputHash 又按当前输入回填基线,素材差异被永久掩盖)
+          if (v.frame) { s.video.assetVer = Store.shotAssetVer(p, s); s.video.inputHash = Store.shotInputHash(p, s); }
           s.history = s.history || [];
           s.history.unshift({ type: '回滚至 v' + vno, model: v.model || '版本回滚', time: Store.now(), prompt: s.prompt, frame: v.frame || null, url: v.url || '', firstFrame: s.firstFrame || null, lastFrame: s.lastFrame || null });
           Store.save(); close();
@@ -463,7 +466,8 @@
       try {
         const frame = await Media.captureFrameUp(st.videoUrl, 0.1, 'frame_' + s.id + '.jpg');
         const tail = await Media.captureFrameUp(st.videoUrl, 'end', 'tail_' + s.id + '.jpg');
-        s.video = { status: 'done', model: s.video.model || '', url: st.videoUrl, frame: frame || PH.video(s.plot, s.order), assetVer: Store.shotAssetVer(p, s), inputHash: Store.shotInputHash(p, s), upstreamId: s.video.upstreamId };
+        const keepVer = s.video.assetVer, keepHash = s.video.inputHash; // 发起时指纹=中断前真实输入,优先沿用;存量无指纹才按当前输入现算
+        s.video = { status: 'done', model: s.video.model || '', url: st.videoUrl, frame: frame || PH.video(s.plot, s.order), assetVer: keepVer !== undefined ? keepVer : Store.shotAssetVer(p, s), inputHash: keepHash || Store.shotInputHash(p, s), upstreamId: s.video.upstreamId };
         s.image = s.image || frame || PH.shot(s.plot, s.order);
         s.lastFrame = tail || frame || framePH(s, 'last');
         finishVideoDone(p, ep, s, main, tk, `${ep.title}·镜头${s.order + 1}`, strategy, 0);
@@ -471,7 +475,8 @@
         return true;
       } catch (e) {
         Tasks.fail(tk, e.message);
-        s.video = { status: 'failed', error: '恢复失败:' + e.message };
+        // 上游成片已就绪,仅本地截帧/上传失败:保留 upstreamId+resumable(及发起时指纹),再点生成继续续查,不重复创建上游任务
+        s.video = { status: 'failed', error: '恢复失败:' + e.message, model: s.video.model, upstreamId: s.video.upstreamId, resumable: true, assetVer: s.video.assetVer, inputHash: s.video.inputHash };
         Store.save();
         return false;
       }
@@ -549,7 +554,8 @@
         if (!s.firstFrame) { s.firstFrame = framePH(s, 'first'); }
       }
       snapshotShot(s, '重新生成前'); // 覆盖旧 video/image 前留档(已成功生成并入档的版本去重跳过)
-      s.video = { status: 'generating', model: s.videoModel || ep.sbConfig.batchVideoModel };
+      // 发起时即打输入指纹:生成期间输入被改/刷新中断后续查落片,指纹仍对应本次真实输入(落片路径优先沿用,不现算)
+      s.video = { status: 'generating', model: s.videoModel || ep.sbConfig.batchVideoModel, assetVer: Store.shotAssetVer(p, s), inputHash: Store.shotInputHash(p, s) };
       Store.save(); renderShots(main, p, ep);
       // 在线走火山引擎真实文生视频(数分钟,直接 await),失败如实退费;离线回退 PH 占位
       if (window.Media && Media.isReady()) {
@@ -566,13 +572,13 @@
           }));
           const frame = await Media.captureFrameUp(r.videoUrl, 0.1, 'frame_' + s.id + '.jpg'); // 截帧即传服务端,state 只存短路径
           const tail = await Media.captureFrameUp(r.videoUrl, 'end', 'tail_' + s.id + '.jpg');
-          s.video = { status: 'done', model: s.video.model, url: r.videoUrl, frame: frame || PH.video(s.plot, s.order), assetVer: Store.shotAssetVer(p, s), inputHash: Store.shotInputHash(p, s), upstreamId: s.video.upstreamId }; // assetVer/inputHash:生成时输入指纹,之后提示词/台词/素材变更则提示"素材已更新·建议重生成"
+          s.video = { status: 'done', model: s.video.model, url: r.videoUrl, frame: frame || PH.video(s.plot, s.order), assetVer: s.video.assetVer !== undefined ? s.video.assetVer : Store.shotAssetVer(p, s), inputHash: s.video.inputHash || Store.shotInputHash(p, s), upstreamId: s.video.upstreamId }; // assetVer/inputHash:沿用发起时输入指纹(存量缺失才现算),之后提示词/台词/素材变更则提示"素材已更新·建议重生成"
           s.image = s.image || frame || PH.shot(s.plot, s.order);
           s.lastFrame = tail || frame || framePH(s, 'last'); // 尾帧取自真实视频结尾,供下一镜继承
           finishVideoDone(p, ep, s, main, tk, target, strategy, vrefCnt);
           return;
         } catch (e) {
-          s.video = { status: 'failed', error: e.message, model: s.video.model, upstreamId: s.video.upstreamId, resumable: !!s.video.upstreamId }; // 保留 upstreamId:轮询超时类失败可再点生成走断点续查
+          s.video = { status: 'failed', error: e.message, model: s.video.model, upstreamId: s.video.upstreamId, resumable: !!s.video.upstreamId, assetVer: s.video.assetVer, inputHash: s.video.inputHash }; // 保留 upstreamId:轮询超时类失败可再点生成走断点续查;发起时指纹一并保留,续查落片不按新输入误记
           if (e.__pending) {
             // 九轮:10 分钟超时——任务仍在后台生成,不退本地镜像(服务端 30 分钟标 stale/60 分钟兜底退款;重试同 opId 幂等续查)
             U.toast(e.message, 'info', 5000);
@@ -661,8 +667,17 @@
       }));
     }
     let okCnt = 0, failCnt = 0, noFunds = false, blockedCnt = 0;
+    /* 批量进度上报(§3.2):在飞的逐镜任务携带「批 cur/total+约剩」,任务中心/标题角标统一可见;
+     * 每镜落定边界更新一次(loop 顶调用覆盖所有 continue 分支) */
+    const tBatch0 = Date.now();
+    const batchProg = () => {
+      const cur = okCnt + failCnt;
+      const eta = cur ? Math.round((Date.now() - tBatch0) / cur * (shots.length - cur)) : 0;
+      tks.forEach(tk => Tasks.setProgress(tk, cur, shots.length, eta));
+    };
     const failed = []; // 失败镜头清单 {s, err}:批量结束后汇总弹窗可单独/全部重试
     for (let i = 0; i < shots.length; i++) {
+      batchProg();
       const s = shots[i];
       if (dock && dock.cancelled) { Tasks.fail(tks[i], '用户取消'); failCnt++; failed.push({ s, err: '用户取消' }); upd(i, `✕ 镜头${s.order + 1} 已取消(未扣费)`); continue; }
       // 内容安全前置拦截:提示词命中敏感词直接失败该镜(不扣费;十六轮:不再覆盖旧成片为 failed,保持原状)
@@ -695,7 +710,8 @@
       const effPrompt = (opts.prefix ? opts.prefix + ' ' : '') + (s.prompt || '');
       snapshotShot(s, '重新生成前'); // 覆盖旧 video/image 前留档(已入档版本去重跳过)
       if (useReal) {
-        s.video = { status: 'generating', model: s.videoModel || ep.sbConfig.batchVideoModel };
+        // 发起时即打输入指纹(同单镜口径):生成期间输入被改/刷新中断后落片,指纹仍对应本次真实输入
+        s.video = { status: 'generating', model: s.videoModel || ep.sbConfig.batchVideoModel, assetVer: Store.shotAssetVer(p, s), inputHash: Store.shotInputHash(p, s) };
         upd(i, `🎬 镜头${s.order + 1} 生成中…`);
         if (onEpPage(p, ep)) renderShots(main, p, ep);
         try {
@@ -712,7 +728,7 @@
           }));
           const frame = await Media.captureFrameUp(r.videoUrl, 0.1, 'frame_' + s.id + '.jpg'); // 截帧即传服务端,state 只存短路径
           const tail = await Media.captureFrameUp(r.videoUrl, 'end', 'tail_' + s.id + '.jpg');
-          s.video = { status: 'done', model: s.video.model, url: r.videoUrl, frame: frame || PH.video(s.plot, s.order), assetVer: Store.shotAssetVer(p, s), inputHash: Store.shotInputHash(p, s), upstreamId: s.video.upstreamId }; // assetVer/inputHash:生成时输入指纹
+          s.video = { status: 'done', model: s.video.model, url: r.videoUrl, frame: frame || PH.video(s.plot, s.order), assetVer: s.video.assetVer !== undefined ? s.video.assetVer : Store.shotAssetVer(p, s), inputHash: s.video.inputHash || Store.shotInputHash(p, s), upstreamId: s.video.upstreamId }; // assetVer/inputHash:沿用发起时输入指纹(存量缺失才现算)
           s.image = s.image || frame || PH.shot(s.plot, s.order);
           s.lastFrame = tail || frame || framePH(s, 'last');
           s.history = s.history || [];
@@ -723,7 +739,7 @@
           upd(i, `<span style="color:var(--green)">✓ 镜头${s.order + 1} 完成</span>`);
         } catch (e) {
           // 真实模式失败:该镜如实失败;保留 upstreamId 供断点续查。九轮:超时(__pending)不退费
-          s.video = { status: 'failed', error: e.message, model: s.video.model, upstreamId: s.video.upstreamId, resumable: !!s.video.upstreamId };
+          s.video = { status: 'failed', error: e.message, model: s.video.model, upstreamId: s.video.upstreamId, resumable: !!s.video.upstreamId, assetVer: s.video.assetVer, inputHash: s.video.inputHash }; // 发起时指纹一并保留,续查/对账落片不按新输入误记
           if (e.__pending) {
             upd(i, `<span style="color:var(--yellow)">⏳ 镜头${s.order + 1} 超时仍在后台生成,可稍后重试续查(未重复扣费)</span>`);
             Tasks.background(tks[i], '上游仍在生成,稍后重试可免费续查'); // 十轮:后台态计入删除拦截
@@ -753,6 +769,7 @@
       Tasks.done(tks[i], { filename: `${gn || ep.title}_镜头${s.order + 1}_视频帧.png`, dataURL: s.video.frame });
       okCnt++;
     }
+    batchProg(); // 末镜落定后终态对齐(在飞集合此时为空,仅触发一次节流落库)
     if (blockedCnt) U.toast(`有 ${blockedCnt} 镜因提示词含敏感词被内容安全拦截(未扣费):${Compliance.GUIDE}`, 'error', 4500);
     syncFramesWithNote(ep, p); // 十六轮:批量出新尾帧后,级联影响继承镜时如实提示
     ep.composed = false; // 重新生成后需重新合成

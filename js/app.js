@@ -30,7 +30,7 @@
     const nav = NAV.filter(n => !n.company || (u && u.accountType === 'company'))
       .map(n => {
         return `<div class="nav-item ${activeHash && activeHash.startsWith(n.hash) ? 'active' : ''}" data-nav="${n.hash}">
-          <span class="ico">${n.ico}</span><span class="txt">${n.txt}</span>${n.external ? '<span class="small muted" style="margin-left:auto">↗</span>' : ''}${n.hash === '#/dashboard' && runningTasks ? `<span class="tag cyan" style="margin-left:auto;font-size:10px;padding:1px 7px" title="进行中任务(数据看板→任务监控)">${runningTasks}</span>` : ''}</div>`;
+          <span class="ico">${n.ico}</span><span class="txt">${n.txt}</span>${n.external ? '<span class="small muted" style="margin-left:auto">↗</span>' : ''}${n.hash === '#/dashboard' && runningTasks ? `<span class="tag cyan" data-task-badge="1" style="margin-left:auto;font-size:10px;padding:1px 7px" title="进行中任务(数据看板→任务监控)">${runningTasks}</span>` : ''}</div>`;
       }).join('');
     app.innerHTML = `
     <div class="shell">

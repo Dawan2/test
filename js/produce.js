@@ -257,6 +257,7 @@
     }
     const say = h => { if (dock) dock.say(h); };
     let passCnt = 0, retryCnt = 0, manualCnt = 0;
+    const lastRep = {}; // 每镜最后一次审片报告(重抽后再审会覆盖),用于收尾写回整集 lastReview
     for (const s of targets) {
       if (dock && dock.cancelled) { say(`⏹ 用户中止审片`); break; }
       let pass = false;
@@ -265,6 +266,7 @@
         say(`▶ 镜头 ${s.order + 1} 评审中${attempt ? `(第 ${attempt} 次重生成后)` : ''}…`);
         const r = await Review.reviewShot(p, ep, s);
         if (!r) { say('&nbsp;&nbsp;积分不足,审片中止'); manualCnt++; break; }
+        lastRep[s.id] = r;
         if (r.score >= 7) { pass = true; passCnt++; s.confirm = true; say(`&nbsp;&nbsp;✅ <b style="color:var(--green)">${r.score.toFixed(1)}</b> 分,达标(已自动确认)`); } // 审片达标 = 系统替你确认(镜头确认闸联动)
         else if (attempt < maxRetry) {
           retryCnt++;
@@ -278,6 +280,7 @@
           } else {
             say(`&nbsp;&nbsp;⚠️ <b style="color:var(--yellow)">${r.score.toFixed(1)}</b> 分不达标,自动重生成…`);
           }
+          if (window.SB && SB.snapshotShot) SB.snapshotShot(s, '审片重抽前'); // 覆盖旧 video 前留档(与正常重生成路径同一快照函数):重抽失败/积分不足时旧片可从历史版本回滚
           s.video = { status: 'none' };
           await SBGen.createShotVideo(p, ep, s, main, true);
           if (!s.video || !Store.shotVideoReady(s)) { say('&nbsp;&nbsp;重生成失败,转人工处理'); manualCnt++; break; }
@@ -292,7 +295,23 @@
     if (dock) dock.finish(`<b style="color:${manualCnt ? 'var(--yellow)' : 'var(--green)'}">━━ ${summary} ━━</b>`);
     if (quiet) U.toast(`智能审片完成(${ep.title}):达标 ${passCnt} · 重抽 ${retryCnt} 次 · 待人工 ${manualCnt}`, manualCnt ? 'info' : 'success', 3500);
     if (window.Bus) Bus.emit('review.smartDone', { p, ep, main, pass: passCnt, retry: retryCnt, manual: manualCnt, quiet: !!quiet, brief: `智能审片完成:达标 ${passCnt} · 重抽 ${retryCnt} · 待人工 ${manualCnt}` }); // 事件总线:Agent 订阅转译(quiet/headless 由订阅侧静默)
-    Store.save(); // 达标镜头的 confirm=true 落库
+    /* 写回整集审片记录(与 review.js openEpisodeReview / 服务端 wf smart-review 同构):
+     * 此前全程只写单镜 s.reviews/s.confirm,ep.lastReview 缺失 → 发布门 G3 判"无审片记录"、
+     * 问题中心/分集页均分不更新;snapshotHash 用 wf-core 同口径(重抽后按最新视频状态计算) */
+    const reviewed = targets.filter(s => lastRep[s.id]);
+    if (reviewed.length) {
+      ep.lastReview = {
+        time: Store.now(),
+        avg: Math.round(reviewed.reduce((a, s) => a + lastRep[s.id].score, 0) / reviewed.length * 10) / 10,
+        snapshotHash: window.WfCore && WfCore.reviewSnapshotHashOf ? WfCore.reviewSnapshotHashOf(ep) : undefined,
+        sourceRev: ep.contentRev || 0,
+        graphRev: ep.graphRev || 0,
+        perShot: reviewed.map(s => ({ shotId: s.id, order: s.order, score: lastRep[s.id].score, reportId: lastRep[s.id].id, videoInputHash: lastRep[s.id].videoInputHash || '' })),
+        common: { summary: '', issues: [] }, // 闭环不做整集共性汇总/四维评审(结构规整,整集报告页防空指针)
+        cut: null,
+      };
+    }
+    Store.save(); // 达标镜头的 confirm=true 与整集 lastReview 落库
     if (main && main.isConnected) window.SB.renderShots(main, p, ep);
     return { pass: passCnt, retry: retryCnt, manual: manualCnt };
   }

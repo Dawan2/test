@@ -28,9 +28,9 @@
     select: { risk: 'read', label: '选中镜头' }, goto: { risk: 'read', label: '切换视图' }, run: { risk: 'exec', label: '执行功能' },
   };
   const opRisk = op => (OP_TOOLS[op && op.op] || { risk: 'edit' }).risk;
-  /* 动作类 op → 预览/审批描述(exec 级 run 前加 ⚠ 并注明按该功能规则扣费) */
+  /* ---- 动作类 op → 预览/审批描述(exec 级 run 前加 ⚠ 并注明按该功能规则扣费) ---- */
   function actDesc(o) {
-    if (o.op === 'run') return `⚠ ▶ 执行:${o.action}(按该功能规则扣费)`;
+    if (o.op === 'run') return `⚠ ▶ 执行:${o.action || o.cmd}(按该功能规则扣费)`;
     if (o.op === 'goto') return '→ 跳转:' + o.target;
     return '◎ 选中镜头 ' + o.shot;
   }
@@ -52,7 +52,39 @@
   /* 动作协议文本(二十轮):由注册表自动生成注入 system prompt——协议宣称与可执行集合恒一致,
    * 模型照协议输出不再必得"⊘ 暂不支持"(此前提示词宣称 9 动作、注册表只 8 个且互有出入,白扣对话轮) */
   const actProtocol = () => Object.keys(ACT_CMD).join('|');
-  /* 结构化回执 → 一句话摘要(与 run 结果 ok/error/cost 对齐,Agent 据此如实汇报,不凭"已发起"声称成功) */
+  /* cmd+args 动作协议(二十二轮):命令白名单与参数面由 cmd-registry.js 单源生成——
+   * Agent 可执行面从 6 个固定中文动作扩到「全部领域命令 × 全参数空间」(confirmAll/shotIds/maxRetry 等) */
+  const cmdProtocol = () => {
+    const list = (window.Commands && Commands.list) ? Commands.list() : [];
+    const T = { boolean: 'bool', number: '数字', string: '文本', array: '数组' };
+    return list.map(c => {
+      const args = (c.args || []).filter(a => ['pid', 'epid', 'ui'].indexOf(a.name) < 0); // pid/epid 上下文自动注入,ui 不开放
+      const at = args.length
+        ? args.map(a => `"${a.name}":${T[a.type] || a.type}${a.required ? '(必填)' : ''}${a.desc ? '—' + a.desc : ''}`).join(' ')
+        : '无参数';
+      return `· ${c.name}(${c.label}${c.risk === 'read' ? ',只读' : ''}): ${at}`;
+    }).join('\n');
+  };
+  /* run 类 op 的参数白名单与类型整形(cmd-registry 单源):未声明的键丢弃,防模型幻觉参数污染执行/计费 */
+  function sanitizeCmdArgs(cmdName, raw) {
+    const meta = (typeof CmdRegistry !== 'undefined' && CmdRegistry.byName[cmdName]) || null;
+    if (!meta) return {};
+    const src = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+    const out = {};
+    (meta.args || []).forEach(a => {
+      if (['pid', 'epid', 'ui'].indexOf(a.name) >= 0) return; // 上下文注入,不接受模型填写
+      let v = src[a.name];
+      if (v === undefined || v === null) return;
+      if (a.type === 'boolean') v = !!v;
+      else if (a.type === 'number') { v = +v; if (!isFinite(v)) return; }
+      else if (a.type === 'array') { if (!Array.isArray(v)) return; v = v.map(x => String(x)).slice(0, 50); }
+      else v = String(v);
+      out[a.name] = v;
+    });
+    return out;
+  }
+  /* 结构化回执 → 一句话摘要(与 run 结果 ok/error/cost 对齐,Agent 据此如实汇报,不凭"已发起"声称成功);
+   * 二十二轮:消化 r.next(Domain 重推的下一步建议)一并回执——Agent 拿到结构化「下一步」可自主推进多步任务 */
   function cmdDigest(cmd, r) {
     if (!r) return '无回执';
     if (r.error) return r.error.message + (r.cost ? '(-' + r.cost + '积分)' : '');
@@ -65,21 +97,29 @@
     else if (cmd === 'episode.produce') s = '全流程完成:' + (z.steps || []).map(x => x.step + (x.ok ? '✓' : '✕')).join(' → ');
     else if (cmd === 'episode.understanding') s = '本集理解已更新';
     else s = '完成';
-    return s + (r.cost ? '(-' + r.cost + '积分)' : '');
+    s += (r.cost ? '(-' + r.cost + '积分)' : '');
+    if (r.next && r.next.label) s += ';下一步:' + r.next.label;
+    return s;
   }
   const WB_GOTO = { '分镜脚本': 'board', '脚本层': 'board', '分镜表': 'shots', '分镜视频': 'shots', '分镜表模式': 'shots', '剪辑': 'cut', '剪辑台': 'cut', '节拍板': 'bb', '节拍板模式': 'bb', '镜头组': 'groups' };
   async function runEpisodeActions(p, ep, acts, main) {
     const done = [];
     for (const op of acts) {
       if (op.op === 'run') {
-        const act = String(op.action || '').trim();
-        const cmd = ACT_CMD[act];
-        if (!cmd || !window.Commands) { done.push('⊘ 暂不支持自动执行:' + act); continue; }
+        /* 二十二轮:cmd+args 新协议(白名单/参数整形自 cmd-registry 单源);旧中文别名 action 兼容层保留 */
+        const alias = String(op.action || '').trim();
+        const want = String(op.cmd || '').trim();
+        const cmd = want || ACT_CMD[alias];
+        const names = (window.Commands && Commands.list) ? Commands.list().map(c => c.name) : null; // 无 list 自省(测试桩)时信别名映射
+        if (!cmd || !window.Commands || (names && !names.includes(cmd))) { done.push('⊘ 暂不支持自动执行:' + (want || alias || '?')); continue; }
+        const args = Object.assign(sanitizeCmdArgs(cmd, op.args), { pid: p.id, epid: ep && ep.id, main });
+        // shotIds 允许镜号或 id(模型只见分镜表序号):统一归一为镜头 id
+        if (Array.isArray(args.shotIds) && ep) args.shotIds = args.shotIds.map(x => { const s = (ep.shots || []).find(y => y.id === x) || (ep.shots || [])[(+x) - 1]; return s ? s.id : String(x); });
         try {
-          const r = await Commands.execute(cmd, { pid: p.id, epid: ep && ep.id, main });
-          done.push(`▶ ${act}:${r.ok ? '✓' : '✕'} ${cmdDigest(cmd, r)}`);
+          const r = await Commands.execute(cmd, args);
+          done.push(`▶ ${alias || cmd}:${r.ok ? '✓' : '✕'} ${cmdDigest(cmd, r)}`);
         } catch (e) {
-          done.push(`▶ ${act}:✕ 异常(${(e && e.message) || e})`);
+          done.push(`▶ ${alias || cmd}:✕ 异常(${(e && e.message) || e})`);
         }
       } else if (op.op === 'select') {
         const n = (+op.shot) - 1, s = ep.shots[n];
@@ -92,13 +132,15 @@
     }
     return done;
   }
-  /* ---- 回执回喂自修复轮(二十轮;settings.agentSelfFix 开关,默认关——控制成本) ----
+  /* ---- 回执回喂自修复轮(二十轮;settings.agentSelfFix 开关,二十二轮起默认开——step:'fix' 辅助槽位本就不另扣费) ----
    * run 类命令的执行回执不再只拼进聊天文案:含失败(✕)/不支持(⊘)项时,回执作为新上下文追加一轮
-   * 「核验/修复」调用——模型归因并仅可输出数据类修复 ops(禁止 run/goto/select,防执行循环);
+   * 「核验/修复」调用——模型归因并可输出两类修复:数据类 ops(update/insert/move/batch/beatupdate/sceneupdate)
+   * 与「重试同一个失败命令」的 run 重试(白名单=回执中失败过的命令,同 opId 幂等,服务端防双扣;最多 2 轮转人工);
    * 修复直接自动执行(沿用本条消息的 undo 快照,verifyOps 回读校验,与自动执行同纪律);
    * 计费复用本条消息的 operationId(step:'fix' 辅助步骤槽位,九轮状态机:辅助步不交付 operation,不另扣费)。
    * 返回追加进聊天文案的摘要;无修复动作/异常/离线均返回 ''(静默降级,不影响主流程)。 */
-  async function selfFixRound(p, ep, main, receipts, opId) {
+  async function selfFixRound(p, ep, main, receipts, opId, depth) {
+    depth = depth || 0;
     const failed = (receipts || []).filter(x => /[✕⊘]/.test(x));
     if (!failed.length || !ep || !window.API || !API.isReady()) return '';
     let out = null;
@@ -107,8 +149,10 @@
       out = await call({
         model: (Store.state.settings || {}).defLLM || API.getConfig().model,
         system: `你是「虎鲸导演助手」的执行核验器。刚才按用户指令驱动工作台执行了动作,回执如下(✕=失败,⊘=不支持)。
-请归因:能靠修改数据修复的(如提示词违规→改写提示词),输出修复 ops(仅数据类 update/insert/move/batch/beatupdate/sceneupdate,禁止 run/goto/select);
-修不了的(积分不足/上游故障/镜头未确认/缺首帧等需人工决策的),不要输出 ops,只在 reply 里给用户一句建议。
+请归因并修复:
+- 能靠修改数据修复的(如提示词违规→改写提示词),输出数据类修复 ops(仅 update/insert/move/batch/beatupdate/sceneupdate);
+- 临时性失败的动作(上游超时/限流/生成失败已退费),可输出 {"op":"run","cmd":"原命令名"} 重试一次(args 可修正,如 {"shotIds":["失败镜 id 或序号"]})——只允许重试回执里出现过的命令,禁止新动作,禁止 goto/select;
+- 修不了的(积分不足/上游故障持续/镜头未确认/缺首帧等需人工决策的),不要输出 ops,只在 reply 里给用户一句建议。
 返回 JSON {"reply":"一句话结论","ops":[操作或空数组]}`,
         user: `执行回执:\n${receipts.join('\n')}\n当前分镜表:\n${compactShots(ep)}${stateBlock(p, ep)}`,
         temperature: 0.3, max_tokens: 2000,
@@ -116,17 +160,44 @@
       });
     } catch (_) { return ''; }
     if (!out) return '';
-    const fixes = splitOps(Array.isArray(out.ops) ? out.ops.filter(o => o && o.op) : []).data;
-    if (!fixes.length) return '\n(🩹 自修复:' + String(out.reply || '需人工处理,见上').slice(0, 80) + ')';
-    // 沿用本条消息已有 undo 快照(不覆盖——一次「↩ 撤销」回滚含自修复在内的全部改动)
-    ep.agentUndo = ep.agentUndo || { shots: JSON.parse(JSON.stringify(ep.shots)), composed: ep.composed, board: JSON.parse(JSON.stringify(ep.scriptBoard || null)), time: Store.now() };
-    let changes = [], vf = null;
-    try {
-      changes = applyOps(ep, fixes, true);
-      vf = verifyOps(ep, fixes);
-      Store.save();
-    } catch (_) { return '\n(🩹 自修复:修复方案应用失败,未做改动)'; }
-    return `\n(🩹 自修复:已自动修复 ${fixes.length} 项——${changes.slice(0, 2).join(';').slice(0, 60)}${vf ? ' ' + verifyNote(vf) : ''},可点「↩ 撤销」回滚)`;
+    const all = Array.isArray(out.ops) ? out.ops.filter(o => o && o.op) : [];
+    const sp = splitOps(all);
+    const fixes = sp.data;
+    /* run 重试白名单:仅允许回执中失败过的命令(防自修复轮发起新动作/执行循环) */
+    const retrySet = new Set();
+    failed.forEach(x => {
+      const m = String(x).match(/▶\s*([^:：]+)[:：]/);
+      if (!m) return;
+      const t = m[1].trim();
+      const cmd = (window.Commands && Commands.list && Commands.list().some(c => c.name === t)) ? t : ACT_CMD[t];
+      if (cmd) retrySet.add(cmd);
+    });
+    const retries = sp.acts
+      .filter(o => o.op === 'run' && retrySet.has(String(o.cmd || '').trim() || ACT_CMD[String(o.action || '').trim()] || ''))
+      .slice(0, 2);
+    let note = '';
+    if (fixes.length) {
+      // 沿用本条消息已有 undo 快照(不覆盖——一次「↩ 撤销」回滚含自修复在内的全部改动)
+      ep.agentUndo = ep.agentUndo || { shots: JSON.parse(JSON.stringify(ep.shots)), composed: ep.composed, board: JSON.parse(JSON.stringify(ep.scriptBoard || null)), time: Store.now() };
+      let changes = [], vf = null;
+      try {
+        changes = applyOps(ep, fixes, true);
+        vf = verifyOps(ep, fixes);
+        Store.save();
+        note = `\n(🩹 自修复:已自动修复 ${fixes.length} 项——${changes.slice(0, 2).join(';').slice(0, 60)}${vf ? ' ' + verifyNote(vf) : ''},可点「↩ 撤销」回滚)`;
+      } catch (_) { note = '\n(🩹 自修复:修复方案应用失败,未做改动)'; }
+    }
+    if (retries.length) {
+      const rr = await runEpisodeActions(p, ep, retries, main);
+      note += '\n(🩹 自修复重试:' + rr.join(';') + ')';
+      /* 限 2 轮:重试仍失败再归因一轮,更深即停转人工(防执行循环) */
+      if (depth < 1 && /[✕⊘]/.test(rr.join(''))) {
+        const deeper = await selfFixRound(p, ep, main, rr, opId, depth + 1);
+        if (deeper) note += deeper;
+      }
+    }
+    if (!note) return '\n(🩹 自修复:' + String(out.reply || '需人工处理,见上').slice(0, 80) + ')';
+    return note;
   }
   // 项目级/全局动作
   const PROJ_TAB_OF = { '制片': '制片', '剧本': '剧本', '导演': '导演', '主体': '主体', '分集': '分集', '成片库': '成片库', '剧壳': '剧壳', '切片': '切片' };
@@ -839,6 +910,9 @@ action 二选一:
   }
 
   /* ---- ops 应用器(update/insert/delete/move/batch) ---- */
+  /* 内容字段(提示词/剧情/台词/旁白):被改写即回落确认闸 s.confirm=false(与 UI 编辑同口径,
+   * sb-views.js:667/670/986),防止镜头已确认后被助手批量改写、headless 批量生成按 confirm 过滤直接放量 */
+  const CONTENT_KEYS = ['prompt', 'plot', 'dialogue', 'narration'];
   function applyFields(s, fields, changes, idx, record) {
     Object.entries(fields || {}).forEach(([k, v]) => {
       const key = FIELD_MAP[k] || k;
@@ -856,11 +930,14 @@ action 二选一:
         const old = s.prompt;
         if (record) Store.setShotPrompt(s, String(v));
         else s.prompt = String(v);
-        if (String(old || '') !== s.prompt) changes.push(`镜头${idx + 1}:${k} ${String(old || '').slice(0, 10) || '空'}→${String(v).slice(0, 10)}`);
+        if (String(old || '') !== s.prompt) { changes.push(`镜头${idx + 1}:${k} ${String(old || '').slice(0, 10) || '空'}→${String(v).slice(0, 10)}`); s.confirm = false; }
       } else {
         const old = s[key];
         s[key] = String(v);
-        if (String(old || '') !== s[key]) changes.push(`镜头${idx + 1}:${k} ${String(old || '').slice(0, 10) || '空'}→${String(v).slice(0, 10)}`);
+        if (String(old || '') !== s[key]) {
+          changes.push(`镜头${idx + 1}:${k} ${String(old || '').slice(0, 10) || '空'}→${String(v).slice(0, 10)}`);
+          if (CONTENT_KEYS.includes(key)) s.confirm = false; // 内容修改自动回落为未确认(镜头确认闸)
+        }
       }
     });
     if (record && changes._pushHistory !== false && Object.keys(fields || {}).length) {
@@ -1237,6 +1314,6 @@ action 二选一:
     });
   }
 
-  window.AgentOps = { splitOps, opRisk, actDesc, changeLineHTML, runEpisodeActions, runGlobalActions, selfFixRound, prearrSend, prearrCardHTML, bindPrearr, bindChoices, parseChoices, choiceCardHTML, execPrearr, compactChat, chatLines, compactShots, focusOf, focusBlock, applyOps, verifyOps, verifyNote, OP_TOOLS, FIELD_MAP, setPendingBase, getPendingBase, fingerprint, detectConflicts, resolveOps, openConflictPanel, stateDigest, stateBlock, dynamicChips, openingLine, pushEvent, eventCardHTML, bindEvents, queryProtocol, answerQueries, ACT_CMD, actProtocol };
+  window.AgentOps = { splitOps, opRisk, actDesc, changeLineHTML, runEpisodeActions, runGlobalActions, selfFixRound, prearrSend, prearrCardHTML, bindPrearr, bindChoices, parseChoices, choiceCardHTML, execPrearr, compactChat, chatLines, compactShots, focusOf, focusBlock, applyOps, verifyOps, verifyNote, OP_TOOLS, FIELD_MAP, setPendingBase, getPendingBase, fingerprint, detectConflicts, resolveOps, openConflictPanel, stateDigest, stateBlock, dynamicChips, openingLine, pushEvent, eventCardHTML, bindEvents, queryProtocol, answerQueries, ACT_CMD, actProtocol, cmdProtocol, sanitizeCmdArgs, cmdDigest };
   window.__AGENT_TEST = { applyOps, compactShots, FIELD_MAP, focusOf, focusBlock, OP_TOOLS, verifyOps, compactChat, fingerprint, detectConflicts, resolveOps, stateDigest, stateBlock, dynamicChips, openingLine, pushEvent, eventCardHTML, bindEvents, queryProtocol, answerQueries, subscribeBus };
 })();

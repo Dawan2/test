@@ -3,7 +3,8 @@
  * 把 cli.js 的全链路命令包装为 MCP 工具,供支持 MCP 的 AI 助手(Claude Code/Cursor/Trae 等)
  * 以协议方式调用:工具调用 =  spawn node cli.js <命令>(stdout 纯 JSON 原样透传,exit code 映射 isError)。
  *
- * 协议:stdio 传输,换行分隔的 JSON-RPC 2.0 消息;实现 initialize/ping/tools/list/tools/call。
+ * 协议:stdio 传输,换行分隔的 JSON-RPC 2.0 消息;实现 initialize/ping/tools/list/tools/call
+ *   + resources/list|resources/read(只读状态资源,免反复拼工具调用)+ prompts/list|prompts/get(流程模板)。
  * 配置(客户端 mcpServers 示例):
  *   { "hujing": { "command": "node", "args": ["C:/Users/EDY/modelvideo-hujing/mcp.js"] } }
  * 认证:与 CLI 共用 ~/.hujing/config.json(先 node cli.js login);HUJING_SERVER/HUJING_TOKEN 环境变量优先。
@@ -14,6 +15,7 @@ const path = require('path');
 const readline = require('readline');
 
 const CLI = path.join(__dirname, 'cli.js');
+const CmdRegistry = require('./js/cmd-registry.js'); // 领域命令词表/描述单源(hujing_exec 等工具描述由此生成)
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_INFO = { name: 'hujing-manju', version: '1.0.0' };
 
@@ -52,7 +54,7 @@ const TOOLS = [
   { name: 'hujing_export', description: '下载成片 mp4 + 字幕 srt 到本地目录', inputSchema: obj(Object.assign({}, pidEp, { out: Object.assign({}, S, { description: '输出目录' }) }), ['pid', 'epid']), build: i => ['export', i.pid, i.epid].concat(i.out ? ['--out', i.out] : []) },
   { name: 'hujing_release_check', description: '发布门 10 项检查(与 UI 同口径;withBilling 跑服务端账目对账)', inputSchema: obj({ pid: pidEp.pid, minScore: N, withBilling: B }, ['pid']), build: i => ['release-check', i.pid].concat(i.minScore ? ['--min-score', String(i.minScore)] : [], i.withBilling ? ['--with-billing'] : []) },
   { name: 'hujing_release', description: '打发布版本(留痕 releases;通过/条件通过才执行,force 强制)', inputSchema: obj({ pid: pidEp.pid, note: S, minScore: N, force: B }, ['pid']), build: i => ['release', i.pid].concat(i.note ? ['--note', i.note] : [], i.minScore ? ['--min-score', String(i.minScore)] : [], i.force ? ['--force'] : []) },
-  { name: 'hujing_exec', description: '统一领域命令透传(与前端 Commands.execute 同名同结构):episode.preflight/generateVideos/compose/produce、shot.generateVideo 等', inputSchema: obj({ name: Object.assign({}, S, { description: '命令名,如 episode.generateVideos' }), args: { type: 'object', description: '命令参数,如 {"pid":"..","epid":".."}' } }, ['name']), build: i => ['exec', i.name, '--args', JSON.stringify(i.args || {})] },
+  { name: 'hujing_exec', description: '统一领域命令透传(与前端 Commands.execute 同名同结构;词表单源 cmd-registry.js):' + CmdRegistry.META.map(m => m.name + '(' + m.label + ')').join('、'), inputSchema: obj({ name: Object.assign({}, S, { description: '命令名:' + CmdRegistry.names().join(' / ') }), args: { type: 'object', description: '命令参数,如 {"pid":"..","epid":".."};各命令参数面见 cmd-registry.js' } }, ['name']), build: i => ['exec', i.name, '--args', JSON.stringify(i.args || {})] },
   { name: 'hujing_llm', description: 'LLM 透传(服务端 key;自由提示词,剧本/文案类辅助)', inputSchema: obj({ user: Object.assign({}, S, { description: '用户提示词' }), system: S, json: Object.assign({}, B, { description: '期望返回 JSON(自动解析)' }) }, ['user']), build: i => ['llm', '--user', i.user].concat(i.system ? ['--system', i.system] : [], i.json ? ['--json'] : []) },
 ];
 
@@ -69,6 +71,78 @@ function runCli(argv) {
     cp.on('close', code => resolve({ code: code || 0, out: out.trim(), err: err.trim() }));
   });
 }
+
+/* ---- 只读资源(§2.7):高频状态查询暴露成 resource,助手按 URI 直读,不必记工具参数面 ---- */
+const RESOURCES = [
+  { uri: 'hujing://projects', name: '项目列表', description: '项目列表(进度摘要),同 hujing_projects 工具', mimeType: 'application/json' },
+];
+const RESOURCE_TEMPLATES = [
+  { uriTemplate: 'hujing://project/{pid}/show', name: '项目详情', description: '主体/分集/逐镜状态统计,同 hujing_project_show 工具', mimeType: 'application/json' },
+  { uriTemplate: 'hujing://project/{pid}/workflow', name: '项目工作流状态', description: '主线各阶段完成度与下一步推荐(项目级),同 hujing_workflow 工具', mimeType: 'application/json' },
+  { uriTemplate: 'hujing://project/{pid}/episode/{epid}/workflow', name: '分集工作流状态', description: '分集级阶段完成度与下一步推荐,同 hujing_workflow 工具', mimeType: 'application/json' },
+];
+/* URI → cli argv;不匹配返回 null */
+function resourceArgv(uri) {
+  const u = String(uri || '');
+  if (u === 'hujing://projects') return ['projects'];
+  let m = u.match(/^hujing:\/\/project\/([^/]+)\/show$/);
+  if (m) return ['project-show', decodeURIComponent(m[1])];
+  m = u.match(/^hujing:\/\/project\/([^/]+)\/workflow$/);
+  if (m) return ['workflow', decodeURIComponent(m[1])];
+  m = u.match(/^hujing:\/\/project\/([^/]+)\/episode\/([^/]+)\/workflow$/);
+  if (m) return ['workflow', decodeURIComponent(m[1]), decodeURIComponent(m[2])];
+  return null;
+}
+async function readResource(uri) {
+  const argv = resourceArgv(uri);
+  if (!argv) return { error: { code: -32602, message: '未知资源 URI:' + uri + '(可用资源见 resources/list)' } };
+  const r = await runCli(argv);
+  if (r.code !== 0) return { error: { code: -32603, message: (r.out || '资源读取失败') + (r.err ? ' [stderr] ' + r.err.slice(-300) : '') } };
+  return { result: { contents: [{ uri: String(uri), mimeType: 'application/json', text: r.out || '{}' }] } };
+}
+
+/* ---- 流程模板(§2.7):把正确的工具调用序列一次交给助手,不用自己猜命令顺序 ---- */
+const PROMPTS = [
+  {
+    name: 'hujing_new_drama', description: '新剧开工流程:从剧名/剧本到成片发布的正确工具调用序列',
+    arguments: [
+      { name: 'name', description: '剧名', required: true },
+      { name: 'style', description: '风格(如 漫剧/真人短剧,可空)', required: false },
+    ],
+    build(a) {
+      const style = a.style ? ',风格 "' + a.style + '"' : '';
+      return [{ role: 'user', content: { type: 'text', text:
+`新剧《${a.name}》开工(${style})。按以下顺序调用虎鲸漫剧工具,每步确认成功再进下一步:
+1. hujing_project_create 建项目(有剧本文本文件就带 scriptFile),记下返回的 pid。
+2. hujing_episode_add 逐集建分集(带 contentFile 写入剧本正文;后补用 hujing_episode_script)。写剧本会使下游理解/分镜自动判旧,属正常。
+3. hujing_subject_add 建主要角色/场景主体并 genImage=true 生成参考图——空主体库会导致逐镜换脸,这步不要省。
+4. hujing_storyboard 智能分镜(或 hujing_exec episode.generateStoryboard),然后 hujing_shots 检查分镜表。
+5. 精修:hujing_shot_set 修订单镜提示词;逐镜 hujing_shot_confirm 确认(批量生成只跑已确认镜)。
+6. hujing_exec episode.generateVideos 批量出片(未确认镜自动跳过并如实进 skipped)。
+7. hujing_smart_review 整集审片;不达标镜修提示词后重生成。
+8. hujing_compose 合成成片;hujing_export 下载 mp4+srt。
+9. hujing_release_check 发布门检查(可 withBilling=true 对账)→ hujing_release 打版本。
+约束:任何一步返回 blocked/isError,先读错误码(unconfirmed/no-credits/no-script)对症处理,不要跳步重试;随时可调 hujing_workflow 或读资源 hujing://project/{pid}/workflow 看下一步推荐。` } }];
+    },
+  },
+  {
+    name: 'hujing_failed_shots', description: '失败镜排查流程:断点续查→失败重跑→复审合成的正确顺序',
+    arguments: [
+      { name: 'pid', description: '项目 id', required: true },
+      { name: 'epid', description: '分集 id', required: true },
+    ],
+    build(a) {
+      return [{ role: 'user', content: { type: 'text', text:
+`排查项目 ${a.pid} 分集 ${a.epid} 的失败镜,按此顺序:
+1. hujing_workflow(pid="${a.pid}", epid="${a.epid}") 看阶段状态与阻塞项(或读资源 hujing://project/${a.pid}/episode/${a.epid}/workflow)。
+2. hujing_shots 拉分镜表,筛 video.status=="failed" 的镜头,逐个读 error 与 upstreamId。
+3. 轮询超时/任务失联类失败:hujing_wait(taskId=upstreamId) 断点续查——上游已成功会直接落片,不重复扣费。
+4. 上游报错/质量不达标:hujing_shot_set 修订提示词 → hujing_gen_episode(failedOnly=true) 只重跑失败镜。
+5. 全部转 done 后 hujing_smart_review 复审 → hujing_compose 合成。
+禁止:不要带着失败镜直接 compose(skipIncomplete 仅限明确接受缺镜的场景);重跑前确认积分余额(hujing_credits)。` } }];
+    },
+  },
+];
 
 async function callTool(name, input) {
   const t = TOOLS.find(x => x.name === name);
@@ -95,7 +169,7 @@ async function handle(msg) {
   const isNotif = id === undefined || id === null;
   try {
     if (method === 'initialize') {
-      return respond(id, { protocolVersion: PROTOCOL_VERSION, capabilities: { tools: {} }, serverInfo: SERVER_INFO });
+      return respond(id, { protocolVersion: PROTOCOL_VERSION, capabilities: { tools: {}, resources: {}, prompts: {} }, serverInfo: SERVER_INFO });
     }
     if (method === 'ping') return respond(id, {});
     if (method === 'tools/list') {
@@ -105,6 +179,27 @@ async function handle(msg) {
       const p = params || {};
       const result = await callTool(p.name, p.arguments);
       return respond(id, result);
+    }
+    if (method === 'resources/list') {
+      return respond(id, { resources: RESOURCES, resourceTemplates: RESOURCE_TEMPLATES });
+    }
+    if (method === 'resources/templates/list') { // 旧版客户端单独拉模板
+      return respond(id, { resourceTemplates: RESOURCE_TEMPLATES });
+    }
+    if (method === 'resources/read') {
+      const r = await readResource(params && params.uri);
+      return respond(id, r.result, r.error);
+    }
+    if (method === 'prompts/list') {
+      return respond(id, { prompts: PROMPTS.map(p => ({ name: p.name, description: p.description, arguments: p.arguments })) });
+    }
+    if (method === 'prompts/get') {
+      const p = params || {};
+      const tpl = PROMPTS.find(x => x.name === p.name);
+      if (!tpl) return respond(id, null, { code: -32602, message: '未知提示模板:' + p.name });
+      const missing = tpl.arguments.filter(x => x.required && !(p.arguments || {})[x.name]);
+      if (missing.length) return respond(id, null, { code: -32602, message: '缺必填参数:' + missing.map(x => x.name).join(',') });
+      return respond(id, { description: tpl.description, messages: tpl.build(p.arguments || {}) });
     }
     if (isNotif) return; // notifications/initialized 等:不应答
     respond(id, null, { code: -32601, message: 'Method not found: ' + method });
@@ -121,4 +216,4 @@ rl.on('line', line => {
   try { msg = JSON.parse(t); } catch (_) { return; } // 非 JSON 行静默忽略(容错)
   handle(msg);
 });
-process.stderr.write('[hujing-mcp] stdio MCP server 已就绪(' + TOOLS.length + ' 工具,包装 cli.js)\n');
+process.stderr.write('[hujing-mcp] stdio MCP server 已就绪(' + TOOLS.length + ' 工具 + ' + (RESOURCES.length + RESOURCE_TEMPLATES.length) + ' 资源 + ' + PROMPTS.length + ' 提示模板,包装 cli.js)\n');

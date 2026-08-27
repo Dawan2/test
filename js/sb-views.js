@@ -668,7 +668,8 @@
     // 提示词统一走 Store.setShotPrompt(自动留档 promptHistory)
     const promptEl = main.querySelector('[data-r="prompt"]');
     if (promptEl) promptEl.onchange = () => { sel.confirm = false; Store.setShotPrompt(sel, promptEl.value); };
-    bindInput('narration'); bindInput('dialogue'); bindInput('voice'); bindInput('vmodel');
+    bindInput('narration', () => { sel.confirm = false; }); bindInput('dialogue', () => { sel.confirm = false; }); // 旁白/台词影响时长预估与字幕,同样回落确认闸(与 Agent/CLI 同口径)
+    bindInput('voice'); bindInput('vmodel');
     // 单镜时长:不再人工填写,按提示词+台词自动预估(estShotDuration),输入提示词时实时刷新
     const durEstEl = main.querySelector('[data-x=durest]');
     bindInput('intent'); // 运镜/轴线不再为用户字段:由分镜智能体按 KB 规则自动赋予,生成时系统默认注入

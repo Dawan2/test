@@ -301,7 +301,8 @@
             } else {
               const frame = await this.captureFrameUp(st.videoUrl, 0.1, 'frame_' + s.id + '.jpg');
               const tail = await this.captureFrameUp(st.videoUrl, 'end', 'tail_' + s.id + '.jpg');
-              s.video = { status: 'done', model: s.video.model || '', url: st.videoUrl, frame: frame || PH.video(s.plot, s.order), assetVer: Store.shotAssetVer(p, s), inputHash: Store.shotInputHash(p, s), upstreamId: job.upstreamId };
+              const keepVer = s.video.assetVer, keepHash = s.video.inputHash; // 发起时指纹=中断前真实输入,优先沿用;存量无指纹才按当前输入现算
+              s.video = { status: 'done', model: s.video.model || '', url: st.videoUrl, frame: frame || PH.video(s.plot, s.order), assetVer: keepVer !== undefined ? keepVer : Store.shotAssetVer(p, s), inputHash: keepHash || Store.shotInputHash(p, s), upstreamId: job.upstreamId };
               s.image = s.image || frame || PH.shot(s.plot, s.order);
               s.lastFrame = tail || frame || s.lastFrame;
             }
@@ -309,7 +310,7 @@
           } catch (_) { /* 截帧/上传异常:保留现状,下次启动再试 */ }
         } else if (st.status === 'failed') {
           if (s.video.status !== 'failed' || s.video.upstreamId !== job.upstreamId) {
-            s.video = { status: 'failed', error: st.error || '上游生成失败', model: s.video.model, upstreamId: job.upstreamId };
+            s.video = { status: 'failed', error: st.error || '上游生成失败', model: s.video.model, upstreamId: job.upstreamId, assetVer: s.video.assetVer, inputHash: s.video.inputHash }; // 发起时指纹一并保留,后续续查落片不按新输入误记
             lost++;
           }
         } else {

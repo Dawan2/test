@@ -282,6 +282,8 @@ ${brief.slice(0, 6000)}` }],
       ep.shots = shots;
       ep.status = 'storyboarded';
       ep.composed = false;
+      ep.shotsSourceRev = ep.contentRev || 0; // 记录分镜对应的剧本版本(剧本修改后判旧)
+      ep.shotsGraphRev = ep.graphRev || 0;    // 记录分镜对应的事件图谱版本(图谱修订后判旧)
       Store.state.settings = Store.state.settings || {};
       Store.state.settings.epViewMode = 'shots'; // 确认后进入分镜表/生成台(全局视图偏好)
       Store.save();

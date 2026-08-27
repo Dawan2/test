@@ -608,8 +608,8 @@
       </div>
       <div class="card" style="margin-top:14px;padding:14px">
         <b>整集共性问题</b>
-        <p class="small muted" style="margin:8px 0;line-height:1.8">${U.esc(lr.common.summary)}</p>
-        ${lr.common.issues.length ? `<table class="tbl"><thead><tr><th style="width:150px">共性问题</th><th>涉及说明</th><th>建议</th></tr></thead><tbody>
+        <p class="small muted" style="margin:8px 0;line-height:1.8">${U.esc((lr.common && lr.common.summary) || '（无共性汇总）')}</p>
+        ${((lr.common && lr.common.issues) || []).length ? `<table class="tbl"><thead><tr><th style="width:150px">共性问题</th><th>涉及说明</th><th>建议</th></tr></thead><tbody>
           ${lr.common.issues.map(i => `<tr><td><span class="tag yellow">${U.esc(i.type)}</span></td><td class="small">${U.esc(i.detail)}</td><td class="small">${U.esc(i.suggestion)}</td></tr>`).join('')}
         </tbody></table>` : '<div class="hint">✓ 无整集级共性问题</div>'}
       </div>
@@ -642,8 +642,8 @@
         m.querySelector('[data-x=export]').onclick = () => {
           const lines = [`整集审片报告 · ${p.name} / ${ep.title}`, '='.repeat(40), `整集均分:${lr.avg}/10 · ${lr.time}`, '',
             ...reports.map(x => `镜头${x.shot.order + 1}:${x.report.score.toFixed(1)} 分(技术${x.report.dimensions.technical.score} 匹配${x.report.dimensions.matching.score} 导演${x.report.dimensions.directing.score})${x.report.issues.length ? ' 问题:' + x.report.issues.map(i => i.type).join('/') : ''}`),
-            '', '整集共性问题:', lr.common.summary,
-            ...lr.common.issues.map(i => `- ${i.type}:${i.detail} → ${i.suggestion}`),
+            '', '整集共性问题:', (lr.common && lr.common.summary) || '（无）',
+            ...(((lr.common && lr.common.issues) || []).map(i => `- ${i.type}:${i.detail} → ${i.suggestion}`)),
             ...(lr.cut ? ['', '四维成片评审:', ...CUT_DIMS.map(([k, name]) => `${name}:${lr.cut[k].score.toFixed(1)} 分 — ${lr.cut[k].comment}`), lr.cut.overall || ''] : [])];
           U.downloadText(`整集审片报告_${p.name}_${ep.title}.txt`, lines.join('\n'));
           U.toast('整集报告已导出', 'success');

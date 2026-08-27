@@ -26,15 +26,16 @@
       const st = window.Domain ? Domain.episodeState(p, ep, on) : { counts: {}, blockers: [] };
       const c = st.counts || {};
       const base = { epid: ep.id, epTitle: ep.title || ('第' + (i + 1) + '集') };
+      /* 每条问题必须 Object.assign({}, base, …) 新开对象:同一集可挂多条问题,直接改 base 会让已入组条目全部串成同一引用(二十二轮修复) */
       if (!(ep.content || '').trim()) {
-        out.push(Object.assign(base, { kind: 'no-script', sev: 'high', count: 1, label: `「${ep.title}」缺剧本正文`, detail: '无剧本无法拆镜与生成本集理解', goto: `#/project/${p.id}/episode/${ep.id}` }));
+        out.push(Object.assign({}, base, { kind: 'no-script', sev: 'high', count: 1, label: `「${ep.title}」缺剧本正文`, detail: '无剧本无法拆镜与生成本集理解', goto: `#/project/${p.id}/episode/${ep.id}` }));
         return;
       }
-      if (!c.total) { out.push(Object.assign(base, { kind: 'no-shots', sev: 'mid', count: 1, label: `「${ep.title}」未生成分镜`, detail: '已有剧本未拆镜,可直接智能分镜', cmd: 'episode.generateStoryboard' })); return; }
-      if (st.shotsStale) { out.push(Object.assign(base, { kind: 'shots-stale', sev: 'mid', count: 1, label: `「${ep.title}」分镜表基于旧剧本/图谱`, detail: '剧本或事件图谱修订后未重新拆镜', goto: `#/project/${p.id}/episode/${ep.id}` })); return; }
+      if (!c.total) { out.push(Object.assign({}, base, { kind: 'no-shots', sev: 'mid', count: 1, label: `「${ep.title}」未生成分镜`, detail: '已有剧本未拆镜,可直接智能分镜', cmd: 'episode.generateStoryboard' })); return; }
+      if (st.shotsStale) { out.push(Object.assign({}, base, { kind: 'shots-stale', sev: 'mid', count: 1, label: `「${ep.title}」分镜表基于旧剧本/图谱`, detail: '剧本或事件图谱修订后未重新拆镜', goto: `#/project/${p.id}/episode/${ep.id}` })); return; }
       if (c.failed) {
         const fs = (ep.shots || []).filter(s => s.video && s.video.status === 'failed');
-        out.push(Object.assign(base, {
+        out.push(Object.assign({}, base, {
           kind: 'failed-shots', sev: 'high', count: c.failed, label: `「${ep.title}」${c.failed} 镜生成失败`,
           detail: fs.map(s => `镜头${s.order + 1}:${String(s.video.error || '未知错误').slice(0, 36)}`).slice(0, 4).join(';') + (fs.length > 4 ? '…' : '') + '(失败已退费,可重试)',
           cmd: 'episode.generateVideos', shotIds: fs.map(s => s.id),
@@ -42,14 +43,14 @@
       }
       if (c.stale) {
         const ss = (ep.shots || []).filter(s => Domain.shotVideoStale(p, s, on));
-        out.push(Object.assign(base, { kind: 'stale-shots', sev: 'mid', count: c.stale, label: `「${ep.title}」${c.stale} 镜素材已更新(过期)`, detail: `镜头 ${ss.map(s => s.order + 1).slice(0, 8).join('、')}${ss.length > 8 ? '…' : ''} 生成后输入有变化,建议重生成`, goto: `#/project/${p.id}/episode/${ep.id}` }));
+        out.push(Object.assign({}, base, { kind: 'stale-shots', sev: 'mid', count: c.stale, label: `「${ep.title}」${c.stale} 镜素材已更新(过期)`, detail: `镜头 ${ss.map(s => s.order + 1).slice(0, 8).join('、')}${ss.length > 8 ? '…' : ''} 生成后输入有变化,建议重生成`, goto: `#/project/${p.id}/episode/${ep.id}` }));
       }
-      if (c.unconfirmed && !c.generating) out.push(Object.assign(base, { kind: 'unconfirmed', sev: 'low', count: c.unconfirmed, label: `「${ep.title}」${c.unconfirmed} 镜待确认`, detail: '未确认镜头不参与批量生成,先过确认闸', goto: `#/project/${p.id}/episode/${ep.id}` }));
-      if (st.reviewAvg !== null && st.reviewAvg !== undefined && st.reviewAvg < 7) {
+      if (c.unconfirmed && !c.generating) out.push(Object.assign({}, base, { kind: 'unconfirmed', sev: 'low', count: c.unconfirmed, label: `「${ep.title}」${c.unconfirmed} 镜待确认`, detail: '未确认镜头不参与批量生成,先过确认闸', goto: `#/project/${p.id}/episode/${ep.id}` }));
+      if (!st.reviewStale && st.reviewAvg !== null && st.reviewAvg !== undefined && st.reviewAvg < 7) { // 判旧(rev/快照失配)的旧分不再报问题;「需重审」语义由分集页/报告页「旧版」标记承接
         const lows = ((ep.lastReview || {}).perShot || []).filter(x => x.score < 7);
-        out.push(Object.assign(base, { kind: 'low-review', sev: 'mid', count: lows.length || 1, label: `「${ep.title}」审片均分 ${st.reviewAvg} 低于达标线`, detail: lows.length ? `低分镜:${lows.map(x => (x.order + 1) + '镜' + x.score + '分').slice(0, 6).join('、')}` : '整体质量待修订(可让助手按问题清单优化提示词)', goto: `#/project/${p.id}/episode/${ep.id}` }));
+        out.push(Object.assign({}, base, { kind: 'low-review', sev: 'mid', count: lows.length || 1, label: `「${ep.title}」审片均分 ${st.reviewAvg} 低于达标线`, detail: lows.length ? `低分镜:${lows.map(x => (x.order + 1) + '镜' + x.score + '分').slice(0, 6).join('、')}` : '整体质量待修订(可让助手按问题清单优化提示词)', goto: `#/project/${p.id}/episode/${ep.id}` }));
       }
-      if (ep.composed && !st.composedReady) out.push(Object.assign(base, { kind: 'composed-stale', sev: 'mid', count: 1, label: `「${ep.title}」成片已过期`, detail: '合成输入或剧本已变化,需重新合成', cmd: 'episode.compose' }));
+      if (ep.composed && !st.composedReady) out.push(Object.assign({}, base, { kind: 'composed-stale', sev: 'mid', count: 1, label: `「${ep.title}」成片已过期`, detail: '合成输入或剧本已变化,需重新合成', cmd: 'episode.compose' }));
     });
     const SEV = { high: 0, mid: 1, low: 2 };
     const sevOf = x => (SEV[x] === undefined ? 9 : SEV[x]);
@@ -93,24 +94,24 @@
     </div>`;
   }
 
-  function paintBody() {
+  function paintBody(list) {
     const { p, bodyEl, main } = openState;
-    const list = collect(p);
-    const hi = list.filter(x => x.sev === 'high').length, mid = list.filter(x => x.sev === 'mid').length, low = list.length - hi - mid;
-    bodyEl.innerHTML = list.length ? `
+    const list2 = list || collect(p); // §3.4:调用方可传入共享重算结果(防抖轮内 badge 与弹窗同一快照)
+    const hi = list2.filter(x => x.sev === 'high').length, mid = list2.filter(x => x.sev === 'mid').length, low = list2.length - hi - mid;
+    bodyEl.innerHTML = list2.length ? `
       <div class="hint" style="margin-bottom:10px">全项目待处理问题聚合(失败/过期/未分镜/低分/待确认/缺图,与流程条同一套状态推导):
         <span class="tag red" style="font-size:10px">高 ${hi}</span> <span class="tag yellow" style="font-size:10px">中 ${mid}</span> <span class="tag" style="font-size:10px">低 ${low}</span>
         ——命令类问题一键处置(经统一命令层,含确认闸/预审),导航类跳转对应页面。</div>
-      ${list.map((it, idx) => issueRow(p, it, idx)).join('')}` : '<div class="empty"><p class="small muted">🎉 项目无待处理问题,主线畅通。</p></div>';
+      ${list2.map((it, idx) => issueRow(p, it, idx)).join('')}` : '<div class="empty"><p class="small muted">🎉 项目无待处理问题,主线畅通。</p></div>';
     bodyEl.querySelectorAll('[data-ifx]').forEach(b => b.onclick = async () => {
-      const it = collect(p)[+b.dataset.ifx];
+      const it = list2[+b.dataset.ifx]; // 快照索引与渲染行对齐(处置后 paintBody() 无参重算刷新)
       if (!it) return;
       b.disabled = true;
       await fixIssue(p, it, main, () => paintBody());
       paintBody();
     });
     bodyEl.querySelectorAll('[data-igoto]').forEach(b => b.onclick = () => {
-      const it = collect(p)[+b.dataset.igoto];
+      const it = list2[+b.dataset.igoto];
       if (it && it.goto) { openState.close(); location.hash = it.goto; }
     });
   }
@@ -128,24 +129,35 @@
     });
   }
 
-  /* Bus 通配订阅:管线事件(生成/审片/合成落定)驱动弹窗与项目页角标实时重算 */
+  /* Bus 通配订阅:管线事件(生成/审片/合成落定)驱动弹窗与项目页角标实时重算。
+   * §3.4:150ms 防抖合并事件风暴;一轮防抖内 badge 与弹窗共享同一次 collect 快照——
+   * 此前每个事件各自全量重算(collect 对每集推导 episodeState/shotInputHash,大项目=每事件 2×全项目扫描) */
   function bindBus() {
     if (!window.Bus || bindBus._done) return;
     bindBus._done = true;
+    let timer = null;
     Bus.on('*', () => {
-      if (openState && openState.bodyEl && openState.bodyEl.isConnected) paintBody();
+      const modalOpen = !!(openState && openState.bodyEl && openState.bodyEl.isConnected);
       const btn = document.querySelector('[data-x=pissues][data-pid]');
-      if (btn) {
-        const p = Store.getProject(btn.dataset.pid);
-        if (p) btn.innerHTML = badgeHTML(p);
-      }
+      if (!modalOpen && !btn) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const cache = {}; // pid → 本轮 collect 快照
+        const collect1 = p => (cache[p.id] = cache[p.id] || collect(p));
+        const modalStillOpen = !!(openState && openState.bodyEl && openState.bodyEl.isConnected);
+        if (modalStillOpen) paintBody(collect1(openState.p));
+        if (btn.isConnected) {
+          const p = Store.getProject(btn.dataset.pid);
+          if (p) btn.innerHTML = badgeHTML(p, collect1(p));
+        }
+      }, 150);
     });
   }
   if (typeof document !== 'undefined') bindBus();
 
-  /* 项目页入口按钮内联 HTML(角标实时重算用同一实现) */
-  function badgeHTML(p) {
-    const n = count(p);
+  /* 项目页入口按钮内联 HTML(角标实时重算用同一实现;list 可传入共享快照) */
+  function badgeHTML(p, list) {
+    const n = list ? list.length : count(p);
     return `🩺 问题${n ? ` <b style="color:var(--red)">${n}</b>` : ''}`;
   }
 

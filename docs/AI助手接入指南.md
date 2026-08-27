@@ -12,6 +12,8 @@
 
 - 29 个工具(`hujing_*`),stdio 传输,零依赖;工具调用 = 包装 cli.js,计费/幂等/退费语义与 CLI 完全一致。
 - 工具结果:stdout 纯 JSON 原样透传;非零 exit 时 `isError:true` 并附 exit code 语义。
+- resources:只读状态直读——`hujing://projects`、`hujing://project/{pid}/show`、`hujing://project/{pid}/workflow`、`hujing://project/{pid}/episode/{epid}/workflow`,不必记工具参数面。
+- prompts:`hujing_new_drama`(新剧开工流程)/`hujing_failed_shots`(失败镜排查流程)两个模板,一次拿到正确的工具调用序列。
 
 ### 2. CLI 直接调用(任何能跑 shell 的助手)
 

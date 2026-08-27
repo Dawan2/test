@@ -20,6 +20,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const Domain = require('./js/domain.js'); // 领域单一来源:指纹/就绪/判旧/工作流状态与主应用逐字节一致
+const CmdRegistry = require('./js/cmd-registry.js'); // 领域命令元数据单源:exec 用法/help 文案/needs 校验由此生成(与前端 Commands 同词表)
 
 /* ================= 基础设施:配置 / 参数 / 输出 ================= */
 const CFG_DIR = process.env.HUJING_CONFIG_DIR || path.join(os.homedir(), '.hujing');
@@ -233,6 +234,7 @@ const normShot = (raw, i, baseOrder) => ({
   image: raw.image || null,
   video: raw.video && typeof raw.video === 'object' ? raw.video : { status: 'none' },
   audio: raw.audio || false,
+  audioUrl: raw.audioUrl || '', // 逐镜 TTS 配音轨(透传保留,合成时混入成片音轨)
   history: Array.isArray(raw.history) ? raw.history : [],
   transition: raw.transition || null,
   reviews: Array.isArray(raw.reviews) ? raw.reviews : [],
@@ -266,18 +268,20 @@ async function genVideoCreate(prompt, flags, extra) {
  * 主应用据此判"素材已更新";--nowait 落 generating+upstreamId,断点续查/对账扫描可发现) */
 async function genShotVideo(proj, ep, s, flags, opt) {
   opt = opt || {};
-  need(s.prompt, '镜头 ' + s.id + ' 无提示词,请先 shot-set 补 prompt');
+  need(s.prompt || s.plot, '镜头 ' + s.id + ' 无提示词,请先 shot-set 补 prompt');
+  /* canonical 生成请求(与主应用/写回 inputHash 同一构造点):prompt 含主体定义/轴线/运镜/机位/美术后缀,
+   * 参考图按生成策略映射(主体解析走 Domain.findSubject,支持形态全称/曾用名/scene/props 引用) */
+  const req = Domain.buildVideoRequest(proj, ep, s);
   const extra = {
-    ratio: (ep.sbConfig && ep.sbConfig.ratio) || '16:9',
-    duration: +s.duration > 0 ? +s.duration : 5,
+    ratio: req.ratio, duration: req.duration,
     job: { projectId: proj.id, episodeId: ep.id, shotId: s.id },
   };
-  if (s.image) extra.image = s.image; // 首帧(底图一致性)
-  const refImages = (s.characters || [])
-    .map(n => (proj.subjects || []).find(x => x.name === n && x.image))
-    .filter(Boolean).map(x => ({ url: x.image }));
-  if (refImages.length) extra.refImages = refImages; // 主体参考(一致性核心)
-  const created = await genVideoCreate(s.prompt, flags, extra);
+  if (req.model) extra.model = req.model;
+  if (req.image) extra.image = req.image; // 首帧(底图一致性,按策略映射)
+  if (req.lastFrame) extra.lastFrame = req.lastFrame; // 尾帧(首尾帧策略)
+  if (req.refImages && req.refImages.length) extra.refImages = req.refImages; // 主体参考(一致性核心)
+  if (req.refAudio) extra.refAudio = req.refAudio; // 角色音色参考
+  const created = await genVideoCreate(req.prompt, flags, extra);
   const finish = d => {
     if (d.status !== 'succeeded') throw new CliError('镜头 ' + s.id + ' 生成失败:' + (d.error || d.status), 5);
     s.video = {
@@ -291,24 +295,53 @@ async function genShotVideo(proj, ep, s, flags, opt) {
     s.video = { status: 'generating', model: '', upstreamId: created.id, resumable: true };
     return { id: created.id, duration: created.duration, reused: !!created.reused, pending: true };
   }
-  const d = await waitJob(created.id, flags, opt.timeout);
-  return { id: created.id, reused: !!created.reused, video: finish(d) };
+  try {
+    const d = await waitJob(created.id, flags, opt.timeout);
+    return { id: created.id, reused: !!created.reused, video: finish(d) };
+  } catch (e) {
+    // 上游任务已创建但失败/超时:写回 failed 并保留 upstreamId(对齐主应用 sb-gen.js 口径),
+    // 主应用对账 reconcileJobs 可扫到续查,不再产生孤儿任务
+    s.video = { status: 'failed', error: e.message, model: '', upstreamId: created.id, resumable: true };
+    throw e;
+  }
 }
 
-/* compose items 构建(对齐前端 doCompose:视频段用 url,图片段 image+dur;text=台词,转场随镜) */
-function composeItems(ep, flags) {
+/* compose items 构建(与前端 doCompose 同口径:序列走 Domain.composeSeqOf canonical 时间线——tlOrder 定序/
+ * tlTrims 剔除与裁剪;字幕文本取台词/旁白、配音取 s.audioUrl、转场为字符串记在后一镜(首段无转场);
+ * 字幕开关 flags.subtitle 已由调用方解析:--no-subtitle 等显式参数优先,缺省读 ep.sbConfig.subtitle) */
+async function composeItems(ep, flags) {
   const items = [], segs = [], missing = [];
-  (ep.shots || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0)).forEach(s => {
-    const vurl = s.video && s.video.status === 'done' && s.video.url;
-    const dur = (s.video && +s.video.duration) || +s.duration || 5;
-    if (!vurl && !s.image) { missing.push(s.id); return; }
-    const it = { text: s.dialogue || s.narration || '' };
-    if (vurl) it.video = vurl; else { it.image = s.image; it.dur = dur; }
-    if (s.audio && s.audio.url) it.audio = s.audio.url;
-    if (s.transition && s.transition.type) it.transition = s.transition;
-    items.push(it);
-    segs.push({ text: it.text, dur }); // SRT 与 items 同序同段(硬切时间轴近似)
+  const subtitle = flags.subtitle !== false;
+  const trims = ep.tlTrims || {};
+  (ep.shots || []).forEach(s => { // 被时间线剔除的段不算缺失;无视频也无底图且未剔除才计 missing
+    if (!(trims[s.id] && trims[s.id].off) && !((Domain.shotVideoReady(s, true) && s.video.url) || s.image)) missing.push(s.id);
   });
+  const seq = Domain.composeSeqOf(ep, true); // canonical 序列:与写回的 composedInputHash 完全同源
+  for (let idx = 0; idx < seq.length; idx++) {
+    const s = seq[idx];
+    const it = { text: subtitle ? String(s.dialogue || s.narration || '').slice(0, 120) : '' };
+    let segDur = 0; // 该段在成片时间轴上的时长(SRT 用)
+    if (s.audioUrl) it.audio = s.audioUrl; // 逐镜 TTS 配音混入成片音轨
+    if (idx > 0 && s.transition) it.transition = { type: String(s.transition).slice(0, 12) }; // 转场记在后一镜
+    if (Domain.shotVideoReady(s, true) && s.video.url) {
+      it.video = s.video.url;
+      if (typeof s._tlStart === 'number') it.start = s._tlStart; // 时间线裁剪:入点
+      if (typeof s._tlEnd === 'number') it.end = s._tlEnd;       // 时间线裁剪:出点
+      segDur = (typeof s._tlStart === 'number' && typeof s._tlEnd === 'number') ? Math.max(0.5, s._tlEnd - s._tlStart) : Domain.estShotDuration(s);
+    } else {
+      let img = s.image;
+      if (String(img).startsWith('data:')) { // 占位/截帧 dataURL 先传服务端(对齐 doCompose)
+        const ext = String(img).startsWith('data:image/jpeg') ? '.jpg' : '.png';
+        img = (await POST('/api/upload', { name: 'shot_' + (s.order + 1) + ext, dataBase64: String(img).split(',')[1] || '' }, flags)).url;
+      }
+      if (!img) continue;
+      it.image = img;
+      it.dur = Math.max(2, Math.min(15, Domain.estShotDuration(s)));
+      segDur = it.dur;
+    }
+    items.push(it);
+    segs.push({ text: String(s.dialogue || s.narration || '').trim(), dur: segDur }); // SRT 与 items 同序同段,与字幕开关无关
+  }
   return { items, segs, missing };
 }
 
@@ -377,14 +410,15 @@ function _releaseGates(p, minScore) {
     if (blockers.length) { list.push(gate('g1-workflow', '主线步骤全完成', 'fail', blockers.map(b => b.ep + '(' + b.status + (b.action ? ':' + b.label : '') + ')').join('；'))); fails++; }
     else list.push(gate('g1-workflow', '主线步骤全完成', 'pass', eps.length + ' 集 done'));
   } catch (e) { list.push(gate('g1-workflow', '主线步骤', 'warn', 'Domain 异常:' + e.message)); warns++; }
-  // G3 审片
-  const withRev = eps.filter(ep => ep.lastReview && typeof ep.lastReview.avg === 'number');
-  if (!withRev.length) { list.push(gate('g3-review', '审片均分 ≥ ' + minScore, 'fail', eps.length + ' 集均无审片记录')); fails++; }
-  else {
-    const fails3 = withRev.filter(ep => ep.lastReview.avg < minScore);
-    if (fails3.length) { list.push(gate('g3-review', '审片均分 ≥ ' + minScore, 'fail', fails3.map(ep => (ep.title || ep.id) + ':' + ep.lastReview.avg.toFixed(2)).join('；'))); fails++; }
-    else list.push(gate('g3-review', '审片均分 ≥ ' + minScore, 'pass', withRev.length + ' 集'));
-  }
+  // G3 审片(每集都必须有审片记录且达标:无记录集=fail,与前端 Release.collect 同口径)
+  const noRev = eps.filter(ep => !(ep.lastReview && typeof ep.lastReview.avg === 'number'));
+  const lowRev = eps.filter(ep => ep.lastReview && typeof ep.lastReview.avg === 'number' && ep.lastReview.avg < minScore);
+  if (!eps.length) list.push(gate('g3-review', '审片均分 ≥ ' + minScore, 'pass', '0 集'));
+  else if (noRev.length || lowRev.length) {
+    const parts = noRev.map(ep => (ep.title || ep.id) + ':未审片')
+      .concat(lowRev.map(ep => (ep.title || ep.id) + ':' + ep.lastReview.avg.toFixed(2)));
+    list.push(gate('g3-review', '审片均分 ≥ ' + minScore, 'fail', parts.join('；'))); fails++;
+  } else list.push(gate('g3-review', '审片均分 ≥ ' + minScore, 'pass', eps.length + ' 集'));
   // G4/G5/G6 counts 聚合
   const agg = { stale: 0, unconfirmed: 0, failed: 0 };
   try {
@@ -682,6 +716,8 @@ CMD['shots-import'] = async (a, f) => {
     const norm = arr.map((s, i) => normShot(s, i, base));
     ep.shots = f.append ? (ep.shots || []).concat(norm) : norm;
     ep.status = 'storyboarded';
+    ep.shotsSourceRev = ep.contentRev || 0; // 导入即一次"分镜发布":记录对应剧本版本(对齐智能分镜发布口径,消除"手动导入仍判旧"误报)
+    ep.shotsGraphRev = ep.graphRev || 0;    // 记录对应事件图谱版本
     return { episode: ep.id, imported: norm.length, total: ep.shots.length, replaced: !f.append };
   })).ret;
 };
@@ -690,7 +726,7 @@ CMD['shots-import'] = async (a, f) => {
 const SHOT_PATCH_RULES = {
   name: v => String(v), plot: v => String(v), camera: v => String(v),
   scene: v => String(v), narration: v => String(v), dialogue: v => String(v),
-  prompt: v => String(v), transition: v => (v && typeof v === 'object' ? v : null),
+  prompt: v => String(v), transition: v => (v ? String(v) : null), // 转场为字符串(对齐主应用 sb-views.js),空值=无转场(硬切)
   duration: v => { const n = +v; need(Number.isFinite(n) && n >= 1 && n <= 30, 'duration 需为 1~30 秒'); return n; },
   characters: v => { need(Array.isArray(v), 'characters 需为数组'); return v.map(String); },
   props: v => { need(Array.isArray(v), 'props 需为数组'); return v.map(String); },
@@ -720,6 +756,8 @@ CMD['shot-set'] = async (a, f) => {
       } else s[k] = val;
       applied.push(k);
     }
+    // 内容字段(prompt/plot/dialogue/narration)修改自动回落为未确认(对齐主应用"内容修改需重新过目"语义)
+    if (['prompt', 'plot', 'dialogue', 'narration'].some(k => k in patch)) s.confirm = false;
     return { id: s.id, patched: applied };
   })).ret;
 };
@@ -767,10 +805,18 @@ CMD['gen-video'] = async (_, f) => {
 };
 CMD['gen-shot-video'] = async (a, f) => {
   need(a[0] && a[1] && a[2], '用法:hujing gen-shot-video <pid> <epid> <sid> [--nowait] [--timeout 分钟] (单镜生视频写回 s.video)');
-  return (await withProject(a[0], f, async proj => {
+  let genErr = null;
+  const r = await withProject(a[0], f, async proj => {
     const s = findShot(findEp(proj, a[1]), a[2]);
-    return genShotVideo(proj, findEp(proj, a[1]), s, f, { wait: !f.nowait, timeout: +f.timeout || 30 });
-  })).ret;
+    try {
+      return await genShotVideo(proj, findEp(proj, a[1]), s, f, { wait: !f.nowait, timeout: +f.timeout || 30 });
+    } catch (e) {
+      genErr = e; // 失败态已写回 s.video(见 genShotVideo):先随补丁落库再向外抛
+      return null;
+    }
+  });
+  if (genErr) throw genErr;
+  return r.ret;
 };
 CMD['gen-episode'] = async (a, f) => {
   need(a[0] && a[1], '用法:hujing gen-episode <pid> <epid> [--failed-only] [--include-unconfirmed] [--no-image] [--timeout 分钟/镜]\n'
@@ -791,7 +837,7 @@ CMD['gen-episode'] = async (a, f) => {
   const result = { episode: ep.id, total: todo.length, ok: 0, failed: [], shots: {} };
   for (const s of todo) {
     try {
-      await withProject(a[0], f, async (projLive) => {
+      const r = await withProject(a[0], f, async (projLive) => {
         const epLive = findEp(projLive, a[1]);
         const sLive = findShot(epLive, s.id);
         if (!sLive.image && !f['no-image']) { // 缺底图先补(廉价文生图,失败即停该镜不碰视频)
@@ -799,8 +845,14 @@ CMD['gen-episode'] = async (a, f) => {
           sLive.image = img.url;
           log('镜 ' + s.id + ' 底图已补:' + img.url);
         }
-        await genShotVideo(projLive, epLive, sLive, f, { wait: true, timeout: +f.timeout || 30 });
+        try {
+          await genShotVideo(projLive, epLive, sLive, f, { wait: true, timeout: +f.timeout || 30 });
+        } catch (e) {
+          return e; // 失败态已由 genShotVideo 写回 sLive.video:先随补丁落库(含已补底图),再在循环外汇总
+        }
+        return null;
       });
+      if (r.ret) throw r.ret;
       result.ok++;
       result.shots[s.id] = 'done';
       log('镜 ' + s.id + ' ✓ (' + result.ok + '/' + todo.length + ')');
@@ -835,10 +887,16 @@ CMD['review-note'] = async (a, f) => {
   return (await withProject(a[0], f, async proj => {
     const s = findShot(findEp(proj, a[1]), a[2]);
     s.reviews = s.reviews || [];
-    const rv = { score, time: new Date().toLocaleString('zh-CN'), comments: f.comment ? [f.comment] : [] };
+    const rv = {
+      id: 'rv_' + Date.now().toString(36) + crypto.randomBytes(3).toString('hex').slice(0, 5), // 与 Store.uid('rv') 同规则,可按 reportId 恢复
+      shotId: s.id, score, time: new Date().toLocaleString('zh-CN'), comments: f.comment ? [f.comment] : [],
+      videoInputHash: (s.video && s.video.inputHash) || Domain.shotInputHash(proj, s), // 版本绑定:判旧 review.js reportStale 要求;优先沿用生成时指纹(与 UI 同口径),缺失才现算
+      videoUrl: (s.video && s.video.url) || '', reviewedAt: Date.now(),
+    };
     if (f.dimensions) rv.dimensions = JSON.parse(f.dimensions);
     s.reviews.unshift(rv);
-    return { id: s.id, score, reviews: s.reviews.length };
+    s.reviews = s.reviews.slice(0, 5); // 与主应用同上限
+    return { id: s.id, reportId: rv.id, score, reviews: s.reviews.length };
   })).ret;
 };
 
@@ -849,13 +907,15 @@ async function composeCore(pid, epid, f) {
   const proj = (state.projects || []).find(x => x.id === pid);
   if (!proj) throw new CliError('项目不存在:' + pid, 4);
   const ep = findEp(proj, epid);
-  const { items, segs, missing } = composeItems(ep, f);
+  // 字幕开关:--no-subtitle/--subtitle 显式参数优先,缺省读 ep.sbConfig.subtitle(与主应用 doCompose 同口径)
+  const subtitle = f.subtitle !== undefined ? f.subtitle !== false : !!(ep.sbConfig && ep.sbConfig.subtitle);
+  const { items, segs, missing } = await composeItems(ep, Object.assign({}, f, { subtitle }));
   if (missing.length && !f['skip-incomplete']) throw new CliError('以下镜头无视频也无底图,无法合成:' + missing.join(',') + '(--skip-incomplete 可跳过)', 2);
   need(items.length, '无可合成段落(分镜表为空或全部缺素材)');
   log('合成 ' + items.length + ' 段(计费 ff.compose)…');
   const d = await POST('/api/ffmpeg/compose', {
     items, ratio: f.ratio || (ep.sbConfig && ep.sbConfig.ratio) || '16:9',
-    subtitle: f.subtitle !== false, operationId: crypto.randomUUID(),
+    subtitle, operationId: crypto.randomUUID(),
   }, f, { timeoutMs: 120000 + items.length * 60000 });
   const srt = buildSrt(segs);
   return (await withProject(pid, f, async (projLive) => {
@@ -868,6 +928,7 @@ async function composeCore(pid, epid, f) {
     epLive.composedSrt = srt || null;
     epLive.composedVia = 'shots';
     epLive.composedInputHash = Domain.composedInputHash(epLive, true); // 合成输入指纹:调序/裁剪/换素材 → 主应用判"待更新"
+    epLive.composedDialogueSig = Domain.composedDialogueSig(epLive, true); // 字幕文本/时长指纹:改台词/旁白 → 判未就绪(与主应用同口径)
     epLive.composedSourceRev = epLive.contentRev || 0; // 合成时剧本版本
     epLive.composedGraphRev = epLive.graphRev || 0;    // 合成时图谱版本
     return { episode: epLive.id, url: d.url, count: items.length, skipped: missing, srt: !!srt, transitions: d.transitions };
@@ -964,15 +1025,21 @@ EXEC['episode.generateVideos'] = { needs: ['p', 'ep'], meter: true, run: async (
   let okCnt = 0;
   for (const s of todo) {
     try {
-      await withProject(args.pid, f, async projLive => {
+      const r = await withProject(args.pid, f, async projLive => {
         const epLive = findEp(projLive, args.epid);
         const sLive = findShot(epLive, s.id);
         if (!sLive.image && !args.noImage) { // 缺底图先补(廉价文生图,失败即停该镜不碰视频)
           const img = await genImage(sLive.prompt || sLive.plot || ('镜头' + sLive.order), f, {});
           sLive.image = img.url;
         }
-        await genShotVideo(projLive, epLive, sLive, f, { wait: true, timeout: +args.timeout || 30 });
+        try {
+          await genShotVideo(projLive, epLive, sLive, f, { wait: true, timeout: +args.timeout || 30 });
+        } catch (e) {
+          return e; // 失败态已由 genShotVideo 写回 sLive.video:先随补丁落库(含已补底图),再在循环外汇总
+        }
+        return null;
       });
+      if (r.ret) throw r.ret;
       okCnt++;
       log('镜 ' + s.id + ' ✓ (' + okCnt + '/' + todo.length + ')');
     } catch (e) {
@@ -996,10 +1063,17 @@ EXEC['shot.generateVideo'] = { needs: ['p', 'ep', 's'], meter: true, run: async 
       sLive.image = (await genImage(sLive.prompt || sLive.plot || ('镜头' + sLive.order), f, {})).url;
     });
   }
+  let genErr = null;
   const ret = await withProject(args.pid, f, async projLive => {
     const epLive = findEp(projLive, args.epid);
-    return genShotVideo(projLive, epLive, findShot(epLive, s.id), f, { wait: true, timeout: +args.timeout || 30 });
+    try {
+      return await genShotVideo(projLive, epLive, findShot(epLive, s.id), f, { wait: true, timeout: +args.timeout || 30 });
+    } catch (e) {
+      genErr = e; // 失败态已写回 s.video(见 genShotVideo):先随补丁落库再向外抛
+      return null;
+    }
   });
+  if (genErr) throw genErr;
   return execOk({ shotId: s.id, url: (ret.ret.video && ret.ret.video.url) || '' });
 } };
 
@@ -1058,11 +1132,15 @@ EXEC['episode.smartReview'] = { needs: ['p', 'ep'], meter: true, run: async (arg
   return r;
 } };
 
+/* needs 校验面与注册表单源对齐(执行体各端自治;contract 套件锁死 EXEC 键集 = 注册表词表) */
+CmdRegistry.META.forEach(m => { if (EXEC[m.name]) EXEC[m.name].needs = m.needs.slice(); });
+
 CMD.exec = async (a, f) => {
   const name = a[0];
-  need(name, '用法:hujing exec <command> --pid X [--epid Y] [--sid Z] [--confirm-all] [--no-image] [--timeout 分钟/镜] [--args \'{"pid":".."}\']\n'
-    + '  统一领域命令(与前端 Commands.execute 同名同结构):' + Object.keys(EXEC).join(', '));
-  need(EXEC[name], '未注册命令:' + name + ';可用:' + Object.keys(EXEC).join(', '));
+  need(name, '用法:hujing exec <command> [--args \'{"pid":".."}\'] [--confirm-all] [--no-image] [--timeout 分钟/镜]\n'
+    + '  统一领域命令(与前端 Commands.execute 同名同结构,cmd-registry.js 单源):\n'
+    + CmdRegistry.META.map(m => `    ${m.name} ${CmdRegistry.usageOf(m)} — ${m.label}`).join('\n'));
+  need(EXEC[name], '未注册命令:' + name + ';可用:' + CmdRegistry.names().join(', '));
   const cmd = EXEC[name];
   const args = Object.assign(f.args ? JSON.parse(f.args) : {}, {
     pid: f.pid, epid: f.epid, sid: f.sid,
@@ -1198,18 +1276,8 @@ const HELP = `虎鲸漫剧 CLI —— 面向 AI 助手与人工的全链路命�
   release <pid> [--note 发布说明] [--min-score 7] [--force]
                                                    打发布版本(留痕 releases 入 state;通过/条件通过才执行,--force 强制)
 
-统一领域命令(与前端 Commands.execute 同名同结构 {ok,status,result,error,cost,next})
-  exec episode.preflight --pid X --epid Y          生产就绪检查(Domain 单源推导)
-  exec episode.generateVideos --pid X --epid Y [--confirm-all] [--no-image]
-                                                   批量生成(未确认镜跳过进 skipped;--confirm-all 授权全量)
-  exec shot.generateVideo --pid X --epid Y --sid Z 单镜生成(sid 支持镜头 id 或序号)
-  exec episode.compose --pid X --epid Y            合成成片(失败镜前置 blocked)
-  exec episode.produce --pid X --epid Y [--confirm-all]   一键成片编排(就绪→生成→审片→合成;
-                                                   低分镜质量闸门阻断合成,--args '{"riskyCompose":true}' 放行)
-  exec episode.generateStoryboard --pid X --epid Y [--args '{"shotCount":8,"sbPlans":2}]
-                                                   智能分镜(服务端工作流:理解→拆镜→评审修订)
-  exec episode.understanding --pid X --epid Y            本集理解(服务端工作流)
-  exec episode.smartReview --pid X --epid Y              整集智能审片(服务端工作流:逐镜+共性+四维)
+统一领域命令(与前端 Commands.execute 同名同结构 {ok,status,result,error,cost,next};词表/参数面由 js/cmd-registry.js 单源生成)
+${CmdRegistry.META.map(m => '  exec ' + (m.name + (CmdRegistry.usageOf(m) ? ' ' + CmdRegistry.usageOf(m) : '')).padEnd(58) + m.label + ':' + m.desc).join('\n')}
   (exit 映射:ok→0 | blocked→2/6/4 | failed→5;--args '{"pid":".."}' 可整体传参)
 
 工具

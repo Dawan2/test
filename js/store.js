@@ -582,6 +582,8 @@
             Object.entries(g.assets).forEach(([k, v]) => { na[mapRef(k)] = v; });
             g.assets = na;
           }
+          /* 签名同步重算(规则同 shotgroups.js sigOf):改名后自动分组仍能命中旧组,不新建同语义组留幽灵组 */
+          g.sig = (g.scene || '未知场景') + '|' + (g.chars || []).slice().sort().join('、');
         });
       });
       this.save();
@@ -628,6 +630,12 @@
         if (s.video && s.video.inputHash && !String(s.video.inputHash).startsWith('v3:')
           && s.video.inputHash === this._shotInputHashV1(p, s)) {
           s.video.inputHash = this.shotInputHash(p, s);
+        }
+        /* 二十二轮:无指纹的存量 done 镜回填基线(此前 inputHash 缺失恒不判过期——老项目改提示词/换参考图后
+         * 旧片冒充新成果);以当前输入为基线(原生成输入不可考,不回溯误报),此后输入再变即正常判过期 */
+        if (s.video && s.video.status === 'done' && !s.video.inputHash) {
+          s.video.inputHash = this.shotInputHash(p, s);
+          if (s.video.assetVer === undefined) s.video.assetVer = Domain.shotAssetVer(p, s);
         }
       })));
     },
@@ -676,6 +684,10 @@
     /* 成片合成输入指纹(实现下沉 domain.js):与合成 items 完全同源;CLI 经 require 算出同一值 */
     composedInputHash(ep) {
       return Domain.composedInputHash(ep, _online());
+    },
+    /* 成片字幕文本/时长指纹(实现下沉 domain.js):合成时记录,改台词/旁白/时长 → 成片判未就绪(无记录的旧数据不比对) */
+    composedDialogueSig(ep) {
+      return Domain.composedDialogueSig(ep, _online());
     },
     /* 节拍板出片就绪(真实):与 shotVideoReady 同语义的节拍段版本(实现下沉 domain.js) */
     beatVideoReady(b) {

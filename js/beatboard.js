@@ -250,11 +250,19 @@ ${frames}${b.styleParam ? '\n本段生成参数:' + b.styleParam : ''}${p.global
           ns.name = `Beat${b.idx} ${b.name}`;
           ns.plot = b.frames.map((f, k) => String(f.text || '').trim()).filter(Boolean).join('。') || b.name;
           ns.duration = (window.SB && SB.estShotDuration) ? SB.estShotDuration(ns) : 10;
-          if (b.video && b.video.status === 'done' && b.video.url) ns.video = { status: 'done', url: b.video.url, frame: b.video.frame || '' };
+          if (b.video && b.video.status === 'done' && b.video.url) {
+            ns.video = { status: 'done', url: b.video.url, frame: b.video.frame || '' };
+            // 回填输入指纹基线(与 store.js 存量迁移同语义):当下不误报,此后素材/输入变更即判旧
+            if (window.Domain) { ns.video.inputHash = Domain.shotInputHash(p, ns); ns.video.assetVer = Domain.shotAssetVer(p, ns); }
+          }
           ns.history = [{ type: '节拍板转入', model: 'BeatBoard', time: Store.now() }];
           return ns;
         });
         ep.uiSel = ep.shots[0] ? ep.shots[0].id : null;
+        ep.composed = false;  // 分镜整体覆盖:旧成片已无分镜支撑(对齐批量全删口径)
+        ep.lastReview = null; // 逐镜审片报告引用的 shotId 已全部失效
+        ep.shotsSourceRev = ep.contentRev || 0; // 记录分镜对应的剧本版本(剧本修改后判旧)
+        ep.shotsGraphRev = ep.graphRev || 0;    // 记录分镜对应的事件图谱版本(图谱修订后判旧)
         Store.state.settings.epViewMode = 'shots'; // 转完进入分镜视频视图(全局视图偏好)
         Store.save();
         U.toast('已转换为 5 个分镜(Beat1~5),进入分镜视频视图', 'success');

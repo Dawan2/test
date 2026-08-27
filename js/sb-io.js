@@ -190,6 +190,9 @@
           ep.shots = newShots;
           ep.uiSel = newShots[0] ? newShots[0].id : null;
           ep.composed = false;
+          ep.lastReview = null; // 整表覆盖:旧审片报告的 shotId 全部失效,口径同 beatsToShots/sb-batch 全删路径
+          ep.shotsSourceRev = ep.contentRev || 0; // 记录分镜对应的剧本版本(剧本修改后判旧)
+          ep.shotsGraphRev = ep.graphRev || 0;    // 记录分镜对应的事件图谱版本(图谱修订后判旧)
           Store.save();
           Tasks.done(tk);
           close();
@@ -241,6 +244,9 @@
           });
           ep.shots.forEach((x, i) => x.order = i);
           ep.composed = false;
+          // 追加导入同样把分镜表对齐到当前剧本/图谱版本(剧本或图谱修改后判旧)
+          ep.shotsSourceRev = ep.contentRev || 0;
+          ep.shotsGraphRev = ep.graphRev || 0;
           Store.save(); close();
           U.toast(`已导入 ${lines.length} 个分镜`, 'success');
           renderShots(main, p, ep);
@@ -276,6 +282,9 @@
           ep.shots.push(ns);
           ep.shots.forEach((x, i) => x.order = i);
           ep.composed = false;
+          // 追加导入同样把分镜表对齐到当前剧本/图谱版本(剧本或图谱修改后判旧)
+          ep.shotsSourceRev = ep.contentRev || 0;
+          ep.shotsGraphRev = ep.graphRev || 0;
           Store.save();
           c.style.borderColor = 'var(--green)';
           n++;
@@ -516,6 +525,7 @@
         ep.composedSrt = buildSrt(srtSegs) || null; // SRT 软字幕与成片同时间轴同步产出(导出▾「导出字幕 SRT」;无对白/旁白则为 null)
         ep.composedVia = 'shots'; // 来源轨:分镜合成(成片库据此标「分镜表」)
         ep.composedInputHash = Store.composedInputHash(ep); // 七轮:记录合成输入指纹,之后调序/裁剪/换素材/改转场 → 自动失效
+        ep.composedDialogueSig = Store.composedDialogueSig(ep); // 二十三轮:记录字幕文本/时长指纹,之后改台词/旁白 → 成片判未就绪
         ep.composedSourceRev = ep.contentRev || 0; // 十轮:记录合成时的剧本版本(剧本修改后提示重合成)
         ep.composedGraphRev = ep.graphRev || 0;    // 十二轮:记录合成时的图谱版本(图谱修订后判旧)
         Store.save();

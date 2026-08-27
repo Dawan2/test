@@ -1,8 +1,8 @@
 /* ============ release.js 交付检查(发布门禁10项 + 版本留痕 + 交付物打包ZIP) ============
  * 10 类发布门(按 fail/warn/pass):
  *   G1  主线就绪:每集 Domain.episodeState.status === 'done' — fail
- *   G2  问题清零:Issues.collect(p).list.length === 0 — fail(有 unresolved 高/中危)
- *   G3  审片均分:每集 reviewAvg >= 阈值(默认 7,可配置 releaseMinReviewScore) — fail
+ *   G2  问题清零:Issues.collect(p) 返回数组,高/中危条目清零 — fail(有 unresolved 高/中危)
+ *   G3  审片均分:每集都必须有未过期(rev/快照判旧=视为未审)的审片记录且 reviewAvg >= 阈值(默认 7,可配置 releaseMinReviewScore) — fail
  *   G4  素材过期镜 0:stale 镜清零 — fail
  *   G5  未确认镜 0:unconfirmed 清零 — fail
  *   G6  失败镜 0:failed 清零 — fail
@@ -46,7 +46,9 @@
   /* ---------- G1-G10 collect ---------- */
   function collect(p, opts) {
     opts = opts || {};
-    const online = opts.online !== false && (typeof API !== 'undefined' && API && typeof API.isReady === 'function' && API.isReady());
+    /* online 与 Issues.collect/流程条同一判定(Media.isReady:有后端 token 才算在线)——
+     * 不用 API.isReady:直连模式有 key 即 true,但未登录后端无法真实生成,会把模拟片判就绪(G1 与问题中心结论相反) */
+    const online = opts.online !== false && (typeof Media !== 'undefined' && Media && typeof Media.isReady === 'function' && Media.isReady());
     const eps = (p && p.episodes) || [];
     const gates = [];
     const min = minReviewScore();
@@ -57,61 +59,76 @@
         let blockers = [];
         eps.forEach(ep => {
           const st = Domain.episodeState(p, ep, online);
-          if (st.status !== 'done') blockers.push({ ep: ep.title || ep.id, status: st.status, label: (st.action && st.action.label) || '' });
+          if (st.status !== 'done') blockers.push({ epid: ep.id, ep: ep.title || ep.id, status: st.status, label: (st.action && st.action.label) || '' });
         });
         if (blockers.length) {
           gates.push(gate('g1-workflow', '主线步骤全完成', 'fail', blockers.map(b => `· ${b.ep}(${b.status}${b.label ? ':' + b.label : ''})`).join('；'),
-            { severity: 'high', fix: { type: 'command', cmd: 'episode.gen', epid: blockers[0] && blockers[0].ep } }));
+            { severity: 'high', fix: { type: 'command', cmd: 'episode.produce', epid: blockers[0].epid } }));
         } else gates.push(gate('g1-workflow', '主线步骤全完成', 'pass', eps.length + ' 集全部 done'));
       } else gates.push(gate('g1-workflow', '主线步骤全完成', 'warn', 'Domain 模块未加载,无法校验'));
     } catch (e) { gates.push(gate('g1-workflow', '主线步骤全完成', 'warn', '校验异常:' + e.message)); }
 
-    /* G2 问题清零 */
+    /* G2 问题清零(Issues.collect 返回数组,契约见 tests/unit.js release 套件) */
     try {
       if (typeof Issues !== 'undefined' && Issues.collect) {
-        const col = Issues.collect(p);
-        const unresolved = (col.list || []).filter(x => x.sev === 'high' || x.sev === 'mid');
+        const list = Issues.collect(p);
+        const unresolved = list.filter(x => x.sev === 'high' || x.sev === 'mid');
         if (unresolved.length) {
           const high = unresolved.filter(x => x.sev === 'high').length;
           const mid = unresolved.length - high;
           gates.push(gate('g2-issues', '问题清零(无高危/中危未解决)', high > 0 ? 'fail' : 'warn',
             `高危 ${high} 项,中危 ${mid} 项`,
             { severity: high > 0 ? 'high' : 'mid', fix: { type: 'nav', goto: 'issues' } }));
-        } else gates.push(gate('g2-issues', '问题清零(无高危/中危未解决)', 'pass', (col.list || []).length ? '仅 ' + (col.list || []).filter(x => x.sev === 'low').length + ' 低危' : '0 问题'));
+        } else gates.push(gate('g2-issues', '问题清零(无高危/中危未解决)', 'pass', list.length ? '仅 ' + list.filter(x => x.sev === 'low').length + ' 低危' : '0 问题'));
       } else gates.push(gate('g2-issues', '问题清零', 'warn', 'Issues 模块未加载'));
     } catch (e) { gates.push(gate('g2-issues', '问题清零', 'warn', '校验异常:' + e.message)); }
 
-    /* G3 审片均分(有审片记录才判,无记录视为 fail 因为没审过) */
+    /* G3 审片均分(每集都必须有审片记录且达标;记录判旧=视为未审 fail——
+     * 剧本/图谱修订或镜头重抽后旧分不放行;无 sourceRev/graphRev/snapshotHash 的旧记录保持原语义不判旧) */
     try {
-      const withReview = eps.filter(ep => ep.lastReview && typeof ep.lastReview.avg === 'number');
-      if (!withReview.length) {
-        gates.push(gate('g3-review', '审片均分 ≥ ' + min, 'fail', eps.length + ' 集均无审片记录', { fix: { type: 'command', cmd: 'episode.review' } }));
+      const hasReview = ep => ep.lastReview && typeof ep.lastReview.avg === 'number';
+      const staleOf = ep => (typeof Domain !== 'undefined' && Domain.reviewStaleByScript) ? !!Domain.reviewStaleByScript(ep) : false;
+      const noReview = eps.filter(ep => !hasReview(ep));
+      const stale = eps.filter(ep => hasReview(ep) && staleOf(ep));
+      const fails = eps.filter(ep => hasReview(ep) && !staleOf(ep) && ep.lastReview.avg < min);
+      if (!eps.length) {
+        gates.push(gate('g3-review', '审片均分 ≥ ' + min, 'fail', '无分集'));
+      } else if (noReview.length || stale.length || fails.length) {
+        const parts = [];
+        if (noReview.length) parts.push('未审:' + noReview.map(ep => (ep.title || ep.id)).join('、'));
+        if (stale.length) parts.push('审片记录已过期(视为未审):' + stale.map(ep => (ep.title || ep.id)).join('、'));
+        if (fails.length) parts.push('低于阈值:' + fails.map(ep => (ep.title || ep.id) + ':' + ep.lastReview.avg.toFixed(2)).join('、'));
+        const first = noReview[0] || stale[0] || fails[0];
+        gates.push(gate('g3-review', '审片均分 ≥ ' + min, 'fail', parts.join('；'),
+          { fix: { type: 'command', cmd: 'episode.smartReview', epid: first.id } }));
       } else {
-        const fails = withReview.filter(ep => ep.lastReview.avg < min);
-        const avgAll = (withReview.reduce((s, ep) => s + ep.lastReview.avg, 0) / withReview.length).toFixed(2);
-        if (fails.length) gates.push(gate('g3-review', '审片均分 ≥ ' + min, 'fail',
-          fails.map(ep => '· ' + (ep.title || ep.id) + ':' + ep.lastReview.avg.toFixed(2)).join('；') + '；整体均分:' + avgAll,
-          { fix: { type: 'command', cmd: 'episode.review' } }));
-        else gates.push(gate('g3-review', '审片均分 ≥ ' + min, 'pass', withReview.length + ' 集均分:' + avgAll));
+        const avgAll = (eps.reduce((s, ep) => s + ep.lastReview.avg, 0) / eps.length).toFixed(2);
+        gates.push(gate('g3-review', '审片均分 ≥ ' + min, 'pass', eps.length + ' 集均分:' + avgAll));
       }
     } catch (e) { gates.push(gate('g3-review', '审片均分', 'warn', '校验异常:' + e.message)); }
 
-    /* G4 过期镜 / G5 未确认 / G6 失败镜 (统一从 Domain.counts 聚合) */
+    /* G4 过期镜 / G5 未确认 / G6 失败镜 (统一从 Domain.counts 聚合;fix 落到首个受累集并带 shotIds 子集) */
     const agg = { stale: 0, unconfirmed: 0, failed: 0, noSubjectImage: 0 };
+    let firstStale = null, firstFailed = null, firstUnconfirmed = null;
     try {
       if (typeof Domain !== 'undefined' && Domain.episodeState) {
         eps.forEach(ep => {
           const st = Domain.episodeState(p, ep, online);
           ['stale', 'unconfirmed', 'failed'].forEach(k => { agg[k] += (st.counts && +st.counts[k]) || 0; });
+          if (!firstStale && st.counts && +st.counts.stale)
+            firstStale = { epid: ep.id, shotIds: (ep.shots || []).filter(s => Domain.shotVideoStale(p, s, online)).map(s => s.id) };
+          if (!firstFailed && st.counts && +st.counts.failed)
+            firstFailed = { epid: ep.id, shotIds: (ep.shots || []).filter(s => s.video && s.video.status === 'failed').map(s => s.id) };
+          if (!firstUnconfirmed && st.counts && +st.counts.unconfirmed) firstUnconfirmed = { epid: ep.id };
         });
       }
     } catch (_) {}
     gates.push(gate('g4-stale', '素材过期镜 = 0', agg.stale ? 'fail' : 'pass', agg.stale + ' 镜素材与当前剧本不一致',
-      agg.stale ? { severity: 'mid', fix: { type: 'command', cmd: 'episode.regenStale' } } : null));
+      agg.stale && firstStale ? { severity: 'mid', fix: { type: 'command', cmd: 'episode.generateVideos', epid: firstStale.epid, shotIds: firstStale.shotIds } } : null));
     gates.push(gate('g5-unconfirmed', '未确认镜 = 0', agg.unconfirmed ? 'fail' : 'pass', agg.unconfirmed + ' 镜用户未确认最终',
-      agg.unconfirmed ? { fix: { type: 'command', cmd: 'episode.confirmShots' } } : null));
+      agg.unconfirmed && firstUnconfirmed ? { fix: { type: 'nav', hash: '#/project/' + p.id + '/episode/' + firstUnconfirmed.epid } } : null));
     gates.push(gate('g6-failed', '失败镜 = 0', agg.failed ? 'fail' : 'pass', agg.failed + ' 镜生成失败未处理',
-      agg.failed ? { severity: 'high', fix: { type: 'command', cmd: 'episode.fixFailed' } } : null));
+      agg.failed && firstFailed ? { severity: 'high', fix: { type: 'command', cmd: 'episode.generateVideos', epid: firstFailed.epid, shotIds: firstFailed.shotIds } } : null));
 
     /* G7 合规命中 (剧本+所有主体+镜头台词/旁白/提示词) */
     try {
@@ -158,10 +175,10 @@
       } else gates.push(gate('g8-humanreview', '真人素材审核无 rejected', 'warn', 'HumanReview 模块未加载,无法校验'));
     } catch (e) { gates.push(gate('g8-humanreview', '真人素材审核', 'warn', '校验异常:' + e.message)); }
 
-    /* G9 主体缺图 0 */
+    /* G9 主体缺图 0(主体参考图走角色页逐主体生成,无对应领域命令——导航类处置) */
     const noImg = (p.subjects || []).filter(s => !s.image).length;
     gates.push(gate('g9-subjects', '主体角色图齐全 = 0 缺图', noImg ? 'fail' : 'pass', noImg ? noImg + ' 位主体缺参考图' : (p.subjects || []).length + ' 位全部就位',
-      noImg ? { fix: { type: 'command', cmd: 'subject.generateImage' } } : null));
+      noImg ? { fix: { type: 'nav', hash: '#/project/' + p.id + '/roles' } } : null));
 
     /* G10 计费账目核对(离线/无接口 warn;在线时 CLI 端真正跑 /api/billing/usage 对账) */
     try {
@@ -263,11 +280,16 @@
     if (!window.ZipUtil || !ZipUtil.create) throw new Error('ZipUtil 未加载,无法打包');
     const files = [];
     const eps = (p.episodes || []).slice();
-    const summary = { ok: 0, skipped: [] };
+    const summary = { ok: 0, skipped: [], stale: [] };
 
     for (let i = 0; i < eps.length; i++) {
       const ep = eps[i];
       const epName = (i + 1) + '_' + safeName(ep.title || ep.id);
+      /* 判旧警告:成片/SRT 基于过期输入(调序/裁剪/改台词/剧本修订)时提示需先重合成——只警告不拦截打包 */
+      if (ep.composed && typeof Domain !== 'undefined' && Domain.epComposedReady
+        && !Domain.epComposedReady(ep, typeof Media !== 'undefined' && Media && Media.isReady && Media.isReady())) {
+        summary.stale.push((ep.title || ep.id) + ':成片/SRT 已过期(合成输入或剧本已变化),建议先重新合成');
+      }
       // 1) 成片 mp4:ep.composed 若是 /uploads/*.mp4 URL → 转 bytes;否则记 skipped
       if (ep.composed && String(ep.composed).startsWith('/uploads/') && !opts.skipVideo) {
         try {
@@ -322,10 +344,13 @@
 
 跳过的视频:
 ${summary.skipped.length ? summary.skipped.map(s => ' - ' + s).join('\n') : ' (全部成功,共 ' + summary.ok + ' 集)'}
+
+过期提醒(建议重新合成后再交付):
+${summary.stale.length ? summary.stale.map(s => ' - ' + s).join('\n') : ' (无)'}
 ` });
 
     const bytes = ZipUtil.create(files);
-    return { bytes, files: files.length, videosOK: summary.ok, videosSkipped: summary.skipped, size: bytes.length };
+    return { bytes, files: files.length, videosOK: summary.ok, videosSkipped: summary.skipped, stale: summary.stale, size: bytes.length };
   }
   function safeName(s) { return String(s || '').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 60) || 'untitled'; }
   async function downloadReleaseZip(p, opts) {
@@ -342,7 +367,29 @@ ${summary.skipped.length ? summary.skipped.map(s => ' - ' + s).join('\n') : ' (�
       setTimeout(() => URL.revokeObjectURL(a.href), 3000);
     } catch (_) { ZipUtil.download(name, [{ name: 'project_meta.json', data: '空下载兜底:请重新打包' }]); }
     if (window.U) U.toast(`交付包已下载:${r.files} 个文件,${r.videosOK}/${(p.episodes || []).length} 集成片${r.videosSkipped.length ? '(' + r.videosSkipped.length + ' 跳过)' : ''}`, 'success', 4000);
+    if (r.stale && r.stale.length && window.U) U.toast(`注意:${r.stale.length} 集成片/SRT 已过期(输入或剧本已变化),建议先重新合成再交付`, 'info', 5000); // 判旧警告不拦截打包,如实提示
     return r;
+  }
+
+  /* ---------- 门禁 fix 统一执行器(发布门弹窗与制作台共用) ----------
+   * command 类走统一命令层(ui 模式保留决策闸,带 epid/shotIds 子集);nav 类跳转/开对应面板。
+   * onDone(r) 处置落定后回调(调用方重收门禁/重绘);opts.issuesAsSection:制作台单屏内「问题清零」导航不另开弹窗,仅重绘。 */
+  function execFix(p, g, main, onDone, opts) {
+    const fix = g && g.fix;
+    if (!fix) return;
+    if (fix.type === 'nav') {
+      if (fix.goto === 'issues') { if (!(opts && opts.issuesAsSection)) { location.hash = '#/project/' + p.id; if (window.Issues) Issues.openModal(p, main); } }
+      else if (fix.goto === 'compliance') { if (window.Compliance) Compliance.rulesModal(); }
+      else if (fix.goto === 'humanreview') { U.toast('请前往「模型配置 - 肖像授权」与「素材审核」处理 rejected 项', 'info', 3000); }
+      if (fix.hash) location.hash = fix.hash;
+      if (onDone) onDone(null);
+      return;
+    }
+    if (fix.type === 'command' && window.Commands && typeof Commands.execute === 'function') {
+      return Commands.execute(fix.cmd, { pid: p.id, epid: fix.epid, shotIds: fix.shotIds, main, ui: true })
+        .then(Commands.digest)
+        .then(r => { if (onDone) onDone(r); });
+    }
   }
 
   /* ---------- 模态:打开交付检查 UI ---------- */
@@ -418,17 +465,15 @@ ${summary.skipped.length ? summary.skipped.map(s => ' - ' + s).join('\n') : ' (�
               <span class="rel-ico">${g.status === 'pass' ? '✅' : g.status === 'warn' ? '⚠️' : '❌'}</span>
               <div class="grow"><b>${g.label}</b><div class="small muted" style="margin-top:2px">${U.esc(g.info || '')}</div></div>
               <span class="tag ${g.status === 'pass' ? 'green' : g.status === 'warn' ? 'yellow' : ''}">${g.status === 'pass' ? '通过' : g.status === 'warn' ? '警告' : '失败'}</span>
-              ${g.fix ? `<button class="btn sm" data-fix="${g.code}" data-cmd="${g.fix.cmd || ''}" data-goto="${g.fix.goto || ''}">${g.fix.type === 'command' ? '一键处置' : '前往处理'}</button>` : ''}
+              ${g.fix ? `<button class="btn sm" data-fix="${g.code}">${g.fix.type === 'command' ? '一键处置' : '前往处理'}</button>` : ''}
             </div>
           </div>`).join('');
           host.querySelectorAll('[data-fix]').forEach(b => b.onclick = () => {
-            const code = b.dataset.fix; const cmd = b.dataset.cmd; const goto = b.dataset.goto;
-            if (goto === 'issues') { if (window.Issues) Issues.openModal(p, main); close(); location.hash = '#project=' + p.id + '&view=episodes'; }
-            else if (goto === 'compliance') { if (window.Compliance) Compliance.rulesModal(); }
-            else if (goto === 'humanreview') { U.toast('请前往「模型配置 - 肖像授权」与「素材审核」处理 rejected 项', 'info', 3000); }
-            else if (cmd && window.Commands && typeof Commands.execute === 'function') {
-              Commands.execute(cmd, { pid: p.id, ui: true }).then(Commands.digest).then(() => { gate = collect(p, { online: true }); renderGates(); });
-            }
+            const g2 = gate.gates.find(x => x.code === b.dataset.fix);
+            if (!g2 || !g2.fix) return;
+            if (g2.fix.type === 'nav') close(); // 导航类处置:先收弹窗再跳转/开对应面板
+            b.disabled = true;
+            execFix(p, g2, main, () => { gate = collect(p, { online: true }); renderGates(); });
           });
           // 更新 stamp 按钮
           const stampBtn = m.querySelector('[data-x=stamp]');
@@ -494,7 +539,7 @@ ${summary.skipped.length ? summary.skipped.map(s => ' - ' + s).join('\n') : ' (�
   /* ---------- 导出 ---------- */
   window.Release = {
     collect, badgeHTML, stampRelease, releaseList, rollbackTo,
-    buildReleaseZip, downloadReleaseZip, openModal,
+    buildReleaseZip, downloadReleaseZip, openModal, execFix,
     minReviewScore, setMinReviewScore,
   };
   // 测试桩:在 __TEST 环境下不绑定键盘,纯逻辑测试

@@ -9,14 +9,19 @@
   function bindBadgeBus() {
     if (badgeBusBound || !window.Bus) return;
     badgeBusBound = true;
+    let timer = null;
     Bus.on('*', () => {
-      const ctx = badgeCtx;
-      if (!ctx || !ctx.main.isConnected) return;
-      const { main, p } = ctx;
-      const tabRow = main.querySelector('[data-x=pissues]'); if (tabRow && window.Issues) tabRow.innerHTML = Issues.badgeHTML(p);
-      const planB = main.querySelector('[data-x=pplan]'); if (planB && window.Plans) planB.innerHTML = Plans.badgeHTML(p);
-      const relB = main.querySelector('[data-x=prelease]'); if (relB && window.Release) relB.outerHTML = Release.badgeHTML(p);
-      const nb = main.querySelector('[data-x=prelease]'); if (nb) nb.onclick = () => window.Release && Release.openModal(p, main);
+      if (!badgeCtx || !badgeCtx.main.isConnected) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => { // §3.4:300ms 防抖合并事件风暴(发布门角标含全量合规扫描,逐事件原样重跑会卡主线程)
+        const ctx = badgeCtx;
+        if (!ctx || !ctx.main.isConnected) return;
+        const { main, p } = ctx;
+        const tabRow = main.querySelector('[data-x=pissues]'); if (tabRow && window.Issues) tabRow.innerHTML = Issues.badgeHTML(p);
+        const planB = main.querySelector('[data-x=pplan]'); if (planB && window.Plans) planB.innerHTML = Plans.badgeHTML(p);
+        const relB = main.querySelector('[data-x=prelease]'); if (relB && window.Release) relB.outerHTML = Release.badgeHTML(p);
+        const nb = main.querySelector('[data-x=prelease]'); if (nb) nb.onclick = () => window.Workbench ? Workbench.openModal(p, main, 'gate') : (window.Release && Release.openModal(p, main));
+      }, 300);
     });
   }
 
@@ -83,13 +88,13 @@
       </div>`;
 
       main.querySelectorAll('[data-tab]').forEach(t => t.onclick = () => openTab(t.dataset.tab));
-      // 问题中心/制作计划入口(第三阶段协同层):角标由 Issues 的 Bus 通配订阅实时刷新
+      // 制作台(§3.3):问题/计划/交付三角标统一打开三合一单屏(各模块独立面板经 Workbench「完整面板」保留)
       const issuesBtn = main.querySelector('[data-x=pissues]');
-      if (issuesBtn) issuesBtn.onclick = () => window.Issues && Issues.openModal(p, main);
+      if (issuesBtn) issuesBtn.onclick = () => window.Workbench ? Workbench.openModal(p, main, 'issues') : (window.Issues && Issues.openModal(p, main));
       const planBtn = main.querySelector('[data-x=pplan]');
-      if (planBtn) planBtn.onclick = () => window.Plans && Plans.openModal(p, main);
+      if (planBtn) planBtn.onclick = () => window.Workbench ? Workbench.openModal(p, main, 'plans') : (window.Plans && Plans.openModal(p, main));
       const releaseBtn = main.querySelector('[data-x=prelease]');
-      if (releaseBtn) releaseBtn.onclick = () => window.Release && Release.openModal(p, main);
+      if (releaseBtn) releaseBtn.onclick = () => window.Workbench ? Workbench.openModal(p, main, 'gate') : (window.Release && Release.openModal(p, main));
       // Bus 订阅:问题/计划/交付角标随主线事件实时刷新(项目页不切换不重建 render,避免每事件整页刷新)
       // 二十轮:订阅本体在模块级只注册一次,此处仅更新当前页上下文
       badgeCtx = { main, p };
@@ -1031,11 +1036,12 @@ ${(ep.content || '').slice(0, 8000)}` }],
         if (b) b.style.display = b.style.display === 'none' ? '' : 'none';
       });
       // 十二轮:图谱手动编辑/增删递增 ep.graphRev——图谱是拆解/分镜的剧情骨架,
-      // 修订后旧分镜/审片/成片经 shotsGraphRev/lastReview.graphRev/composedGraphRev 判旧
+      // 修订后旧分镜/审片/成片经 shotsGraphRev/lastReview.graphRev/composedGraphRev 判旧;
+      // 手动编辑/增删即用户认领"图谱已对齐当前剧本",同步对齐 sourceRev(不再被判旧不注入)
       const bumpGraphRev = gi => {
         const g = (p.eventGraph || [])[+gi];
         const ep2 = g && (p.episodes || []).find(e => e.id === g.epId);
-        if (ep2) ep2.graphRev = (ep2.graphRev || 0) + 1;
+        if (ep2) { ep2.graphRev = (ep2.graphRev || 0) + 1; g.sourceRev = ep2.contentRev || 0; }
       };
       main.querySelectorAll('[data-eg]').forEach(inp => inp.onchange = () => {
         const [gi, ei, f] = inp.dataset.eg.split('_');
