@@ -1702,6 +1702,11 @@ function wfPersonaNote(tree, p, board) {
     boards: (p && p.boards) || null, board,
   });
 }
+/* 记忆板块词表(协作记忆 scope 的取值面):支线「导演」板块 + 主线七步板块名(Skills.STAGES 单源),
+ * 与浏览器 agent.js AGENT_BOARDS 的板块键同集——本层不写第二份板块词表 */
+function wfMemBoards() {
+  return [WfCore.WF_BOARD.understanding].concat(Skills.STAGES.map(x => x.name));
+}
 /* 分镜参数兜底(服务端无 storyboard.js UI 默认值;ep.sbConfig 已存在时以其为准) */
 function wfSbConfig(tree, ep) {
   const st = (tree && tree.settings) || {};
@@ -3695,6 +3700,40 @@ const server = http.createServer(async (req, res) => {
         });
       } catch (e) {
         return fail(res, e.httpStatus || 502, e.message || 'Agent 对话失败', e.httpStatus || 502);
+      } finally { rateLimitDone(user.id); }
+    }
+
+    /* 协作记忆播种 / 板块迁移(headless 收口;零 LLM、零计费、零上游调用)
+     * 浏览器打开助手时 memAll() 顺带做的板块改名迁移与标准/知识库种子补种,headless 侧此前没有入口——
+     * 纯 CLI/MCP 用户的记忆桶里没有沉淀条目、旧板块名要等浏览器打开一次才归位。
+     * 派生走 WfCore.memSeed / memMigrateBoard(与浏览器同一份种子表与迁移表),落点仍是既有
+     * state.agentMemory(与 /api/state PUT 同写回路径),不新建存储桶、不新增计费动作。
+     * 入参:{board?} 只播指定板块 | {from,to} 旧板名→新板名迁移;
+     * 空板/未知板名/旧板名下无条目一律 400 如实报错,不静默回空成功;无可播种时 changed=false 且不写盘。 */
+    if (pathname === '/api/wf/memory-seed' && req.method === 'POST') {
+      if (!rateLimitOk(user.id)) return fail(res, 429, '请求过于频繁,请稍候', 429);
+      try {
+        const b = await readJSONBody(req, 256 * 1024);
+        const { cur, tree } = wfLoadCtx(user.id, '', '');
+        if (!tree) return fail(res, 404, '尚无云端状态数据(请先创建项目或写入一次状态)', 404);
+        const boards = wfMemBoards();
+        let r;
+        try {
+          r = (b.from || b.to)
+            ? WfCore.memMigrateBoard(tree.agentMemory, b.from, b.to, { boards })
+            : WfCore.memSeed(tree.agentMemory, { kb: KB, now: nowStr, boards, board: b.board || '' });
+        } catch (e) {
+          return fail(res, 400, e.message || '记忆播种参数不合法', 400);
+        }
+        tree.agentMemory = r.mem;
+        const rev = r.changed ? wfSave(user.id, cur, tree) : (cur.rev || 0);
+        return ok(res, {
+          rev, total: r.mem.length, changed: !!r.changed, boards,
+          added: (r.added || []).map(m => ({ scope: m.scope, kb: m.kb || '', text: m.text })),
+          updated: r.updated || [], migrated: r.migrated || [],
+        });
+      } catch (e) {
+        return fail(res, e.httpStatus || 500, e.message || '记忆播种失败', e.httpStatus || 500);
       } finally { rateLimitDone(user.id); }
     }
 

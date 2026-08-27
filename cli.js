@@ -1446,7 +1446,9 @@ CMD.agent = async (a, f) => {
 
 /* ---- 协作记忆(双端消费):Agent 对话层沉淀的用户偏好/已确认决定,加审片/发布闭环回流的可判定结论,
  * 一律存既有 state.agentMemory;wf 端点与对话层按 WfCore.memRecall 同算法召回注入。
- * list 支持 --recall 预览实际注入条目(回流条目带 fb 回流键,同一集/同一项目只留最新一条) ---- */
+ * list 支持 --recall 预览实际注入条目(回流条目带 fb 回流键,同一集/同一项目只留最新一条);
+ * seed/migrate 是 /api/wf/memory-seed 的薄封装(零 LLM 零计费):把浏览器 memAll() 那份板块改名迁移与
+ * 标准/知识库种子补种搬到 headless,种子表与迁移表由 WfCore.memSeed 双端单源持有,CLI 不留第二份 ---- */
 CMD.memory = async (a, f) => {
   const sub = a[0] || 'list';
   if (sub === 'list') {
@@ -1473,7 +1475,14 @@ CMD.memory = async (a, f) => {
       }
     }
   }
-  throw new CliError('用法:hujing memory <list|add> [--scope 板块] [--recall 输入文本] [--text 内容]', 2);
+  if (sub === 'seed') { // 板块改名迁移 + 标准/知识库种子补种(幂等;空板/未知板名服务端如实报错)
+    return POST('/api/wf/memory-seed', f.scope ? { board: f.scope } : {}, f);
+  }
+  if (sub === 'migrate') { // 旧板名 → 新板名(条目原地改 scope,不丢不双写)
+    need(f.from && f.to, '用法:hujing memory migrate --from 旧板名 --to 新板名');
+    return POST('/api/wf/memory-seed', { from: f.from, to: f.to }, f);
+  }
+  throw new CliError('用法:hujing memory <list|add|seed|migrate> [--scope 板块] [--recall 输入文本] [--text 内容] [--from 旧板名 --to 新板名]', 2);
 };
 
 /* ---- 逃生舱:裸 state 读写(任意复杂操作) ---- */
@@ -1560,6 +1569,9 @@ ${CmdRegistry.META.map(m => '  exec ' + (m.name + (CmdRegistry.usageOf(m) ? ' ' 
   ff <frames|upscale|merge|cut|suberase|highlight> [--video v] [...]   FFmpeg 工具透传
   memory list [--scope 板块] [--recall 输入]       协作记忆(对话层/工作流层共用;--recall 预览按召回算法实际注入的条目)
   memory add --text 内容 [--scope 板块]            写入记忆(截 120 字,上限 50 条,与浏览器 Agent「记住…」同口径)
+  memory seed [--scope 板块]                       播种记忆(板块改名迁移 + 标准/知识库沉淀补种,与浏览器同一份种子表;
+                                                   幂等,零 LLM 零计费;空板/未知板名如实报错)
+  memory migrate --from 旧板名 --to 新板名         板块迁移(条目原地改板块名,不丢不双写;旧板名下无条目即报错)
   state-get [--out f.json] | state-put --file f.json --force           裸状态读写(逃生舱)
 
 exit code:0 成功 | 1 通用 | 2 参数 | 3 未登录 | 4 不存在 | 5 服务端/上游 | 6 积分不足 | 7 冲突`;
