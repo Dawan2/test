@@ -4741,13 +4741,19 @@ const contractTests = [
     assert(sk11.note.includes('人设句已在注册表') && sk11.note.includes('persona.promptSystem'),
       'SK-11 的 note 须写明本条两个登记键的人设都已在注册表');
     /* 仍欠段只认「仍欠」之后那段(锚点写在"已落地"那半里不算交账),且点名的余量逐处对照源码还在:
-     * 剧本板块那四步已随 SK-03 收编,故这里点名的换成 js/episodes.js 仍内联的那一步,收编时同样转红 */
+     * 剧本模块那几步已随 SK-03 收编,故这里点名的换成别处仍内联的那几步,收编时同样转红 */
     const owed = sk11.note.split('仍欠').slice(1).join('仍欠');
-    assert(owed.includes('js/episodes.js'), 'SK-11 的仍欠段须点名 G-13 余量落在哪一处(不在本条自己的登记面里)');
+    assert(owed.includes('js/agent-ops.js') && owed.includes('js/sb-views.js'),
+      'SK-11 的仍欠段须点名 G-13 余量落在哪几处(不在本条自己的登记面里)');
     const eps = fs.readFileSync(path.join(ROOT, 'js', 'episodes.js'), 'utf8');
-    assert(eps.includes("system: '你是短剧剧本结构分析师。'"),
-      'js/episodes.js 事件图谱拆解步应仍是内联人设(收编后须同步改 SK-11 的仍欠段)');
-    assertEq(Prompts.list().filter(x => x.def === '你是短剧剧本结构分析师。').length, 0, '注册表里不应已有这句(本槽不顺手收这一处)');
+    assert(!eps.includes("system: '你是短剧剧本结构分析师。'"),
+      'js/episodes.js 事件图谱拆解步不得退回内联(已收进 graph.system)');
+    assertEq(Prompts.list().filter(x => x.def === '你是短剧剧本结构分析师。').length, 1, '那句人设应恰好在注册表里一条');
+    assert(!owed.includes('js/episodes.js') && !owed.includes('js/episode-util.js'),
+      '剧本模块两个文件已零内联,SK-11 的仍欠段不得再把它们记成欠账');
+    ['js/agent-ops.js', 'js/sb-views.js'].forEach(rel =>
+      assert(/system: ['`]你是/.test(fs.readFileSync(path.join(ROOT, rel), 'utf8')),
+        '仍欠段点名的 ' + rel + ' 此刻确实还有内联人设(收编后须同步改 SK-11 的仍欠段)'));
     // 缺口未闭合(全仓内联人设仍在):标记不摘,G-13 的关联索引逐字节不变
     assert(sk11.gaps.includes('G-13'), 'G-13 未闭合,本条的缺口标记不摘(关联索引口径:落地一面不摘标记)');
     assertEq(Skills.gaps()['G-13'].join(','),
@@ -4824,11 +4830,17 @@ const contractTests = [
     // 点名断言只认「仍欠」之后那段:锚点写在"已落地"那半里不算交账
     const owed = sk10.note.split('仍欠').slice(1).join('仍欠');
     assert(owed, 'SK-10 的 note 须写明仍欠什么(G-13 没闭合)');
-    assert(owed.includes('js/episodes.js'), 'SK-10 的仍欠段须点名 js/episodes.js');
-    /* 反向:仍欠段点名的那一处此刻确实还在内联(收编了不改记账当场红) */
-    assert(ep.includes("system: '你是短剧剧本结构分析师。'"), 'js/episodes.js 事件图谱拆解步应仍是内联人设(收编后须同步改 SK-10 的仍欠段)');
-    assertEq(require('../js/prompts.js').list().filter(x => x.def === '你是短剧剧本结构分析师。').length, 0,
-      '仍欠那一处的人设句不该已在注册表里(在了就是记账没跟上)');
+    assert(owed.includes('js/agent-ops.js') && owed.includes('js/sb-views.js'),
+      'SK-10 的仍欠段须点名 G-13 余量真正还落在哪几处');
+    /* 反向:仍欠段点名的那几处此刻确实还在内联(收编了不改记账当场红) */
+    ['js/agent-ops.js', 'js/sb-views.js'].forEach(rel =>
+      assert(/system: ['`]你是/.test(fs.readFileSync(path.join(ROOT, rel), 'utf8')),
+        rel + ' 此刻确实还有内联人设(收编后须同步改 SK-10 的仍欠段)'));
+    /* 事件图谱拆解步已收编:同形的反向断言按实况翻面(退回内联或仍记成欠账都当场红) */
+    assert(!owed.includes('js/episodes.js'), '事件图谱拆解步已收编,SK-10 的仍欠段不得再把 js/episodes.js 记成欠账');
+    assert(!ep.includes("system: '你是短剧剧本结构分析师。'"), 'js/episodes.js 事件图谱拆解步不得退回内联');
+    assertEq(require('../js/prompts.js').list().filter(x => x.def === '你是短剧剧本结构分析师。').length, 1,
+      '那句人设应恰好在注册表里一条(独立键 graph.system)');
     /* 摘要三步已收编,这一处的路障随之反转:仍欠段不得再点它,文件里也不得再有那句内联字面 */
     const eu = fs.readFileSync(path.join(ROOT, 'js', 'episode-util.js'), 'utf8');
     assert(!owed.includes('js/episode-util.js'), '摘要三步已收编,SK-10 的仍欠段不得再把它记成欠账');
@@ -5206,6 +5218,44 @@ action 二选一:
     // 记账锚点:仍欠段(只认「仍欠」之后那段)须点名这两条的边界——契约半不开放覆盖,开了就要同步改记账
     const owed3 = (Skills.byId('core.personaCtx').note || '').split('仍欠').slice(1).join('仍欠');
     assert(owed3.includes('音色库') && owed3.includes('不开放覆盖'), 'SK-03 的仍欠段须写明音色推荐的契约半不开放覆盖');
+  } },
+  { name: '事件图谱拆解人设:独立键 graph.system,缺省逐字节等于收编前的内联字面、JSON 契约未开放', fn() {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const DEF = '你是短剧剧本结构分析师。';
+    // 缺省不变:收编前写死在 js/episodes.js 那步的 system 字面,收编后逐字节相同
+    assertEq(Prompts.get('graph.system'), DEF, '缺省人设句应与收编前的内联字面逐字节相同');
+    assertEq(Prompts.get('graph.system', { 'graph.system': '结构拆解员。' }), '结构拆解员。', '覆盖 graph.system 时取值跟随');
+    const it = Prompts.list().find(x => x.key === 'graph.system');
+    assert(it && !it.vars.length && it.name.startsWith('事件图谱拆解') && it.name.includes('系统人设'),
+      '注册表应登记 graph.system 条目(无变量,可在全局默认值页在线改写)');
+    assertEq(Prompts.list().filter(x => x.def === DEF).length, 1, '该人设句应恰好命中注册表一条');
+    // 独立一条键:不与既有人设合成,也不复用其中任何一条的字面(同字面才谈得上复用)
+    ['split.system', 'extract.system', 'und.system', 'sb.system', 'sb.reviewSystem'].forEach(k =>
+      assert(Prompts.get(k) !== DEF, '事件图谱拆解人设不得与既有键 ' + k + ' 同字面'));
+    // 覆盖只换这一键:同板块相邻两键逐字节不动(串台即红)
+    const ov = { 'graph.system': '结构拆解员。' };
+    ['split.system', 'extract.system'].forEach(k => assertEq(Prompts.get(k, ov), Prompts.get(k), '覆盖 graph.system 时 ' + k + ' 应逐字节不动'));
+    // 只收人设句:该步返回 JSON 的 events 字段契约仍留在 user 半,不做成可覆盖变量
+    ['"events"', '"result"', '"where"'].forEach(f =>
+      assertEq(Prompts.list().filter(x => x.def.includes(f)).length, 0, '返回 JSON 契约不进注册表:' + f));
+    assert(Skills.byId('core.personaCtx').prompts.includes('graph.system'), 'SK-03 应登记 graph.system');
+  } },
+  { name: '事件图谱拆解人设(源级):js/episodes.js 零内联,取值口就在逐集拆解那步', fn() {
+    const Prompts = require('../js/prompts.js');
+    const ep = fs.readFileSync(path.join(ROOT, 'js', 'episodes.js'), 'utf8');
+    // 取值口与该步 user 半锚点配对:键挪到别的步骤上即红
+    assert(/system: Prompts\.get\('graph\.system'\),[\s\S]{0,600}把该集剧本拆成结构化事件序列/.test(ep),
+      '事件图谱拆解步应就地经 Prompts.get 取人设(浏览器隐式读 Store 覆盖表),且与该步 user 半锚点配对');
+    assertEq((ep.match(/你是短剧剧本结构分析师/g) || []).length, 0, 'js/episodes.js 不应再内联该人设句(覆盖不会跟过去)');
+    // 该人设句的持有者全仓只剩注册表一份:谁在别处抄第二份当场红
+    const holders = ['server.js', 'cli.js', 'mcp.js', 'index.html']
+      .concat(fs.readdirSync(path.join(ROOT, 'js')).filter(n => n.endsWith('.js')).map(n => 'js/' + n))
+      .filter(rel => fs.readFileSync(path.join(ROOT, rel), 'utf8').includes(Prompts.get('graph.system')));
+    assertEq(holders.sort().join(','), 'js/prompts.js', '人设句字面应只剩注册表一份');
+    // 这条链路没有服务端对端:收编解决的是可覆盖,不是可 headless(别处冒出第二个消费点即红)
+    assert(!fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8').includes('把该集剧本拆成结构化事件序列'),
+      'server.js 不应出现事件图谱拆解步(该步只在浏览器分集页链路上)');
   } },
   { name: '审片升为主线一等步骤(G-03):板块 Agent 有审片席;plans/工作区/CLI 都映射 episode.smartReview', fn() {
     const D = require(path.join(ROOT, 'js/domain.js'));
@@ -7042,13 +7092,17 @@ const skillsTests = [
       assert(!esrc.includes("system: '" + persona), 'js/episodes.js 该步不得再内联人设字面:' + persona);
       assertEq(P.list().filter(x => x.def.startsWith(persona)).length, 1, '该人设句应恰好在注册表里一份:' + persona);
     });
-    /* 仍欠段改指真正还在的那一处:同样先核源码,收编时这条同样转红 */
-    assert(owed10.includes('js/episodes.js'), 'SK-10 的仍欠段须点名 js/episodes.js');
-    assert(esrc.includes("system: '你是短剧剧本结构分析师。'"), 'js/episodes.js 事件图谱拆解步应仍是内联人设');
     /* 摘要三步已收编:同形的反向断言按实况翻面(退回内联或仍记成欠账都当场红) */
     assert(!owed10.includes('js/episode-util.js'), '摘要三步已收编,SK-10 的仍欠段不得再把它记成欠账');
     assertEq((fs.readFileSync(path.join(ROOT, 'js', 'episode-util.js'), 'utf8').match(/system: '你是资深短剧策划。'/g) || []).length, 0,
       'js/episode-util.js 不应再有摘要三步的内联策划人设');
+    /* 同文件的事件图谱拆解步已收编:三处断言一并翻面——不许再记成欠账、源级不许退回内联、注册表须有它自己那一条 */
+    assert(!owed10.includes('事件图谱'), 'SK-10 的仍欠段不得再点名事件图谱拆解步(那步人设已在注册表)');
+    assert(/事件图谱拆解步内联人设已收进注册表\(独立键 graph\.system/.test(sk10.note),
+      'SK-10 的 note 须写明事件图谱拆解步已收进独立键 graph.system');
+    assert(esrc.includes("system: Prompts.get('graph.system')") && !esrc.includes("system: '你是短剧剧本结构分析师。'"),
+      'js/episodes.js 的事件图谱拆解步应经注册表取人设,不得退回内联');
+    assertEq(P.list().filter(x => x.def === '你是短剧剧本结构分析师。').length, 1, '该人设句应恰好在注册表里一条');
     /* G-13 本身未闭合(内联提示词大头仍在),故关联索引一个不摘:改 note 动不到 gaps() 投影 */
     assertEq((Skills.gaps()['G-13'] || []).join(','),
       'script.hookType,script.aiToneBan,subjects.refDiscipline,eps.structureStage,gen.videoTpl,film.rhythmInject',

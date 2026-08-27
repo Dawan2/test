@@ -882,7 +882,7 @@
     {
       id: 'core.personaCtx', sk: 'SK-03', name: '生效人设经 ctx 过服务端', stage: CROSS, wave: 'W3',
       kinds: ['infra'],
-      prompts: ['split.system', 'extract.system', 'digest.planSystem', 'sb.boardSceneSystem', 'sb.boardDraftSystem', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem',
+      prompts: ['split.system', 'extract.system', 'digest.planSystem', 'graph.system', 'sb.boardSceneSystem', 'sb.boardDraftSystem', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem',
         'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem',
         'narration.system', 'reading.system', 'concept.system', 'light.system',
         'voice.recommendSystem', 'voice.recommendBatchSystem'],
@@ -914,6 +914,8 @@
         + '文字分镜拆解 sb.boardDraftSystem——编剧与分镜师两个角色,措辞与产物落点都不同,不合成一个键),'
         + '两步在 js/sb-board.js 同经 Prompts.get 取值、缺省逐字节不变,'
         + '与多轮那三份同为只有浏览器一个消费点的键(用户在「全局默认值」页改得到)。'
+        + '分集页事件图谱拆解步的人设句同形收编为独立键 graph.system(取值口在 js/episodes.js 就地经 Prompts.get,'
+        + '浏览器隐式读全局默认值页的覆盖表);它与多轮那三条同口径:只有浏览器一个消费点,收编解决的是可覆盖不是可 headless。'
         + '仍欠:四处的 ops 协议/字段面/命令白名单/返回 JSON 约定仍由各自装配口拼、不开放覆盖'
         + '(那半是 ops 解析契约,用户改坏即整轮无 ops);'
         + '音色推荐两条同理只收人设句——音色库取值范围与返回 JSON 约定仍写在各自调用点、不开放覆盖'
@@ -1014,9 +1016,11 @@
         + '旁白解说体改写 narration.system/剧本围读 reading.system/构思导演阐述 concept.system/全剧光影总控 light.system,'
         + '四步在 js/episodes.js 同经 Prompts.get 取值、用户在「全局默认值」页改得到(键登记在 SK-03 名下)。'
         + 'js/episode-util.js 剧本摘要的通读/汇总/集纲三步(策划人设)同形收编为一条 digest.planSystem 三个取用口,'
-        + '该文件的内联人设随之归零。'
-        + '仍欠 G-13 的是剧本板块还剩的那一处内联人设:js/episodes.js 的事件图谱拆解步(剧本结构分析师)仍是内联字面,'
-        + '那一步既取不到条目正文、用户也覆盖不到',
+        + '同板块的事件图谱拆解步内联人设已收进注册表(独立键 graph.system,取值口在 js/episodes.js 逐集拆解那步)'
+        + '——剧本模块两个文件的内联人设至此归零。'
+        + '仍欠 G-13 的已不在剧本模块自己这两个文件里,而是别处还没收的那几处内联人设:'
+        + 'js/agent-ops.js 的执行核验器与会话纪要整理器、js/sb-views.js 的分镜改图专家仍是内联字面,'
+        + '那几步既取不到条目正文、用户也覆盖不到',
     },
     /* ---- 主体 ---- */
     {
@@ -1031,8 +1035,8 @@
         + '另一登记键 settings.tplImage 的取用点(js/persona.js 八维度重写文生图提示词那步)取 persona.promptSystem,'
         + '两处装配口都经 Prompts.get 取值、用户在「全局默认值」页改得到(模板本身也一直改得到),'
         + '故本条自己的登记面已无收编余量。'
-        + '仍欠 G-13 的不在本条名下:全仓其余模块的内联人设未进注册表(剧本板块那四步已随 SK-03 收编,'
-        + 'js/episodes.js 的事件图谱拆解步与 js/episode-util.js 剧本摘要三步仍是内联字面),'
+        + '仍欠 G-13 的不在本条名下:全仓其余模块的内联人设未进注册表(剧本模块那几步已随 SK-03 收编,'
+        + 'js/agent-ops.js 的执行核验器与会话纪要整理器、js/sb-views.js 的分镜改图专家仍是内联字面),'
         + '缺口未闭合故按关联索引口径不摘标记。'
         + '生成请求构造点(Domain.buildVideoRequest)不注方法论文本,生成指纹口径不动;'
         + '校验半判定输入就是那份请求的参考图组(人物数上限、被上限挤出、三视图当视频参考),'
