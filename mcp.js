@@ -34,6 +34,8 @@ const TOOLS = [
   { name: 'hujing_project_show', description: '项目详情(主体/分集/逐镜状态统计)', inputSchema: obj({ pid: pidEp.pid }, ['pid']), build: i => ['project-show', i.pid] },
   { name: 'hujing_workflow', description: '统一工作流状态:主线各阶段完成度与下一步推荐(Domain 单源推导,与 UI/Agent 同口径)', inputSchema: obj({ pid: pidEp.pid, epid: Object.assign({}, S, { description: '分集 id(缺省为项目级)' }) }, ['pid']), build: i => ['workflow', i.pid].concat(i.epid ? [i.epid] : []) },
   { name: 'hujing_project_create', description: '新建项目(可选导入剧本文件)', inputSchema: obj({ name: Object.assign({}, S, { description: '剧名' }), style: Object.assign({}, S, { description: '风格,如 漫剧/真人短剧' }), scriptFile: Object.assign({}, S, { description: '剧本文本文件路径' }) }, ['name']), build: i => ['project-create', '--name', i.name].concat(i.style ? ['--style', i.style] : [], i.scriptFile ? ['--script-file', i.scriptFile] : []) },
+  { name: 'hujing_project_script', description: '写入项目剧本原文(≤20 万字;拆集与主体提取的输入)', inputSchema: obj({ pid: pidEp.pid, scriptFile: Object.assign({}, S, { description: '剧本文本文件路径' }) }, ['pid', 'scriptFile']), build: i => ['project-script', i.pid, '--script-file', i.scriptFile] },
+  { name: 'hujing_split_episodes', description: '剧本拆集(服务端工作流):整部剧本按集/章标记切分(零 LLM)或 LLM 锚点分集(正文逐字切原文);已有分集需 overwrite=true 授权覆盖,local=true 强制段落均分(零计费)', inputSchema: obj({ pid: pidEp.pid, overwrite: Object.assign({}, B, { description: '授权覆盖现有分集(含其分镜数据)' }), local: Object.assign({}, B, { description: '强制本地按段落均分,不调 LLM' }) }, ['pid']), build: i => ['exec', 'project.splitEpisodes', '--args', JSON.stringify({ pid: i.pid, overwrite: !!i.overwrite, local: !!i.local })] },
   { name: 'hujing_episode_add', description: '新建分集(可选写入剧本正文)', inputSchema: obj({ pid: pidEp.pid, title: Object.assign({}, S, { description: '分集标题,如 第1集' }), contentFile: Object.assign({}, S, { description: '剧本正文文件路径' }) }, ['pid', 'title']), build: i => ['episode-add', i.pid, '--title', i.title].concat(i.contentFile ? ['--content-file', i.contentFile] : []) },
   { name: 'hujing_episode_script', description: '写入/替换分集剧本正文(contentRev+1,下游理解/分镜自动判旧)', inputSchema: obj({ pid: pidEp.pid, epid: pidEp.epid, contentFile: Object.assign({}, S, { description: '剧本正文文件路径' }) }, ['pid', 'epid', 'contentFile']), build: i => ['episode-script', i.pid, i.epid, '--content-file', i.contentFile] },
   { name: 'hujing_subjects', description: '主体(角色/场景/道具)列表', inputSchema: obj({ pid: pidEp.pid }, ['pid']), build: i => ['subjects', i.pid] },
@@ -113,8 +115,8 @@ const PROMPTS = [
       const style = a.style ? ',风格 "' + a.style + '"' : '';
       return [{ role: 'user', content: { type: 'text', text:
 `新剧《${a.name}》开工(${style})。按以下顺序调用虎鲸漫剧工具,每步确认成功再进下一步:
-1. hujing_project_create 建项目(有剧本文本文件就带 scriptFile),记下返回的 pid。
-2. hujing_episode_add 逐集建分集(带 contentFile 写入剧本正文;后补用 hujing_episode_script)。写剧本会使下游理解/分镜自动判旧,属正常。
+1. hujing_project_create 建项目(有剧本文本文件就带 scriptFile,后补用 hujing_project_script),记下返回的 pid。
+2. 分集:有整部剧本时 hujing_split_episodes 一键拆集(集/章标记 ≥2 条走零 LLM 切分,否则 LLM 锚点分集,正文逐字保留;已有分集要 overwrite=true);逐集手写用 hujing_episode_add / hujing_episode_script。写剧本会使下游理解/分镜自动判旧,属正常。
 3. hujing_subject_add 建主要角色/场景主体并 genImage=true 生成参考图——空主体库会导致逐镜换脸,这步不要省。
 4. hujing_storyboard 智能分镜(或 hujing_exec episode.generateStoryboard),然后 hujing_shots 检查分镜表。
 5. 精修:hujing_shot_set 修订单镜提示词;逐镜 hujing_shot_confirm 确认(批量生成只跑已确认镜)。
