@@ -49,7 +49,7 @@
   const SIZE = {
     'flat-run': '连续同景别,没有递进',
     'jump-cut': '两极对切,缺过渡镜',
-    'no-progression': '整集景别几乎没动过',
+    'no-progression': '景别几乎没动过,始终没用上隔级切换',
   };
   /* 命中 → 一行明细:镜号区间(整集级命中无镜号)+ 码文案 + 景别走向 */
   const sizeLine = h => (h.order ? `镜头${h.order}${h.to > h.order ? '-' + h.to : ''}` : '整集')
