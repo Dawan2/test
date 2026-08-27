@@ -12,14 +12,16 @@
  * 环境差异经 ctx 显式注入;引用键的存在性由 Skills.validate(deps) 自检——除 KB 与 Domain 外的注册表
  * 在浏览器加载顺序里晚于本文件,故一律由调用方注入,本模块不做加载期绑定。
  * 加载期依赖两件双端纯模块:KB(条目正文)与 Domain(校验型条目的领域判定,如主体按名查找),
- * 判定口径一律现取 Domain,本层不写第二份。
+ * 判定口径一律现取 Domain,本层不写第二份。WfCore(机位词表与景别级差)在浏览器加载顺序里晚于本文件,
+ * 故以解析器形态传入、取值时现解析,加载期不绑定——本层仍不写第二份景别阶梯。
  * 加载点成对:index.html 在 domain.js/knowledge.js 之后、wf-core.js 之前;server.js/cli.js/mcp.js 同处 require。
  */
 (function (root, factory) {
   const isNode = typeof module === 'object' && module.exports;
-  const S = factory(isNode ? require('./knowledge.js') : root.KB, isNode ? require('./domain.js') : root.Domain);
+  const S = factory(isNode ? require('./knowledge.js') : root.KB, isNode ? require('./domain.js') : root.Domain,
+    isNode ? () => require('./wf-core.js') : () => root.WfCore);
   if (isNode) module.exports = S; else root.Skills = S;
-})(typeof self !== 'undefined' ? self : globalThis, function (KB, Domain) {
+})(typeof self !== 'undefined' ? self : globalThis, function (KB, Domain, wfCore) {
   'use strict';
 
   /* 主线七步:key 与 Domain.workflow 主线步骤键同词表(审片经 G-03 升为一等步骤后七步全为 wfStep) */
@@ -242,6 +244,58 @@
     return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
   };
 
+  /* ---- 分镜段校验宿主(SK-18 景别面):判定输入是分镜表的景别序列 ----
+   * 相邻两镜的级差一律经 WfCore.sizeGap 取(景别阶梯的唯一定义在 js/wf-core.js,本层不写第二份阶梯);
+   * 级差 -1(缺景别或阶梯外自定义词)即不可判定——既不算递进也不算跳切,并打断连续同级串,
+   * 不拿"没填景别"冒充结论。判据是 KB「景别运镜」衔接那句落到级差上:相邻景别不硬切、
+   * 优先隔一级切换、两极(大全景↔特写)须用全景或中景过渡。
+   * 与剧本段/主体段同纪律:纯本地词法与级差判定、零 LLM、零计费,结论一律 warn 不升 fail;
+   * 这一镜景别选得对不对、有没有摄影层面的设计意图这类语义判断仍归 LLM 审片(G-10)。 */
+  const SIZE_STEP = 2;      // 推荐递进级差(隔一级):整集达不到即景别几乎没动过
+  const SIZE_POLAR = 4;     // 两极对切的级差下限:须补全景或中景过渡
+  const FLAT_RUN = 3;       // 连续同景别镜数达此值即成串(两镜同景别是正反打常态,不报)
+  const SIZE_MIN_PAIRS = 3; // 整集级结论的判定下限:可判定的相邻对少于此数不下整集断言
+
+  /* SK-18 景别递进与跳切:逐对看相邻镜级差,再回看整集有没有用上隔级递进。
+   *   flat-run       连续 FLAT_RUN 镜以上同景别 → warn(hit 定位到串首镜并带串尾镜号与串长)
+   *   jump-cut       相邻两镜级差达两极 → warn(缺过渡镜,hit 带上一镜景别与实测级差)
+   *   no-progression 整集可判定的相邻对里最大级差不到隔一级 → warn(整集级一条,不逐镜重复报)
+   * 单镜入口(只传 s)无相邻可比,不产出结论;轴线面(越轴/匹配剪辑)的判定输入是机位方位,
+   * 分镜字段无承载,仍归 G-10,不在本项冒充。 */
+  CHECKS['shots.sizeLinkage'] = function (obj) {
+    const o = obj || {};
+    const shots = (o.ep && o.ep.shots) || [];
+    if (shots.length < 2) return { pass: true, level: 'info', hits: [] };
+    const sizeGap = wfCore().sizeGap;
+    const sizeOf = s => String(((s || {}).cameraSpec || {}).shotSize || '');
+    const at = s => ({ shotId: s.id, order: (+s.order || 0) + 1 });
+    const hits = [];
+    let pairs = 0, top = -1, run = 1;
+    /* 同级串收尾:够长即记一条并把串长归零(不够长的串是正反打,静默丢弃) */
+    const flush = end => {
+      if (run >= FLAT_RUN) {
+        const head = shots[end - run + 1];
+        hits.push(Object.assign({ code: 'flat-run', name: sizeOf(head), base: '', gap: 0, run, to: (+shots[end].order || 0) + 1 }, at(head)));
+      }
+      run = 1;
+    };
+    for (let i = 1; i < shots.length; i++) {
+      const prev = sizeOf(shots[i - 1]), cur = sizeOf(shots[i]);
+      const gap = sizeGap(prev, cur);
+      if (gap < 0) { flush(i - 1); continue; }
+      pairs++;
+      if (gap > top) top = gap;
+      if (gap === 0) { run++; continue; }
+      flush(i - 1);
+      if (gap >= SIZE_POLAR) hits.push(Object.assign({ code: 'jump-cut', name: cur, base: prev, gap }, at(shots[i])));
+    }
+    flush(shots.length - 1);
+    if (pairs >= SIZE_MIN_PAIRS && top < SIZE_STEP) {
+      hits.push({ code: 'no-progression', shotId: '', order: 0, name: '', base: '', gap: top, run: 0, to: 0, pairs });
+    }
+    return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
+  };
+
   /* 字幕可读性判据(成片字幕/对白面的三条阈值):
    *   CAP_CPS       阅读速度上限(字/秒):超出即观众看不完一条字幕
    *   CAP_MIN_DUR   单条最短停留(秒):低于此值字幕一闪而过
@@ -413,10 +467,14 @@
     },
     {
       id: 'shots.sizeProgression', sk: 'SK-18', name: '景别递进与轴线校验', stage: 'shots',
-      covers: ['shots', 'review'], wave: 'W4', kinds: ['check'], pending: ['check'],
-      kb: ['景别运镜', '轴线匹配'], prompts: ['sb.reviewUser', 'review.system'], cmds: ['episode.smartReview'],
+      covers: ['shots', 'review'], wave: 'W4', kinds: ['check'],
+      kb: ['景别运镜', '轴线匹配'], prompts: ['sb.reviewUser', 'review.system'], checks: ['shots.sizeLinkage'],
+      cmds: ['episode.smartReview', 'episode.preflight'],
       experts: ['ex_dp'], gaps: ['G-10'],
-      note: '景别衔接口诀现以文本形态落在 sb.reviewUser 评审指令里,校验面落地后判据仍以 KB 条目为准',
+      note: '景别衔接口诀另以文本形态落在 sb.reviewUser 评审指令里,校验面判据同出 KB「景别运镜」条目;'
+      + '级差一律经 WfCore.sizeGap 取景别阶梯单源,本层不写第二份阶梯——落地面只判景别递进与跳切,'
+      + '轴线面(越轴/匹配剪辑)的判定输入是机位方位,分镜字段无承载,仍归 G-10;'
+      + '经就绪检查与问题中心消费,结论只报不拦',
     },
     {
       id: 'shots.promptEightDim', sk: 'SK-19', name: '抽卡八维公式与军规注入', stage: 'shots',
