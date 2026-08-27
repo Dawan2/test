@@ -3976,6 +3976,27 @@ const epsP = list => ({ id: 'p1', episodes: list.map((c, i) => ({ id: 'ep' + (i 
 const sixEps = (over) => epsP(Array.from({ length: 6 }, (_, i) => ((over || {})[i + 1] === undefined ? EP_OK : over[i + 1])));
 const arcOf = p => Skills.check('eps', { p }).find(x => x.skill === 'eps.structureStage');
 const payoffOf = (p, ep) => Skills.check('eps', { p, ep }).find(x => x.skill === 'eps.payoffPoint');
+/* 审片路径消费点夹具:js/review.js 沙箱(离线 → 本地模拟评审,校验项经 window.Skills 现取) */
+function loadReview() {
+  const sb = makeSandbox();
+  installCommon(sb);
+  sb.COST = { review: 2, optimize: 1, video: 5 };
+  sb.Views = { episode() {} };
+  loadFile(sb, 'domain.js'); // 与 index.html 同顺序:domain → knowledge → skills → wf-core
+  loadFile(sb, 'prompts.js');
+  loadFile(sb, 'knowledge.js');
+  loadFile(sb, 'skills.js');
+  loadFile(sb, 'wf-core.js');
+  loadFile(sb, 'review.js');
+  return sb;
+}
+/* 单镜夹具:提示词自带稳定约束词、无 cameraSpec、单镜集(离线评审的三条本地硬检查一律零命中,
+ * 报告的 issues 只由 s.id + s.prompt 的种子决定——同种子两次评审可逐字对比) */
+const rvShot = over => Object.assign({
+  id: 'sh0', order: 0, plot: '她亮出证据揭穿骗局', scene: '', props: [],
+  camera: '固定镜头', prompt: '五官稳定不变形,人体结构正常', duration: 5,
+}, over || {});
+const rvEp = s => ({ id: 'ep1', title: '第一集', shots: [s] });
 
 const skillsTests = [
   { name: 'hookAnchor:开篇直接进台词/冲突信号 → info;背景铺陈过长 → late-hook(带首个信号位置)', fn() {
@@ -4436,6 +4457,84 @@ const skillsTests = [
       assert(!Skills.byId(id).cmds.includes('episode.smartReview'), id + ' 不得挂未接的审片命令面');
     });
     assert(Skills.byId('eps.payoffPoint').gaps.includes('G-10'), '卡点掐得准不准仍属审片维度,待 G-10');
+  } },
+  { name: '审片报告只读消费:离线评审附镜级命中,不并入 issues / 不改评分 / 不新增计费', fn: async () => {
+    const sb = loadReview();
+    const p = refP({ script: BG }); // 项目剧本本身有 late-hook:集级结论不该混进单镜报告
+    const dirty = rvShot({ characters: ['林小满', '路人甲'], dialogue: '好'.repeat(31) });
+    const clean = rvShot({ characters: ['林小满'], dialogue: '好'.repeat(10) });
+    const rd = await sb.Review.reviewShot(p, rvEp(dirty), dirty);
+    const rc = await sb.Review.reviewShot(p, rvEp(clean), clean);
+    assertEq(rd.mode, 'local', '离线应走本地模拟评审(零 LLM)');
+    assertEq(rd.checks.map(c => c.skill).join(','), 'script.dialogueRule,subjects.refIntegrity', '按主线步序附已落地的剧本面/主体面结论');
+    assertEq(rd.checks.map(c => c.id).join(','), 'script.dialogueLineLength,subjects.shotRefIntegrity', '结论应同时给实现 id 与能力 id');
+    assertEq(rd.checks.map(c => c.hits.map(h => h.code).join('+')).join(','), 'long-line,unknown-subject');
+    assertEq(rd.checks.map(c => c.level).join(','), 'warn,fail', '级别一律照校验项如实报,不升不降');
+    rd.checks.forEach(c => c.hits.forEach(h => assertEq(h.shotId, 'sh0', 'hits 应只留本镜命中(集级结论归就绪检查与问题中心)')));
+    assert(!rd.checks.some(c => c.skill === 'script.hookStrength'), '项目剧本的开篇钩子是集级结论,不混进单镜报告');
+    assertEq(rc.checks.length, 0, '干净夹具不产出命中');
+    // 只报不拦:命中不进 issues,评分与达标线口径逐字不动(同 id 同提示词 = 同种子)
+    assertEq(rd.issues.filter(i => i.code).length, 0, '校验命中不得并入 issues(达标线/重抽/批量优化判定口径不动)');
+    assertEq(JSON.stringify(rd.issues), JSON.stringify(rc.issues), '命中不改关键问题清单');
+    assertEq(rd.score, rc.score, '命中不参与评分');
+    // 计费不新增:两次审片各一次预扣,校验项纯本地零 LLM 零计费
+    assertEq(sb.__charges.length, 2, '校验项不新增计费动作');
+    assertEq(sb.__charges[0].cost, sb.COST.review);
+  } },
+  { name: '审片报告消费点(源级+展示):两面同表达式且登记面无漏消费;旧报告无该字段仍可打开', fn() {
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'review.js'), 'utf8');
+    const i = src.indexOf('function shotChecks(');
+    assert(i > 0, 'review.js 应有镜级校验命中汇总函数');
+    const expr = src.slice(i, src.indexOf('\n  }', i));
+    const at = st => expr.indexOf("Skills.check('" + st + "'");
+    assert(at('script') > 0 && at('subjects') > at('script'), '两面应同在一处汇总且按主线步序排列(只在别处调用不算消费)');
+    // 登记侧反查:凡登记 episode.smartReview 为消费点的已落地校验条目,其面必须在这处汇总里(将来新增面漏接先红)
+    const consumers = Skills.list().filter(s => !s.pending.includes('check') && s.checks.length && s.cmds.includes('episode.smartReview'));
+    assert(consumers.length >= 2, '审片路径应已登记至少两条已落地校验条目的消费点');
+    consumers.forEach(s => assert(at(s.stage) > 0, '审片报告漏消费已登记面:' + s.id + '(' + s.stage + ')'));
+    assert(src.includes('report.checks = shotChecks(p, s)'), '命中应挂报告的独立字段(不改三维评分与整集四维结构)');
+    assert(!/issues\.(push|unshift)\([^)]*check/i.test(src), '命中不得并入 issues');
+    // 展示:旧报告缺该字段照样开(结构兜底),有命中时如实标注只提醒不拦,校验项名取注册表条目名
+    const sb = loadReview();
+    const modals = [];
+    sb.U.openModal = o => { modals.push(o); };
+    const s = rvShot({ characters: [], dialogue: '' });
+    const old = { id: 'rv_old', score: 6.5, model: '本地模拟评审', mode: 'local', time: '2026-08-01 10:00:00', issues: [] };
+    sb.Review.openReport(refP(), rvEp(s), s, null, old);
+    assertEq(modals.length, 1, '旧报告缺 checks 字段也应能打开');
+    assert(!modals[0].body.includes('方法论校验命中'), '无命中不出该区块');
+    sb.Review.openReport(refP(), rvEp(s), s, null, Object.assign({}, old, {
+      checks: [{ id: 'script.dialogueLineLength', skill: 'script.dialogueRule', level: 'warn', hits: [{ code: 'long-line', len: 31, name: '好好', shotId: 'sh0', order: 1 }] }],
+    }));
+    const body = modals[1].body;
+    assert(body.includes('方法论校验命中') && body.includes('只提醒不拦生成'), '命中区应如实标注只提醒不拦');
+    assert(body.includes('对白铁律注入与单句长度校验'), '校验项名应取注册表条目名(不在展示层写第二份)');
+    assert(body.includes('台词单句 31 字超上限'), '命中应译成人话展示');
+    assert(!/未发现关键问题[\s\S]*方法论校验命中[\s\S]*rv-score/.test(body), '命中区应在评分区之后,不改评分版式');
+  } },
+  { name: '记账诚实位:infra 面仍 pending 的三条须有 note 说明缺口已落地实况(不假清未完成面)', fn() {
+    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    const W = require('../js/wf-core.js');
+    const wfSteps = DomainMod.workflow({ id: 'p1', episodes: [], subjects: [] }).steps.map(x => x.key);
+    const facts = {
+      'core.personaCtx': ['G-01', /function wfPersonaNote\(/.test(srv)],
+      'core.memoryDual': ['G-02', typeof W.memRecall === 'function' && typeof W.memBlock === 'function'],
+      'review.stage': ['G-03', wfSteps.includes('review')],
+    };
+    Object.keys(facts).forEach(id => {
+      const [gap, landed] = facts[id];
+      const s = Skills.byId(id);
+      assert(landed, id + ' 的 ' + gap + ' 出口应仍在(实况变动先红,不靠文档口径)');
+      assert(s.pending.includes('infra'), id + ' 的 infra 面是注册表侧记账收敛,不得在本轮假清');
+      assert(s.gaps.includes(gap), id + ' 应仍写明缺口编号 ' + gap);
+      assert(new RegExp(gap + ' 已落地').test(s.note || ''), id + ' 的 note 须如实说明 ' + gap + ' 已落地(读者不该读成没做)');
+    });
+    // 发布门的方法论门仍待 G-10:本轮只接审片路径的只读消费,门禁计数口径逐字不动
+    const sk29 = Skills.byId('film.deliverContract');
+    assert(sk29.pending.includes('check') && sk29.gaps.includes('G-10'), '发布门方法论门仍未落地,不得因审片接线记成已闭合');
+    const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
+    assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 仍只数高/中危');
+    assert(!/lastReview\.checks|report\.checks/.test(rsrc), '发布门不读审片报告的校验命中字段(本轮不接门禁)');
   } },
 ];
 

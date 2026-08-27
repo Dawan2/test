@@ -460,11 +460,15 @@
       kinds: ['infra'], pending: ['infra'],
       prompts: ['sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.finalSystem'],
       cmds: ['episode.understanding', 'episode.generateStoryboard', 'episode.smartReview'], gaps: ['G-01'],
+      note: 'G-01 已落地:服务端 /api/wf/* 各端点经唯一装配口 wfPersonaNote 注入生效人设,浏览器同装配口;'
+        + '本条 pending 的 infra 面留的是注册表侧记账收敛(改 pending 会动 gaps 投影,单列一轮),口径同 SK-23',
     },
     {
       id: 'core.memoryDual', sk: 'SK-04', name: '长期记忆双端与召回纯函数', stage: CROSS, wave: 'W3',
       kinds: ['infra'], pending: ['infra'], gaps: ['G-02'],
-      note: '召回策略(同板块最近若干 + 全局最近若干)抽为纯函数后双端同用;记忆种子不在 KB 条目面',
+      note: 'G-02 已落地:召回策略(同板块最近若干 + 全局最近若干)已抽为 WfCore.memRecall/memBlock 双端同用,'
+        + '记忆种子不在 KB 条目面;本条 pending 的 infra 面留的是注册表侧记账收敛('
+        + '改 pending 会动 gaps 投影,单列一轮),口径同 SK-23',
     },
     {
       id: 'core.playbookProjection', sk: 'SK-05', name: 'playbook 由注册表投影', stage: CROSS, wave: 'W4',
@@ -498,10 +502,12 @@
       id: 'script.dialogueRule', sk: 'SK-09', name: '对白铁律注入与单句长度校验', stage: 'script',
       covers: ['script', 'shots'], wave: 'W2', kinds: ['inject', 'check'],
       kb: ['对话铁律', '人物体系'], prompts: ['sb.system'], checks: ['script.dialogueLineLength'],
-      cmds: ['episode.generateStoryboard', 'episode.preflight'],
+      cmds: ['episode.generateStoryboard', 'episode.preflight', 'episode.smartReview'],
       experts: ['ex_dialogue'], gaps: ['G-15', 'G-10', 'S-01'],
       note: '注入面 W2 落地;校验面判剧本正文引号台词与分镜 s.dialogue 两处载体的单句长度,'
-        + '阈值现取 KB「对话铁律」正文不写第二份数字;潜台词/说明文式台词等语义面属审片维度,待 G-10',
+        + '阈值现取 KB「对话铁律」正文不写第二份数字;经就绪检查、问题中心与审片报告消费——'
+        + '审片路径只读附本镜命中(独立字段,不并入 issues、不改三维/四维评分与达标线);'
+        + '潜台词/说明文式台词等语义面属审片维度,待 G-10',
     },
     {
       id: 'script.aiToneBan', sk: 'SK-10', name: '文案 AI 味硬禁与痕迹检出', stage: 'script',
@@ -520,9 +526,11 @@
     {
       id: 'subjects.refIntegrity', sk: 'SK-12', name: '分镜引用主体完备性校验', stage: 'subjects',
       covers: ['subjects', 'shots'], wave: 'W4', kinds: ['check'],
-      kb: ['主体参考'], checks: ['subjects.shotRefIntegrity'], cmds: ['episode.preflight'], gaps: ['S-03'],
+      kb: ['主体参考'], checks: ['subjects.shotRefIntegrity'],
+      cmds: ['episode.preflight', 'episode.smartReview'], gaps: ['S-03'],
       note: '主体按名查找(含多形态全称)与取图口径复用 Domain,不在本层再写一份;'
-        + '校验项经就绪检查(episode.preflight)双端消费,结论只报不拦;S-03 的一致性半由 SK-13 承接',
+        + '校验项经就绪检查(episode.preflight)双端消费,审片报告(episode.smartReview)只读附本镜命中'
+        + '(独立字段,不并入 issues、不改评分与达标线);结论只报不拦;S-03 的一致性半由 SK-13 承接',
     },
     {
       id: 'subjects.crossShot', sk: 'SK-13', name: '跨镜头主体一致性校验', stage: 'subjects',
@@ -571,12 +579,13 @@
       id: 'shots.sizeProgression', sk: 'SK-18', name: '景别递进与轴线校验', stage: 'shots',
       covers: ['shots', 'review'], wave: 'W4', kinds: ['check'],
       kb: ['景别运镜', '轴线匹配'], prompts: ['sb.reviewUser', 'review.system'], checks: ['shots.sizeLinkage'],
-      cmds: ['episode.smartReview', 'episode.preflight'],
+      cmds: ['episode.preflight'],
       experts: ['ex_dp'], gaps: ['G-10'],
       note: '景别衔接口诀另以文本形态落在 sb.reviewUser 评审指令里,校验面判据同出 KB「景别运镜」条目;'
       + '级差一律经 WfCore.sizeGap 取景别阶梯单源,本层不写第二份阶梯——落地面只判景别递进与跳切,'
       + '轴线面(越轴/匹配剪辑)的判定输入是机位方位,分镜字段无承载,仍归 G-10;'
-      + '经就绪检查与问题中心消费,结论只报不拦',
+      + '经就绪检查与问题中心消费,结论只报不拦——审片报告尚未消费本面'
+      + '(景别递进是跨镜判定,审片的镜级入口取不到相邻镜,判定输入未定),故不登记 episode.smartReview',
     },
     {
       id: 'shots.promptEightDim', sk: 'SK-19', name: '抽卡八维公式与军规注入', stage: 'shots',

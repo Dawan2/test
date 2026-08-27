@@ -89,6 +89,27 @@
     throw lastErr || new Error('视觉模型均不可用');
   }
 
+  /* ---- 镜级方法论校验命中(只读消费) ----
+   * 跑已落地的剧本面/主体面校验项(js/skills.js 的 Skills.check,纯本地零 LLM 零计费),
+   * 只取 hits 带本镜 shotId 的命中——集级结论(开篇钩子/打脸四步/整集字幕)归就绪检查与问题中心,本层不重复报。
+   * 结论只报不拦:作为报告的独立字段,既不并入 issues(不参与达标线/重抽/批量优化判定)、
+   * 不改三维评分与整集四维口径,也不进 Domain 阻塞项与发布门计数。 */
+  function shotChecks(p, s) {
+    if (!window.Skills || !p || !s) return [];
+    return Skills.check('script', { p, s }).concat(Skills.check('subjects', { p, s }))
+      .map(x => ({ id: x.id, skill: x.skill, level: x.level, hits: (x.hits || []).filter(h => h.shotId === s.id) }))
+      .filter(x => x.hits.length);
+  }
+  /* 命中展示文案:判据一律在校验项里,本层只把 hits 译成人话(不写第二份口径) */
+  const CHECK_TXT = {
+    'long-line': h => `台词单句 ${h.len} 字超上限:「${h.name}…」`,
+    'unknown-subject': h => `引用「${h.name}」在主体库解析不到`,
+    'no-ref-image': h => `主体「${h.name}」无真实参考图,生成时不进参考图组`,
+    'no-subject-ref': () => '本镜未引用任何主体,无形象锁定(易换脸)',
+  };
+  const checkLine = h => (CHECK_TXT[h.code] ? CHECK_TXT[h.code](h) : h.code + (h.name ? `「${h.name}」` : ''));
+  const checkName = c => (window.Skills && (Skills.byId(c.skill) || {}).name) || c.skill;
+
   /* ---- 本地模拟评审(回退) ---- */
   function localReview(p, ep, s) {
     let h = 0;
@@ -200,6 +221,8 @@
     report.videoInputHash = (s.video && s.video.inputHash) || '';
     report.videoUrl = (s.video && s.video.url) || '';
     report.reviewedAt = Date.now();
+    // 审片时的方法论校验命中(只读消费,LLM 与离线本地评审同附):独立字段,不并入 issues、不参与评分与达标线
+    report.checks = shotChecks(p, s);
     s.reviews.unshift(report);
     s.reviews = s.reviews.slice(0, 5);
     s.history = s.history || [];
@@ -246,7 +269,19 @@
           <td>${U.esc(it.suggestion)}</td></tr>`).join('')}
         </tbody>
       </table>` : '<div class="hint" style="margin-top:8px">✓ 未发现关键问题,该分镜质量达标。</div>'}
-    </div>`;
+    </div>
+    ${r.checks.length ? `
+    <div class="rv-issues" style="margin-top:14px">
+      <b>方法论校验命中</b><span class="small muted">(知识库判据本地校验,零积分;只提醒不拦生成,不计入上方评分)</span>
+      <table class="tbl" style="margin-top:8px">
+        <thead><tr><th style="width:180px">校验项</th><th style="width:70px">级别</th><th>命中</th></tr></thead>
+        <tbody>${r.checks.map(c => `<tr>
+          <td class="small">${U.esc(checkName(c))}</td>
+          <td><span class="tag ${c.level === 'fail' ? 'red' : 'yellow'}">${c.level === 'fail' ? '需修正' : '提醒'}</span></td>
+          <td class="small">${c.hits.map(h => U.esc(checkLine(h))).join(';')}</td></tr>`).join('')}
+        </tbody>
+      </table>
+    </div>` : ''}`;
   }
 
   /* 评审记录结构兜底:旧/外部数据可能缺 dimensions/issues 字段,读取处统一规整,防 undefined 崩溃 */
@@ -260,6 +295,7 @@
     return Object.assign({}, r, {
       score: +r.score || 0, dimensions: dims,
       issues: Array.isArray(r.issues) ? r.issues : [],
+      checks: Array.isArray(r.checks) ? r.checks : [], // 旧报告无校验命中字段:按空处理,不回补(不冒充当时的结论)
       time: r.time || '', model: r.model || '',
     });
   }
@@ -314,6 +350,8 @@
       ...DIMS.map(([k, name]) => `【${name} ${r.dimensions[k].score.toFixed(1)}】\n评语:${r.dimensions[k].comment}\n建议:${r.dimensions[k].suggestion}\n`),
       '关键问题定位:',
       ...(r.issues.length ? r.issues.map(it => `- [${it.timeRange}] ${it.type}\n  分析:${it.analysis}\n  建议:${it.suggestion}`) : ['无']),
+      '', '方法论校验命中(本地判据,只提醒不拦生成,不计入评分):',
+      ...(r.checks.length ? r.checks.map(c => `- ${checkName(c)}(${c.level})\n  ${c.hits.map(checkLine).join(';')}`) : ['无']),
     ].join('\n');
     U.downloadText(`审片报告_${p.name}_${ep.title}_镜头${s.order + 1}.txt`, lines);
     U.toast('报告已导出', 'success');
