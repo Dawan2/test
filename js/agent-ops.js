@@ -46,7 +46,7 @@
     '智能分镜': 'episode.generateStoryboard', '生成分镜': 'episode.generateStoryboard',
     'AI分镜师': 'episode.generateStoryboard', 'AI拆解': 'episode.generateStoryboard', '拆解文字分镜': 'episode.generateStoryboard',
     '生成视频': 'episode.generateVideos', '批量生成视频': 'episode.generateVideos',
-    '合成成片': 'episode.compose', '整集审片': 'episode.smartReview',
+    '合成成片': 'episode.compose', '整集审片': 'episode.smartReview', '审片修订': 'episode.smartReview', '重新审片': 'episode.smartReview',
     '一键成片': 'episode.produce', '本集理解': 'episode.understanding',
   };
   /* 动作协议文本(二十轮):由注册表自动生成注入 system prompt——协议宣称与可执行集合恒一致,
@@ -94,7 +94,7 @@
     else if (cmd === 'episode.compose') s = '成片已归档,可预览导出';
     else if (cmd === 'episode.smartReview') s = `达标 ${z.pass}·重抽 ${z.retry}·待人工 ${z.manual}`;
     else if (cmd === 'episode.generateStoryboard') s = `分镜 ${z.shots} 镜` + (z.plans ? `(${z.plans} 套候选方案待择优)` : '');
-    else if (cmd === 'episode.produce') s = '全流程完成:' + (z.steps || []).map(x => x.step + (x.ok ? '✓' : '✕')).join(' → ');
+    else if (cmd === 'episode.produce') s = '全流程完成:' + (z.steps || []).map(x => x.step + (x.ok ? '✓' : x.status === 'skipped' ? '⊘' : '✕')).join(' → ');
     else if (cmd === 'episode.understanding') s = '本集理解已更新';
     else s = '完成';
     s += (r.cost ? '(-' + r.cost + '积分)' : '');
