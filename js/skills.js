@@ -157,6 +157,109 @@
     return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
   };
 
+  /* ---- 主体面生成前置判定基面(SK-11/SK-13 的 G-06 校验半共用) ----
+   * 判定输入是该镜**真实的生成请求**:请求现取 Domain.buildVideoRequest(与真实发送、生成指纹同一构造点),
+   * 参考图组与取图优先级现取 Domain.shotRefImages/subjectRefImage,本层不写第二份装配与第二份取图。
+   * 提示词正文取 s.prompt 优先 s.plot(与请求装配同口径):两者都空即该镜还没有可判定的提示词,不产出结论。
+   * 与其余校验项同纪律:纯本地词法/计数,零 LLM 零计费,结论只到 warn——不进 blockers、不改发布门、不拦生成动作。 */
+  const shotsOf = o => (o.s ? [o.s] : ((o.ep && o.ep.shots) || []));
+  const promptOf = s => String(s.prompt || s.plot || '');
+  /* 引用名去重后逐个解析:回 [{name, full, r}],解析不到的名字略过(那是 SK-12 的完备性面) */
+  const refsOf = (p, s) => {
+    const out = [], seen = {};
+    [].concat(s.characters || [], s.scene ? [s.scene] : [], s.props || [])
+      .map(n => String(n === null || n === undefined ? '' : n).trim()).filter(Boolean)
+      .forEach(name => {
+        const r = Domain.findSubject(p, name);
+        if (!r) return;
+        const full = Domain.subjectFullName(r);
+        if (seen[full]) return;
+        seen[full] = 1;
+        out.push({ name, full, r });
+      });
+    return out;
+  };
+  /* 词表命中次数(逐词累加,用于"太碎"这类计数判据) */
+  const countOf = (t, words) => words.reduce((n, w) => {
+    let c = 0;
+    for (let i = t.indexOf(w); i >= 0; i = t.indexOf(w, i + w.length)) c++;
+    return n + c;
+  }, 0);
+
+  /* SK-11 主体参考纪律生成前置校验(G-06 校验半的主体参考面):逐镜看真实生成请求的参考图组守不守条目纪律。
+   *   ref-person-overflow 该镜进参考图组的人物主体超过条目上限 → warn
+   *                       (条目②「参考人物≤4,越多越易识别模糊」;上限现取条目正文,本层不写第二份数字)
+   *   ref-cap-dropped     该主体有真实图却没进参考图组(被 5 张上限挤出)→ warn(这一镜拿不到它的参考)
+   *   ref-sheet-fallback  人物主体没有视频参考大头照,喂进去的是白底三视图权威图 → warn
+   *                       (条目③「人物参考用大头照+全身照,不要用三视图/多视图,模型会误判为多个主体」;
+   *                        取图优先级里大头照本就排在权威图之前,补出 s.imgRef 后本命中自动消失)
+   * 引用名解析不到、主体全程无图归 SK-12,跨镜锁不一致归 SK-13,本项只报这一镜的参考纪律;
+   * 一律 warn:参考纪律影响的是抽卡命中率而非"必然拿不到参考",fail 仍只留给完备性面。 */
+  const REF_PERSON_MAX = +((String(KB.section('主体参考') || '').match(/参考人物≤(\d+)/) || [])[1] || 0) || 4;
+  CHECKS['subjects.genRefDiscipline'] = function (obj) {
+    const o = obj || {};
+    const p = o.p;
+    const shots = shotsOf(o);
+    if (!p || !shots.length) return { pass: true, level: 'info', hits: [] };
+    const hits = [];
+    shots.forEach(s => {
+      const order = (+s.order || 0) + 1;
+      const fed = {}; // 本镜真实进了参考图组的全称 → 图 url
+      Domain.shotRefImages(p, s).refImages.forEach(x => { fed[x.name] = x.url; });
+      let persons = 0;
+      refsOf(p, s).forEach(({ full, r }) => {
+        const img = Domain.subjectRefImage(r);
+        if (!img) return; // 主体全程无真实图:SK-12 已如实报缺图,本项不重复
+        if (!fed[full]) { hits.push({ code: 'ref-cap-dropped', shotId: s.id, order, name: full, limit: Object.keys(fed).length }); return; }
+        if (r.s.kind !== 'character') return;
+        persons++;
+        if (img === r.s.image && img !== r.s.imgRef) hits.push({ code: 'ref-sheet-fallback', shotId: s.id, order, name: full, limit: 0 });
+      });
+      if (persons > REF_PERSON_MAX) hits.push({ code: 'ref-person-overflow', shotId: s.id, order, name: '', limit: REF_PERSON_MAX, count: persons });
+    });
+    return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
+  };
+
+  /* SK-13 多镜头写法生成前置校验(G-06 校验半的多镜头写法面):逐镜看送出去的提示词守不守条目三条写法纪律。
+   *   img2ref-decl-missing 送了图(图生视频:输入图或参考图组)却在提示词里找不到"基于参考图保持一致"的声明 → warn
+   *                        (条目「图生视频须声明…」;有主体参考图组时该声明由请求装配自带,故只在无主体参考的镜上命中)
+   *   frames-motion-overrun 首尾帧策略的镜写了大幅动作 → warn(条目「首尾帧策略时动作幅度收敛,保证两端画面可插值」)
+   *   shot-flow-fragmented  一镜提示词里镜头切换信号过多 → warn(条目「按时间顺序描述镜头流,不要太碎」)
+   * 声明的判定字面取自条目那句"须声明"的原话(真实请求里这句由主体定义后缀给出,措辞不同但同一条纪律),
+   * 条目改写到关键词不在了判据自然退空——不拿失配的字面制造假命中。 */
+  const MULTI_DECL = (String(KB.section('多镜头写法') || '').match(/须声明"([^"]*)"/) || [])[1] || '';
+  const DECL_WORDS = ['参考图', '一致'].filter(w => MULTI_DECL.indexOf(w) >= 0);
+  /* 大幅动作词:首尾帧两端画面插不出来的那一类动作(位移大、姿态变化剧烈) */
+  const BIG_MOTION = ['奔跑', '狂奔', '飞奔', '疾驰', '追逐', '打斗', '厮打', '翻滚', '跳跃', '跃起',
+    '摔倒', '扑倒', '坠落', '爆炸', '冲刺', '急转', '挥拳', '旋转'];
+  /* 镜头切换信号:一镜之内出现多次即是把好几个镜头挤进一条提示词 */
+  const CUT_SIGNALS = ['切至', '切到', '切换', '快切', '转场', '闪回', '画面一转', '镜头一转'];
+  const CUT_MAX = 2;
+  CHECKS['subjects.multiShotPrompt'] = function (obj) {
+    const o = obj || {};
+    const p = o.p;
+    const shots = shotsOf(o);
+    if (!p || !shots.length) return { pass: true, level: 'info', hits: [] };
+    const hits = [];
+    shots.forEach(s => {
+      const base = promptOf(s);
+      if (!base) return; // 提示词还没写,无判定输入
+      let q;
+      try { q = Domain.buildVideoRequest(p, o.ep, s); } catch (_) { return; } // 数据残缺装不出请求即无判定输入
+      const at = { shotId: s.id, order: (+s.order || 0) + 1 };
+      const push = (code, name, extra) => hits.push(Object.assign({ code }, at, { name }, extra || {}));
+      if (DECL_WORDS.length && (q.image || q.lastFrame || (q.refImages || []).length)
+        && !DECL_WORDS.every(w => String(q.prompt || '').indexOf(w) >= 0)) push('img2ref-decl-missing', '');
+      if (q.strategy === 'frames') {
+        const m = firstOf(base, BIG_MOTION);
+        if (m.at >= 0) push('frames-motion-overrun', m.word);
+      }
+      const cuts = countOf(base, CUT_SIGNALS);
+      if (cuts > CUT_MAX) push('shot-flow-fragmented', '', { count: cuts, limit: CUT_MAX });
+    });
+    return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
+  };
+
   /* SK-12 分镜引用主体完备性(S-03 的完备性半):逐镜看 characters/scene/props 的引用名能否落到主体库,
    * 落到的主体(含形态)有没有可喂模型的真实参考图。主体按名查找与取图优先级一律走 Domain
    * (findSubject 含多形态全称与曾用名兜底;subjectRefImage 与真实生成请求同一取图口径),本层不写第二份。
@@ -518,14 +621,15 @@
     /* ---- 主体 ---- */
     {
       id: 'subjects.refDiscipline', sk: 'SK-11', name: '主体参考纪律注入与生成前置校验', stage: 'subjects',
-      covers: ['subjects', 'gen'], wave: 'W4', kinds: ['inject', 'check'], pending: ['check'],
-      kb: ['主体参考'], settings: ['tplImage'],
+      covers: ['subjects', 'gen'], wave: 'W4', kinds: ['inject', 'check'],
+      kb: ['主体参考'], settings: ['tplImage'], checks: ['subjects.genRefDiscipline'],
       cmds: ['episode.preflight', 'shot.generateVideo', 'subject.generateImage'],
-      gaps: ['G-06', 'G-13'],
+      gaps: ['G-13'],
       note: '注入面落在主体步系统人设 WfCore.extractSystem(浏览器解析向导与 /api/wf/extract-subjects 同一份),'
         + '本条拼块即该条目正文;人设句入注册表待 G-13。'
         + '生成请求构造点(Domain.buildVideoRequest)不注方法论文本,生成指纹口径不动;'
-        + 'gaps 的 G-06 记的是本条尚未落地的校验半(生成前置 warn)',
+        + '校验半判定输入就是那份请求的参考图组(人物数上限、被上限挤出、三视图当视频参考),'
+        + '经就绪检查双端消费,结论只报不拦、不改生成动作',
     },
     {
       id: 'subjects.refIntegrity', sk: 'SK-12', name: '分镜引用主体完备性校验', stage: 'subjects',
@@ -539,11 +643,13 @@
     {
       id: 'subjects.crossShot', sk: 'SK-13', name: '跨镜头主体一致性校验', stage: 'subjects',
       covers: ['subjects', 'gen'], wave: 'W4', kinds: ['check'],
-      kb: ['多镜头写法', '主体参考'], checks: ['subjects.crossShotConsistency'],
-      cmds: ['episode.preflight'], gaps: ['G-06', 'S-03'],
+      kb: ['多镜头写法', '主体参考'], checks: ['subjects.crossShotConsistency', 'subjects.multiShotPrompt'],
+      cmds: ['episode.preflight'], gaps: ['S-03'],
       note: '与 SK-12 成对闭合 S-03:完备性看单镜引用能否落到主体,一致性看同一主体跨镜锁得一不一致;'
-        + '每镜实际参考图现取 Domain.shotRefImages(与真实生成请求同一份构造,含参考图组上限);'
-        + '经就绪检查与问题中心消费,结论只报不拦;生成前置消费点待 G-06',
+        + '每镜实际参考图现取 Domain.shotRefImages(与真实生成请求同一份构造,含参考图组上限)。'
+        + '「多镜头写法」的校验面是第二条实现(G-06 校验半):逐镜看送出去的提示词有无图生视频一致性声明、'
+        + '首尾帧镜有无大幅动作、一镜里镜头切换是不是太碎。两条都经就绪检查(生成前置)双端消费,结论只报不拦;'
+        + '批量/单镜生成动作里不加拦截也不加弹窗(要不要拦生成的产品口径未定),故 cmds 不挂那两个命令面',
     },
     /* ---- 分集 ---- */
     {
@@ -619,8 +725,9 @@
         + '模型未给 prompt 的兜底、本地拼装出口 SB.buildShotPrompt),模板为空时输出逐字节不变;'
         + '方法论半按键整条注入提示词改写人设 WfCore.genPromptSystem——本条拼块即那两条条目正文,'
         + '生成请求构造点(Domain.buildVideoRequest)不注方法论文本,生成指纹口径不动;'
-        + 'G-06 的注入半到此闭合(多镜头写法进 SK-17 拆镜人设、主体参考进 SK-11 主体人设),'
-        + '其校验半(生成前置 warn)仍挂 SK-11/SK-13;模块内联提示词入注册表的覆盖面待 G-13',
+        + 'G-06 的注入半在此闭合(多镜头写法进 SK-17 拆镜人设、主体参考进 SK-11 主体人设),'
+        + '校验半(生成前置 warn)由 SK-11/SK-13 的校验项承接,G-06 两半到此清账;'
+        + '模块内联提示词入注册表的覆盖面待 G-13',
     },
     {
       id: 'gen.renderCredential', sk: 'SK-22', name: '生成凭据与确认失效校验', stage: 'gen', wave: 'W4',
