@@ -5278,7 +5278,10 @@ const skillsTests = [
     const block = asrc.slice(asrc.indexOf('const AGENT_BOARDS'), asrc.indexOf('window.AGENT_BOARDS'));
     const keys = [...block.matchAll(/key: '([^']+)'/g)].map(m => m[1]);
     assertEq(keys.filter(k => names.includes(k)).join(','), names.join(','), '看板的主线板块键应与 STAGES 七步名逐字同序');
-    assert(keys.some(k => !names.includes(k)), '看板另有支线板块(本项判定范围窄于看板软闸门,如实记在条目 note 里)');
+    /* 支线板块清单钉死:看板加板块时本条先红,提醒同步条目 note 里那句判定范围(否则 note 会静默失真) */
+    assertEq(keys.filter(k => !names.includes(k)).join(','), '导演', '看板现有一个支线板块,条目 note 须与此一致');
+    assertEq(DomainMod.workflow(dcP(), true).steps.map(s => s.key).filter(k => !Skills.STAGES.some(x => x.key === k)).join(','),
+      'prod,director,shell,clips', 'Domain.workflow 的四个支线步同样不在主线契约链上');
     keys.filter(k => !names.includes(k)).forEach(k => {
       const p = dcP(); p.boards[k] = { stage: '已定稿' };
       assertEq(dcOf(p).hits.length, 0, '支线板块不在主线契约链上,不判:' + k);
