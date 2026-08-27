@@ -36,6 +36,7 @@ const TOOLS = [
   { name: 'hujing_projects', description: '项目列表(进度摘要)', inputSchema: obj({}), build: () => ['projects'] },
   { name: 'hujing_project_show', description: '项目详情(主体/分集/逐镜状态统计)', inputSchema: obj({ pid: pidEp.pid }, ['pid']), build: i => ['project-show', i.pid] },
   { name: 'hujing_workflow', description: '统一工作流状态:主线各阶段完成度与下一步推荐(Domain 单源推导,与 UI/Agent 同口径)', inputSchema: obj({ pid: pidEp.pid, epid: Object.assign({}, S, { description: '分集 id(缺省为项目级)' }) }, ['pid']), build: i => ['workflow', i.pid].concat(i.epid ? [i.epid] : []) },
+  { name: 'hujing_issues', description: '问题中心:全项目待处理问题聚合(失败镜/过期/未分镜/缺剧本/低分审片/待确认/成片过期/主体缺图 + 方法论低危提醒),与浏览器 🩺 问题中心同一份双端投影(js/issues.js),高/中危就是发布门 G2 数的那一批。只读:零 LLM、零计费,只列不处置(处置各走对应的 hujing_exec 领域命令)', inputSchema: obj({ pid: pidEp.pid, sev: Object.assign({}, S, { description: '只看某一档:high / mid / low(缺省全部)' }), kind: Object.assign({}, S, { description: '只看某一类,如 failed-shots / no-script / script-craft(缺省全部)' }) }, ['pid']), build: i => ['issues', i.pid].concat(i.sev ? ['--sev', i.sev] : [], i.kind ? ['--kind', i.kind] : []) },
   { name: 'hujing_project_create', description: '新建项目(可选导入剧本文件)', inputSchema: obj({ name: Object.assign({}, S, { description: '剧名' }), style: Object.assign({}, S, { description: '风格,如 漫剧/真人短剧' }), scriptFile: Object.assign({}, S, { description: '剧本文本文件路径' }) }, ['name']), build: i => ['project-create', '--name', i.name].concat(i.style ? ['--style', i.style] : [], i.scriptFile ? ['--script-file', i.scriptFile] : []) },
   { name: 'hujing_project_script', description: '写入项目剧本原文(≤20 万字;拆集与主体提取的输入)', inputSchema: obj({ pid: pidEp.pid, scriptFile: Object.assign({}, S, { description: '剧本文本文件路径' }) }, ['pid', 'scriptFile']), build: i => ['project-script', i.pid, '--script-file', i.scriptFile] },
   { name: 'hujing_split_episodes', description: '剧本拆集(服务端工作流):整部剧本按集/章标记切分(零 LLM)或 LLM 锚点分集(正文逐字切原文);已有分集需 overwrite=true 授权覆盖,local=true 强制段落均分(零计费)', inputSchema: obj({ pid: pidEp.pid, overwrite: Object.assign({}, B, { description: '授权覆盖现有分集(含其分镜数据)' }), local: Object.assign({}, B, { description: '强制本地按段落均分,不调 LLM' }) }, ['pid']), cmd: 'project.splitEpisodes', build: i => ['exec', 'project.splitEpisodes', '--args', JSON.stringify({ pid: i.pid, overwrite: !!i.overwrite, local: !!i.local })] },
@@ -105,6 +106,7 @@ const RESOURCES = [
 const RESOURCE_TEMPLATES = [
   { uriTemplate: 'hujing://project/{pid}/show', name: '项目详情', description: '主体/分集/逐镜状态统计,同 hujing_project_show 工具', mimeType: 'application/json' },
   { uriTemplate: 'hujing://project/{pid}/workflow', name: '项目工作流状态', description: '主线各阶段完成度与下一步推荐(项目级),同 hujing_workflow 工具', mimeType: 'application/json' },
+  { uriTemplate: 'hujing://project/{pid}/issues', name: '项目问题清单', description: '全项目待处理问题聚合(高/中危即发布门 G2 计数,低危为方法论提醒),同 hujing_issues 工具', mimeType: 'application/json' },
   { uriTemplate: 'hujing://project/{pid}/episode/{epid}/workflow', name: '分集工作流状态', description: '分集级阶段完成度与下一步推荐,同 hujing_workflow 工具', mimeType: 'application/json' },
 ];
 /* URI → cli argv;不匹配返回 null */
@@ -116,6 +118,8 @@ function resourceArgv(uri) {
   if (m) return ['project-show', decodeURIComponent(m[1])];
   m = u.match(/^hujing:\/\/project\/([^/]+)\/workflow$/);
   if (m) return ['workflow', decodeURIComponent(m[1])];
+  m = u.match(/^hujing:\/\/project\/([^/]+)\/issues$/);
+  if (m) return ['issues', decodeURIComponent(m[1])];
   m = u.match(/^hujing:\/\/project\/([^/]+)\/episode\/([^/]+)\/workflow$/);
   if (m) return ['workflow', decodeURIComponent(m[1]), decodeURIComponent(m[2])];
   return null;
