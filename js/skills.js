@@ -989,17 +989,23 @@
         + '三张词表与每千字上限一律现取该条目正文,校验层不写第二份词表,注入与校验两面同一份判据;'
         + '两处载体与 SK-09 同(剧本正文引号台词与分镜 s.dialogue),'
         + '经就绪检查、问题中心与审片报告消费,审片路径只读附本镜命中(独立字段,不并入 issues、不改评分与达标线);'
-        + '有没有人味、像不像这个人物说的话属语义面,待 G-10;人设句入注册表待 G-13',
+        + '有没有人味、像不像这个人物说的话属语义面,待 G-10;'
+        + '本条注入走板块方法论通道、没有专属人设句,'
+        + '仍欠 G-13 的是剧本模块几处内联提示词(解说体改写、导演阐述、光影总控、剧本围读)未进注册表——'
+        + '那几步既取不到本条目正文,用户也覆盖不到',
     },
     /* ---- 主体 ---- */
     {
       id: 'subjects.refDiscipline', sk: 'SK-11', name: '主体参考纪律注入与生成前置校验', stage: 'subjects',
       covers: ['subjects', 'gen'], wave: 'W4', kinds: ['inject', 'check'],
-      kb: ['主体参考'], settings: ['tplImage'], checks: ['subjects.genRefDiscipline'],
+      kb: ['主体参考'], prompts: ['extract.system'], settings: ['tplImage'], checks: ['subjects.genRefDiscipline'],
       cmds: ['episode.preflight', 'shot.generateVideo', 'subject.generateImage'],
       gaps: ['G-13'],
       note: '注入面落在主体步系统人设 WfCore.extractSystem(浏览器解析向导与 /api/wf/extract-subjects 同一份),'
-        + '本条拼块即该条目正文;人设句入注册表待 G-13。'
+        + '本条拼块即该条目正文;人设句已在注册表(extract.system,装配口收覆盖表参数),'
+        + '故注入面两半——人设句与方法论正文——都在单源之内、用户都改得到。'
+        + '仍欠 G-13 的是本条另一登记键 tplImage 的取用点:八维度重写文生图提示词那步的人设仍内联在 js/persona.js,'
+        + '不在注册表也就覆盖不到(与其余模块内联提示词同批处置)。'
         + '生成请求构造点(Domain.buildVideoRequest)不注方法论文本,生成指纹口径不动;'
         + '校验半判定输入就是那份请求的参考图组(人物数上限、被上限挤出、三视图当视频参考),'
         + '经就绪检查双端消费,结论只报不拦、不改生成动作',

@@ -5552,7 +5552,9 @@ const skillsTests = [
     const sk11 = Skills.byId('subjects.refDiscipline');
     assertEq(sk11.pending.length, 0, 'SK-11 校验面已落地,pending 应清空');
     assertEq(sk11.checks.join(','), 'subjects.genRefDiscipline');
-    assertEq(sk11.gaps.join(','), 'G-13', 'G-06 的校验半落地后本条只剩人设句入注册表那一项');
+    // G-06 清账后本条只剩 G-13 那一项;它现在指的是 tplImage 取用点那处内联人设(人设句自 W45 已在注册表),
+    // 记账串与余量实况由「SK-10/SK-11 的旧账按实况改写」那条用例逐项钉住
+    assertEq(sk11.gaps.join(','), 'G-13', 'G-06 的校验半落地后本条只剩 G-13 那一项');
     const sk13 = Skills.byId('subjects.crossShot');
     assertEq(sk13.checks.join(','), 'subjects.crossShotConsistency,subjects.multiShotPrompt', 'SK-13 承接一致性与多镜头写法两条实现');
     assertEq(sk13.gaps.join(','), 'S-03');
@@ -6571,6 +6573,44 @@ const skillsTests = [
     assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 仍只数高/中危');
     assert(rsrc.includes("if (fails > 0) overall = 'fail'"), '发布门 overall 计数口径逐字未动');
     assert(!/lastReview\.checks|report\.checks/.test(rsrc), '发布门不读审片报告的校验命中字段');
+  } },
+  { name: '记账对齐:SK-10/SK-11 的「人设句入注册表待 G-13」旧账按实况改写(人设已在表,仍欠段只写真正还在的)', fn() {
+    const W = require('../js/wf-core.js');
+    const P = require('../js/prompts.js');
+    const keys = P.list().map(x => x.key);
+    const sk11 = Skills.byId('subjects.refDiscipline'), sk10 = Skills.byId('script.aiToneBan');
+    /* 实况一:SK-11 注入落点的人设句确实在注册表,且用户覆盖真到得了那一步(不是"进了表但取值口没接") */
+    assert(keys.includes('extract.system'), '主体步人设句应在注册表里(旧账说它还没进表,先钉实况)');
+    assertEq(W.extractSystem({ 'extract.system': 'X。' }).slice(0, 2), 'X。', '装配口应真收覆盖表参数(覆盖到不了就不能记成已在注册表)');
+    assert(sk11.prompts.includes('extract.system'), 'SK-11 应登记自己注入落点的提示词键(与 SK-17/SK-21 同口径)');
+    /* 记账串:旧账不许回来(变异位),新账须写明人设句已在表 */
+    [sk11, sk10].forEach(s => assert(!/人设句入注册表待 G-13/.test(s.note),
+      s.id + ' 的 note 不得再写「人设句入注册表待 G-13」——那句人设已在注册表'));
+    assert(/人设句已在注册表\(extract\.system/.test(sk11.note), 'SK-11 的 note 须写明人设句已在注册表 extract.system');
+    assert(/没有专属人设句/.test(sk10.note), 'SK-10 的 note 须写明本条注入走板块方法论通道、没有专属人设句');
+    /* 仍欠段只认「仍欠」之后那段(写在"已落地"那半里不算交账),且点名的余量必须真的还在 */
+    const owedOf = note => (note || '').split('仍欠').slice(1).join('仍欠');
+    const owed11 = owedOf(sk11.note);
+    assert(owed11.includes('tplImage') && owed11.includes('js/persona.js'), 'SK-11 的仍欠段须点名 tplImage 取用点那处内联人设');
+    const psrc = fs.readFileSync(path.join(ROOT, 'js', 'persona.js'), 'utf8');
+    const rw = psrc.slice(psrc.indexOf('async function rewritePrompt('), psrc.indexOf('/* 八维度编辑弹窗 */'));
+    assert(rw.includes('tplImage') && rw.includes("system: '你是文生图提示词专家。'") && !rw.includes('Prompts.get('),
+      'js/persona.js 的文生图重写步应仍是内联人设(收编进注册表了就要同步改 SK-11 的仍欠段)');
+    assertEq(P.list().filter(x => x.def === '你是文生图提示词专家。').length, 0, '该人设句应仍不在注册表(进表了本条就不欠这一处)');
+    const owed10 = owedOf(sk10.note);
+    const esrc = fs.readFileSync(path.join(ROOT, 'js', 'episodes.js'), 'utf8');
+    [['解说体改写', '你是资深短剧解说编剧'], ['导演阐述', '你是资深短剧/漫剧导演'],
+      ['光影总控', '你是影视摄影指导(DP)'], ['剧本围读', '你是短剧导演组的剧本围读会'],
+    ].forEach(([label, persona]) => {
+      assert(owed10.includes(label), 'SK-10 的仍欠段须点名剧本模块仍内联的那几步:' + label);
+      assert(esrc.includes("system: '" + persona), 'js/episodes.js 该步应仍是内联人设(收编了就要同步改 SK-10 的仍欠段):' + persona);
+      assertEq(P.list().filter(x => x.def.startsWith(persona)).length, 0, '该人设句应仍不在注册表:' + persona);
+    });
+    /* G-13 本身未闭合(内联提示词大头仍在),故关联索引一个不摘:改 note 动不到 gaps() 投影 */
+    assertEq((Skills.gaps()['G-13'] || []).join(','),
+      'script.hookType,script.aiToneBan,subjects.refDiscipline,eps.structureStage,gen.videoTpl,film.rhythmInject',
+      '改 note 不动 gaps() 投影(缺口标记按关联索引口径保留)');
+    assertEq(Skills.validate({ Prompts: P, KB: require('../js/knowledge.js') }).join(';'), '', '新登记的提示词键须通过引用自检');
   } },
   { name: 'infra 余量:审片侧三步接上人设/记忆通道(模板唯一装配口,缺省无雇佣时逐字节不变)', fn() {
     const W = require('../js/wf-core.js');
