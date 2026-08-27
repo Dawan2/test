@@ -4803,6 +4803,61 @@ const contractTests = [
       'G-13 的六条关联索引逐字节不变(只收一面不摘标记)');
     assertEq(Skills.validate({ Prompts }).join(' | '), '', '新键须被 skill 索引引用且引用键都存在');
   } },
+  { name: '拉片建集人设:经 Prompts.get(rip.system) 取值,缺省逐字节等于收编前的内联字面、覆盖只换这一键', fn() {
+    const Prompts = require('../js/prompts.js');
+    const SYS = '你是短剧拉片分析师。根据用户给的单镜头关键帧与时段,输出该镜头的结构化描述。';
+    assertEq(Prompts.get('rip.system'), SYS, '缺省人设句应与收编前的内联字面逐字节相同');
+    const it = Prompts.list().find(x => x.key === 'rip.system');
+    assert(it && !it.vars.length && it.name.startsWith('拉片建集') && it.name.includes('系统人设'),
+      '注册表应登记拉片建集条目(无变量,可在全局默认值页在线改写)');
+    assertEq(Prompts.list().filter(x => x.def === SYS).length, 1, '该步 system 应恰好命中注册表一条(同 def 开两个键即红)');
+    /* 不与既有人设复用:拉片分析师这一句与在表的每一条都不同字面,谈不上并键 */
+    ['split.system', 'und.system', 'sb.system', 'extract.system'].forEach(k =>
+      assert(Prompts.get(k) !== SYS, '拉片人设不得与既有键 ' + k + ' 同字面'));
+    /* 覆盖只换这一键:同为建分集入口的 split.system 逐字节不动(串台即红) */
+    const OV = { 'rip.system': '你是参考片拆解分析师(覆盖生效)。' };
+    assertEq(Prompts.get('rip.system', OV), '你是参考片拆解分析师(覆盖生效)。', '覆盖 rip.system 时该步取值跟随');
+    assertEq(Prompts.get('split.system', OV), '你是专业的短剧策划编辑。', '覆盖 rip.system 不应动到剧本拆集那一键');
+    assertEq(Prompts.get('rip.system', { 'split.system': '拆集编辑。' }), SYS, '覆盖 split.system 时拉片那一键逐字节不动');
+    /* 展示顺序:建分集两条入口相邻(剧本拆集 → 拉片建集),后续槽插到中间即红 */
+    const keys = Prompts.list().map(x => x.key);
+    assertEq(keys[keys.indexOf('split.system') + 1], 'rip.system', '拉片建集应紧跟剧本拆集登记(建分集两条入口相邻)');
+    /* 只收人设句:该步返回 JSON 的字段契约仍留在 user 半,不做成可覆盖变量 */
+    ['"shot_desc"', '"dialogue_text"', '"mood"'].forEach(f =>
+      assertEq(Prompts.list().filter(x => x.def.includes(f)).length, 0, '返回 JSON 契约不进注册表:' + f));
+  } },
+  { name: '拉片建集人设(源级):js/proj-upload.js 零内联、取值口与该步 user 半配对,全仓持有者名单只剩注册表', fn() {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'proj-upload.js'), 'utf8');
+    const ANCHOR = '这是参考视频第';
+    assert(/system: Prompts\.get\('rip\.system'\),[\s\S]{0,600}这是参考视频第/.test(src),
+      'rip.system 应就在拉片逐段画面理解那步的取值口上,且与该步 user 半锚点配对(键换位置即红)');
+    assert(!/Prompts\.get\('rip\.system', *\{/.test(src), '取值口不得传空覆盖表(进表了但用户改不到)');
+    // W76 点名的这一处是本文件最后一处内联人设:收编后该文件的内联人设计数归零
+    assertEq((src.match(/system: '你是/g) || []).length, 0, 'js/proj-upload.js 不应再有内联人设字面(W76 点名的那一处至此归零)');
+    /* 全仓持有者名单:这句字面扫一遍全仓,恰好只剩 js/prompts.js —— 谁在别处抄第二份(哪怕原文件仍走注册表)当场红 */
+    const holders = f => ['server.js', 'cli.js', 'mcp.js', 'index.html']
+      .concat(fs.readdirSync(path.join(ROOT, 'js')).filter(n => n.endsWith('.js')).map(n => 'js/' + n))
+      .filter(rel => fs.readFileSync(path.join(ROOT, rel), 'utf8').includes(f)).sort();
+    assertEq(holders(Prompts.get('rip.system')).join(','), 'js/prompts.js',
+      'rip.system 的人设句字面应只剩注册表一份(全仓持有者名单逐字节比对)');
+    /* 纯浏览器链路:拉片建集没有服务端/CLI 对端,那两处不得长出第二份 user 半 */
+    ['server.js', 'cli.js', 'mcp.js'].forEach(rel =>
+      assert(!fs.readFileSync(path.join(ROOT, rel), 'utf8').includes(ANCHOR),
+        rel + ' 不应出现拉片那一步的 user 半(该步只在浏览器链路上)'));
+    /* 记账:键登记在 SK-03(人设通道的记账宿主),note 按实况点名取值口 */
+    const sk3 = Skills.byId('core.personaCtx');
+    assert(sk3.prompts.includes('rip.system'), 'SK-03 应登记 rip.system');
+    assert(sk3.note.includes('rip.system') && sk3.note.includes('js/proj-upload.js'),
+      'SK-03 的 note 须写明这一键与它的取值口所在文件');
+    /* G-13 没闭合:按关联索引口径一个标记不摘,投影逐字节不变 */
+    const g = Skills.gaps();
+    assertEq(Object.keys(g).length, 20, '缺口投影键数应不变');
+    assertEq(g['G-13'].join(','), 'script.hookType,script.aiToneBan,subjects.refDiscipline,eps.structureStage,gen.videoTpl,film.rhythmInject',
+      'G-13 的六条关联索引逐字节不变(只收一处不摘标记)');
+    assertEq(Skills.validate({ Prompts }).join(' | '), '', '新键须被 skill 索引引用且引用键都存在');
+  } },
   { name: 'Agent 单轮人设:经 WfCore.buildAgentSystem(agent.system) 取值,缺省逐字节等于收编前的模板串', fn() {
     const Prompts = require('../js/prompts.js');
     const Skills = require('../js/skills.js');

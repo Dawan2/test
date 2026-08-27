@@ -419,7 +419,7 @@
               try {
                 const dataUrl = await toDataURL(rows[i].frame);
                 const out = await API.chatJSON({
-                  system: '你是短剧拉片分析师。根据用户给的单镜头关键帧与时段,输出该镜头的结构化描述。',
+                  system: Prompts.get('rip.system'), // 人设走注册表单源(js/prompts.js),浏览器隐式读全局默认值页的覆盖表
                   messages: [{ role: 'user', content: [
                     { type: 'text', text: `这是参考视频第 ${i + 1} 个场景段(${rows[i].start.toFixed(1)}s 起,约 ${rows[i].dur.toFixed(1)}s)的关键帧。输出 JSON:{"shot_desc":"画面内容≤40字","camera":"推测机位/运镜(如 固定镜头/推镜头/手持跟拍)","scene":"场景名","characters":["画面人物外观特征,无则空数组"],"dialogue_text":"画面可见台词/字幕,无则空串","mood":"情绪基调≤8字"}` },
                     { type: 'image_url', image_url: { url: dataUrl } },
