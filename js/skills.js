@@ -906,12 +906,28 @@
     },
     {
       id: 'core.playbookProjection', sk: 'SK-05', name: 'playbook 由注册表投影', stage: CROSS, wave: 'W4',
-      kinds: ['orchestrate'], pending: ['orchestrate'],
-      cmds: ['episode.preflight', 'episode.generateStoryboard', 'episode.generateVideos', 'shot.generateVideo',
-        'episode.smartReview', 'episode.compose', 'episode.produce', 'episode.understanding',
-        'subject.generateImage', 'project.extractSubjects', 'project.splitEpisodes'],
+      kinds: ['orchestrate'],
+      steps: [
+        { cmd: 'project.extractSubjects', args: {}, note: '提取主体:整部剧本先立主体库,下游每镜才锁得住参考' },
+        { cmd: 'subject.generateImage', args: {}, note: '主体生图:缺参考图的主体补齐真实图,主体步才算齐备' },
+        { cmd: 'project.splitEpisodes', args: {}, note: '剧本拆集:整本切成分集,拿到集 id 后转入集内各步' },
+        { cmd: 'episode.understanding', args: {}, note: '本集理解:先出人物/情绪/场景口径' },
+        { cmd: 'episode.generateStoryboard', args: {}, note: '智能分镜:按理解口径拆镜' },
+        { cmd: 'episode.preflight', args: {}, note: '就绪检查:出片前把各面校验结论过一遍(零 LLM 零计费,只报不拦)' },
+        { cmd: 'episode.generateVideos', args: {}, note: '批量生成:整集出片,未确认镜如实跳过' },
+        { cmd: 'episode.smartReview', args: {}, note: '智能审片:逐镜评审 + 共性汇总 + 四维成片评审' },
+        { cmd: 'episode.compose', args: {}, note: '合成成片:拼接并写回软字幕' },
+      ],
       gaps: ['G-12'],
-      note: '本条登记命令全面;编排型条目的步骤投影出口 Skills.playbooks(),计划步骤改由投影生成待 G-12',
+      note: '编排型条目的步骤投影出口 Skills.playbooks();本条自己的 steps 是主线全链投影——'
+        + '按 Domain.workflow 的主线步序(主体→分集→分镜→生成→审片→成片)把已注册领域命令串成一条端到端步骤表,'
+        + 'SK-16 前段四步是它的前段子序列,SK-25/SK-30 各持审片修订与一键成片两段;cmds 由 steps 推出不写第二份。'
+        + 'args 一律留空:授权位(拆集 overwrite、批量生成 confirmAll、合成放行 riskyCompose)与'
+        + '模式位(拆集 local、提取 mode、子集 shotIds/subjectIds)属调用方决策,编排层只给步序不预设授权。'
+        + '两条命令有意不进本链:shot.generateVideo 是断点补拍不是主线一步(登记在 SK-11/SK-21/SK-22),'
+        + 'episode.produce 是生成→审片→合成三步的聚合(登记在 SK-29/SK-30),与本链并列而非串进本链——'
+        + '故本条不再手写全量 cmds,全部领域命令仍被索引覆盖由契约断言反查。'
+        + 'G-12 仍挂账:计划步骤(js/plans.js fromWorkflow)改由本投影生成、MCP 流程模板补主线中段两处都未动',
     },
     /* ---- 剧本 ---- */
     {
