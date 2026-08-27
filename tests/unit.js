@@ -4877,8 +4877,10 @@ const assertIssuesProjection = (stage, kind, skill, level) => {
   assertEq(row.sev, 'low', kind + ' 须挂低危(发布门 G2 只数高/中危)');
   assertEq(row.level, level, kind + ' 的挂载级别应是 ' + level);
   const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
-  assertEq((isrc.match(/\.check\(r\.stage, obj, ck\)/g) || []).length, 1, '问题中心应只此一处按投影表取校验项结论');
-  assert(!/Skills\.check\('/.test(isrc), '投影表收口后不得再出现逐面写死的 Skills.check(<面名>');
+  const body = isrc.slice(isrc.indexOf('function (Domain, skills)'));
+  assertEq((body.match(/\.check\(/g) || []).length, 1, '问题中心应只此一处取校验项结论(绕开投影表的第二处取值点即红)');
+  assertEq((body.match(/\.check\(r\.stage, obj, ck\)/g) || []).length, 1, '那一处必须是按投影表的 stage 跑');
+  assert(!/\.check\('/.test(body), '投影表收口后不得再出现逐面写死的 check(<面名>');
 };
 
 const skillsTests = [
