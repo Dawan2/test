@@ -131,24 +131,22 @@
         suggestion: '按"一镜一信息点"拆成多个分镜:长台词按语义断句拆镜,交替给说话人近景与听者反应镜头。',
       });
     }
-    // KB 景别衔接检查:与上一镜相同/相邻或两极对切(KB:优先隔一级切换,两极须过渡),记轻微问题
-    const SIZES = ['特写', '近景', '中景', '全景'];
+    // KB 景别衔接检查:与上一镜同级/相邻(无递进)或两极对切(缺过渡)记轻微问题;
+    // 级差经 WfCore.sizeGap 取自 wf-core.js 景别阶梯(词表单源),六档全覆盖,-1=任一端不在阶梯上不判定
     const shotIdx = (ep.shots || []).findIndex(x => x.id === s.id);
     const prevShot = shotIdx > 0 ? ep.shots[shotIdx - 1] : null;
     const curSize = (s.cameraSpec || {}).shotSize, prevSize = (prevShot && prevShot.cameraSpec || {}).shotSize;
-    if (curSize && prevSize && SIZES.includes(curSize) && SIZES.includes(prevSize)) {
-      const gap = Math.abs(SIZES.indexOf(curSize) - SIZES.indexOf(prevSize));
-      if (gap !== 2) {
-        issues.push({
-          timeRange: shotTimeRange(ep, s),
-          type: '运镜/景别偏差',
-          severity: '轻微',
-          analysis: gap === 3 ? `与上一镜两极对切(${prevSize}→${curSize}),缺少中景过渡,衔接生硬。`
-            : gap === 0 ? `与上一镜景别相同(${curSize}),无递进变化,视觉节奏平。`
-            : `与上一镜景别相邻(${prevSize}→${curSize}),隔一级切换更有递进感。`,
-          suggestion: gap === 3 ? '在两镜之间补一个中景过渡镜,或把本镜景别调为中景。' : '按"全景→中景→近景→特写"路径调整景别,优先隔一级切换。',
-        });
-      }
+    const gap = WfCore.sizeGap(prevSize, curSize);
+    if (gap >= 0 && (gap <= 1 || gap >= 4)) {
+      issues.push({
+        timeRange: shotTimeRange(ep, s),
+        type: '运镜/景别偏差',
+        severity: '轻微',
+        analysis: gap >= 4 ? `与上一镜两极对切(${prevSize}→${curSize}),缺少中景过渡,衔接生硬。`
+          : gap === 0 ? `与上一镜景别相同(${curSize}),无递进变化,视觉节奏平。`
+          : `与上一镜景别相邻(${prevSize}→${curSize}),隔一级切换更有递进感。`,
+        suggestion: gap >= 4 ? '在两镜之间补一个中景过渡镜,或把本镜景别调为中景。' : '按"全景→中景→近景→特写"路径调整景别,优先隔一级切换。',
+      });
     }
     // KB 抽卡军规检查:提示词缺"稳定/不变形"类约束词,记轻微问题
     if (!/稳定|不变形|不僵硬|结构正常/.test(s.prompt || '')) {
@@ -386,7 +384,7 @@
   const CUT_DIMS = [
     ['natural', '镜头语言自然度', '运镜是否像真人摄影师拍摄,有无乱抖/鬼畜/毫无道理的旋转'],
     ['continuity', '衔接流畅度', '镜头切换时人物动作、位置、服装是否连贯,有无瞬移/突变(AI 视频最常见崩坏)'],
-    ['framing', '景别合理性', '该拍脸时拍脸、对峙给中景、情绪给特写,有无乱切大远景'],
+    ['framing', '景别合理性', '该拍脸时拍脸、对峙给中景、情绪给特写,有无乱切大全景'],
     ['pacing', '剪辑节奏适配', '镜头切换快慢是否匹配剧情情绪:冲突快切(1-2秒/镜)、抒情慢切(3-5秒/镜)'],
   ];
   /* ---- 审片版本判定(九轮强化):正向证明才有效 ----

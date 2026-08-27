@@ -22,6 +22,7 @@
 | [w3-g03-review-step.md](./w3-g03-review-step.md) | G-03 审片升为 `Domain.workflow` 主线一等步骤及四个消费面接通 | 改主线步骤集合前 |
 | [w3-g04-headless-front.md](./w3-g04-headless-front.md) | G-04 剧本拆集下沉 `wf-core` + `/api/wf/split-episodes` + 领域命令/CLI/MCP 入口 | 改拆集或 headless 起跑链路前 |
 | [w4-g05-tpl-video.md](./w4-g05-tpl-video.md) | G-05 `settings.tplVideo` 定性与接入(改在提示词成型阶段,不动生成指纹) | 改模板三件套前 |
+| [w4-shot-size-glossary.md](./w4-shot-size-glossary.md) | G-07 机位词表归一:景别阶梯/运镜/角度结构表下沉 `wf-core.js`、`sizeGap` 级差、15 个消费点逐点对照、指纹影响面 | 改景别/运镜取值或其消费点前 |
 | [w4-subject-ref-check.md](./w4-subject-ref-check.md) | SK-12 分镜↔主体引用完备性校验(`Skills.CHECKS` 首条实现,只报不拦) | 加校验项前 |
 | [w4-sk13-consistency.md](./w4-sk13-consistency.md) | SK-13 跨镜头主体一致性校验,与 SK-12 成对闭合 S-03 | 同上 |
 | [w5-cycle1-audit.md](./w5-cycle1-audit.md) | 周期 1 逐项目独立核验报告:成熟度分档、分叉风险实测、合入次序建议 | 想知道每项做到哪一步、分叉在哪 |
@@ -33,6 +34,7 @@
 - 主线七步在代码里齐了:`Domain.workflow` 已含"审片"步(G-03),`js/skills.js` 的 `STAGES` 七步全部 `wfStep: true`。
 - 贯通缺口已收口的部分:专家人设(G-01)与协作记忆(G-02 由 agent-flow 覆盖)进 `/api/wf/*`,CLI/MCP 同链路吃到;剧本拆集(G-04)补上机读入口,headless 可从"一份整部剧本"起跑。
 - 空挂已清:`settings.tplVideo`(G-05)与 `KB.SECTIONS`(G-15/G-08 的 KB 侧)都有了消费方,并有断言防回退。
+- 词表分叉已收口:景别/运镜/视角/角度四张词表的单一来源在 `js/wf-core.js`,`camera.js`/`review.js`/`sb-io.js`/`agent.js` 全派生(G-07,见 `w4-shot-size-glossary.md`)。
 
 ## 阅读约定
 

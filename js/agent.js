@@ -120,7 +120,7 @@
     // 标准沉淀:景别衔接口诀(导演传授的剪辑衔接准则,拆镜/审片/改镜时遵循)
     if (!Store.state.agentMemory.some(m => (m.text || '').includes('景别衔接口诀'))) {
       Store.state.agentMemory.push({
-        text: '景别衔接口诀:相邻景别不硬切(前后镜景别避免相同或相邻,防止无信息跳切);景别切换隔一别(优先跨一级切换,如全景→近景、中景→特写);两极镜头不衔接(大全景/远景与特写/超级特写不得直接对切,须用全景或中景过渡)',
+        text: '景别衔接口诀:相邻景别不硬切(前后镜景别避免相同或相邻,防止无信息跳切);景别切换隔一别(优先跨一级切换,如全景→近景、中景→特写);两极镜头不衔接(大全景与特写/超级特写不得直接对切,须用全景或中景过渡)',
         time: Store.now(), scope: '分镜',
       });
       Store.save();
@@ -512,7 +512,7 @@ ${AO.cmdProtocol()})
 兼容旧格式:{"op":"run","action":"${AO.actProtocol()}"}(中文动作别名,无参数通道,能用 cmd+args 时优先新格式)
 {"op":"goto","target":"分镜脚本|分镜视频|剪辑|节拍板|镜头组"}(切换工作区视图)
 {"op":"select","shot":镜头号}(选中某镜头到右栏编辑)
-纯咨询/建议类问题 ops 返回 []。运镜限:固定镜头/推镜头/拉镜头/摇镜头/移镜头/跟镜头/环绕镜头/俯拍/仰拍/特写;视角:正面/侧面/背面;角度:仰拍/平视/俯拍/高角度;景别:特写/近景/中景/全景;光圈:ƒ/1.4~ƒ/11。项目风格:${styleOf(p)}。
+纯咨询/建议类问题 ops 返回 []。运镜限:${WfCore.CAMERAS.join('/')};视角:${WfCore.VIEWS.join('/')};角度:${WfCore.ANGLES.join('/')};景别:${WfCore.SIZES.join('/')};光圈:ƒ/1.4~ƒ/11。项目风格:${styleOf(p)}。
 ★ 关键决策点选项卡:当对话处于创作方向/风格/方案等关键决策点、适合让用户拍板时,额外返回可选键 "choices":{"title":"选择主题(如:复仇方向选择)","options":[{"t":"方向一:标题","d":"一句话描述"}]}(2-4 个);返回 choices 的本轮 ops 返回 [],等用户提交选择后再据此继续。${AO.queryProtocol()}`,
           user: `${histBlock}本集剧本摘要:${(ep.content || '').slice(0, 500)}\n当前分镜表:\n${AO.compactShots(ep)}${AO.focusBlock(p, ep)}${AgentRefs.block(p, ep, 'ep')}${AO.stateBlock(p, ep)}\n\n用户指令:${text}`,
           temperature: 0.4, max_tokens: 6000,
