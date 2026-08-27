@@ -45,6 +45,15 @@
   const stageLine = h => `${h.stage || ''}(第${h.from}-${h.to}集)${EPSC[h.code] || h.code}`;
   /* 付费卡点命中 → 一行明细:码文案 + 兑现落空时点到下一集 */
   const payoffLine = h => (EPSC[h.code] || h.code) + (h.next ? `(应在第${h.next}集兑现)` : '');
+  /* 分镜景别面命中码 → 展示文案(同上:判据只在 js/skills.js 的校验项里一份) */
+  const SIZE = {
+    'flat-run': '连续同景别,没有递进',
+    'jump-cut': '两极对切,缺过渡镜',
+    'no-progression': '整集景别几乎没动过',
+  };
+  /* 命中 → 一行明细:镜号区间(整集级命中无镜号)+ 码文案 + 景别走向 */
+  const sizeLine = h => (h.order ? `镜头${h.order}${h.to > h.order ? '-' + h.to : ''}` : '整集')
+    + (SIZE[h.code] || h.code) + (h.base ? `(${h.base}→${h.name})` : h.name ? `(${h.name})` : '');
 
   /* ================= 问题清单推导(纯数据,可 vm 沙箱测试) =================
    * 条目:{ kind, sev(high|mid|low), count, label, detail, epid?, epTitle?, cmd?, shotIds?, goto? }
@@ -128,6 +137,16 @@
         label: `「${ep.title}」${consist.length} 处跨镜主体参考不一致`,
         detail: consist.slice(0, 4).map(h => `镜头${h.order}「${h.name}」${CONSIST[h.code] || h.code}`).join(';')
           + (consist.length > 4 ? ` 等 ${consist.length} 处` : '') + '——同一主体形象易在镜间漂移',
+        goto: `#/project/${p.id}/episode/${ep.id}`,
+      }));
+      /* 分镜景别递进与跳切(js/skills.js SK-18 校验项,纯本地零 LLM 零计费):级差经 WfCore.sizeGap 判,
+       * 连续同景别/两极对切/整集无递进 → 低危提醒,只报不拦——发布门 G2 只数高/中危,本项不改门禁状态 */
+      const sizes = window.Skills ? (Skills.check('shots', { p, ep }).find(x => x.skill === 'shots.sizeProgression') || {}).hits || [] : [];
+      if (sizes.length) out.push(Object.assign({}, base, {
+        kind: 'shot-size-linkage', sev: 'low', count: sizes.length,
+        label: `「${ep.title}」${sizes.length} 处景别衔接提醒`,
+        detail: sizes.slice(0, 4).map(sizeLine).join(';') + (sizes.length > 4 ? ` 等 ${sizes.length} 处` : '')
+          + '——判据取自知识库条目,只提醒不拦生成',
         goto: `#/project/${p.id}/episode/${ep.id}`,
       }));
       /* 成片字幕/对白可读性(js/skills.js 校验项,纯本地零 LLM 零计费):以合成时间轴段判阅读速度与截断 →

@@ -1287,8 +1287,10 @@ function loadCommands() {
     },
   };
   loadFile(sb, 'domain.js');
-  loadFile(sb, 'knowledge.js'); // skill 索引的加载期依赖(与 index.html 同顺序:domain → knowledge → skills)
-  loadFile(sb, 'skills.js');    // 就绪检查附带的主体面校验项(result.checks)
+  loadFile(sb, 'knowledge.js'); // skill 索引的加载期依赖(与 index.html 同顺序:domain → knowledge → skills → wf-core)
+  loadFile(sb, 'prompts.js');
+  loadFile(sb, 'skills.js');    // 就绪检查附带的主体面/分镜面校验项(result.checks)
+  loadFile(sb, 'wf-core.js');   // 分镜面校验项的景别级差现取 WfCore.sizeGap(词表单源)
   loadFile(sb, 'cmd-registry.js'); // 命令元数据单源(与 index.html 同顺序:commands.js 之前)
   loadFile(sb, 'commands.js');
   return sb;
@@ -1342,7 +1344,7 @@ const commandsTests = [
     const chk2 = (r2.result.checks || []).find(x => x.skill === 'subjects.refIntegrity');
     assertEq(chk2.pass, true); assertEq(chk2.level, 'info'); assertEq(chk2.hits.length, 0);
   } },
-  { name: 'preflight:result.checks 是剧本+主体+分集+成片字幕四面并集(按主线步序,摘任一面即红)', fn: async () => {
+  { name: 'preflight:result.checks 是剧本+主体+分集+分镜+成片字幕五面并集(按主线步序,摘任一面即红)', fn: async () => {
     const sb = loadCommands();
     /* 烧录字幕开启 + 镜1 台词超硬上限:字幕面必产出 caption-truncated(fail),
      * 即结论不是"时间轴未成形"那种空 info——摘掉 film 这一面时本例的并集与 fail 都对不上 */
@@ -1354,19 +1356,20 @@ const commandsTests = [
     const checks = r.result.checks || [];
     assertEq(checks.map(x => x.skill).join(','),
       'script.hookStrength,script.faceslapFour,script.dialogueRule,subjects.refIntegrity,subjects.crossShot,'
-      + 'eps.structureStage,eps.payoffPoint,film.subtitleQC',
-      'result.checks 应是四面并集,按主线步序 script → subjects → eps → film');
+      + 'eps.structureStage,eps.payoffPoint,shots.sizeProgression,film.subtitleQC',
+      'result.checks 应是五面并集,按主线步序 script → subjects → eps → shots → film');
     const cap = checks.find(x => x.skill === 'film.subtitleQC');
     assert(cap, '就绪检查必须消费成片字幕面(film 面被摘掉则本条红)');
     assertEq(cap.id, 'film.subtitleTiming', '字幕面结论应带实现 id');
     assertEq(cap.pass, false); assertEq(cap.level, 'fail', '烧录字幕超硬上限=合成必丢字,判 fail');
     assertEq(cap.hits.map(h => h.code + '@' + h.order).join(','), 'caption-truncated@1', '命中应逐段定位到镜号');
     assertEq(cap.hits[0].limit, 120, 'hit 应带硬上限口径(Domain.SUB_BURN_MAX)');
-    /* 与直接跑四面逐字节一致:命令层不得对某一面做二次过滤/降级/改序(沙箱无 Media,ck.online=false) */
+    /* 与直接跑五面逐字节一致:命令层不得对某一面做二次过滤/降级/改序(沙箱无 Media,ck.online=false) */
     const ck = { online: false };
     const direct = sb.Skills.check('script', { p, ep }, ck)
-      .concat(sb.Skills.check('subjects', { p, ep }, ck), sb.Skills.check('eps', { p, ep }, ck), sb.Skills.check('film', { p, ep }, ck));
-    assertEq(JSON.stringify(checks), JSON.stringify(direct), 'result.checks 应逐字节等于四面直跑结果的并集');
+      .concat(sb.Skills.check('subjects', { p, ep }, ck), sb.Skills.check('eps', { p, ep }, ck),
+        sb.Skills.check('shots', { p, ep }, ck), sb.Skills.check('film', { p, ep }, ck));
+    assertEq(JSON.stringify(checks), JSON.stringify(direct), 'result.checks 应逐字节等于五面直跑结果的并集');
     assertEq(r.ok, true); assertEq(r.status, 'ready', '字幕面 fail 只报不拦,不改就绪判定');
     assert(!(r.result.blockers || []).some(b => /字幕/.test(b.label || '')), '字幕结论不得混进 Domain 阻塞项');
     assertEq(r.cost, undefined, '就绪检查零计费');
@@ -2729,8 +2732,10 @@ function loadIssues() {
   const sb = makeSandbox();
   installCommon(sb);
   loadFile(sb, 'domain.js');
-  loadFile(sb, 'knowledge.js'); // skill 索引的加载期依赖(与 index.html 同顺序:domain → knowledge → skills → issues)
-  loadFile(sb, 'skills.js');    // 问题中心消费的跨镜主体一致性校验项
+  loadFile(sb, 'knowledge.js'); // skill 索引的加载期依赖(与 index.html 同顺序:domain → knowledge → skills → wf-core → issues)
+  loadFile(sb, 'prompts.js');
+  loadFile(sb, 'skills.js');    // 问题中心消费的跨镜主体一致性/分镜景别衔接校验项
+  loadFile(sb, 'wf-core.js');   // 景别衔接校验项的级差现取 WfCore.sizeGap(词表单源)
   loadFile(sb, 'issues.js');
   return sb;
 }
@@ -3428,10 +3433,14 @@ const contractTests = [
     assertEq(Skills.block('shots', { ids: ['shots.shotLanguage'] }), KB.pick('景别运镜', '轴线匹配'), '分镜注入块应逐字节等于 KB 条目拼接');
     assertEq(Skills.block('review'), KB.reviewBlock(), '审片注入块应逐字节等于 KB.reviewBlock()');
     const src = fs.readFileSync(path.join(ROOT, 'js', 'skills.js'), 'utf8');
-    const iBody = src.indexOf('function (KB, Domain) {'); // 加载期依赖只有 KB 与 Domain 两件双端纯模块
-    assert(iBody > 0, 'skills.js factory 签名应为 (KB, Domain)');
+    // 加载期依赖只有 KB 与 Domain 两件双端纯模块;WfCore 以解析器形态传入(浏览器里它晚于本文件加载)
+    const iBody = src.indexOf('function (KB, Domain, wfCore) {');
+    assert(iBody > 0, 'skills.js factory 签名应为 (KB, Domain, wfCore)');
     const body = src.slice(iBody); // 只查 factory 体(UMD 头与文件头注释不计)
     ['window', 'Store', 'document', 'location', 'fetch'].forEach(w => assert(!body.includes(w), 'skills.js 模块体不得出现环境句柄:' + w));
+    // WfCore 只在校验项体内现解析,不在模块顶层绑定(否则浏览器加载顺序上取到 undefined)
+    assertEq((body.match(/wfCore\(\)/g) || []).length, 1, 'WfCore 应只在用到它的校验项里现解析一次');
+    assert(!/^\s*const \w+ = wfCore\(\)/m.test(body.slice(0, body.indexOf("CHECKS['"))), 'skills.js 不得在模块顶层解析 WfCore');
     // 编排型步骤只引用已注册命令(playbook 不内联新命令语义)
     const names = require('../js/cmd-registry.js').names();
     const orch = Skills.list().filter(s => s.kinds.includes('orchestrate') && !s.pending.includes('orchestrate'));
@@ -3927,6 +3936,10 @@ const refIntegrity = (p, ep) => Skills.check('subjects', { p, ep }).find(x => x.
 const crossShot = (p, shots) => Skills.check('subjects', { p, ep: { id: 'ep1', shots } }).find(x => x.skill === 'subjects.crossShot');
 /* 主体带真实图的项目夹具:n 个角色各有权威图(参考图组 5 张上限用例) */
 const manySubjP = n => ({ id: 'p1', subjects: Array.from({ length: n }, (_, i) => ({ id: 'c' + i, name: '角色' + i, kind: 'character', image: '/uploads/a/c' + i + '.png' })) });
+/* 分镜景别夹具:只摆景别(级差判定只看 cameraSpec.shotSize;传 undefined 即该镜没填景别) */
+const sizeShot = (order, shotSize) => ({ id: 'sh' + order, order, cameraSpec: shotSize === undefined ? {} : { shotSize } });
+const linkOf = shots => Skills.check('shots', { p: { id: 'p1' }, ep: { id: 'ep1', shots } }).find(x => x.skill === 'shots.sizeProgression');
+const sizes = (...list) => linkOf(list.map((x, i) => sizeShot(i, x)));
 /* 成片字幕夹具:镜头缺省带分镜图(进得了合成序列),段时长由 Domain.subtitleSegs 按预估/裁剪推出,用例只摆内容 */
 const capShot = (order, over) => Object.assign({ id: 'sh' + order, order, dialogue: '', narration: '', image: '/uploads/a/f' + order + '.png' }, over || {});
 const capEp = (shots, over) => Object.assign({ id: 'ep1', sbConfig: { subtitle: true }, shots }, over || {});
@@ -4165,6 +4178,72 @@ const skillsTests = [
     assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 只数高/中危 —— 低危提醒不改门禁状态');
     ['episode.generateVideos', 'shot.generateVideo'].forEach(n => assert(!Skills.byId('subjects.crossShot').cmds.includes(n), '生成侧消费待 G-06,条目不得挂未接的命令面:' + n));
   } },
+  { name: 'sizeLinkage:隔级递进的分镜表全 pass;级差现取 WfCore.sizeGap(不在 skill 层另立阶梯)', fn() {
+    const W = require('../js/wf-core.js');
+    const r = sizes('全景', '近景', '中景', '特写');
+    assertEq(r.pass, true); assertEq(r.level, 'info'); assertEq(r.hits.length, 0, '隔一级切换不应产出命中');
+    assertEq(W.sizeGap('全景', '近景'), 2, '判据基准就是词表单源的级差:隔一级=2');
+    assertEq(sizes('大全景', '近景').hits.length, 0, '级差 3 按阶梯属隔级递进,不误报为两极对切');
+  } },
+  { name: 'sizeLinkage:连续同景别成串 → flat-run(定位串首镜并带串尾镜号);两镜同景别是正反打不报', fn() {
+    const r = sizes('中景', '中景', '中景', '特写');
+    assertEq(r.pass, false); assertEq(r.level, 'warn', '景别衔接是提醒级,不升 fail');
+    assertEq(r.hits.map(h => h.code + '@' + h.order + '-' + h.to).join(','), 'flat-run@1-3');
+    assertEq(r.hits[0].run, 3); assertEq(r.hits[0].name, '中景');
+    assertEq(r.hits[0].shotId, 'sh0', 'hits 应带镜头 id 供调用方跳转');
+    assertEq(sizes('中景', '中景', '特写', '近景').hits.length, 0, '两镜同景别对切是正反打常态,不当缺陷报');
+    assertEq(sizes('近景', '近景', '近景', '全景', '全景', '全景').hits.map(h => h.order + '-' + h.to).join(','), '1-3,4-6', '多段成串应逐段命中');
+  } },
+  { name: 'sizeLinkage:两极对切 → jump-cut(带上一镜景别与实测级差)', fn() {
+    const r = sizes('大全景', '特写');
+    assertEq(r.level, 'warn');
+    assertEq(r.hits.map(h => h.code + '@' + h.order).join(','), 'jump-cut@2');
+    assertEq(r.hits[0].base, '大全景'); assertEq(r.hits[0].name, '特写'); assertEq(r.hits[0].gap, 4, '两极级差应如实带出');
+    assertEq(sizes('大全景', '超级特写').hits[0].gap, 5, '阶梯两端级差 5 同属两极');
+    assertEq(sizes('大全景', '中景', '特写').hits.length, 0, '中间补了中景过渡镜即不再命中');
+  } },
+  { name: 'sizeLinkage:整集最大级差不到隔一级 → no-progression 一条集级结论(不逐镜重复报)', fn() {
+    const r = sizes('全景', '中景', '近景', '中景');
+    assertEq(r.hits.map(h => h.code + '@' + h.order).join(','), 'no-progression@0', '整集级命中不冒充镜号');
+    assertEq(r.hits[0].gap, 1); assertEq(r.hits[0].pairs, 3, 'hits 应带实测最大级差与可判定对数');
+    assertEq(sizes('全景', '中景', '近景').hits.length, 0, '可判定相邻对不足判定下限时不下整集断言');
+  } },
+  { name: 'sizeLinkage:没填景别与阶梯外词一律不判定(并打断同级串);单镜入口不产出结论', fn() {
+    assertEq(sizes('中景', undefined, '中景', '中景').hits.length, 0, '缺景别的那两对不可判定,同级串被打断不成串');
+    assertEq(sizes('远景', '远景', '远景', '远景').hits.length, 0, '阶梯外自定义词不判定,不冒充结论');
+    assertEq(sizes('中景', '中景', undefined, '中景', '中景').hits.length, 0, '被缺字段隔开的两段两镜串不合并计数');
+    assertEq(linkOf([sizeShot(0, '中景')]).level, 'info', '单镜无相邻可比,不冒充通过判定');
+    assertEq(Skills.check('shots', { p: { id: 'p1' }, s: sizeShot(0, '中景') })[0].hits.length, 0, '镜级入口无相邻输入');
+    assertEq(Skills.check('shots', {}).length, 1, '分镜步现有一条已落地校验项');
+  } },
+  { name: 'sizeLinkage:纯函数(不改入参、同输入同结论)', fn() {
+    const shots = [sizeShot(0, '中景'), sizeShot(1, '中景'), sizeShot(2, '中景'), sizeShot(3, '大全景')];
+    const snap = JSON.stringify(shots);
+    assertEq(JSON.stringify(linkOf(shots)), JSON.stringify(linkOf(shots)), '同输入应给同结论(无隐藏状态)');
+    assertEq(JSON.stringify(shots), snap, '校验项不得改动领域对象');
+  } },
+  { name: 'sizeLinkage:消费点——就绪检查双端按步序附结论 + 问题中心低危(不改门禁、不新增计费)', fn() {
+    [['js/commands.js', fs.readFileSync(path.join(ROOT, 'js', 'commands.js'), 'utf8')], ['cli.js', fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8')]].forEach(([f, src]) => {
+      assert(/Skills\.check\('shots'/.test(src), f + ' 就绪检查应跑分镜面校验项');
+      assert(src.indexOf("Skills.check('subjects'") < src.indexOf("Skills.check('shots'"), f + ' 结论应按主线步序排列(主体在分镜之前)');
+      assert(src.indexOf("Skills.check('shots'") < src.indexOf("Skills.check('film'"), f + ' 结论应按主线步序排列(分镜在成片之前)');
+    });
+    const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
+    assert(/Skills\.check\('shots'/.test(isrc), '问题中心应复用同一校验项,不写第二份判定');
+    assert(isrc.includes("kind: 'shot-size-linkage', sev: 'low'"), '景别衔接提醒须挂低危(发布门 G2 只数高/中危)');
+    const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
+    assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 只数高/中危 —— 低危提醒不改门禁状态');
+    assertEq(require('../js/cmd-registry.js').byName['episode.preflight'].risk, 'read', '就绪检查应仍是 read 类零计费');
+    const sk = Skills.byId('shots.sizeProgression');
+    assertEq(sk.pending.length, 0, '校验面已落地,不应再挂 pending');
+    assertEq(sk.checks.join(','), 'shots.sizeLinkage');
+    assert(sk.cmds.includes('episode.preflight'), '条目应登记已接通的就绪检查命令面');
+    assert(sk.gaps.includes('G-10'), '轴线面与景别选型的语义判断仍待 G-10');
+    // 级差单源:skill 层只调 WfCore.sizeGap,不自建第二份阶梯(整份词表字面的零残留由词表单源套件覆盖)
+    const sksrc = fs.readFileSync(path.join(ROOT, 'js', 'skills.js'), 'utf8');
+    assert(sksrc.includes('wfCore().sizeGap'), '景别级差应现取 WfCore.sizeGap');
+    assert(!/indexOf\((?:prev|cur|a|b)\)/.test(sksrc), 'skill 层不得自建景别索引查表(级差只由 sizeGap 给)');
+  } },
   { name: 'subtitleTiming:干净夹具全 pass(台词短、停留够 → info 无命中)', fn() {
     const r = caption(capEp([capShot(0, { dialogue: '快走别回头' }), capShot(1, { narration: '雨声渐起' })]));
     assertEq(r.pass, true); assertEq(r.level, 'info'); assertEq(r.hits.length, 0, '读得完的字幕不应产出命中');
@@ -4235,12 +4314,13 @@ const skillsTests = [
     assertEq(sk.checks.join(','), 'film.subtitleTiming');
     assertEq(Skills.check('film', { p: { id: 'p1' }, ep: capEp([capShot(0, { dialogue: '走' })]) }).length, 1, '成片步现有一条已落地校验项');
   } },
-  { name: '就绪检查校验面并集(源级):双端 preflight 段内 script/subjects/eps/film 同在一条 checks 表达式,登记面无漏消费', fn() {
+  { name: '就绪检查校验面并集(源级):双端 preflight 段内 script/subjects/eps/shots/film 同在一条 checks 表达式,登记面无漏消费', fn() {
     /* 只断"文件里出现过 Skills.check('film'" 是有盲区的:算出来却不并进 result.checks 时照样通过。
      * 这里把断言收到 preflight 实现段内的那一条 checks 表达式上,并按登记侧反查有无漏消费的面。 */
     const consumers = Skills.list().filter(s => !s.pending.includes('check') && s.checks.length && s.cmds.includes('episode.preflight'));
     assert(consumers.some(s => s.stage === 'film'), '字幕面应登记 episode.preflight 为消费点');
     assert(consumers.some(s => s.stage === 'eps'), '分集面应登记 episode.preflight 为消费点');
+    assert(consumers.some(s => s.stage === 'shots'), '分镜面应登记 episode.preflight 为消费点');
     [['js/commands.js', "reg('episode.preflight'", "reg('episode.generateStoryboard'"],
       ['cli.js', "EXEC['episode.preflight']", "EXEC['episode.generateVideos']"]].forEach(([f, from, to]) => {
       const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
@@ -4251,12 +4331,12 @@ const skillsTests = [
       assert(i >= 0, f + ' 就绪检查段内应有 checks 汇总表达式');
       const expr = seg.slice(i, seg.indexOf(';', i) + 1);
       const at = st => expr.indexOf("Skills.check('" + st + "'");
-      const order = ['script', 'subjects', 'eps', 'film'];
+      const order = ['script', 'subjects', 'eps', 'shots', 'film'];
       order.forEach(st => assert(at(st) > 0, f + ' checks 表达式应并入 ' + st + ' 面(只在段外调用不算消费)'));
-      order.slice(1).forEach((st, k) => assert(at(order[k]) < at(st), f + ' 四面应按主线步序 ' + order.join(' → ') + ' 排列'));
+      order.slice(1).forEach((st, k) => assert(at(order[k]) < at(st), f + ' 五面应按主线步序 ' + order.join(' → ') + ' 排列'));
       // 登记侧反查:凡登记了 episode.preflight 消费点的已落地校验条目,其所属面必须在这条表达式里(将来新增面漏接先红)
       consumers.forEach(s => assert(at(s.stage) > 0, f + ' 就绪检查漏消费已登记面:' + s.id + '(' + s.stage + ')'));
-      assert(seg.includes('result: Object.assign({}, st, { checks })'), f + ' 四面并集应附在 result.checks(不并入 Domain 推导结果)');
+      assert(seg.includes('result: Object.assign({}, st, { checks })'), f + ' 五面并集应附在 result.checks(不并入 Domain 推导结果)');
     });
   } },
   { name: 'stageCoverage:六段段名与集号区间取自 KB 条目正文,按比例摊到当前集数;干净分集表 → info', fn() {
