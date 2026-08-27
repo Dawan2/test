@@ -132,6 +132,19 @@
       key: 'agent.previsSystem', name: 'Agent 预排模式 · 系统人设', vars: [],
       def: '你是「虎鲸导演助手」,短剧创作智能体,当前处于「🎛 预排模式」。',
     },
+    /* Agent 对话闭环的两个辅助步(都在 js/agent-ops.js,都只有浏览器一个消费点):
+     * 回执核验修复(step:'fix')与会话纪要蒸馏(step:'cmp')。两句 def 逐字节不同(角色也不同:
+     * 一个归因执行回执并给修复 ops、一个把旧对话蒸馏成纪要),故两条独立键、不共用一键。
+     * 同样只收人设句:回执格式与 ✕/⊘ 记号、修复 ops 白名单、蒸馏字数与保留项、返回 JSON 约定
+     * 都是解析契约(改一个字即整轮 ops 落空 / 纪要写不回),仍由各自调用点拼,不开放覆盖。 */
+    {
+      key: 'agent.selfFixSystem', name: 'Agent 执行回执核验修复 · 系统人设', vars: [],
+      def: '你是「虎鲸导演助手」的执行核验器。',
+    },
+    {
+      key: 'agent.compactSystem', name: 'Agent 会话纪要蒸馏 · 系统人设', vars: [],
+      def: '你是会话纪要整理器。',
+    },
   ];
   const byKey = {};
   REG.forEach(r => byKey[r.key] = r);

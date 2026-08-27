@@ -4743,7 +4743,7 @@ const contractTests = [
     /* 仍欠段只认「仍欠」之后那段(锚点写在"已落地"那半里不算交账),且点名的余量逐处对照源码还在:
      * 剧本模块那几步已随 SK-03 收编,故这里点名的换成别处仍内联的那几步,收编时同样转红 */
     const owed = sk11.note.split('仍欠').slice(1).join('仍欠');
-    assert(owed.includes('js/agent-ops.js') && owed.includes('js/sb-views.js'),
+    assert(owed.includes('js/sb-views.js'),
       'SK-11 的仍欠段须点名 G-13 余量落在哪几处(不在本条自己的登记面里)');
     const eps = fs.readFileSync(path.join(ROOT, 'js', 'episodes.js'), 'utf8');
     assert(!eps.includes("system: '你是短剧剧本结构分析师。'"),
@@ -4751,7 +4751,12 @@ const contractTests = [
     assertEq(Prompts.list().filter(x => x.def === '你是短剧剧本结构分析师。').length, 1, '那句人设应恰好在注册表里一条');
     assert(!owed.includes('js/episodes.js') && !owed.includes('js/episode-util.js'),
       '剧本模块两个文件已零内联,SK-11 的仍欠段不得再把它们记成欠账');
-    ['js/agent-ops.js', 'js/sb-views.js'].forEach(rel =>
+    /* Agent 对话闭环那两处已收编:同形的反向断言按实况翻面(退回内联或仍记成欠账都当场红) */
+    assert(!owed.includes('js/agent-ops.js'),
+      'Agent 辅助两步已收编,SK-11 的仍欠段不得再把 js/agent-ops.js 记成欠账');
+    assertEq((fs.readFileSync(path.join(ROOT, 'js', 'agent-ops.js'), 'utf8').match(/system: ['`]你是/g) || []).length, 0,
+      'js/agent-ops.js 不得退回内联人设(两处已收进 agent.selfFixSystem/agent.compactSystem)');
+    ['js/sb-views.js'].forEach(rel =>
       assert(/system: ['`]你是/.test(fs.readFileSync(path.join(ROOT, rel), 'utf8')),
         '仍欠段点名的 ' + rel + ' 此刻确实还有内联人设(收编后须同步改 SK-11 的仍欠段)'));
     // 缺口未闭合(全仓内联人设仍在):标记不摘,G-13 的关联索引逐字节不变
@@ -4830,12 +4835,18 @@ const contractTests = [
     // 点名断言只认「仍欠」之后那段:锚点写在"已落地"那半里不算交账
     const owed = sk10.note.split('仍欠').slice(1).join('仍欠');
     assert(owed, 'SK-10 的 note 须写明仍欠什么(G-13 没闭合)');
-    assert(owed.includes('js/agent-ops.js') && owed.includes('js/sb-views.js'),
+    assert(owed.includes('js/sb-views.js'),
       'SK-10 的仍欠段须点名 G-13 余量真正还落在哪几处');
     /* 反向:仍欠段点名的那几处此刻确实还在内联(收编了不改记账当场红) */
-    ['js/agent-ops.js', 'js/sb-views.js'].forEach(rel =>
+    ['js/sb-views.js'].forEach(rel =>
       assert(/system: ['`]你是/.test(fs.readFileSync(path.join(ROOT, rel), 'utf8')),
         rel + ' 此刻确实还有内联人设(收编后须同步改 SK-10 的仍欠段)'));
+    /* Agent 对话闭环那两处已收编:同形的反向断言按实况翻面 */
+    assert(!owed.includes('js/agent-ops.js'), 'Agent 辅助两步已收编,SK-10 的仍欠段不得再把 js/agent-ops.js 记成欠账');
+    assertEq((fs.readFileSync(path.join(ROOT, 'js', 'agent-ops.js'), 'utf8').match(/system: ['`]你是/g) || []).length, 0,
+      'js/agent-ops.js 不得退回内联人设(两处已收进注册表)');
+    ['agent.selfFixSystem', 'agent.compactSystem'].forEach(k =>
+      assertEq(Prompts.list().filter(x => x.key === k).length, 1, '那两句人设应各在注册表里恰好一条:' + k));
     /* 事件图谱拆解步已收编:同形的反向断言按实况翻面(退回内联或仍记成欠账都当场红) */
     assert(!owed.includes('js/episodes.js'), '事件图谱拆解步已收编,SK-10 的仍欠段不得再把 js/episodes.js 记成欠账');
     assert(!ep.includes("system: '你是短剧剧本结构分析师。'"), 'js/episodes.js 事件图谱拆解步不得退回内联');
@@ -5256,6 +5267,86 @@ action 二选一:
     // 这条链路没有服务端对端:收编解决的是可覆盖,不是可 headless(别处冒出第二个消费点即红)
     assert(!fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8').includes('把该集剧本拆成结构化事件序列'),
       'server.js 不应出现事件图谱拆解步(该步只在浏览器分集页链路上)');
+  } },
+  { name: 'Agent 辅助两步人设:回执核验修复/会话纪要蒸馏各一独立键,缺省逐字节等于收编前的内联字面', fn() {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const FIX = '你是「虎鲸导演助手」的执行核验器。';
+    const CMP = '你是会话纪要整理器。';
+    assertEq(Prompts.get('agent.selfFixSystem'), FIX, '回执核验修复缺省人设句应与收编前的内联字面逐字节相同');
+    assertEq(Prompts.get('agent.compactSystem'), CMP, '会话纪要蒸馏缺省人设句应与收编前的内联字面逐字节相同');
+    /* 两处 def 逐字节不同(角色也不同:一个归因执行回执并给修复 ops、一个把旧对话蒸馏成纪要),
+     * 故两条独立键——"def 相同才谈得上共用一键"这条判据在这里判的是"不能共用" */
+    assert(FIX !== CMP, '两步 def 逐字节不同,不得共用一键');
+    ['agent.selfFixSystem', 'agent.compactSystem'].forEach(k => {
+      const it = Prompts.list().find(x => x.key === k);
+      assert(it && !it.vars.length && it.name.startsWith('Agent ') && it.name.includes('系统人设'),
+        '注册表应登记 ' + k + ' 条目(无变量,可在全局默认值页在线改写)');
+      assertEq(Prompts.list().filter(x => x.def === Prompts.get(k)).length, 1, k + ' 的人设句应恰好命中注册表一条');
+    });
+    // Agent 六条键措辞互不相同:合成一个键会让其中几步的角色定位失真
+    const AG = ['agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem', 'agent.selfFixSystem', 'agent.compactSystem'];
+    assertEq(new Set(AG.map(k => Prompts.get(k))).size, AG.length, 'Agent 各键的人设措辞应互不相同');
+    // 覆盖只换对应那一键:另一条逐字节不动(串台即红)
+    const ov = { 'agent.selfFixSystem': '你是覆盖生效的核验器。' };
+    assertEq(Prompts.get('agent.selfFixSystem', ov), '你是覆盖生效的核验器。', '覆盖应命中 selfFix 那一键');
+    assertEq(Prompts.get('agent.compactSystem', ov), CMP, '覆盖 selfFix 时 compact 应逐字节不动');
+    // 只收人设句:两步的解析契约半不开放覆盖(注册表里不该出现它)
+    ['"ops"', '"summary"', '✕=失败', '≤150字'].forEach(f =>
+      assertEq(Prompts.list().filter(x => x.def.includes(f)).length, 0, '解析契约不进注册表:' + f));
+    AG.slice(4).forEach(k => assert(Skills.byId('core.personaCtx').prompts.includes(k), 'SK-03 应登记 ' + k));
+    assertEq(Skills.validate({ Prompts }).join(';'), '', '引用键自检应通过(新登记的键须在注册表内)');
+  } },
+  { name: 'Agent 辅助两步人设(源级+行为面):js/agent-ops.js 零内联,两步真跑取的就是注册表那份', fn: async () => {
+    const Prompts = require('../js/prompts.js');
+    const ao = fs.readFileSync(path.join(ROOT, 'js', 'agent-ops.js'), 'utf8');
+    // 取值口与各自那一步的锚点配对:两个键互换位置即红
+    assert(/system: `\$\{Prompts\.get\('agent\.selfFixSystem'\)\}刚才按用户指令驱动工作台执行了动作/.test(ao),
+      '回执核验修复步应就地经 Prompts.get 取人设(浏览器隐式读 Store 覆盖表),且与该步协议半锚点配对');
+    assert(/system: Prompts\.get\('agent\.compactSystem'\) \+ '把以下短剧创作协作对话蒸馏为/.test(ao),
+      '会话纪要蒸馏步应就地经 Prompts.get 取人设,且与该步指令半锚点配对');
+    assertEq((ao.match(/system: ['`]你是/g) || []).length, 0, 'js/agent-ops.js 应零内联人设(两处已收编)');
+    // 全仓持有者名单:两句字面恰好只剩注册表一份(谁在别处抄第二份即红,哪怕原文件仍走注册表)
+    const holders = f => ['server.js', 'cli.js', 'mcp.js', 'index.html']
+      .concat(fs.readdirSync(path.join(ROOT, 'js')).filter(n => n.endsWith('.js')).map(n => 'js/' + n))
+      .filter(rel => fs.readFileSync(path.join(ROOT, rel), 'utf8').includes(f)).sort();
+    ['agent.selfFixSystem', 'agent.compactSystem'].forEach(k =>
+      assertEq(holders(Prompts.get(k)).join(','), 'js/prompts.js',
+        k + ' 的人设句字面应只剩注册表一份(全仓持有者名单逐字节比对)'));
+    // 纯浏览器链路:两步没有服务端/CLI 对端,那两处不得长出第二份指令半
+    ['server.js', 'cli.js'].forEach(rel => {
+      const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      assert(!src.includes('刚才按用户指令驱动工作台执行了动作') && !src.includes('把以下短剧创作协作对话蒸馏为'),
+        rel + ' 不应出现这两步的指令半(两步只在浏览器 Agent 对话闭环上)');
+    });
+    /* 行为面:沙箱真跑两步,从上游请求体截获 system——两步 handler 都在模块闭包里,只能靠导出的入口驱动 */
+    const run = async ovr => {
+      const sb = loadAgentOps();
+      if (ovr) sb.Store.state.settings.promptOverrides = ovr;
+      sb.__apiReady = true;
+      const seen = [];
+      sb.API.chatJSON = async req => { seen.push(req.system); return { summary: '纪要' }; };
+      sb.Understanding.chatJSONRobust = async req => { seen.push(req.system); return { reply: '需人工处理', ops: [] }; };
+      await sb.AgentOps.selfFixRound({ id: 'p1' }, makeEp(), null, ['▶ 生成视频:✕ 失败'], 'op_z');
+      const msgs = [];
+      for (let i = 0; i < 30; i++) msgs.push({ role: i % 2 ? 'assistant' : 'user', text: '消息' + i });
+      sb.AgentOps.compactChat(msgs, sb.Store.state.settings, 'k1', 'op_z');
+      await sleep(30); // 蒸馏是 fire-and-forget,等微任务落定
+      return seen;
+    };
+    const def = await run(null);
+    assertEq(def.length, 2, '两步各应发起一次上游调用');
+    assert(def[0].startsWith(Prompts.get('agent.selfFixSystem') + '刚才按用户指令驱动工作台执行了动作,回执如下(✕=失败,⊘=不支持)。\n'),
+      '回执核验 system 缺省应是「注册表人设句 + 原协议半」,逐字节等于收编前');
+    assert(def[0].includes('返回 JSON {"reply":"一句话结论","ops":[操作或空数组]}') && def[0].includes('禁止 goto/select'),
+      '修复 ops 白名单与返回 JSON 约定应逐字节留在调用点(契约半不开放覆盖)');
+    assertEq(def[1], Prompts.get('agent.compactSystem')
+      + '把以下短剧创作协作对话蒸馏为≤150字的「会话纪要」,保留:用户的修改意图与偏好、已确认的决定、未完成事项。只返回 JSON {"summary":"..."}',
+      '会话纪要蒸馏 system 缺省应逐字节等于收编前的整串');
+    const ovd = await run({ 'agent.selfFixSystem': '你是覆盖生效的核验器。' });
+    assertEq(ovd[0], '你是覆盖生效的核验器。' + def[0].slice(Prompts.get('agent.selfFixSystem').length),
+      '覆盖只换人设句,协议半逐字节不变');
+    assertEq(ovd[1], def[1], '覆盖 selfFix 不串台到会话纪要那一步');
   } },
   { name: '审片升为主线一等步骤(G-03):板块 Agent 有审片席;plans/工作区/CLI 都映射 episode.smartReview', fn() {
     const D = require(path.join(ROOT, 'js/domain.js'));

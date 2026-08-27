@@ -883,7 +883,7 @@
       id: 'core.personaCtx', sk: 'SK-03', name: '生效人设经 ctx 过服务端', stage: CROSS, wave: 'W3',
       kinds: ['infra'],
       prompts: ['split.system', 'extract.system', 'digest.planSystem', 'graph.system', 'sb.boardSceneSystem', 'sb.boardDraftSystem', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem',
-        'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem',
+        'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem', 'agent.selfFixSystem', 'agent.compactSystem',
         'narration.system', 'reading.system', 'concept.system', 'light.system',
         'voice.recommendSystem', 'voice.recommendBatchSystem'],
       cmds: ['episode.understanding', 'episode.generateStoryboard', 'episode.smartReview'], gaps: ['G-01'],
@@ -916,11 +916,17 @@
         + '与多轮那三份同为只有浏览器一个消费点的键(用户在「全局默认值」页改得到)。'
         + '分集页事件图谱拆解步的人设句同形收编为独立键 graph.system(取值口在 js/episodes.js 就地经 Prompts.get,'
         + '浏览器隐式读全局默认值页的覆盖表);它与多轮那三条同口径:只有浏览器一个消费点,收编解决的是可覆盖不是可 headless。'
+        + 'Agent 对话闭环的两个辅助步同形收编为两条独立键(执行回执核验修复 agent.selfFixSystem/'
+        + '会话纪要蒸馏 agent.compactSystem——两句 def 逐字节不同、角色也不同,不共用一键),'
+        + '取值口都在 js/agent-ops.js 的 selfFixRound/compactChat 就地经 Prompts.get,'
+        + 'js/agent-ops.js 的内联人设至此归零。'
         + '仍欠:四处的 ops 协议/字段面/命令白名单/返回 JSON 约定仍由各自装配口拼、不开放覆盖'
         + '(那半是 ops 解析契约,用户改坏即整轮无 ops);'
         + '音色推荐两条同理只收人设句——音色库取值范围与返回 JSON 约定仍写在各自调用点、不开放覆盖'
         + '(用户改坏即推荐值落不回音色库,只能退随机);'
-        + '多轮那三份与音色推荐两份都没有 Node 第二消费点,两端只落在取值口'
+        + '辅助两步同理只收人设句——回执格式与 ✕/⊘ 记号、修复 ops 白名单、蒸馏字数与保留项、'
+        + '返回 JSON 约定仍写在各自调用点、不开放覆盖(用户改坏即整轮修复 ops 落空或纪要写不回);'
+        + '多轮那三份与音色推荐两份、辅助两步都没有 Node 第二消费点,两端只落在取值口'
         + '(同一注册表键 + Prompts.get 读覆盖),不是两个消费点',
     },
     {
@@ -1017,9 +1023,11 @@
         + '四步在 js/episodes.js 同经 Prompts.get 取值、用户在「全局默认值」页改得到(键登记在 SK-03 名下)。'
         + 'js/episode-util.js 剧本摘要的通读/汇总/集纲三步(策划人设)同形收编为一条 digest.planSystem 三个取用口,'
         + '同板块的事件图谱拆解步内联人设已收进注册表(独立键 graph.system,取值口在 js/episodes.js 逐集拆解那步)'
-        + '——剧本模块两个文件的内联人设至此归零。'
+        + '——剧本模块两个文件的内联人设至此归零;'
+        + 'js/agent-ops.js 的执行核验器与会话纪要整理器同形收编为 agent.selfFixSystem/agent.compactSystem 两条独立键,'
+        + '该文件的内联人设也随之归零。'
         + '仍欠 G-13 的已不在剧本模块自己这两个文件里,而是别处还没收的那几处内联人设:'
-        + 'js/agent-ops.js 的执行核验器与会话纪要整理器、js/sb-views.js 的分镜改图专家仍是内联字面,'
+        + 'js/sb-views.js 的分镜改图专家仍是内联字面,'
         + '那几步既取不到条目正文、用户也覆盖不到',
     },
     /* ---- 主体 ---- */
@@ -1034,9 +1042,9 @@
         + '本条拼块即该条目正文;人设句已在注册表——主体步取 extract.system,'
         + '另一登记键 settings.tplImage 的取用点(js/persona.js 八维度重写文生图提示词那步)取 persona.promptSystem,'
         + '两处装配口都经 Prompts.get 取值、用户在「全局默认值」页改得到(模板本身也一直改得到),'
-        + '故本条自己的登记面已无收编余量。'
-        + '仍欠 G-13 的不在本条名下:全仓其余模块的内联人设未进注册表(剧本模块那几步已随 SK-03 收编,'
-        + 'js/agent-ops.js 的执行核验器与会话纪要整理器、js/sb-views.js 的分镜改图专家仍是内联字面),'
+        + '故本条自己的登记面已无收编余量;剧本模块那几步与 Agent 对话闭环的辅助两步都已随 SK-03 收编。'
+        + '仍欠 G-13 的不在本条名下:全仓其余模块的内联人设未进注册表'
+        + '(js/sb-views.js 的分镜改图专家仍是内联字面),'
         + '缺口未闭合故按关联索引口径不摘标记。'
         + '生成请求构造点(Domain.buildVideoRequest)不注方法论文本,生成指纹口径不动;'
         + '校验半判定输入就是那份请求的参考图组(人物数上限、被上限挤出、三视图当视频参考),'

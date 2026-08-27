@@ -125,7 +125,7 @@
       const call = (window.Understanding && Understanding.chatJSONRobust) ? Understanding.chatJSONRobust.bind(Understanding) : API.chatJSON;
       out = await call({
         model: (Store.state.settings || {}).defLLM || API.getConfig().model,
-        system: `你是「虎鲸导演助手」的执行核验器。刚才按用户指令驱动工作台执行了动作,回执如下(✕=失败,⊘=不支持)。
+        system: `${Prompts.get('agent.selfFixSystem')}刚才按用户指令驱动工作台执行了动作,回执如下(✕=失败,⊘=不支持)。
 请归因并修复:
 - 能靠修改数据修复的(如提示词违规→改写提示词),输出数据类修复 ops(仅 update/insert/move/batch/beatupdate/sceneupdate);
 - 临时性失败的动作(上游超时/限流/生成失败已退费),可输出 {"op":"run","cmd":"原命令名"} 重试一次(args 可修正,如 {"shotIds":["失败镜 id 或序号"]})——只允许重试回执里出现过的命令,禁止新动作,禁止 goto/select;
@@ -815,7 +815,7 @@ action 二选一:
       const lines = list.slice(0, -12).map(m2 => (m2.role === 'user' ? '用户:' : '助手:') + String(m2.text || '').replace(/\s+/g, ' ').slice(0, 120));
       API.chatJSON({
         model: (Store.state.settings || {}).defLLM || API.getConfig().model,
-        system: '你是会话纪要整理器。把以下短剧创作协作对话蒸馏为≤150字的「会话纪要」,保留:用户的修改意图与偏好、已确认的决定、未完成事项。只返回 JSON {"summary":"..."}',
+        system: Prompts.get('agent.compactSystem') + '把以下短剧创作协作对话蒸馏为≤150字的「会话纪要」,保留:用户的修改意图与偏好、已确认的决定、未完成事项。只返回 JSON {"summary":"..."}',
         messages: [{ role: 'user', content: (summary ? '此前纪要:' + summary + '\n' : '') + '对话记录:\n' + lines.join('\n') }],
         temperature: 0.2, max_tokens: 400,
         billingAction: opId ? 'llm.agent' : undefined, operationId: opId, step: 'cmp',
