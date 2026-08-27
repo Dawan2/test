@@ -22,7 +22,8 @@ Windows 也可直接双击 `启动.bat`(自动起服务并打开浏览器)。
    │                 工作流状态(workflow/episodeState)字面单源,store/pipeline/produce/cli 全委托
    │  js/wf-core.js  工作流纯核(双端 UMD,二十一轮)——智能分镜/本集理解/智能审片的
    │                 提示词拼装与结果规整单一来源:浏览器 sb-llm/understanding/review 委托,
-   │                 server.js /api/wf/* 端点 require;Prompts/KB 同步 UMD 化(覆盖表显式传入)
+   │                 server.js /api/wf/* 端点 require;Prompts/KB 同步 UMD 化(覆盖表显式传入);
+   │                 提示词模板三件套的填充亦在此(fillTplVideo/tplVideoNote 双端同一份)
    │  js/commands.js 统一领域命令注册表(Commands.execute)——就绪检查/智能分镜/批量生成/
    │                 智能审片/合成/一键成片,UI 按钮(ui 模式,决策弹窗保留)、导演助手动作、
    │                 跑批引擎、CLI exec(后三者 headless)同一命令层;Commands.digest 统一消化回执
@@ -521,7 +522,7 @@ uploads/gen/                  火山引擎生成结果本地缓存(内容寻址�
 - **历史版本**:分镜版本列表(时间/模型/策略/提示词摘要/审核分)、双栏对比、一键"应用此版"回滚。**分镜表版本历史**:整表覆盖(AI 拆解/智能分镜/本地拆镜发布)前自动快照(存 `ep.shotHistory`,近 8 版,含判旧基准 sourceRev/graphRev),分镜顶栏「🕘 历史」弹窗预览各版逐镜内容并可一键回滚,回滚前对当前表再自动留档。
 - **🎰 首帧海选**:单镜「海选」一次文生图出 2×2 宫格构图变体(1 次计费顶 4 张,角度/景别变体同风格),客户端 canvas 切分后 4 选 1 写入首帧;切分失败保留整张原图可用不退费(与主体宫格同口径)。
 - **剪映导入包导出**:零依赖 ZIP(STORE+CRC32),含 draft_content.json(视频/音频/文本三轨,微秒时长)、draft_meta_info.json、materials/ 占位帧 PNG、README.txt。
-- **全局配置页**(左侧栏 🛠):文生图/文生视频/审片提示词模板(变量 {style}{subject}{shot})、默认 LLM/生图/视频模型/音色、默认画质与比例,注入各生成入口。
+- **全局配置页**(左侧栏 🛠):文生图/文生视频/审片提示词模板(变量 {style}{subject}{shot})、默认 LLM/生图/视频模型/音色、默认画质与比例,注入各生成入口。三套模板的注入点分别是:**文生图**→主体图提示词(`EpisodeUtil.genPrompt` / 八维人设重写);**文生视频**→分镜画面提示词(智能分镜 user 提示词的逐镜 prompt 要素要求、模型未给 prompt 时的兜底成型、`SB.buildShotPrompt` 本地拼装出口),浏览器与服务端 `/api/wf/smart-storyboard` 取 `settings.tplVideo` 同一原值,雇佣风格专家即换成该专家的模板;**审片**→单镜评审提示词的「评审模板要求」。三套模板均**不新增计费动作**,随所在链路的既有 `Tasks.run`(浏览器)/`wfLLM`(服务端)登记扣费与失败退费。
 
 ## 剧本上传支持的格式
 

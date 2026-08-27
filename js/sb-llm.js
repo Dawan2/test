@@ -3,7 +3,7 @@
  * runSmartSB(智能分镜入口,两阶段:本集理解→分镜生成) + publishShots(本地兜底拆分)。
  * 加载顺序:storyboard.js 之后;共享辅助经 window.SB 解构,批量操作运行时经 SB.runBatchOp(sb-batch.js)。 */
 (function () {
-  const { blankShot, CAMERAS, snapshotShot, buildShotPrompt, renderShots, onEpPage, VOICES } = window.SB; // SPLIT_RULES/PROMPT5 已随拆镜模板下沉 wf-core.js
+  const { blankShot, CAMERAS, snapshotShot, buildShotPrompt, tplVideoOf, renderShots, onEpPage, VOICES } = window.SB; // SPLIT_RULES/PROMPT5 已随拆镜模板下沉 wf-core.js
 
   /* ================= LLM 分镜生成(失败时调用方回退本地 publishShots) ================= */
   async function genShotsLLM(p, ep, { model, count, mode, optimize, adv, feedback, opId, step }) {
@@ -22,6 +22,7 @@
       understandingText: ep.understanding && window.Understanding ? Understanding.toText(ep.understanding) : '',
       eventsText: window.eventsOfEpisode ? eventsOfEpisode(p, ep) : '',
       content: (ep.content || '').slice(0, 12000),
+      tplVideoText: tplVideoOf(), // 文生视频模板(雇佣专家/全局配置写入):与服务端 /api/wf/smart-storyboard 同一取值口径
     });
     const out = await API.chatJSON({
       model,
@@ -53,6 +54,7 @@
     return WfCore.normalizeLLMShot(raw, i, p, ep, modelName, tweet, {
       uid: Store.uid, now: Store.now,
       directorNote: window.directorInject ? directorInject(p.style) : '',
+      tplVideoText: tplVideoOf(), // 模型未给 prompt 时按文生视频模板兜底(与服务端同口径)
       phImage: tweet ? (s => PH.shot(s.plot, s.order)) : null,
     });
   }
