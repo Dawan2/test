@@ -131,7 +131,7 @@
     // R1 收敛:统一走 API.chatJSONRobust(重试+修复内置)
     const out = await API.chatJSONRobust({
       model,
-      system: WfCore.EXTRACT_SYSTEM,
+      system: WfCore.extractSystem(), // 人设句 + 「主体参考」按键注入(js/wf-core.js 单源,与 wf 端点同一份)
       user,
       temperature: 0.3, max_tokens: 4000,
       operationId: opId,

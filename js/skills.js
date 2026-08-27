@@ -462,6 +462,10 @@
       kb: ['主体参考'], settings: ['tplImage'],
       cmds: ['episode.preflight', 'shot.generateVideo', 'subject.generateImage'],
       gaps: ['G-06', 'G-13'],
+      note: '注入面落在主体步系统人设 WfCore.extractSystem(浏览器解析向导与 /api/wf/extract-subjects 同一份),'
+        + '本条拼块即该条目正文;人设句入注册表待 G-13。'
+        + '生成请求构造点(Domain.buildVideoRequest)不注方法论文本,生成指纹口径不动;'
+        + 'gaps 的 G-06 记的是本条尚未落地的校验半(生成前置 warn)',
     },
     {
       id: 'subjects.refIntegrity', sk: 'SK-12', name: '分镜引用主体完备性校验', stage: 'subjects',
@@ -509,9 +513,11 @@
     /* ---- 分镜 ---- */
     {
       id: 'shots.shotLanguage', sk: 'SK-17', name: '镜头语言词表归一与注入', stage: 'shots', wave: 'W2',
-      kinds: ['inject'], kb: ['景别运镜', '轴线匹配'], prompts: ['sb.system'],
+      kinds: ['inject'], kb: ['景别运镜', '轴线匹配', '多镜头写法'], prompts: ['sb.system'],
       cmds: ['episode.generateStoryboard'], experts: ['ex_dp'], gaps: ['G-07', 'G-14'],
-      note: 'kb 顺序与 WfCore.sbSystem 注入点一致;词表以 WfCore 的景别/运镜/视点/角度四表为准',
+      note: 'kb 顺序与 WfCore.sbSystem 注入点一致;词表以 WfCore 的景别/运镜/视点/角度四表为准。'
+        + '「多镜头写法」自 SK-19 移来:它治的是逐镜 prompt 的镜头流写法,落点就是拆镜人设这一处,'
+        + '同一提示词内不重复注入(SK-19 不再登记该键)',
     },
     {
       id: 'shots.sizeProgression', sk: 'SK-18', name: '景别递进与轴线校验', stage: 'shots',
@@ -523,9 +529,11 @@
     {
       id: 'shots.promptEightDim', sk: 'SK-19', name: '抽卡八维公式与军规注入', stage: 'shots',
       covers: ['shots', 'gen'], wave: 'W2', kinds: ['inject', 'check'], pending: ['check'],
-      kb: ['抽卡公式', '抽卡军规', '多镜头写法'], prompts: ['sb.system'], settings: ['tplVideo'],
-      cmds: ['episode.generateStoryboard'], gaps: ['G-15', 'G-06', 'G-05', 'G-10'],
-      note: '索引面 W2 落地;生成前 warn 的校验面属 W4',
+      kb: ['抽卡公式', '抽卡军规'], prompts: ['sb.system'], settings: ['tplVideo'],
+      cmds: ['episode.generateStoryboard'], gaps: ['G-15', 'G-05', 'G-10'],
+      note: '索引面 W2 落地;生成前 warn 的校验面属 W4。'
+        + '「多镜头写法」移交 SK-17(拆镜人设注入面)后本条不再登记该键,G-06 随之从本条清账;'
+        + '本条两条抽卡条目的提示词落点是生成步人设 WfCore.genPromptSystem(SK-21 同键登记)',
     },
     {
       id: 'shots.motionGate', sk: 'SK-20', name: '镜头动态感准入校验', stage: 'shots', wave: 'W4',
@@ -539,12 +547,13 @@
       kinds: ['inject'], kb: ['抽卡公式', '抽卡军规'], prompts: ['gen.promptSystem'], settings: ['tplVideo'],
       cmds: ['shot.generateVideo', 'episode.generateVideos'],
       experts: ['ex_suspense', 'ex_sweet', 'ex_hotblood', 'ex_healing', 'ex_cinema', 'ex_narration', 'ex_revenge', 'ex_power'],
-      gaps: ['G-06', 'G-13'],
+      gaps: ['G-13'],
       note: '注入面两半:模板半(tplVideo)经 WfCore.fillTplVideo 落在提示词成型链路(拆镜要素要求、'
         + '模型未给 prompt 的兜底、本地拼装出口 SB.buildShotPrompt),模板为空时输出逐字节不变;'
         + '方法论半按键整条注入提示词改写人设 WfCore.genPromptSystem——本条拼块即那两条条目正文,'
         + '生成请求构造点(Domain.buildVideoRequest)不注方法论文本,生成指纹口径不动;'
-        + '多镜头写法/主体参考两条仍未进任何提示词构造点(G-06 未闭),模块内联提示词入注册表的覆盖面待 G-13',
+        + 'G-06 的注入半到此闭合(多镜头写法进 SK-17 拆镜人设、主体参考进 SK-11 主体人设),'
+        + '其校验半(生成前置 warn)仍挂 SK-11/SK-13;模块内联提示词入注册表的覆盖面待 G-13',
     },
     {
       id: 'gen.renderCredential', sk: 'SK-22', name: '生成凭据与确认失效校验', stage: 'gen', wave: 'W4',

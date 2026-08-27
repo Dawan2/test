@@ -300,8 +300,10 @@ ${ctx.content}`;
       genStrategy: cfg.batchStrategy || 'ref', inheritTail: false, firstFrame: null, lastFrame: null, name: '',
     };
   };
-  /* 智能分镜系统人设(按 KB.SECTIONS 键取条目正文,知识库单一来源;ov=用户提示词覆盖表) */
-  W.sbSystem = ov => Prompts.get('sb.system', ov) + KB.pick('景别运镜', '轴线匹配');
+  /* 智能分镜系统人设(按 KB.SECTIONS 键取条目正文,知识库单一来源;ov=用户提示词覆盖表):
+   * 键与顺序即 skill 索引分镜步 shots.shotLanguage 的登记——「多镜头写法」治的是逐镜 prompt 的镜头流写法
+   * (按时间顺序不写碎、图生视频声明依参考图、首尾帧策略收敛动作幅度),与拆镜同时决定的策略/景别同属一处口径。 */
+  W.sbSystem = ov => Prompts.get('sb.system', ov) + KB.pick('景别运镜', '轴线匹配', '多镜头写法');
   /* 视频提示词改写人设句(注册表单取,不接方法论块):一键优化/produce 修订重抽两端的 system 半,
    * 与 buildOptimizeUser 配对使用——这两条链路的 user 半已给定原提示词与审片意见,方法论块会改写方向,
    * 故只收人设句,缺省输出与收编前的内联字面逐字节相同;覆盖 gen.promptSystem 时两端一并跟随。 */
@@ -604,8 +606,13 @@ ${ctx.personaNote ? ctx.personaNote.replace(/^。/, '') + '\n' : ''}${ctx.memTex
 ${t}`;
     return { user, truncated: trunc };
   };
-  /* 提取 system(浏览器解析向导与 /api/wf/extract-subjects 同一句) */
+  /* 提取人设句(浏览器解析向导与 /api/wf/extract-subjects 同一句;方法论块由 extractSystem 接) */
   W.EXTRACT_SYSTEM = '你是专业的短剧剧本分析助手。';
+  /* 主体步系统人设(主体装配口,与 sbSystem/genPromptSystem 同形态):人设句 + 「主体参考」按键整条注入。
+   * 该条目治的正是提取产出要成为可用参考的形状——名称唯一稳定(供生成时「将图片N定义为「名字」」)、
+   * 人物 prompt 按大头照+全身照写而非三视图、参考人物数有上限;正文只从 KB 取,本层不写第二份。
+   * 人设句尚未入 Prompts 注册表(G-13),故本装配口不收覆盖表参数。 */
+  W.extractSystem = () => W.EXTRACT_SYSTEM + KB.pick('主体参考');
   /* 提取结果规整:逐字段白名单 + 可信性校验(拦截台词碎片) + 别名合并去重 → {character,scene,prop} */
   W.normalizeExtracted = function (out) {
     out = out || {};

@@ -3425,7 +3425,8 @@ const contractTests = [
     assertEq(Skills.stages().filter(k => !Skills.stageOf(k).wfStep).join(','), '', '七步应全部标为 Domain.workflow 主线步骤');
     // 索引层不复制正文:块文本逐字节等于 KB 原文/压缩块
     const KB = require('../js/knowledge.js');
-    assertEq(Skills.block('shots', { ids: ['shots.shotLanguage'] }), KB.pick('景别运镜', '轴线匹配'), '分镜注入块应逐字节等于 KB 条目拼接');
+    assertEq(Skills.block('shots', { ids: ['shots.shotLanguage'] }), KB.pick('景别运镜', '轴线匹配', '多镜头写法'), '分镜注入块应逐字节等于 KB 条目拼接');
+    assertEq(Skills.block('subjects'), KB.section('主体参考'), '主体步注入块应逐字节等于 KB 主体参考条目');
     assertEq(Skills.block('review'), KB.reviewBlock(), '审片注入块应逐字节等于 KB.reviewBlock()');
     assertEq(Skills.block('gen'), KB.pick('抽卡公式', '抽卡军规'), '生成步注入块应逐字节等于 KB 条目拼接');
     const src = fs.readFileSync(path.join(ROOT, 'js', 'skills.js'), 'utf8');
@@ -3692,12 +3693,39 @@ const contractTests = [
     const orphan = Object.keys(KB.SECTIONS).filter(k => !digested.includes(k) && !srcAll.includes("'" + k + "'"));
     assertEq(orphan.join('、'), '', '条目须有取用点:补进注入清单(BOARD_KB/KB.pick)或压缩摘要,不留库里躺着的条目');
   } },
-  { name: '知识库取用:拆镜人设整条注入景别运镜+轴线匹配正文(按键取用后正文不缩水)', fn() {
+  { name: '知识库取用:拆镜人设整条注入景别运镜+轴线匹配+多镜头写法正文,与 Skills.block(shots) 逐字节同源', fn() {
     const KB = require('../js/knowledge.js');
+    const Skills = require('../js/skills.js');
+    const Prompts = require('../js/prompts.js');
     const WfCore = require('../js/wf-core.js');
     const sys = WfCore.sbSystem({});
-    assert(sys.includes(KB.section('景别运镜')) && sys.includes(KB.section('轴线匹配')), '拆镜系统人设应含两条目正文');
-    assert(sys.startsWith(require('../js/prompts.js').get('sb.system', {})), '拆镜人设应以 sb.system 提示词开头(注册表覆盖生效)');
+    ['景别运镜', '轴线匹配', '多镜头写法'].forEach(k => assert(sys.includes(KB.section(k)), '拆镜系统人设应含条目正文:' + k));
+    assert(sys.startsWith(Prompts.get('sb.system', {})), '拆镜人设应以 sb.system 提示词开头(注册表覆盖生效)');
+    assertEq(sys, Prompts.get('sb.system', {}) + Skills.block('shots', { ids: ['shots.shotLanguage'] }), '拆镜人设的方法论段应逐字节等于分镜步注入块(SK-17)');
+    assertEq(WfCore.sbSystem({ 'sb.system': '分镜师。' }), '分镜师。' + KB.pick('景别运镜', '轴线匹配', '多镜头写法'), '覆盖只换人设句,方法论正文不受影响');
+    // 同一提示词内不重复注入:多镜头写法在分镜步只登记一次(SK-19 移交后不得再挂,否则拼块出现两份正文)
+    assertEq(Skills.list('shots').filter(s => s.kb.includes('多镜头写法')).map(s => s.id).join(','), 'shots.shotLanguage',
+      '多镜头写法在分镜步应只由拆镜人设宿主登记');
+  } },
+  { name: '知识库取用:主体步人设整条注入主体参考正文,与 Skills.block(subjects) 逐字节同源', fn() {
+    const KB = require('../js/knowledge.js');
+    const Skills = require('../js/skills.js');
+    const WfCore = require('../js/wf-core.js');
+    const sys = WfCore.extractSystem();
+    assertEq(WfCore.EXTRACT_SYSTEM, '你是专业的短剧剧本分析助手。', '提取人设句应与接入前的字面逐字节相同');
+    assert(sys.startsWith(WfCore.EXTRACT_SYSTEM), '主体步人设应以提取人设句开头');
+    assertEq(sys, WfCore.EXTRACT_SYSTEM + Skills.block('subjects'), '主体步人设的方法论段应逐字节等于主体步注入块(SK-11)');
+    assertEq(sys, WfCore.EXTRACT_SYSTEM + KB.section('主体参考'), '方法论段应逐字节等于 KB 主体参考条目');
+    // 双端消费点:浏览器解析向导与 wf 端点同一装配口,两端都不再直取人设句常量(否则注入只落一端)
+    const eu = fs.readFileSync(path.join(ROOT, 'js', 'episode-util.js'), 'utf8');
+    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    [['js/episode-util.js', eu], ['server.js', srv]].forEach(([f, src]) => {
+      assert(src.includes('WfCore.extractSystem()'), f + ' 提取主体应经 WfCore.extractSystem 取人设');
+      assert(!src.includes('WfCore.EXTRACT_SYSTEM'), f + ' 不应直取人设句常量(方法论块会漏一端)');
+    });
+    // 注入只加在 system 半:提取 user 模板不留第二份条目正文
+    const types = { character: true, scene: true, prop: true };
+    assert(!WfCore.buildExtractUser('剧本正文', 'normal', types).user.includes(KB.section('主体参考')), '提取 user 模板不应重复一份条目正文');
   } },
   { name: '知识库取用:生成步提示词改写人设整条注入抽卡公式+军规,与 Skills.block(gen) 逐字节同源', fn() {
     const KB = require('../js/knowledge.js');
