@@ -4294,6 +4294,30 @@ const skillsTests = [
     assert(body.includes('台词单句 31 字超上限'), '命中应译成人话展示');
     assert(!/未发现关键问题[\s\S]*方法论校验命中[\s\S]*rv-score/.test(body), '命中区应在评分区之后,不改评分版式');
   } },
+  { name: '记账诚实位:infra 面仍 pending 的三条须有 note 说明缺口已落地实况(不假清未完成面)', fn() {
+    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    const W = require('../js/wf-core.js');
+    const wfSteps = DomainMod.workflow({ id: 'p1', episodes: [], subjects: [] }).steps.map(x => x.key);
+    const facts = {
+      'core.personaCtx': ['G-01', /function wfPersonaNote\(/.test(srv)],
+      'core.memoryDual': ['G-02', typeof W.memRecall === 'function' && typeof W.memBlock === 'function'],
+      'review.stage': ['G-03', wfSteps.includes('review')],
+    };
+    Object.keys(facts).forEach(id => {
+      const [gap, landed] = facts[id];
+      const s = Skills.byId(id);
+      assert(landed, id + ' 的 ' + gap + ' 出口应仍在(实况变动先红,不靠文档口径)');
+      assert(s.pending.includes('infra'), id + ' 的 infra 面是注册表侧记账收敛,不得在本轮假清');
+      assert(s.gaps.includes(gap), id + ' 应仍写明缺口编号 ' + gap);
+      assert(new RegExp(gap + ' 已落地').test(s.note || ''), id + ' 的 note 须如实说明 ' + gap + ' 已落地(读者不该读成没做)');
+    });
+    // 发布门的方法论门仍待 G-10:本轮只接审片路径的只读消费,门禁计数口径逐字不动
+    const sk29 = Skills.byId('film.deliverContract');
+    assert(sk29.pending.includes('check') && sk29.gaps.includes('G-10'), '发布门方法论门仍未落地,不得因审片接线记成已闭合');
+    const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
+    assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 仍只数高/中危');
+    assert(!/lastReview\.checks|report\.checks/.test(rsrc), '发布门不读审片报告的校验命中字段(本轮不接门禁)');
+  } },
 ];
 
 /* ================= 套件 20:剧本拆集双端单源(wf-core split* + 服务端/CLI/浏览器接入,G-04) =================

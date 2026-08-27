@@ -310,11 +310,15 @@
       kinds: ['infra'], pending: ['infra'],
       prompts: ['sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.finalSystem'],
       cmds: ['episode.understanding', 'episode.generateStoryboard', 'episode.smartReview'], gaps: ['G-01'],
+      note: 'G-01 已落地:服务端 /api/wf/* 各端点经唯一装配口 wfPersonaNote 注入生效人设,浏览器同装配口;'
+        + '本条 pending 的 infra 面留的是注册表侧记账收敛(改 pending 会动 gaps 投影,单列一轮),口径同 SK-23',
     },
     {
       id: 'core.memoryDual', sk: 'SK-04', name: '长期记忆双端与召回纯函数', stage: CROSS, wave: 'W3',
       kinds: ['infra'], pending: ['infra'], gaps: ['G-02'],
-      note: '召回策略(同板块最近若干 + 全局最近若干)抽为纯函数后双端同用;记忆种子不在 KB 条目面',
+      note: 'G-02 已落地:召回策略(同板块最近若干 + 全局最近若干)已抽为 WfCore.memRecall/memBlock 双端同用,'
+        + '记忆种子不在 KB 条目面;本条 pending 的 infra 面留的是注册表侧记账收敛('
+        + '改 pending 会动 gaps 投影,单列一轮),口径同 SK-23',
     },
     {
       id: 'core.playbookProjection', sk: 'SK-05', name: 'playbook 由注册表投影', stage: CROSS, wave: 'W4',
