@@ -63,14 +63,8 @@
   const EMOTIONS = ['平静', '开心', '悲伤', '愤怒', '温柔', '严肃', '兴奋', '恐惧'];
   // R4 收敛:7 项旁白音色为全局唯一来源(storyboard/gsettings 复用)
   const NARRATOR_PRESETS = ['旁白·沉稳男声', '旁白·知性女声', '少年音', '少女音', '磁性大叔音', '冷艳御姐音', '苍老智者音'];
-  const DEFAULT_CFG = { voice: '叙事氛围', rate: 1.0, volume: 5, pitch: 1.0, emotion: '平静' };
-
-  /* 旧数据兼容:字符串 voice → 结构化 */
-  function norm(v) {
-    if (!v) return Object.assign({}, DEFAULT_CFG);
-    if (typeof v === 'string') return Object.assign({}, DEFAULT_CFG, { voice: v });
-    return Object.assign({}, DEFAULT_CFG, v);
-  }
+  /* 旧数据兼容:字符串 voice → 结构化(实现下沉 domain.js,配音清单与 CLI 同一份规范化) */
+  const norm = v => Domain.normVoiceCfg(v);
   const byName = name => all().find(v => v.name === name) || null;
   const favs = () => { if (!Store.state.favVoices) Store.state.favVoices = []; return Store.state.favVoices; };
   const isFav = id => favs().includes(id);
