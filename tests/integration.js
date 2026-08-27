@@ -483,6 +483,57 @@ async function main() {
     report('MOCK_LLM 下拆集不扣费(计费链路由 wfLLM 统一负责)', balAfterSplit === balBeforeSplit, '前 ' + balBeforeSplit + ' 后 ' + balAfterSplit);
   }
 
+  /* ============ 测试 23(W53):协作记忆播种 /api/wf/memory-seed(headless 无 window 的补种与板块迁移) ============
+   * 覆盖:空桶播种写回既有 state.agentMemory / 幂等不重复种 / 按板块播种 / 空板与未知板名 400 /
+   *      旧板名→新板名迁移不丢不双写 / 空板迁移 400 / 全程零计费。 */
+  {
+    const balBeforeSeed = (await req('GET', '/api/wallet', null, token)).data.balance;
+    const memBefore = ((await req('GET', '/api/state', null, token)).data.state.agentMemory || []).length; // 桶里已有审片闭环回流的条目
+    await sleep(1100);
+    const sd1 = await req('POST', '/api/wf/memory-seed', {}, token);
+    report('wf/memory-seed 播种 200(changed + added 如实回报,原有条目不动)',
+      sd1.status === 200 && sd1.data && sd1.data.changed === true && sd1.data.added.length === 7 && sd1.data.total === memBefore + 7,
+      'HTTP ' + sd1.status + ' ' + JSON.stringify(sd1.data || sd1.raw).slice(0, 160));
+    report('播种板块词表含主线七步 + 支线导演板块',
+      sd1.data && (sd1.data.boards || []).join(',') === '导演,剧本,主体,分集,分镜,生成,审片,成片', JSON.stringify(sd1.data && sd1.data.boards));
+    const sSeed = await req('GET', '/api/state', null, token);
+    const memS = (sSeed.data.state.agentMemory) || [];
+    report('播种落在既有 state.agentMemory 桶(条目结构与浏览器同形)',
+      memS.length === memBefore + 7 && memS.every(m => m.text && m.time && m.scope) && memS.filter(m => m.kb).length === 5,
+      JSON.stringify(memS.map(m => (m.kb || m.scope))).slice(0, 160));
+    report('播种条目可经 cli memory list 同通道读回(state 顶层键未新增)',
+      !Object.keys(sSeed.data.state).includes('agentSeeds') && Array.isArray(sSeed.data.state.agentMemory), Object.keys(sSeed.data.state).join(',').slice(0, 120));
+    await sleep(1100);
+    const sd2 = await req('POST', '/api/wf/memory-seed', {}, token);
+    report('重复播种幂等(changed=false + 不再新增条目)',
+      sd2.status === 200 && sd2.data && sd2.data.changed === false && sd2.data.added.length === 0 && sd2.data.total === memBefore + 7, JSON.stringify(sd2.data || sd2.raw).slice(0, 120));
+    await sleep(1100);
+    const sdBad = await req('POST', '/api/wf/memory-seed', { board: '灯光' }, token);
+    report('未知板名 400(不静默空成功)', sdBad.status === 400 && /未知板块名/.test(sdBad.raw || ''), 'HTTP ' + sdBad.status + ' ' + sdBad.raw);
+    await sleep(1100);
+    const sdEmpty = await req('POST', '/api/wf/memory-seed', { board: '生成' }, token);
+    report('空板(该板块无登记种子)400', sdEmpty.status === 400 && /没有登记的记忆种子/.test(sdEmpty.raw || ''), 'HTTP ' + sdEmpty.status + ' ' + sdEmpty.raw);
+    // 板块迁移:先写一条旧板名条目(与浏览器/CLI 同一个 meta 桶通道),再迁到新板名
+    const sM = await req('GET', '/api/state', null, token);
+    const metaMem = (sM.data.state.agentMemory || []).concat([{ text: '旧板名条目:夜戏偏冷色', time: '2026-08-27 12:00:00', scope: '构思' }]);
+    const putM = await req('PUT', '/api/state', { rev: +(sM.data && sM.data.rev || 0), changes: { meta: { agentMemory: metaMem } } }, token);
+    report('旧板名条目写入 meta 桶成功', putM.status === 200, 'HTTP ' + putM.status);
+    await sleep(1100);
+    const mg = await req('POST', '/api/wf/memory-seed', { from: '构思', to: '导演' }, token);
+    report('板块迁移 200(旧板名→新板名,计数如实)',
+      mg.status === 200 && mg.data && mg.data.total === memBefore + 8 && JSON.stringify(mg.data.migrated) === JSON.stringify([{ from: '构思', to: '导演', count: 1 }]),
+      'HTTP ' + mg.status + ' ' + JSON.stringify(mg.data || mg.raw).slice(0, 140));
+    const sMg = (await req('GET', '/api/state', null, token)).data.state.agentMemory || [];
+    report('迁移不丢不双写(条目数不变,旧板名清零,正文原样)',
+      sMg.length === memBefore + 8 && !sMg.some(m => m.scope === '构思') && sMg.filter(m => m.text === '旧板名条目:夜戏偏冷色').length === 1
+      && sMg.filter(m => m.scope === '导演').length === 1, JSON.stringify(sMg.map(m => m.scope)));
+    await sleep(1100);
+    const mgEmpty = await req('POST', '/api/wf/memory-seed', { from: '构思', to: '导演' }, token);
+    report('空板迁移 400(旧板名下已无条目,不回空成功)', mgEmpty.status === 400 && /没有记忆条目/.test(mgEmpty.raw || ''), 'HTTP ' + mgEmpty.status + ' ' + mgEmpty.raw);
+    const balAfterSeed = (await req('GET', '/api/wallet', null, token)).data.balance;
+    report('播种/迁移全程零计费(无 LLM、无上游调用)', balAfterSeed === balBeforeSeed, '前 ' + balBeforeSeed + ' 后 ' + balAfterSeed);
+  }
+
   console.log(`\n===== ${PASS}/${PASS + FAIL} PASS, ${FAIL} FAIL =====`);
 }
 

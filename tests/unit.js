@@ -6026,6 +6026,19 @@ const splitTests = [
   } },
 ];
 
+/* 浏览器助手模块(记忆播种入口 memAll 的宿主):按 index.html 顺序加载 KB/Prompts/WfCore 后加载 agent.js;
+ * memAll 不在对外出口上,经 AgentCore.memBlock/openMemoryModal 触发(与浏览器真实调用路径一致) */
+function loadAgent() {
+  const sb = makeSandbox();
+  installCommon(sb);
+  loadFile(sb, 'domain.js');
+  loadFile(sb, 'prompts.js');
+  loadFile(sb, 'knowledge.js');
+  loadFile(sb, 'wf-core.js');
+  loadFile(sb, 'agent.js');
+  return sb;
+}
+
 /* ================= 套件 21:协作记忆双端单源(wf-core memRecall/memBlock,G-02) =================
  * 召回算法自 agent.js 下沉后是对话层与 /api/wf/* 工作流端点的唯一一份,此前只有经 evolveExpert
  * 的间接使用,没有直接断言(W6 收敛记录列为主干最薄处)。本套件锁住召回口径与注入块字面。 */
@@ -6292,7 +6305,167 @@ const memoryTests = [
     const sk4 = Skills.byId('core.memoryDual');
     assert(sk4.note.includes('审片/发布两个闭环') && sk4.note.includes('SK-26'), 'SK-04 的 note 须随回流面落地同步改写');
   } },
+  /* ---- 记忆播种/板块迁移(W53:补种与迁移的 headless 收口) ----
+   * 此前这段派生只在浏览器 memAll() 里,headless 读写记忆桶跑不到。下沉后判据全在这几条上:
+   * 种子表只此一份、Node 无 window 也能播出同结构条目、迁移不丢不双写、空板/未知板名不静默空成功。 */
+  { name: 'memSeed 播种(Node 无 window):迁移+标准沉淀+知识库种子一次到位,条目结构与既有记忆桶同形', fn() {
+    const W = require('../js/wf-core.js');
+    const KB = require('../js/knowledge.js');
+    const seed = mem => W.memSeed(mem, { kb: KB, now: () => '2026-08-27 10:00:00', boards: HEADLESS_BOARDS() });
+    const src = [];
+    const r = seed(src);
+    assertEq(src.length, 0, '入参数组不得被改写(与 memWrite 同纪律)');
+    assertEq(r.mem.length, W.MEM_STD_SEEDS.length + W.MEM_KB_SEEDS.length, '空桶播种应种下两张表的全部条目');
+    assertEq(r.added.length, r.mem.length, 'added 应逐条如实回报');
+    assertEq(r.changed, true, '有新种条目即 changed');
+    // 条目结构:沿用既有桶的字段集(知识库条目多一个同键标识 kb),不另造第二套 schema
+    const keys = m => Object.keys(m).sort().join(',');
+    assertEq(keys(r.mem[0]), 'scope,text,time', '标准沉淀条目字段集');
+    assertEq(keys(r.mem[r.mem.length - 1]), 'kb,scope,text,time', '知识库沉淀条目字段集(多 kb 同键标识)');
+    assertEq(r.mem.every(m => m.time === '2026-08-27 10:00:00'), true, '时间戳经 ctx.now 注入(纯函数不取当前时间)');
+    assertEq(r.mem.map(m => m.scope).join(','), '分镜,分镜,剧本,剧本,剧本,分镜,分镜', '板块 scope 取种子表登记值');
+    assertEq(r.mem[r.mem.length - 1].text, KB.pick('抽卡军规', '抽卡公式'), '知识库条目正文现取 KB(不留第二份措辞)');
+    // 种下的条目立刻可被同板块召回(播种→召回闭合)
+    assert(W.memBlock(r.mem, '', '分镜').includes('五段式标准结构'), '播下的分镜种子应能被同板块召回');
+    // 幂等:再播一次不重复种、不写盘
+    const again = seed(r.mem);
+    assertEq(again.added.length, 0, '已种过再播不重复种');
+    assertEq(again.changed, false, '无变化时 changed=false(调用方据此不写盘)');
+    assertEq(again.mem.length, r.mem.length);
+    // 脏入参安全(非数组按空桶处理)
+    [null, undefined, 'x', 42].forEach(bad => assertEq(seed(bad).mem.length, r.mem.length, '非数组入参应按空桶播种:' + JSON.stringify(bad)));
+  } },
+  { name: 'memSeed 补种边界:旧板名自动迁移、知识库同键跟随正文、老手抄版不重复种、无 kb 时跳过知识库种子', fn() {
+    const W = require('../js/wf-core.js');
+    const KB = require('../js/knowledge.js');
+    // 旧板块名迁移(表驱动):条目原地改 scope,不新增条目
+    const old = [{ text: '用户偏好:夜戏偏冷色', time: 't', scope: '构思' }, { text: '另一条', time: 't', scope: '分镜' }];
+    const r = W.memSeed(old, { kb: KB, now: 't2' });
+    assertEq(JSON.stringify(r.migrated), JSON.stringify([{ from: '构思', to: '导演', count: 1 }]), '旧板名应按迁移表归位');
+    assertEq(r.mem.filter(m => m.scope === '构思').length, 0, '迁移后不应再有旧板名条目');
+    assertEq(r.mem.filter(m => m.text === '用户偏好:夜戏偏冷色').length, 1, '迁移不双写(条目仍只有一条)');
+    assertEq(old[0].scope, '构思', '入参条目不得被就地改写');
+    // 知识库同键沉淀:条目正文改过后跟随更新(不重复种、不留旧措辞)
+    const seeded = W.memSeed([], { kb: KB, now: 't' }).mem;
+    const one = seeded.find(m => m.kb === '对话铁律');
+    one.text = '过时的旧正文';
+    const upd = W.memSeed(seeded, { kb: KB, now: 't' });
+    assertEq(upd.updated.join(','), '对话铁律', '同键沉淀正文改过应跟随更新');
+    assertEq(upd.mem.filter(m => m.kb === '对话铁律').length, 1, '跟随更新是原地改,不追加第二条');
+    assertEq(upd.mem.find(m => m.kb === '对话铁律').text, KB.section('对话铁律'));
+    // 老数据的手抄版(无 kb 键但正文含 legacy 标记):保留用户既有条目,不重复种
+    const legacy = [{ text: '钩子六型:老用户自己抄的那版', time: 't', scope: '剧本' }];
+    const lr = W.memSeed(legacy, { kb: KB, now: 't' });
+    assertEq(lr.mem.filter(m => String(m.text).includes('钩子六型')).length, 1, '命中 legacy 标记不重复种');
+    assertEq(lr.mem.some(m => m.kb === '钩子六型'), false, '老条目保留原样,不改写成带 kb 的新条目');
+    // 未注入知识库:只种标准沉淀(与浏览器 window.KB 缺失时同口径)
+    const noKb = W.memSeed([], { now: 't' });
+    assertEq(noKb.mem.length, W.MEM_STD_SEEDS.length, '无 kb 注入时跳过知识库种子');
+    assertEq(noKb.mem.every(m => !m.kb), true);
+  } },
+  { name: 'memSeed 按板块播种:只播该板块;空板与未知板名一律明确报错,不静默回空成功', fn() {
+    const W = require('../js/wf-core.js');
+    const KB = require('../js/knowledge.js');
+    const boards = HEADLESS_BOARDS();
+    const only = W.memSeed([], { kb: KB, now: 't', boards, board: '剧本' });
+    assertEq(only.mem.length, 3, '只播剧本板块的三条知识库种子');
+    assertEq(only.mem.every(m => m.scope === '剧本'), true, '不得越板种入其他板块');
+    // 未知板名:板块词表由调用方注入,不在本层另写一份
+    let err = '';
+    try { W.memSeed([], { kb: KB, boards, board: '灯光' }); } catch (e) { err = e.message; }
+    assert(/未知板块名:灯光/.test(err), '未知板名应明确报错:' + err);
+    // 空板:板块合法但没有登记种子(播下去什么也不会发生)——同样报错,不回一个"成功 0 条"
+    err = '';
+    try { W.memSeed([], { kb: KB, boards, board: '生成' }); } catch (e) { err = e.message; }
+    assert(/板块「生成」没有登记的记忆种子/.test(err), '空板应明确报错:' + err);
+    assert(W.memSeedBoards().join(',') === '分镜,剧本', '有种子的板块由两张种子表推出,不另写清单');
+    // 迁移表命中的板块可单播(旧板名归位不受板块过滤影响)
+    const mig = W.memSeed([{ text: 'x', scope: '构思' }], { kb: KB, boards, board: '分镜' });
+    assertEq(mig.migrated.length, 0, '只播分镜时不做导演板块的迁移');
+  } },
+  { name: 'memMigrateBoard 板块迁移:条目不丢不双写;空板/同名/未知新板名一律报错', fn() {
+    const W = require('../js/wf-core.js');
+    const boards = HEADLESS_BOARDS();
+    const mem = [
+      { text: 'A', time: 't', scope: '构思' }, { text: 'B', time: 't', scope: '分镜' },
+      { text: 'C', time: 't', scope: '构思', kb: 'x' }, { text: 'D', time: 't', scope: '' },
+    ];
+    const r = W.memMigrateBoard(mem, '构思', '导演', { boards });
+    assertEq(r.mem.length, mem.length, '迁移不增不减条目(不丢不双写)');
+    assertEq(r.moved.length, 2, '两条旧板名条目迁移');
+    assertEq(r.mem.map(m => m.scope).join('|'), '导演|分镜|导演|', '只改命中条目的 scope,其余原样');
+    assertEq(r.mem[2].kb, 'x', '迁移保留条目其余字段');
+    assertEq(r.mem.map(m => m.text).join(''), 'ABCD', '条目正文与顺序不变');
+    assertEq(mem[0].scope, '构思', '入参不得被改写');
+    assertEq(JSON.stringify(r.migrated), JSON.stringify([{ from: '构思', to: '导演', count: 2 }]));
+    assertEq(W.memRecall(r.mem, '', '导演').slice(0, 2).map(m => m.text).join(','), 'A,C', '迁移后条目应能被新板块优先召回');
+    // 明确报错面:空板(旧板名下无条目)/缺参/同名/未知新板名
+    const boom = (fn, re, why) => { let m = ''; try { fn(); } catch (e) { m = e.message; } assert(re.test(m), why + ':' + m); };
+    boom(() => W.memMigrateBoard(r.mem, '构思', '导演', { boards }), /旧板名「构思」下没有记忆条目/, '空板应报错而非静默空成功');
+    boom(() => W.memMigrateBoard(mem, '', '导演', { boards }), /需同时给出旧板名与新板名/, '缺旧板名应报错');
+    boom(() => W.memMigrateBoard(mem, '构思', '', { boards }), /需同时给出旧板名与新板名/, '缺新板名应报错');
+    boom(() => W.memMigrateBoard(mem, '分镜', '分镜', { boards }), /旧板名与新板名相同/, '同名迁移应报错');
+    boom(() => W.memMigrateBoard(mem, '构思', '灯光', { boards }), /未知板块名:灯光/, '未知新板名应报错');
+  } },
+  { name: '双端同播:浏览器 memAll 与 Node 无 window 直调 memSeed 产出逐字段一致', fn() {
+    const W = require('../js/wf-core.js');
+    const KB = require('../js/knowledge.js');
+    // 浏览器路径:agent.js 的 memAll(经 AgentCore.memBlock 触发,与真实调用路径一致)
+    const sb = loadAgent();
+    assertEq(typeof sb.window, 'object', '浏览器沙箱有 window');
+    sb.AgentCore.memBlock('', '分镜');
+    const browser = sb.Store.state.agentMemory;
+    assertEq(sb.Store._saves, 1, '播种只落一次盘(逐条 save 的老写法应已收敛)');
+    // headless 路径:Node 进程里没有 window/Store,记忆桶与知识库经参数注入
+    assertEq(typeof global.window, 'undefined', '本进程无 window(headless 判据)');
+    const headless = W.memSeed([], { kb: KB, now: () => sb.Store.now(), boards: HEADLESS_BOARDS() }).mem;
+    assertEq(JSON.stringify(headless), JSON.stringify(browser), '两端播出的条目应逐字段一致');
+    // 浏览器再开一次不重复种(memAll 幂等)
+    sb.AgentCore.memBlock('', '分镜');
+    assertEq(sb.Store.state.agentMemory.length, browser.length, '重复进入助手不重复种');
+    assertEq(sb.Store._saves, 1, '无变化时不再写盘');
+    // 浏览器侧的旧板名迁移仍在(老数据打开一次即归位)
+    const sb2 = loadAgent();
+    sb2.Store.state.agentMemory = [{ text: '老条目', time: 't', scope: '构思' }];
+    sb2.AgentCore.memBlock('', '导演');
+    assertEq(sb2.Store.state.agentMemory.filter(m => m.scope === '构思').length, 0, '浏览器打开时旧板名应归位');
+    assertEq(sb2.Store.state.agentMemory.filter(m => m.text === '老条目').length, 1, '迁移不双写');
+  } },
+  { name: '播种面接线(源级):种子表只在 wf-core 一份,四端入口齐备,板块词表两端同集', fn() {
+    const W = require('../js/wf-core.js');
+    const Skills = require('../js/skills.js');
+    const ag = fs.readFileSync(path.join(ROOT, 'js', 'agent.js'), 'utf8');
+    const wf = fs.readFileSync(path.join(ROOT, 'js', 'wf-core.js'), 'utf8');
+    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    const cli = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    const mcp = fs.readFileSync(path.join(ROOT, 'mcp.js'), 'utf8');
+    // 浏览器改为委托,种子正文/迁移表不得再在 agent.js 留第二份(直写 window-only 那一份即红)
+    assert(/WfCore\.memSeed\(Store\.state\.agentMemory,/.test(ag), '浏览器 memAll 应委托 WfCore.memSeed');
+    ['五段式标准结构', '景别衔接口诀', 'KB_SEEDS =', "scope === '构思'"].forEach(k =>
+      assert(!ag.includes(k), 'agent.js 不得再内联种子/迁移表:' + k));
+    assert(W.MEM_STD_SEEDS.every(s => wf.includes(s.legacy)) && wf.includes('构思'), '种子表与迁移表应落在 wf-core');
+    // headless 三端:服务端端点 + CLI 薄封装 + MCP 工具
+    assert(srv.includes("pathname === '/api/wf/memory-seed'") && /WfCore\.memSeed\(tree\.agentMemory,/.test(srv)
+      && /WfCore\.memMigrateBoard\(tree\.agentMemory,/.test(srv), '服务端端点应委托 WfCore 并写回既有 state 树记忆桶');
+    assert(/tree\.agentMemory = r\.mem;/.test(srv), '服务端落点仍是既有 agentMemory 桶(不新建存储桶)');
+    assert(!/wfLLM\([^)]*memory-seed/.test(srv) && !srv.includes("action: 'llm.memorySeed'"), '播种端点不得挂 LLM 计费动作');
+    assert(cli.includes("POST('/api/wf/memory-seed'") && /sub === 'seed'/.test(cli) && /sub === 'migrate'/.test(cli),
+      'CLI 应有 memory seed|migrate 两个薄封装子命令');
+    assert(cli.includes('memory seed [--scope 板块]') && cli.includes('memory migrate --from 旧板名 --to 新板名'), 'CLI help 应登记两条用法');
+    assert(mcp.includes('hujing_memory_seed') && mcp.includes('hujing_memory_migrate'), 'MCP 应暴露播种与迁移工具');
+    assert(/'memory', 'seed'/.test(mcp) && /'memory', 'migrate'/.test(mcp), 'MCP 工具应包装 CLI 同名子命令(不另起链路)');
+    // 板块词表:浏览器 AGENT_BOARDS 键 vs headless(Skills.STAGES 主线七步 + 支线导演),两端同集
+    const uiBoards = [...ag.matchAll(/\{ key: '([^']+)', ico:/g)].map(m => m[1]);
+    assertEq(uiBoards.join(','), HEADLESS_BOARDS().join(','), '两端板块词表应同集同序(各取自己那份单源)');
+    assert(/Skills\.STAGES\.map\(x => x\.name\)/.test(srv), '服务端板块词表应现取 Skills.STAGES,不手写第二份');
+    assertEq(Skills.STAGES.length + 1, uiBoards.length, '主线七步 + 支线导演板块');
+  } },
 ];
+/* headless 侧板块词表(与 server.js wfMemBoards 同一推导):支线「导演」+ 主线七步板块名 */
+function HEADLESS_BOARDS() {
+  const W = require('../js/wf-core.js');
+  return [W.WF_BOARD.understanding].concat(require('../js/skills.js').STAGES.map(x => x.name));
+}
 
 const SUITES = { 'agent-ops': agentOpsTests, experts: expertsTests, produce: produceTests, commands: commandsTests, store: storeTests, 'sb-gen': sbGenTests, pipeline: pipelineTests, 'sb-views': sbViewsTests, 'sb-io': sbIoTests, understanding: understandingTests, billing: billingTests, domain: domainTests, bus: busTests, issues: issuesTests, plans: plansTests, continuity: continuityTests, release: releaseTests, contract: contractTests, skills: skillsTests, tasks: tasksTests, split: splitTests, memory: memoryTests };
 (async () => {

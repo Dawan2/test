@@ -202,6 +202,29 @@ async function main() {
   r = cli('state-get', '--out', CFG_DIR + '/snap.json');
   report('state-get 落盘', r.code === 0 && fs.existsSync(CFG_DIR + '/snap.json'), '');
 
+  // ---- 协作记忆(headless 播种/迁移:零 LLM 零计费,与浏览器同一份种子表) ----
+  r = cli('memory', 'list');
+  const memBefore = (r.out && r.out.total) || 0;
+  report('memory list 读回记忆桶', r.code === 0 && Array.isArray(r.out.list), 'total=' + memBefore);
+  await sleep(1100); // wf 端点限流
+  r = cli('memory', 'seed');
+  report('memory seed 播种(标准沉淀 + 知识库种子,零计费)', r.code === 0 && r.out && r.out.changed === true && r.out.added.length === 7 && r.out.total === memBefore + 7, 'exit=' + r.code + ' ' + JSON.stringify(r.out || {}).slice(0, 90));
+  r = cli('memory', 'list');
+  report('播种条目同通道读回(与浏览器条目同形:text/time/scope + kb)', r.code === 0 && r.out.total === memBefore + 7 && r.out.list.filter(m => m.kb).length === 5, 'total=' + (r.out && r.out.total));
+  r = cli('memory', 'list', '--scope', '分镜', '--recall', '五段式');
+  report('播种条目可被召回算法取到(headless 提示词即刻吃到)', r.code === 0 && (r.out.recalled || []).some(m => String(m.text).includes('五段式标准结构')), JSON.stringify((r.out && r.out.recalled || []).map(m => m.scope)));
+  await sleep(1100);
+  r = cli('memory', 'seed');
+  report('重复播种幂等(changed=false,不重复种)', r.code === 0 && r.out && r.out.changed === false && r.out.added.length === 0, JSON.stringify(r.out || {}).slice(0, 80));
+  await sleep(1100);
+  r = cli('memory', 'seed', '--scope', '生成');
+  report('空板播种如实报错(不静默空成功)', r.code !== 0 && /没有登记的记忆种子/.test(String((r.out && r.out.error) || r.err)), 'exit=' + r.code + ' ' + String((r.out && r.out.error) || r.err).slice(0, 60));
+  await sleep(1100);
+  r = cli('memory', 'migrate', '--from', '构思', '--to', '导演');
+  report('空板迁移如实报错(旧板名下无条目)', r.code !== 0 && /没有记忆条目/.test(String((r.out && r.out.error) || r.err)), 'exit=' + r.code + ' ' + String((r.out && r.out.error) || r.err).slice(0, 60));
+  r = cli('memory', 'bogus');
+  report('memory 未知子命令 → exit 2(用法含 seed|migrate)', r.code === 2 && /seed\|migrate/.test(String((r.out && r.out.error) || r.err)), 'exit=' + r.code);
+
   // ---- workflow 统一工作流状态(domain.js 单源口径) ----
   r = cli('workflow', pid);
   report('workflow 项目级(steps+recommendedAction)', r.code === 0 && Array.isArray(r.out.steps) && !!r.out.recommendedAction, (r.out && r.out.recommendedAction && r.out.recommendedAction.key) || '');
