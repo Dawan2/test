@@ -3480,7 +3480,7 @@ const contractTests = [
     // 波次配比与短名单一致:W2 单源打底 9 / W3 双端贯通 5 / W4 校验闸门 16
     const byWave = list.reduce((m, s) => { m[s.wave] = (m[s.wave] || 0) + 1; return m; }, {});
     assertEq(JSON.stringify(byWave), JSON.stringify({ W2: 9, W3: 5, W4: 16 }), '波次配比应为 W2:9 / W3:5 / W4:16');
-    // 四类既有单源键全覆盖:KB 17 条 / Prompts 6 key / 命令 11 条 / 专家 16 位(新增单源键必须进索引)
+    // 四类既有单源键全覆盖:KB 18 条 / Prompts 6 key / 命令 11 条 / 专家 16 位(新增单源键必须进索引)
     const uniq = k => [...new Set([].concat(...list.map(s => s[k])))];
     const KB = require('../js/knowledge.js');
     const kbKeys = Object.keys(KB.SECTIONS);
@@ -3497,6 +3497,22 @@ const contractTests = [
     assert(Skills.covering('shots').some(s => s.id === 'script.dialogueRule'), 'covers 应能查到跨步条目');
     assert(Skills.forExpert('ex_hook').some(s => s.id === 'script.hookType'), '专家反查应命中引用它的能力');
     assert((Skills.gaps()['G-10'] || []).length > 0, '缺口投影应能按缺口编号列出待落地能力');
+  } },
+  { name: 'skill 索引登记面无漏登:索引宿主 SK-01 的 kb 与 KB.SECTIONS 键集逐条对齐(全库登记一次)', fn() {
+    const Skills = require('../js/skills.js');
+    const KB = require('../js/knowledge.js');
+    const kbKeys = Object.keys(KB.SECTIONS);
+    /* 「每个 SECTIONS 键至少被一条 skill.kb 登记」已由上一条契约断言,但它对宿主这一向是盲的:
+     * 某键只要被别的条目登记过,把它从索引宿主里摘掉照样全绿——"全库条目在宿主登记一次"
+     * 此前只是条目 note 里的约定。本条把这一向补成硬断言,漏登即红。 */
+    const idx = Skills.byId('core.stageIndex');
+    assert(idx && idx.stage === Skills.CROSS && idx.kinds.includes('infra'), '索引宿主 core.stageIndex 应是贯通层 infra 条目');
+    assertEq(kbKeys.filter(k => !idx.kb.includes(k)).join('、'), '', '新增 KB 条目须同时登记进索引宿主 SK-01 的 kb');
+    assertEq(idx.kb.filter(k => !kbKeys.includes(k)).join('、'), '', '索引宿主不得留 KB.SECTIONS 之外的键(条目改名/删条后的残留)');
+    assertEq(idx.kb.filter((k, i) => idx.kb.indexOf(k) !== i).join('、'), '', '索引宿主每条只登记一次');
+    // 记账基准只有一份:别的条目一律只引用自己那几条,不得再出现第二个全库宿主
+    Skills.list().filter(s => s.id !== idx.id).forEach(s =>
+      assert(s.kb.length < kbKeys.length, s.id + ' 不应整库登记 KB 条目(全库只在索引宿主登记一次)'));
   } },
   { name: 'skill 索引不挂假出口:未实现的校验/编排面既不登记也不产出结果', fn() {
     const Skills = require('../js/skills.js');
