@@ -22,7 +22,10 @@ Windows 也可直接双击 `启动.bat`(自动起服务并打开浏览器)。
    │                 工作流状态(workflow/episodeState)字面单源,store/pipeline/produce/cli 全委托
    │  js/wf-core.js  工作流纯核(双端 UMD,二十一轮)——智能分镜/本集理解/智能审片的
    │                 提示词拼装与结果规整单一来源:浏览器 sb-llm/understanding/review 委托,
-   │                 server.js /api/wf/* 端点 require;Prompts/KB 同步 UMD 化(覆盖表显式传入)
+   │                 server.js /api/wf/* 端点 require;Prompts/KB 同步 UMD 化(覆盖表显式传入);
+   │                 兼任机位词表单源(SHOT_SIZES/CAMERA_MOVES/CAMERA_ANGLES 结构表 →
+   │                 SIZES/CAMERAS/ANGLES/VIEWS 名称投影 + sizeGap 景别级差),camera.js/
+   │                 review.js/sb-io.js/agent.js 一律派生,不各存一份
    │  js/commands.js 统一领域命令注册表(Commands.execute)——就绪检查/智能分镜/批量生成/
    │                 智能审片/合成/一键成片,UI 按钮(ui 模式,决策弹窗保留)、导演助手动作、
    │                 跑批引擎、CLI exec(后三者 headless)同一命令层;Commands.digest 统一消化回执
@@ -242,6 +245,7 @@ node cli.js export <pid> <epid> --out ./out        # 下载 mp4 + srt
 ## 工业级生成纪律
 
 - **分镜拆解硬规则**:智能分镜/AI分镜师的拆镜 prompt 内置完整拆分原则(`SPLIT_RULES`,js/storyboard.js):① 叙事细化而非形式拆分(判断标准=真人影视是否需要多镜);② 五层景别推进路径(大全景→全景→中景→近景→特写→超级特写,情绪转折越强镜头越靠后);③ 信息密度控制(台词超 40 字必拆、单镜单信息点、禁止单镜同时承载环境+动作+情绪+大量对白);④ 逐镜自检"只让观众记住一件事"。景别枚举已扩展大全景/超级特写;一键审片同步检查台词超 40 字、单镜信息过载、景别无递进(LLM 与离线本地评审均生效)。
+- **机位词表单源(景别/运镜/视角/角度)**:四张词表的唯一定义在 `js/wf-core.js`——结构表 `SHOT_SIZES`(六档景别阶梯,索引即级差,带相对距离与英文摄影词)/`CAMERA_MOVES`(运镜,`axis=move` 为七项镜头运动并带选择器芯片列,俯拍/仰拍/特写三项标注其真实归属栏)/`CAMERA_ANGLES`(四档仰角,带角度值),扁平数组 `SIZES/CAMERAS/ANGLES/VIEWS` 是其名称投影,`WfCore.sizeGap(a,b)` 给出两镜景别级差(同级 0/相邻 1/隔一级 2/两极 4-5/阶梯外 -1)。消费方一律派生:机位选择器(js/camera.js 只保留几何与器材参数,运镜芯片值即 `s.camera` 规范名)、离线景别衔接检查(js/review.js 按 `sizeGap` 判定,六档全覆盖)、分镜表 CSV 导入白名单与模板列说明(js/sb-io.js)、导演助手改镜协议(js/agent.js)、拆镜模板四栏取值(`buildSBUser`)。`node tests/unit.js contract` 断言取值与顺序不漂移、整份词表字面不外流、阶梯外景别词(远景等)零残留。
 - **定稿预览键盘导航**:历史版本弹窗支持 ↑↓ 切换分镜、←→ 选择版本、Enter 应用此版(仅当弹窗在最上层时响应,关闭自动解绑)。
 - **计费透明 + 断点校准**:批量生成视频/镜头组整组生成超过 3 镜时,先弹确认(明示"逐条扣减:每镜单独扣费,余额不足仅该镜失败;单镜失败自动返还"),可选「先校准前 3 镜」→ 出片后确认再放量;扣费已改为逐镜单独扣减,余额不足只失败当前镜。
 - **📌 注册主体**(js/roles.js 角色卡):把角色当前形象注册为"模型侧主体"(`s.isSubject`),生成视频时按主体级参考优先(任务模型标注"主体×N",素材 tab 有主体徽标);换图后注册自动失效需重新注册——接真实视频 API 时注册主体走主体机制而非普通参考图。
