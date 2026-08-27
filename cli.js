@@ -1203,6 +1203,77 @@ EXEC['episode.smartReview'] = { needs: ['p', 'ep'], meter: true, run: async (arg
   return r;
 } };
 
+/* 主体生图(exec):缺参考图主体批量生成并回填(subjectIds 可指定子集,含已有图重生);
+ * 逐主体走服务端生图(计费动作服务端推导,失败退费),与 subject-image --gen 同链路;发布门 G9 一键处置同入口 */
+EXEC['subject.generateImage'] = { needs: ['p'], meter: true, run: async (args, f) => {
+  const { p } = await execCtx(args, f);
+  const ids = Array.isArray(args.subjectIds) && args.subjectIds.length ? new Set(args.subjectIds) : null;
+  const todo = (p.subjects || []).filter(s => ids ? ids.has(s.id) : !s.image);
+  if (!todo.length) return execOk({ total: 0, ok: 0, failed: [] });
+  log('主体生图:' + todo.length + ' 位待处理(串行)…');
+  const failed = [];
+  let okCnt = 0;
+  for (const s of todo) {
+    try {
+      await withProject(args.pid, f, async projLive => {
+        const sj = findSubject(projLive, s.id);
+        const prompt = sj.prompt || ((projLive.style || '漫剧') + '风格,' + sj.name + ',' + (sj.description || '角色立绘'));
+        sj.image = (await genImage(prompt, f, {})).url;
+        sj.prompt = sj.prompt || prompt;
+        sj.status = 'done';
+      });
+      okCnt++;
+      log('主体 ' + s.name + ' ✓ (' + okCnt + '/' + todo.length + ')');
+    } catch (e) {
+      if (e instanceof CliError && e.exit === 6) throw e; // 积分不足整体中止(已生成的随补丁保留)
+      failed.push({ subjectId: s.id, name: s.name, error: String((e && e.message) || e).slice(0, 80) });
+      log('主体 ' + s.name + ' ✗ ' + ((e && e.message) || e));
+    }
+  }
+  const r = { ok: failed.length === 0, status: failed.length ? 'failed' : 'done', result: { total: todo.length, ok: okCnt, failed } };
+  if (failed.length) r.error = { code: okCnt ? 'partial' : 'gen-failed', message: failed.length + ' 位主体生图失败(已退费),可重试' };
+  return r;
+} };
+
+/* 提取主体(exec):项目剧本(无则各集正文)→ LLM 语义提取合并入库(同名同类不覆盖,缺提示词/人设的补齐);
+ * 提示词/规整 wf-core 单源(与浏览器解析向导同源),计费 llm.extract;headless 无离线回退——LLM 失败如实报错(服务端已退费) */
+EXEC['project.extractSubjects'] = { needs: ['p'], meter: true, run: async (args, f) => {
+  const { p } = await execCtx(args, f);
+  const text = String(p.script || '').trim() || (p.episodes || []).map(e => e.content || '').filter(Boolean).join('\n').trim();
+  if (!text) return execBlocked('no-script', '项目暂无剧本内容,请先上传剧本');
+  const b = WfCore.buildExtractUser(text, args.mode === 'fine' ? 'fine' : 'normal', { character: true, scene: true, prop: true });
+  const j = await POST('/api/llm/chat', {
+    messages: [{ role: 'system', content: '你是专业的短剧剧本分析助手。' }, { role: 'user', content: b.user }],
+    jsonMode: true, temperature: 0.3, max_tokens: 4000, billingAction: 'llm.extract', operationId: crypto.randomUUID(),
+  }, f, { timeoutMs: 240000, fullBody: true });
+  if (!j.parsed) throw new CliError('LLM 返回无法解析', 5);
+  const found = WfCore.normalizeExtracted(j.parsed);
+  const stat = { added: 0, skipped: 0, total: 0 };
+  await withProject(args.pid, f, projLive => {
+    projLive.subjects = projLive.subjects || [];
+    ['character', 'scene', 'prop'].forEach(kind => (found[kind] || []).forEach(s => {
+      const exist = projLive.subjects.find(x => x.kind === kind && (x.name === s.name || (x.formerNames || []).includes(s.name) || (s.aliases || []).includes(x.name)));
+      if (exist) {
+        if (!exist.prompt && s.prompt) exist.prompt = s.prompt;
+        if (!exist.persona && s.persona) exist.persona = s.persona;
+        if (!exist.description && s.description) exist.description = s.description;
+        stat.skipped++;
+        return;
+      }
+      stat.added++;
+      const sj = newSubject(s.name, kind, s.description);
+      sj.evidence = s.evidence;
+      sj.prompt = s.prompt || '';
+      if (s.persona) sj.persona = s.persona;
+      sj.formerNames = (s.aliases || []).slice(0, 10); // 别名可寻址(与浏览器入库口径一致)
+      sj.status = 'pending';
+      projLive.subjects.push(sj);
+    }));
+    stat.total = projLive.subjects.length;
+  });
+  return execOk({ added: stat.added, skipped: stat.skipped, total: stat.total, truncated: b.truncated });
+} };
+
 /* needs 校验面与注册表单源对齐(执行体各端自治;contract 套件锁死 EXEC 键集 = 注册表词表) */
 CmdRegistry.META.forEach(m => { if (EXEC[m.name]) EXEC[m.name].needs = m.needs.slice(); });
 

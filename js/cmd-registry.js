@@ -1,5 +1,5 @@
 /* ============ cmd-registry.js 统一领域命令元数据注册表(双端 UMD,二十二轮) ============
- * 8 条领域命令的共享元数据(name/label/risk/needs/desc/args)单一来源:
+ * 10 条领域命令的共享元数据(name/label/risk/needs/desc/args)单一来源:
  *   浏览器 js/commands.js 的 REG 注册默认值与 Commands.list() 自省、CLI `exec` 用法/help 文案、
  *   mcp.js 工具描述全部由此生成;两端各自只注册 handler(commands.js REG / cli.js EXEC)。
  * meter 为各端执行侧差异(浏览器 produce 由子命令计量,CLI 按整体钱包差值),不进共享元数据。 */
@@ -53,6 +53,16 @@
       name: 'episode.understanding', label: '本集理解', risk: 'exec', needs: ['p', 'ep'],
       desc: 'LLM 生成本集导演理解(剧情脉络/情绪曲线/节奏规划/视觉基调/关键场面/悬念),写回 ep.understanding 并按 sourceRev 判旧',
       args: [PID, EPID],
+    },
+    {
+      name: 'subject.generateImage', label: '主体生图', risk: 'exec', needs: ['p'],
+      desc: '缺参考图主体批量 AI 生图并回填(subjectIds 可指定子集,含已有图重生);逐主体计费,失败退费;发布门 G9 一键处置同入口',
+      args: [PID, { name: 'subjectIds', type: 'array', desc: '只处理指定主体 id 子集(默认全部缺图主体)' }, UI],
+    },
+    {
+      name: 'project.extractSubjects', label: '提取主体', risk: 'exec', needs: ['p'],
+      desc: 'LLM 从项目剧本提取角色/场景/道具主体合并入库(同名同类不覆盖,新主体待生图);浏览器离线回退本地启发式',
+      args: [PID, { name: 'mode', type: 'string', desc: 'normal|fine(精细模式提示词/八维度人设更详尽)' }, UI],
     },
   ];
 
