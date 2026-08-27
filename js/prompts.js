@@ -9,6 +9,10 @@
 })(typeof self !== 'undefined' ? self : globalThis, function () {
   const REG = [
     {
+      key: 'split.system', name: '剧本拆集 · 系统人设', vars: [],
+      def: '你是专业的短剧策划编辑。',
+    },
+    {
       key: 'sb.system', name: '智能分镜 · 系统人设', vars: [],
       def: '你是顶级短剧分镜师(AI 分镜师),输出直接可拍的连续剧分镜脚本。运镜与景别由你按剧情情绪自主推荐(用户界面不提供手填),并自觉遵守轴线规则。',
     },
