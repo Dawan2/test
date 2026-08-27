@@ -1344,7 +1344,7 @@ const commandsTests = [
     const chk2 = (r2.result.checks || []).find(x => x.skill === 'subjects.refIntegrity');
     assertEq(chk2.pass, true); assertEq(chk2.level, 'info'); assertEq(chk2.hits.length, 0);
   } },
-  { name: 'preflight:result.checks 是剧本+主体+分集+分镜+生成+审片+成片字幕七面并集(按主线步序,摘任一面即红)', fn: async () => {
+  { name: 'preflight:result.checks 是剧本+主体+分集+分镜+生成+审片+成片七面并集(按主线步序,摘任一面即红)', fn: async () => {
     const sb = loadCommands();
     /* 烧录字幕开启 + 镜1 台词超硬上限:字幕面必产出 caption-truncated(fail),
      * 即结论不是"时间轴未成形"那种空 info——摘掉 film 这一面时本例的并集与 fail 都对不上 */
@@ -1358,7 +1358,7 @@ const commandsTests = [
       'script.hookStrength,script.faceslapFour,script.dialogueRule,script.aiToneBan,'
       + 'subjects.refDiscipline,subjects.refIntegrity,subjects.crossShot,subjects.crossShot,'
       + 'eps.structureStage,eps.payoffPoint,shots.sizeProgression,shots.promptEightDim,shots.motionGate,'
-      + 'gen.renderCredential,review.methodDim,film.subtitleQC',
+      + 'gen.renderCredential,review.methodDim,film.subtitleQC,film.deliverContract',
       'result.checks 应是七面并集,按主线步序 script → subjects → eps → shots → gen → review → film');
     const cred = checks.find(x => x.skill === 'gen.renderCredential');
     assert(cred, '就绪检查必须消费生成凭据面(gen 面被摘掉则本条红)');
@@ -4219,6 +4219,18 @@ const mdCodes = r => r.hits.map(h => h.code + '@' + h.order).join(',');
 const capShot = (order, over) => Object.assign({ id: 'sh' + order, order, dialogue: '', narration: '', image: '/uploads/a/f' + order + '.png' }, over || {});
 const capEp = (shots, over) => Object.assign({ id: 'ep1', sbConfig: { subtitle: true }, shots }, over || {});
 const caption = ep => Skills.check('film', { p: { id: 'p1' }, ep }, { online: true }).find(x => x.skill === 'film.subtitleQC');
+/* 交付契约夹具:板块阶段落 p.boards[主线板块名].stage,产物实况由 Domain.workflow 现推。
+ * 底座只把剧本/主体/分集三步摆成 done(有剧本正文、主体有权威图、分集非空且有正文),
+ * 分镜及其后各步默认未 done —— 定稿摆在哪一步上就判到哪一步,不必为每条用例造全绿项目。 */
+const dcP = (boards, over) => Object.assign({
+  id: 'p1', script: '剧本正文',
+  subjects: [{ id: 'sj1', name: '林晚', kind: 'character', image: '/uploads/a/sj1.png' }],
+  episodes: [{ id: 'ep1', title: '第一集', content: '正文', shots: [] }],
+  boards: boards || {},
+}, over || {});
+const dcOf = (p, online) => Skills.check('film', { p }, { online: online !== false }).find(x => x.skill === 'film.deliverContract');
+/* 命中摘要:码 + 板块 + 判据对象(倒置码给上游板块名,背书码给该步阻塞文案) */
+const dcCodes = r => r.hits.map(h => h.code + ':' + h.board + (h.name ? '←' + h.name : '')).join(',');
 /* 剧本段夹具:正文一律 ≥30 字(短于此的片段不产出结论);BG 是无台词无冲突信号的背景铺陈填充 */
 const BG = '江城的春天多雨。'.repeat(20); // 160 字,开篇窗口(120)之外才出现冲突信号
 const scriptEp = (content, shots) => ({ id: 'ep1', title: '第一集', content, shots: shots || [] });
@@ -5117,7 +5129,7 @@ const skillsTests = [
     assert(ssrc.includes('Domain.reviewStaleByScript(ep)'), '整份判旧应现取 Domain.reviewStaleByScript');
     assert(!/snapshotHash !==|sourceRev !==|reviewSnapshotHashOf/.test(ssrc), 'skill 层不得自建第二份判旧比对');
     /* 只报不拦:审片动作侧、发布门与问题中心一概不引用本面结论——
-     * 发布门 G3 的未审/判旧/低分口径与达标线逐字不动,方法论门仍是 SK-29 的未落地面 */
+     * 发布门 G3 的未审/判旧/低分口径与达标线逐字不动,方法论门那一半(G-10)仍未进发布门 */
     ['js/review.js', 'js/release.js', 'js/issues.js', 'js/commands.js', 'cli.js'].forEach(f => {
       const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
       assert(!src.includes('review.methodDim') && !src.includes("Skills.check('review'"),
@@ -5126,8 +5138,11 @@ const skillsTests = [
     const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
     assert(/hasReview = ep => ep\.lastReview && typeof ep\.lastReview\.avg === 'number'/.test(rsrc),
       '发布门 G3 仍只读 lastReview.avg 判有无审片记录(门禁口径不动)');
+    /* SK-29 的校验面已随 W37 落地,故这里不再拿它的 pending 当判据(那会变成假记账);
+     * 本面落地不得把 G-10 的发布门那一半记成已闭合——判据改钉 SK-29 仍记 G-10 + 发布门对 Skills 零引用 */
     const sk29 = Skills.byId('film.deliverContract');
-    assert(sk29.pending.includes('check'), '发布门方法论门(SK-29)仍未落地,不得因本面落地记成已闭合');
+    assert(sk29.gaps.includes('G-10'), '发布门方法论门未落地,G-10 须仍在 SK-29 的缺口里记账');
+    assert(!/Skills\./.test(rsrc), '发布门对 Skills 应仍零引用(不得因本面落地把方法论门挂进 G1–G10)');
   } },
   { name: 'subtitleTiming:干净夹具全 pass(台词短、停留够 → info 无命中)', fn() {
     const r = caption(capEp([capShot(0, { dialogue: '快走别回头' }), capShot(1, { narration: '雨声渐起' })]));
@@ -5194,7 +5209,124 @@ const skillsTests = [
     const sk = Skills.byId('film.subtitleQC');
     assertEq(sk.pending.length, 0, '校验面已落地,不应再挂 pending');
     assertEq(sk.checks.join(','), 'film.subtitleTiming');
-    assertEq(Skills.check('film', { p: { id: 'p1' }, ep: capEp([capShot(0, { dialogue: '走' })]) }).length, 1, '成片步现有一条已落地校验项');
+    assertEq(Skills.check('film', { p: { id: 'p1' }, ep: capEp([capShot(0, { dialogue: '走' })]) }).length, 2, '成片步现有两条已落地校验项');
+  } },
+  { name: 'deliverContract:契约链未启用不产出结论;定稿有产物背书且链序在位 → info', fn() {
+    assertEq(dcOf(dcP()).level, 'info', '一个板块都没登记阶段=没在用契约链,不拿"没定稿"当缺陷报');
+    assertEq(dcOf(dcP()).hits.length, 0);
+    assertEq(dcOf(dcP({ 分镜: { stage: '进行中' } })).hits.length, 0, '链启用了但没有定稿/待审核板块,无可判契约');
+    assertEq(dcOf(dcP({ 剧本: { stage: '已定稿' } })).level, 'info', '剧本定稿且剧本步实况 done,契约立得住');
+    const ok = dcOf(dcP({ 剧本: { stage: '已定稿' }, 主体: { stage: '已定稿' }, 分集: { stage: '已定稿' } }));
+    assertEq(ok.pass, true); assertEq(ok.hits.length, 0, '前三步顺序定稿且三步实况都 done,零命中');
+  } },
+  { name: 'deliverContract:下游已定稿而主线上游未定稿 → final-out-of-order(带上游板块名与其实际阶段)', fn() {
+    const r = dcOf(dcP({ 剧本: { stage: '已定稿' }, 主体: { stage: '进行中' }, 分集: { stage: '已定稿' } }));
+    assertEq(r.pass, false); assertEq(r.level, 'warn', '契约优先级倒置是提醒级,不升 fail(不拦发布门)');
+    assertEq(dcCodes(r), 'final-out-of-order:分集←主体', '只报倒置那一条:剧本定稿有背书、分集步实况 done');
+    assertEq(r.hits[0].step, 'eps', 'hits 应带主线步骤键供调用方定位');
+    assertEq(r.hits[0].order, 3, 'hits 应带该板块在主线契约链上的位序');
+    assertEq(r.hits[0].stage, '进行中', 'hits 应给出那个上游板块的实际阶段');
+    // 上游从未登记阶段:如实按「未开始」报,不冒充别的阶段词
+    const none = dcOf(dcP({ 主体: { stage: '已定稿' } }));
+    assertEq(dcCodes(none), 'final-out-of-order:主体←剧本');
+    assertEq(none.hits[0].stage, '未开始');
+    // 上游有多个未定稿时只报最靠前那个(整条链的第一个缺环),不逐个重复报
+    const multi = dcOf(dcP({ 分集: { stage: '已定稿' } }));
+    assertEq(dcCodes(multi), 'final-out-of-order:分集←剧本', '取链上最靠前的未定稿上游');
+    assertEq(dcOf(dcP({ 剧本: { stage: '已定稿' } })).hits.length, 0, '链首板块没有上游可判');
+  } },
+  { name: 'deliverContract:待审核板块同一条优先级口径 → audit-out-of-order;上游全定稿即不报', fn() {
+    const r = dcOf(dcP({ 剧本: { stage: '进行中' }, 主体: { stage: '待审核' } }));
+    assertEq(dcCodes(r), 'audit-out-of-order:主体←剧本', '上游还会变,本板块的审核结论可能返工');
+    assertEq(r.level, 'warn');
+    assertEq(dcOf(dcP({ 剧本: { stage: '已定稿' }, 主体: { stage: '待审核' } })).hits.length, 0, '上游已定稿时待审核不报');
+    assertEq(dcOf(dcP({ 剧本: { stage: '待审核' } })).hits.length, 0, '链首板块没有上游可判');
+    // 待审核不判产物背书:审核还没过,产物不成立是常态,不是契约冲突
+    assertEq(dcOf(dcP({ 剧本: { stage: '已定稿' }, 主体: { stage: '已定稿' }, 分集: { stage: '已定稿' }, 分镜: { stage: '待审核' } })).hits.length, 0,
+      '分镜步实况未 done 但该板块只是待审核,不报无背书');
+  } },
+  { name: 'deliverContract:已定稿板块的主线实况未 done → final-unbacked(带该步首条阻塞文案)', fn() {
+    const all3 = { 剧本: { stage: '已定稿' }, 主体: { stage: '已定稿' }, 分集: { stage: '已定稿' } };
+    const r = dcOf(dcP(Object.assign({ 分镜: { stage: '已定稿' } }, all3)));
+    assertEq(dcCodes(r), 'final-unbacked:分镜←有分集未分镜', '定稿背书的产物不成立应如实报,文案取该步阻塞项');
+    assertEq(r.level, 'warn'); assertEq(r.hits[0].stage, 'ready', 'hits 应带该步实况状态词');
+    assertEq(r.hits[0].step, 'shots');
+    // 该步未 done 但没有阻塞项时不冒充文案,只给状态词(分镜已就位、这一镜还没出片 → 生成步未 done 且无阻塞)
+    const one = dcP(Object.assign({ 分镜: { stage: '已定稿' }, 生成: { stage: '已定稿' } }, all3));
+    one.episodes[0].shots = [{ id: 'sh0', order: 0, prompt: '她缓慢转身' }];
+    const g = dcOf(one);
+    assertEq(dcCodes(g), 'final-unbacked:生成', '无阻塞项时 name 留空,不编一句阻塞文案');
+    assertEq(g.hits[0].stage, 'ready');
+  } },
+  { name: 'deliverContract:产物实况现取 Domain.workflow(与流程条/发布门 G1 同一份判定,含 online 维度)', fn() {
+    const all4 = { 剧本: { stage: '已定稿' }, 主体: { stage: '已定稿' }, 分集: { stage: '已定稿' }, 分镜: { stage: '已定稿' } };
+    const sim = dcP(Object.assign({ 生成: { stage: '已定稿' } }, all4));
+    sim.episodes[0].shots = [{ id: 'sh0', order: 0, prompt: '她缓慢转身', video: { status: 'done', simulated: true, url: '/uploads/a/v.mp4' } }];
+    assertEq(dcCodes(dcOf(sim, true)), 'final-unbacked:生成', '在线态离线模拟产物不算出片,生成步的定稿没有背书');
+    assertEq(dcOf(sim, false).hits.length, 0, '离线态同一份数据算就绪 —— online 维度随 Domain 走,本层不写第二份就绪判定');
+    // 判定确实来自 Domain.workflow:同键步骤的 done 一变,本项结论跟着变
+    const wf = DomainMod.workflow(sim, true).steps.find(s => s.key === 'gen');
+    assertEq(wf.done, false, '对照:Domain 侧同键步骤实测未 done');
+    assertEq(DomainMod.workflow(sim, false).steps.find(s => s.key === 'gen').done, true, '对照:离线态 Domain 侧判 done');
+  } },
+  { name: 'deliverContract:板块名与链序取 STAGES 单源(支线板块不判、不写第二份板块词表)', fn() {
+    /* 主线七步的 name 逐字就是看板那七个板块的键:看板改名或改序时本断言先红,
+     * 校验层因此不必也不得另存一份板块词表(支线板块不在主线契约链上,故不判)。 */
+    const names = Skills.STAGES.map(x => x.name);
+    assertEq(names.join(','), '剧本,主体,分集,分镜,生成,审片,成片');
+    const asrc = fs.readFileSync(path.join(ROOT, 'js', 'agent.js'), 'utf8');
+    const block = asrc.slice(asrc.indexOf('const AGENT_BOARDS'), asrc.indexOf('window.AGENT_BOARDS'));
+    const keys = [...block.matchAll(/key: '([^']+)'/g)].map(m => m[1]);
+    assertEq(keys.filter(k => names.includes(k)).join(','), names.join(','), '看板的主线板块键应与 STAGES 七步名逐字同序');
+    assert(keys.some(k => !names.includes(k)), '看板另有支线板块(本项判定范围窄于看板软闸门,如实记在条目 note 里)');
+    keys.filter(k => !names.includes(k)).forEach(k => {
+      const p = dcP(); p.boards[k] = { stage: '已定稿' };
+      assertEq(dcOf(p).hits.length, 0, '支线板块不在主线契约链上,不判:' + k);
+    });
+    // 逐个主线板块都判得动(链序取 STAGES:第 i 个板块的上游就是它前面那 i 个)
+    names.forEach((n, i) => {
+      const p = dcP(); p.boards[n] = { stage: '已定稿' };
+      const r = dcOf(p);
+      if (!i) return assertEq(r.hits.filter(h => h.code === 'final-out-of-order').length, 0, '链首无上游:' + n);
+      assertEq(dcCodes(r).split(',')[0], 'final-out-of-order:' + n + '←' + names[0], '第 ' + (i + 1) + ' 个板块的上游应是链首:' + n);
+      assertEq(r.hits[0].order, i + 1);
+    });
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'skills.js'), 'utf8');
+    assert(src.includes('STAGES.map(x => ({ step: x.key, board: x.name'), '板块名与链序应现取 STAGES,不在校验层另列一张板块表');
+    assert(src.includes('Domain.workflow(p,'), '产物实况应现取 Domain.workflow,不在校验层另写一份步骤就绪判定');
+    keys.filter(k => !names.includes(k)).concat(['剧壳', '切片']).forEach(k =>
+      assert(!src.includes("'" + k + "'"), 'skills.js 不得出现第二份板块词表:' + k));
+  } },
+  { name: 'deliverContract:纯函数与消费点(就绪检查自动多一条;不接发布门、不进问题中心、零计费)', fn() {
+    const p = dcP({ 剧本: { stage: '已定稿' }, 主体: { stage: '进行中' }, 分镜: { stage: '已定稿' } });
+    const snap = JSON.stringify(p);
+    assertEq(JSON.stringify(dcOf(p)), JSON.stringify(dcOf(p)), '同输入应给同结论(无隐藏状态)');
+    assertEq(JSON.stringify(p), snap, '校验项不得改动领域对象');
+    assertEq(Skills.CHECKS['film.upstreamFinalContract']({}).hits.length, 0, '无项目上下文不冒充结论');
+    assertEq(Skills.CHECKS['film.upstreamFinalContract'](null).hits.length, 0, '脏入参回空,不抛');
+    // 记账:校验面已落地、两条缺口按纪律各自如实
+    const sk = Skills.byId('film.deliverContract');
+    assertEq(sk.pending.length, 0, '校验面已落地,不应再挂 pending');
+    assertEq(sk.checks.join(','), 'film.upstreamFinalContract');
+    assert(sk.gaps.includes('S-07') && sk.gaps.includes('G-10'), '两条缺口都仍记账:S-07 由本面承接,G-10 的发布门那半未接');
+    assert(sk.covers.includes(Skills.CROSS), '判定输入含项目级板块契约链,covers 应如实含贯通层');
+    // 消费点:面表内容一字不变(成片面早在表里),两端就绪检查实现一行未改
+    assertPreflightFace('film', '成片交付契约面');
+    assert(sk.cmds.includes('episode.preflight'), '就绪检查是本面的真实消费点,cmds 须如实登记');
+    assertEq(Skills.check('film', { p, ep: capEp([capShot(0, { dialogue: '走' })]) }, { online: true }).length, 2,
+      '成片面现为两条:字幕面 + 交付契约面');
+    // 只报不拦:发布门口径一个字未动(release.js 对 Skills 零引用),问题中心不挂本面
+    const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
+    assert(!/Skills\./.test(rsrc), '发布门本轮不接方法论门(G-10 产品口径未定),release.js 对 Skills 应仍零引用');
+    assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 仍只数高/中危');
+    assert(rsrc.includes("if (fails > 0) overall = 'fail'"), '发布门 overall 计数口径逐字未动');
+    const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
+    assert(isrc.includes("x.skill === 'film.subtitleQC'"), '问题中心的成片面只取字幕结论(要不要挂本面的产品口径未定)');
+    assert(!isrc.includes('film.deliverContract') && !isrc.includes('upstreamFinalContract'), '问题中心不挂本面');
+    // 零计费、不拦合成与成片动作
+    assertEq(require('../js/cmd-registry.js').byName['episode.preflight'].risk, 'read', '就绪检查应仍是 read 类零计费');
+    ['produce.js', 'sb-io.js'].forEach(f => assert(!/Skills\./.test(fs.readFileSync(path.join(ROOT, 'js', f), 'utf8')),
+      f + ' 不得因本面引入拦截(结论只报不拦)'));
   } },
   { name: '就绪检查校验面表(源级):面清单双端单源 Skills.preflightStages(),两端只读该表 concat、不各写一份面字面量', fn() {
     /* 这段曾是并行分支反复撞车的热点(两端各写五个 Skills.check 字面量,任一侧胜出就静默摘掉别人那一面)。
@@ -5213,8 +5345,8 @@ const skillsTests = [
     Skills.list().filter(s => s.pending.includes('check') && s.cmds.includes('episode.preflight'))
       .forEach(s => assert(!stages.includes(s.stage) || consumers.some(x => x.stage === s.stage),
         '校验面未落地的条目不应把 ' + s.stage + ' 面单独带进表:' + s.id));
-    // 表现在跑出来就是十六条结论(面表 + 各面已落地校验项数,与行为断言的期望串同一口径)
-    assertEq(stages.reduce((n, st) => n + Skills.check(st, {}).length, 0), 16, '七面共十六条已落地校验项');
+    // 表现在跑出来就是十七条结论(面表 + 各面已落地校验项数,与行为断言的期望串同一口径)
+    assertEq(stages.reduce((n, st) => n + Skills.check(st, {}).length, 0), 17, '七面共十七条已落地校验项');
     /* 两端只读该表:段内那条 checks 表达式必须取表,且不得再出现任何面字面量;
      * 取表 + concat 的写法两端逐字节相同(同表同口径,一端改写法即红)。 */
     const FRAG = 'Skills.preflightStages().reduce((all, stage) => all.concat(Skills.check(stage, { p, ep }, ck)), [])';
@@ -5230,7 +5362,8 @@ const skillsTests = [
   { name: '就绪检查校验面表:与七面写死并集逐字节等价(表收口不改行为),新增/摘掉一面即改一处', fn() {
     /* 收表前两端各写的是面名写死的并集。这里用那份写死表达式做独立对照(随面表实况同步抬到七面),
      * 证明"读表 concat"与它逐字节同结果——收口只动取面清单的地方,不动任何一条校验项的结论。
-     * 落地 gen 面与 review 面时两端 preflight 实现都一行未改,只有这里的对照表达式与面数口径跟着抬了一档。 */
+     * 落地 gen 面与 review 面时两端 preflight 实现都一行未改,只有这里的对照表达式与面数口径跟着抬了一档;
+     * SK-29 落在已在表内的 film 面上,连对照表达式都不用改(只有条数跟着抬)。 */
     const p = refP();
     const ep = capEp([capShot(0, { dialogue: '我'.repeat(130) }), capShot(1, { dialogue: '好'.repeat(31) })], {
       content: BG + '她被人嘲笑,却默默忍住。',
@@ -5243,7 +5376,7 @@ const skillsTests = [
           Skills.check('review', { p, ep }, ck), Skills.check('film', { p, ep }, ck));
       const byTable = Skills.preflightStages().reduce((all, stage) => all.concat(Skills.check(stage, { p, ep }, ck)), []);
       assertEq(JSON.stringify(byTable), JSON.stringify(legacy), '读表 concat 应逐字节等于七面写死并集(online=' + ck.online + ')');
-      assertEq(byTable.length, 16, '并集现为十六条结论');
+      assertEq(byTable.length, 17, '并集现为十七条结论');
     });
     // 表是纯函数:同输入同表,且调用方拿到的是副本(改返回值不污染下次取表)
     assertEq(Skills.preflightStages().join(','), Skills.preflightStages().join(','), '同输入应给同表');
@@ -5426,13 +5559,19 @@ const skillsTests = [
     // infra 面已无 pending;别人的未落地面一字未动(不借本轮顺手清别人的账)
     assertEq(Skills.list().filter(s => s.pending.includes('infra')).length, 0, 'infra 面已全部落地');
     assertEq(Skills.list().filter(s => s.pending.length).map(s => s.sk + ':' + s.pending.join('+')).join(','),
-      'SK-05:orchestrate,SK-26:orchestrate,SK-29:check', '剩余 pending 应只剩 check 一条 + orchestrate 两条');
-    // 发布门的方法论门仍待 G-10:本轮只接审片路径的只读消费,门禁计数口径逐字不动
+      'SK-05:orchestrate,SK-26:orchestrate', '剩余 pending 应只剩 orchestrate 两条');
+    /* SK-29 的校验面已落地(上游定稿契约判成结论,经就绪检查消费),但 G-10 的**发布门那一半**仍未接:
+     * 方法论门要不要挂成默认 warn 的可选门属产品口径,未定之前门禁一个字不动。
+     * 这里不再拿 pending 快照当判据(那一面已落地,写 pending 反而是假记账),改钉真实约束:
+     * 条目仍记 G-10 + release.js 对 Skills 零引用 + G2/overall 计数口径逐字未动。 */
     const sk29 = Skills.byId('film.deliverContract');
-    assert(sk29.pending.includes('check') && sk29.gaps.includes('G-10'), '发布门方法论门仍未落地,不得因审片接线记成已闭合');
+    assert(sk29.gaps.includes('G-10'), '发布门方法论门未落地,G-10 须仍在 SK-29 的缺口里记账');
+    assert(sk29.checks.length && !sk29.pending.includes('check'), '校验面已落地,不得再挂 pending 冒充未做');
     const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
+    assert(!/Skills\./.test(rsrc), '发布门对 Skills 应仍零引用(方法论门未挂进 G1–G10)');
     assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 仍只数高/中危');
-    assert(!/lastReview\.checks|report\.checks/.test(rsrc), '发布门不读审片报告的校验命中字段(本轮不接门禁)');
+    assert(rsrc.includes("if (fails > 0) overall = 'fail'"), '发布门 overall 计数口径逐字未动');
+    assert(!/lastReview\.checks|report\.checks/.test(rsrc), '发布门不读审片报告的校验命中字段');
   } },
   { name: 'infra 余量实况:审片侧三步两端都没有人设/记忆通道(接上了 note 先失效)', fn() {
     const wfSrc = fs.readFileSync(path.join(ROOT, 'js', 'wf-core.js'), 'utf8');

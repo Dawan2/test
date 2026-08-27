@@ -717,6 +717,57 @@
     return { pass: !hits.length, level, hits };
   };
 
+  /* ---- 成片段交付契约基面(SK-29 交付契约门):判定输入是板块定稿链与主线产物实况 ----
+   * 板块看板把主线每一步登记成一个板块,阶段落 p.boards[板块名].stage(未开始/进行中/待审核/已定稿);
+   * 已定稿板块的内容此前只经助手上下文注入下游板块(「上游已定稿,权威约束,不得偏离」)——
+   * 那是给模型的文本约束,不是可判定的门(S-07)。本面把它判成结论,两向各判一件事:
+   * 契约优先级(下游定稿须由上游定稿背书)与定稿的产物背书(定稿背书的那一步实况得站得住)。
+   * 板块名与链序现取本模块 STAGES 主线七步表(七步的 name 逐字就是那七个板块键),不写第二份板块词表;
+   * 产物实况现取 Domain.workflow 的同键步骤(与流程条、发布门 G1 同一份推导),不写第二份就绪判定;
+   * 阶段取值是持久化字段值(与助手侧上游定稿传导判的是同一字面),不是本层另存的词表。
+   * 看板另有两个支线板块(制片/导演)不在主线七步表里,本面不判它们——支线不在主线契约链上,
+   * 也不为它们在本层另存一份板块词表,判定范围因此窄于看板改阶段那一刻的软闸门(条目 note 写明)。
+   * 与其余段同纪律:纯本地读字段、零 LLM 零计费,结论一律 warn 只报不拦——不进 blockers、
+   * 不改发布门 G1–G10 的 fail/warn 计数与 overall、不改交付打包行为。 */
+  const BOARD_FINAL = '已定稿';
+  const BOARD_AUDIT = '待审核';
+  const boardStageOf = (p, board) => String(((p.boards || {})[board] || {}).stage || '');
+
+  /* SK-29 交付契约门(上游定稿契约的校验半):逐个主线板块看这份契约立不立得住。
+   *   final-out-of-order  已定稿板块的主线上游还有未定稿板块 → warn(契约优先级倒置:注入给下游的
+   *                       「上游已定稿」缺环,本板块的定稿背书的是一份尚未定稿的上游)
+   *   audit-out-of-order  待审核板块的主线上游还有未定稿板块 → warn(同一条优先级口径的较轻一档:
+   *                       上游还会变,本板块的审核结论可能返工)
+   *   final-unbacked      已定稿板块对应的主线步骤实况未 done → warn(定稿背书的产物不成立;
+   *                       name 取该步首条阻塞文案,无阻塞项时给该步实况状态词)
+   * 一个板块都没登记过阶段的项目没有契约链,无判定输入,不产出结论(没在用看板不算缺陷)。
+   * 定稿的内容对不对、契约本身该怎么写这类语义判断仍归 LLM 审片(G-10);
+   * 方法论门要不要进发布门(挂成默认 warn 的可选门)的产品口径未定,本面不改门禁一个字。 */
+  CHECKS['film.upstreamFinalContract'] = function (obj, ctx) {
+    const o = obj || {};
+    const p = o.p;
+    if (!p) return { pass: true, level: 'info', hits: [] };
+    const chain = STAGES.map(x => ({ step: x.key, board: x.name, stage: boardStageOf(p, x.name) }));
+    if (!chain.some(x => x.stage)) return { pass: true, level: 'info', hits: [] }; // 契约链未启用,无判定输入
+    const hits = [];
+    const push = (code, x, i, name, stage) => hits.push({ code, board: x.board, step: x.step, order: i + 1, name, stage });
+    chain.forEach((x, i) => {
+      if (x.stage !== BOARD_FINAL && x.stage !== BOARD_AUDIT) return;
+      const up = chain.slice(0, i).find(u => u.stage !== BOARD_FINAL);
+      if (up) push(x.stage === BOARD_FINAL ? 'final-out-of-order' : 'audit-out-of-order', x, i, up.board, up.stage || '未开始');
+    });
+    if (chain.some(x => x.stage === BOARD_FINAL)) {
+      const steps = Domain.workflow(p, !!(ctx || {}).online).steps;
+      chain.forEach((x, i) => {
+        if (x.stage !== BOARD_FINAL) return;
+        const st = steps.find(w => w.key === x.step);
+        if (!st || st.done) return;
+        push('final-unbacked', x, i, ((st.blockers || [])[0] || {}).label || '', st.status || '');
+      });
+    }
+    return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
+  };
+
   /* ---- 分集段校验宿主(S-01 分集半):判定输入是分集表本身 ----
    * 两条都要集序:六阶段覆盖看全表按比例摊到六段后每段有没有判得动的正文,付费卡点看集尾与下一集集首——
    * 故一律现取 p.episodes(集序取数组序,与 Domain 同口径),取不到集序即无判定输入,不冒充结论。
@@ -1096,9 +1147,20 @@
         + '经就绪检查与问题中心消费(S-06 结构化质检结论落地),结论只报不拦',
     },
     {
-      id: 'film.deliverContract', sk: 'SK-29', name: '交付契约门', stage: 'film', wave: 'W4',
-      kinds: ['check'], pending: ['check'], cmds: ['episode.compose', 'episode.produce'], gaps: ['G-10', 'S-07'],
-      note: '复用既有发布门与问题清单口径;方法论门挂成可选门默认 warn,既有 fail/warn 口径不动',
+      id: 'film.deliverContract', sk: 'SK-29', name: '交付契约门', stage: 'film',
+      covers: ['film', CROSS], wave: 'W4',
+      kinds: ['check'], checks: ['film.upstreamFinalContract'],
+      cmds: ['episode.compose', 'episode.produce', 'episode.preflight'], gaps: ['G-10', 'S-07'],
+      note: '校验面落在上游定稿契约这一份判定输入上:板块名与链序现取 STAGES 主线七步表(七步的 name 逐字'
+        + '就是那七个板块键)、产物实况现取 Domain.workflow 的同键步骤(与流程条、发布门 G1 同一份推导),'
+        + '本层不写第二份板块词表与第二份就绪判定;判两向——下游定稿/待审核而上游未定稿(契约优先级倒置)、'
+        + '已定稿板块背书的那一步实况未 done(定稿无产物背书)。'
+        + '判定范围窄于看板改阶段那一刻的软闸门:看板的两个支线板块(制片/导演)不在主线七步表里,'
+        + '本面不判它们,也不为它们另存一份板块词表。'
+        + '经就绪检查消费(所属成片面已在双端单源面表里,两端实现不必改),结论只报不拦、不改交付打包行为。'
+        + 'G-10 未清账:方法论门进发布门(挂成默认 warn 的可选门)的产品口径未定,本条一行未动 js/release.js 的'
+        + 'G1–G10 与 overall 计数;定稿内容对不对属语义面,同待 G-10。'
+        + 'S-07 由本条的可判定结论承接,契约优先级从"只注入给模型的文本约束"变成两端拿得到的 warn 结论',
     },
     {
       id: 'film.produceProjection', sk: 'SK-30', name: '一键成片编排 playbook 化', stage: 'film', wave: 'W4',
