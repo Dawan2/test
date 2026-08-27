@@ -3023,6 +3023,62 @@ const contractTests = [
     const sv = fs.readFileSync(path.join(ROOT, 'js/sb-views.js'), 'utf8');
     assert(/bindInput\('narration', \(\) => \{ sel\.confirm = false; \}\)/.test(sv), 'UI 旁白编辑应回落确认闸');
   } },
+  /* ---- 知识库单源(KB.SECTIONS 取用面):条目正文只在 knowledge.js,消费方按键取用 ---- */
+  { name: '知识库单源:条目正文与压缩摘要只在 knowledge.js,其余源文件不得出现第二份正文', fn() {
+    const KB = require('../js/knowledge.js');
+    const texts = Object.values(KB.SECTIONS)
+      .concat(Object.values(KB.DIGESTS.sys), Object.values(KB.DIGESTS.review));
+    const files = fs.readdirSync(path.join(ROOT, 'js')).filter(f => f.endsWith('.js') && f !== 'knowledge.js').map(f => 'js/' + f)
+      .concat(['server.js', 'cli.js', 'mcp.js', 'index.html']);
+    const bad = [];
+    files.forEach(rel => {
+      const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      texts.forEach(t => { if (src.includes(t)) bad.push(rel + ' 复制了条目正文:' + t.slice(0, 18) + '…'); });
+    });
+    assertEq(bad.join('; '), '', '知识库正文须按键取用(KB.section/KB.pick),不得复制');
+    // knowledge.js 内部:每条摘要只出现一次(压缩块由 DIGESTS 拼装,函数体内不另写第三份文本)
+    const kbSrc = fs.readFileSync(path.join(ROOT, 'js', 'knowledge.js'), 'utf8');
+    Object.entries(KB.DIGESTS).forEach(([face, map]) => Object.entries(map).forEach(([key, d]) => {
+      assertEq(kbSrc.split(d).length - 1, 1, `DIGESTS.${face}.${key} 摘要应只在表中出现一次`);
+    }));
+  } },
+  { name: '知识库单源:DIGESTS 键 ⊆ SECTIONS 键;压缩块文本全部出自同键摘要', fn() {
+    const KB = require('../js/knowledge.js');
+    const keys = Object.keys(KB.SECTIONS);
+    Object.entries(KB.DIGESTS).forEach(([face, map]) => Object.keys(map).forEach(k =>
+      assert(keys.includes(k), `DIGESTS.${face} 的键 ${k} 不在 SECTIONS 内(键位失配,改条目时会漏改摘要)`)));
+    const block = KB.block(), review = KB.reviewBlock();
+    Object.values(KB.DIGESTS.sys).forEach(d => assert(block.includes(d), 'KB.block() 应含 sys 摘要:' + d.slice(0, 12)));
+    Object.values(KB.DIGESTS.review).forEach(d => assert(review.includes(d), 'KB.reviewBlock() 应含 review 摘要:' + d.slice(0, 12)));
+    assertEq(review.split('\n').length, 4, '评审口径块应为 4 行(钩子/打脸/景别/抽卡)');
+    assertEq(block.split('\n').filter(Boolean).length, 4, '系统块应为 标题 + 编剧/导演/AI抽卡 三域行');
+  } },
+  { name: '知识库单源:消费方不直接引用 KB.WR_/DR_/GC_ 原始属性(一律按 SECTIONS 键取)', fn() {
+    const files = fs.readdirSync(path.join(ROOT, 'js')).filter(f => f.endsWith('.js') && f !== 'knowledge.js').map(f => 'js/' + f)
+      .concat(['server.js', 'cli.js', 'mcp.js']);
+    const bad = [];
+    files.forEach(rel => {
+      const hits = fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/KB\.(WR|DR|GC)_[A-Z]+/g) || [];
+      hits.forEach(h => bad.push(rel + ' → ' + h));
+    });
+    assertEq(bad.join('; '), '', '注入点应走 KB.section/KB.pick 按键取用(便于 skill 层索引同一批键)');
+  } },
+  { name: '知识库零消费回归:每个 SECTIONS 键都有消费点(压缩摘要 或 消费方按键引用)', fn() {
+    const KB = require('../js/knowledge.js');
+    const files = fs.readdirSync(path.join(ROOT, 'js')).filter(f => f.endsWith('.js') && f !== 'knowledge.js').map(f => 'js/' + f)
+      .concat(['server.js', 'cli.js']);
+    const srcAll = files.map(rel => fs.readFileSync(path.join(ROOT, rel), 'utf8')).join('\n');
+    const digested = Object.keys(KB.DIGESTS.sys).concat(Object.keys(KB.DIGESTS.review));
+    const orphan = Object.keys(KB.SECTIONS).filter(k => !digested.includes(k) && !srcAll.includes("'" + k + "'"));
+    assertEq(orphan.join('、'), '', '条目须有取用点:补进注入清单(BOARD_KB/KB.pick)或压缩摘要,不留库里躺着的条目');
+  } },
+  { name: '知识库取用:拆镜人设整条注入景别运镜+轴线匹配正文(按键取用后正文不缩水)', fn() {
+    const KB = require('../js/knowledge.js');
+    const WfCore = require('../js/wf-core.js');
+    const sys = WfCore.sbSystem({});
+    assert(sys.includes(KB.section('景别运镜')) && sys.includes(KB.section('轴线匹配')), '拆镜系统人设应含两条目正文');
+    assert(sys.startsWith(require('../js/prompts.js').get('sb.system', {})), '拆镜人设应以 sb.system 提示词开头(注册表覆盖生效)');
+  } },
   { name: '生成指纹不断链(§主线):发起即打指纹;落片沿用发起时指纹;regen-stale 有执行出口', fn() {
     const sg = fs.readFileSync(path.join(ROOT, 'js/sb-gen.js'), 'utf8');
     const genMark = sg.match(/status: 'generating'[^}]*/g) || [];
