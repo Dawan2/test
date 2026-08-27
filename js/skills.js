@@ -773,7 +773,7 @@
         + '缺口标记按关联索引口径保留。审片侧三步的人设通道已补齐——分镜评审 sb.reviewSystem 随分镜板块 ctx、'
         + '四维成片评审 review.finalSystem 与整集共性汇总(仍是内联 system,未登记为提示词键)随成片板块 ctx,'
         + '三步的 user 模板经 WfCore.reviewCtxNote 统一拼注入段,两端同口径且未雇佣时逐字节不变。'
-        + '仍欠:共性汇总步的系统人设未收进注册表(内联 system 不可被用户覆盖)',
+        + '仍欠:共性汇总步的系统人设未收进提示词注册表(内联 system 不可被用户覆盖)',
     },
     {
       id: 'core.memoryDual', sk: 'SK-04', name: '长期记忆双端与召回纯函数', stage: CROSS, wave: 'W3',

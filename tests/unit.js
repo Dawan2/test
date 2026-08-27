@@ -5266,7 +5266,7 @@ const skillsTests = [
     const wfSteps = DomainMod.workflow({ id: 'p1', episodes: [], subjects: [] }).steps.map(x => x.key);
     // 每条:缺口出口的实况判据 + note 里必须点名的那几处余量(接上了就要同步改 note,不许静默扩面)
     const facts = {
-      'core.personaCtx': ['G-01', /function wfPersonaNote\(/.test(srv), ['共性汇总', '内联 system']],
+      'core.personaCtx': ['G-01', /function wfPersonaNote\(/.test(srv), ['共性汇总', '未收进提示词注册表']],
       'core.memoryDual': ['G-02', typeof W.memRecall === 'function' && typeof W.memBlock === 'function', ['memAll', 'SK-26']],
       'review.stage': ['G-03', wfSteps.includes('review'), ['SK-24', '未审片']],
     };
@@ -5278,7 +5278,9 @@ const skillsTests = [
       assert(s.gaps.includes(gap), id + ' 应仍写明缺口编号 ' + gap + '(关联索引口径:落地不摘标记)');
       assert(new RegExp(gap + ' 已落地').test(s.note || ''), id + ' 的 note 须如实说明 ' + gap + ' 已落地(读者不该读成没做)');
       assert(/仍欠/.test(s.note || ''), id + ' 的 note 须写明仍欠什么(清了 pending 不等于这条没有余量)');
-      owed.forEach(k => assert((s.note || '').includes(k), id + ' 的 note 须点名仍欠的那一处:' + k));
+      // 点名断言只认「仍欠」之后那段:锚点写在"已落地"那半里不算交账(否则余量补完了 note 也能蒙过去)
+      const owedText = (s.note || '').split('仍欠').slice(1).join('仍欠');
+      owed.forEach(k => assert(owedText.includes(k), id + ' 的 note 须在「仍欠」段里点名:' + k));
     });
     // infra 面已无 pending;别人的未落地面一字未动(不借本轮顺手清别人的账)
     assertEq(Skills.list().filter(s => s.pending.includes('infra')).length, 0, 'infra 面已全部落地');
