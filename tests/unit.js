@@ -4855,6 +4855,9 @@ action 二选一:
     KEYS.forEach(k => assert(psrc.includes("Prompts.get('" + k + "')"), '音色推荐应取自注册表键 ' + k));
     assertEq((psrc.match(/你是配音导演/g) || []).length, 0, 'js/persona.js 不应再内联该人设句(覆盖不会跟过去)');
     KEYS.forEach(k => assert(Skills.byId('core.personaCtx').prompts.includes(k), 'SK-03 应登记 ' + k));
+    // 记账锚点:仍欠段(只认「仍欠」之后那段)须点名这两条的边界——契约半不开放覆盖,开了就要同步改记账
+    const owed3 = (Skills.byId('core.personaCtx').note || '').split('仍欠').slice(1).join('仍欠');
+    assert(owed3.includes('音色库') && owed3.includes('不开放覆盖'), 'SK-03 的仍欠段须写明音色推荐的契约半不开放覆盖');
   } },
   { name: '审片升为主线一等步骤(G-03):板块 Agent 有审片席;plans/工作区/CLI 都映射 episode.smartReview', fn() {
     const D = require(path.join(ROOT, 'js/domain.js'));
