@@ -885,7 +885,7 @@
       prompts: ['split.system', 'extract.system', 'digest.planSystem', 'graph.system', 'sb.boardSceneSystem', 'sb.boardDraftSystem', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem',
         'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem',
         'narration.system', 'reading.system', 'concept.system', 'light.system',
-        'voice.recommendSystem', 'voice.recommendBatchSystem', 'comic.bubbleSystem'],
+        'voice.recommendSystem', 'voice.recommendBatchSystem', 'comic.bubbleSystem', 'dirset.system'],
       cmds: ['episode.understanding', 'episode.generateStoryboard', 'episode.smartReview'], gaps: ['G-01'],
       note: 'G-01 已落地:服务端 /api/wf/* 各端点经唯一装配口 wfPersonaNote 注入生效人设(板块雇佣 > 全局雇佣),'
         + '浏览器同装配口;infra 面的 pending 已按实况清空(gaps() 只投影 gaps 字段、不看 pending,清账动不到投影),'
@@ -918,6 +918,10 @@
         + '浏览器隐式读全局默认值页的覆盖表);它与多轮那三条同口径:只有浏览器一个消费点,收编解决的是可覆盖不是可 headless。'
         + '对话面之外另收了一处:漫剧编辑器 AI 生成对白步的人设句成键 comic.bubbleSystem,'
         + '装配口在 js/editors.js 就地拼(人设句 + 契约半),浏览器隐式读覆盖表、缺省逐字节不变。'
+        + '导演设定五维的 AI 生成步(js/gsettings.js 的 genDirectorSetting)同形收编为 dirset.system,'
+        + '取值口经 Prompts.get 隐式读覆盖表、与前四条同口径(纯浏览器链路,只解决可覆盖);'
+        + '该键不与 und.system 复用——两句差「影视/短剧」两字,角色与产物落点都不同;'
+        + 'js/gsettings.js 至此零内联人设(工坊元智能体那份人设字面在 js/experts.js,不在本文件名下)。'
         + '仍欠:四处的 ops 协议/字段面/命令白名单/返回 JSON 约定仍由各自装配口拼、不开放覆盖'
         + '(那半是 ops 解析契约,用户改坏即整轮无 ops);'
         + '音色推荐两条同理只收人设句——音色库取值范围与返回 JSON 约定仍写在各自调用点、不开放覆盖'

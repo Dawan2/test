@@ -31,7 +31,7 @@
     try {
       if (!API.isReady()) throw new Error('LLM 未配置');
       const out = await API.chatJSON({
-        system: '你是资深影视导演。',
+        system: Prompts.get('dirset.system'),
         messages: [{ role: 'user', content: `为一部「${style}」风格的短剧制定导演设定,返回 JSON:{"光影":"2-3句","色调":"2-3句","情感氛围":"2-3句","服化道审美":"2-3句","表演气质":"2-3句"}。要求具体可执行、风格统一。${scriptText ? '剧本前段参考:\n' + scriptText.slice(0, 5000) : '(暂无剧本,按风格通用设定)'}` }],
         temperature: 0.6, max_tokens: 1200,
       });
