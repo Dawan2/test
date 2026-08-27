@@ -210,6 +210,50 @@ async function main() {
   r = cli('workflow', 'p_not_exist');
   report('workflow 不存在项目 → exit 4', r.code === 4, 'exit=' + r.code);
 
+  // ---- 主线中段流程模板(只读零计费):CLI 与 MCP 同一份产出 ----
+  {
+    const FlowTpl = require(ROOT + '/js/flow-tpl.js');
+    r = cli('flow-template'); // 不给 pid:静态模板,不读状态也不打服务端
+    const staticTpl = r.out;
+    report('flow-template 静态模板(中段七步,不读项目状态)',
+      r.code === 0 && staticTpl && staticTpl.segment === 'mid' && staticTpl.steps.length === 7
+      && staticTpl.steps.every(s => s.status === (s.optional ? 'optional' : null) && s.args.every(a => a.from)),
+      'steps=' + ((staticTpl && staticTpl.steps || []).length));
+    r = cli('flow-template', 'gen', pid); // 有分镜未出片:next 落到批量生成,上游未齐的那几步如实进 gaps
+    report('flow-template 生成段带状态(next 落到批量生成;ready 与 gaps 一致)',
+      r.code === 0 && r.out && r.out.next && r.out.next.cmd === 'episode.generateVideos'
+      && r.out.ready === !r.out.gaps.length && r.out.gaps.every(g => g.code && g.label && g.stage),
+      JSON.stringify((r.out && r.out.next) || {}) + ' gaps=' + JSON.stringify((r.out && r.out.gaps || []).map(g => g.code)));
+    r = cli('flow-template', 'mid', pidB); // 项目 B 只有一个主体,无剧本无分集
+    report('flow-template 缺前置如实进 gaps 且 ready=false(不空成功)',
+      r.code === 0 && r.out && r.out.ready === false && (r.out.gaps || []).some(g => g.code === 'no-script'),
+      JSON.stringify((r.out && r.out.gaps) || []).slice(0, 80));
+    r = cli('flow-template', 'bogus');
+    report('flow-template 未知流程段 → exit 2(附可用清单)', r.code === 2 && /flow-template \[mid\|/.test(String((r.out && r.out.error) || '')), 'exit=' + r.code);
+    r = cli('flow-template', 'mid', 'p_not_exist');
+    report('flow-template 不存在项目 → exit 4', r.code === 4, 'exit=' + r.code);
+    // MCP 探测:工具是 CLI 的薄包装,同参产出应与上面逐字节相同(mcp.js 起 cli.js 子进程,沿用同一配置目录)
+    const reqs = [
+      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'hujing_flow_template', arguments: { segment: 'gen', pid } } },
+      { jsonrpc: '2.0', id: 3, method: 'prompts/get', params: { name: 'hujing_mid_pipeline', arguments: { pid } } },
+    ];
+    const mcp = spawnSync(process.execPath, [ROOT + '/mcp.js'], { input: reqs.map(x => JSON.stringify(x)).join('\n') + '\n', encoding: 'utf8', env: CLI_ENV, timeout: 30000 });
+    const byId = {};
+    String(mcp.stdout || '').trim().split('\n').filter(Boolean).forEach(l => { try { const m = JSON.parse(l); byId[m.id] = m; } catch (_) {} });
+    const tools = ((byId[1] && byId[1].result || {}).tools || []).map(t => t.name);
+    report('MCP tools/list 探测到中段流程模板工具', tools.includes('hujing_flow_template'), tools.length + ' 工具');
+    let mcpTpl = null;
+    try { mcpTpl = JSON.parse(byId[2].result.content[0].text); } catch (_) {}
+    report('MCP hujing_flow_template 与 CLI 同参产出逐字节相同(薄包装,零计费)',
+      !!mcpTpl && JSON.stringify(mcpTpl) === JSON.stringify(cli('flow-template', 'gen', pid).out),
+      mcpTpl ? 'next=' + JSON.stringify(mcpTpl.next) : String(mcp.stderr || '').slice(-80));
+    const ptxt = (((byId[3] && byId[3].result || {}).messages || []).map(m => m.content && m.content.text) || []).join('\n');
+    report('MCP hujing_mid_pipeline 正文由同一份模板渲染(步意/断点码齐全)',
+      ptxt.includes(pid) && FlowTpl.template('mid', null).steps.every(s => ptxt.includes(s.note) && s.stop.every(x => ptxt.includes(x.code))),
+      ptxt.length + ' 字');
+  }
+
   // ---- 第四阶段交付检查:release-check / release(与前端 Release.collect 同口径) ----
   r = cli('release-check');
   report('release-check 缺 pid → exit 2(含用法)', r.code === 2 && /用法|release-check.*pid/.test(String((r.out && r.out.error) || r.err || '')), 'exit=' + r.code + ' ' + String((r.out && r.out.error) || r.err).slice(0, 50));
