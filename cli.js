@@ -1017,7 +1017,7 @@ async function execNext(pid, epid, f) {
 }
 
 /* 生产就绪检查(read):Domain.episodeState 单源推导;result.checks 附各校验面结论,面清单与步序一律读双端单源表
- * Skills.preflightStages()(现为 script → subjects → eps → shots → film),本层不写第二份面清单
+ * Skills.preflightStages()(现为 script → subjects → eps → shots → gen → review → film),本层不写第二份面清单
  * (Skills.check,纯本地零 LLM 零计费,只报不拦——不进 blockers、不改 ok/status;与前端命令层同一份结论) */
 EXEC['episode.preflight'] = { needs: ['p', 'ep'], meter: false, next: false, run: async (args, f) => {
   const { p, ep } = await execCtx(args, f);
