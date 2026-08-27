@@ -43,6 +43,112 @@
    * 未注册的校验项不得被 skill 引用(validate 会报),尚无实现的校验面一律留在条目 pending 里。 */
   const CHECKS = {};
 
+  /* ---- 剧本段校验宿主(S-01):判定输入是剧本正文本身 ----
+   * 文本源:有分集上下文取该集正文,否则取项目剧本原文(拆集前的整本也判得动);
+   * 判定一律在**去空白正文**上做,位置 at 与字数同一口径,换行/缩进不影响结论。
+   * 三条校验项全部是本地词法命中:零 LLM、零计费,只判"文本层看得见的编排缺失",
+   * 好坏优劣仍归 LLM 审片(G-10),本层不冒充质量评分,结论一律 warn 不升 fail。 */
+  const scriptTextOf = o => String((o.ep ? o.ep.content : (o.p && o.p.script)) || '');
+  const compact = t => String(t === null || t === undefined ? '' : t).replace(/\s+/g, '');
+  const SCRIPT_MIN = 30; // 短于此的正文(片段/占位)无判定输入,不冒充结论
+  /* 台词行:成对引号包住的一段(中英文引号通用,单段上限防不配对引号吞掉全文) */
+  const LINE_RE = /[「『“"‘][^「『」』”"‘’]{1,200}[」』”"’]/;
+  /* 词表中最早出现的那个词及其位置;无命中回 {at:-1} */
+  const firstOf = (t, words) => {
+    let at = -1, word = '';
+    words.forEach(w => { const i = t.indexOf(w); if (i >= 0 && (at < 0 || i < at)) { at = i; word = w; } });
+    return { at, word };
+  };
+
+  /* SK-07 开篇钩子锚定:KB「钩子六型」的"前3秒必须冲突锚定,直接进冲突,背景后面补"落到剧本文本上——
+   * 只判开篇窗口内有没有冲突锚点(直接进台词,或命中六型的字面冲突信号),不判钩子选得好不好。
+   *   late-hook       窗口内没有、正文后面才有 → warn(开篇是背景铺陈,冲突锚定被推迟,hit 带首个信号位置)
+   *   no-hook-anchor  全文都找不到冲突锚点 → warn(整段无冲突落点,通常是梗概/设定稿而非可拍剧本) */
+  const HOOK_HEAD = 120; // 开篇窗口字数(去空白):按约 4.5 字/秒口播量,覆盖开篇十余秒的可判定范围
+  /* 冲突信号词:钩子六型六类各取其字面可判定的信号(身份反转/误会揭穿/致命危机/情感极限/秘密曝光/打脸预备) */
+  const HOOK_SIGNALS = [
+    '跪下', '求我', '凭什么', '滚出去', '闭嘴', '给我记住', '你算什么',
+    '僵住', '笔迹', '证据', '真相', '原来', '竟然', '不对劲',
+    '在我手上', '一小时', '来不及', '救命', '危险', '威胁', '绑走', '刀', '血',
+    '离婚', '退婚', '分手', '别走', '背叛', '出轨', '骗了',
+    '藏得', '秘密', '曝光', '揭穿', '照片', '录音',
+    '嘲笑', '哄笑', '好戏', '刚开始', '冷笑', '羞辱', '当众',
+  ];
+  CHECKS['script.openingHookAnchor'] = function (obj) {
+    const t = compact(scriptTextOf(obj || {}));
+    if (t.length < SCRIPT_MIN) return { pass: true, level: 'info', hits: [] };
+    const q = t.search(LINE_RE);
+    const sig = firstOf(t, HOOK_SIGNALS);
+    let at = -1, name = '';
+    if (q >= 0) { at = q; name = '台词'; }
+    if (sig.at >= 0 && (at < 0 || sig.at < at)) { at = sig.at; name = sig.word; }
+    if (at >= 0 && at < HOOK_HEAD) return { pass: true, level: 'info', hits: [] };
+    const hits = at < 0
+      ? [{ code: 'no-hook-anchor', at: -1, name: '', head: t.slice(0, 24) }]
+      : [{ code: 'late-hook', at, name, head: t.slice(0, 24) }];
+    return { pass: false, level: 'warn', hits };
+  };
+
+  /* SK-08 打脸四步完备性:KB「打脸四步」的 羞辱→隐忍→反击→释放 四步落到剧本文本上——
+   * 每步一组字面信号词,记其在正文中的首现位置。
+   *   missing-step       四步里某步一个信号词都没有 → warn(打脸段落缺环节,爽点兑现不成立)
+   *   step-out-of-order  某步首现早于前一已命中步 → warn(步序倒置,反击写在隐忍之前则落差无从积累)
+   * 命中步数低于 FACESLAP_MIN 时视为本集本就不是打脸段落,直接不产出结论——
+   * 不是每集都该有打脸,拿"没写打脸"当缺陷报是噪音。 */
+  const FACESLAP_MIN = 2;
+  /* 各步信号词只收该步独有的字面:跨步通用词(当众/跪下/真相大白式的钩子用语)一律不收——
+   * 一个词同时属于两步会把步序判成假倒置,宁可漏判也不制造噪音 */
+  const FACESLAP_STEPS = [
+    { step: '羞辱', words: ['羞辱', '嘲讽', '讥讽', '嘲笑', '哄笑', '奚落', '轻蔑', '不屑', '瞧不起', '看不起', '废物', '丢人', '辱骂'] },
+    { step: '隐忍', words: ['隐忍', '忍住', '强忍', '沉默', '低头', '咽下', '不吭声', '退让', '攥紧', '握紧', '默默', '一言不发', '没有反驳'] },
+    { step: '反击', words: ['反击', '揭穿', '揭露', '真相', '摊牌', '亮出', '证据', '打脸', '逆转', '冷冷', '反问'] },
+    { step: '释放', words: ['震惊', '哗然', '傻眼', '愣住', '惨白', '求饶', '道歉', '恐惧', '鸦雀无声', '扬长而去', '淡然', '刮目相看'] },
+  ];
+  CHECKS['script.faceslapStepOrder'] = function (obj) {
+    const t = compact(scriptTextOf(obj || {}));
+    if (t.length < SCRIPT_MIN) return { pass: true, level: 'info', hits: [] };
+    const at = FACESLAP_STEPS.map(g => firstOf(t, g.words).at);
+    if (at.filter(i => i >= 0).length < FACESLAP_MIN) return { pass: true, level: 'info', hits: [] };
+    const hits = [];
+    FACESLAP_STEPS.forEach((g, i) => { if (at[i] < 0) hits.push({ code: 'missing-step', step: g.step, at: -1 }); });
+    let prev = -1, prevStep = '';
+    FACESLAP_STEPS.forEach((g, i) => {
+      if (at[i] < 0) return;
+      if (prev >= 0 && at[i] < prev) hits.push({ code: 'step-out-of-order', step: g.step, base: prevStep, at: at[i] });
+      prev = at[i]; prevStep = g.step;
+    });
+    return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
+  };
+
+  /* SK-09 台词单句长度(对白铁律的校验半):KB「对话铁律」的"单句≤30字"落到两处台词载体上——
+   * 剧本正文的引号台词,与分镜表的 s.dialogue(条目 covers 含 shots,同一判据两处载体一份实现)。
+   *   long-line  单句去空白字数超阈值 → warn(hit 带载体、镜号与句首摘要)
+   * 阈值现取 KB 条目正文,不在本层写第二份数字(条目改写而字面失配时契约测试先红)。 */
+  const DIALOGUE_MAX = +((String(KB.section('对话铁律') || '').match(/单句≤(\d+)字/) || [])[1] || 0) || 30;
+  const SENT_SPLIT = /[。!?!?;;…]+|——/;
+  CHECKS['script.dialogueLineLength'] = function (obj) {
+    const o = obj || {};
+    const hits = [];
+    /* 一段台词按句切分逐句判长;base 给出该段在去空白正文中的起点(分镜台词以镜定位,不报正文位置) */
+    const push = (where, text, loc, base) => {
+      const raw = compact(text);
+      let cur = 0;
+      raw.split(SENT_SPLIT).forEach(sent => {
+        const at = raw.indexOf(sent, cur);
+        cur = at + sent.length;
+        if (sent.length > DIALOGUE_MAX) {
+          hits.push(Object.assign({ code: 'long-line', where, len: sent.length, name: sent.slice(0, 14) },
+            base === undefined ? {} : { at: base + at }, loc));
+        }
+      });
+    };
+    const body = compact(scriptTextOf(o));
+    const re = new RegExp(LINE_RE.source, 'g'); // 每次现开:全局正则的 lastIndex 不跨调用留状态
+    for (let m = re.exec(body); m; m = re.exec(body)) push('script', m[0].slice(1, -1), {}, m.index + 1);
+    ((o.ep && o.ep.shots) || (o.s ? [o.s] : [])).forEach(s => push('shot', s.dialogue, { shotId: s.id, order: (+s.order || 0) + 1 }));
+    return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
+  };
+
   /* SK-12 分镜引用主体完备性(S-03 的完备性半):逐镜看 characters/scene/props 的引用名能否落到主体库,
    * 落到的主体(含形态)有没有可喂模型的真实参考图。主体按名查找与取图优先级一律走 Domain
    * (findSubject 含多形态全称与曾用名兜底;subjectRefImage 与真实生成请求同一取图口径),本层不写第二份。
@@ -226,19 +332,26 @@
     },
     {
       id: 'script.hookStrength', sk: 'SK-07', name: '开篇钩子强度校验', stage: 'script', wave: 'W4',
-      kinds: ['check'], pending: ['check'], kb: ['钩子六型'], experts: ['ex_hook'], gaps: ['G-10', 'G-04', 'S-01'],
+      kinds: ['check'], kb: ['钩子六型'], checks: ['script.openingHookAnchor'],
+      cmds: ['episode.preflight'], experts: ['ex_hook'], gaps: ['G-10', 'G-04', 'S-01'],
+      note: '只判开篇窗口内有无冲突锚点(本地词法、零 LLM),不判钩子选型好坏——'
+        + '钩型优劣属审片维度,待 G-10;经就绪检查与问题中心消费,结论只报不拦',
     },
     {
       id: 'script.faceslapFour', sk: 'SK-08', name: '打脸四步完备性校验', stage: 'script', wave: 'W4',
-      kinds: ['check'], pending: ['check'], kb: ['打脸四步', '反转五式'], experts: ['ex_pleasure'],
-      gaps: ['G-10', 'G-04', 'S-01'],
+      kinds: ['check'], kb: ['打脸四步', '反转五式'], checks: ['script.faceslapStepOrder'],
+      cmds: ['episode.preflight'], experts: ['ex_pleasure'], gaps: ['G-10', 'G-04', 'S-01'],
+      note: '四步词序与 KB 条目同序;命中步数不足即判本集非打脸段落,不产出结论('
+        + '不是每集都该有打脸);篇幅配比(40%/30%/30%)与爽点强度递进属审片维度,待 G-10',
     },
     {
       id: 'script.dialogueRule', sk: 'SK-09', name: '对白铁律注入与单句长度校验', stage: 'script',
-      covers: ['script', 'shots'], wave: 'W2', kinds: ['inject', 'check'], pending: ['check'],
-      kb: ['对话铁律', '人物体系'], prompts: ['sb.system'], cmds: ['episode.generateStoryboard'],
+      covers: ['script', 'shots'], wave: 'W2', kinds: ['inject', 'check'],
+      kb: ['对话铁律', '人物体系'], prompts: ['sb.system'], checks: ['script.dialogueLineLength'],
+      cmds: ['episode.generateStoryboard', 'episode.preflight'],
       experts: ['ex_dialogue'], gaps: ['G-15', 'G-10', 'S-01'],
-      note: '注入面 W2 落地(条目现为零消费);单句长度校验面待 S-01 校验宿主',
+      note: '注入面 W2 落地;校验面判剧本正文引号台词与分镜 s.dialogue 两处载体的单句长度,'
+        + '阈值现取 KB「对话铁律」正文不写第二份数字;潜台词/说明文式台词等语义面属审片维度,待 G-10',
     },
     {
       id: 'script.aiToneBan', sk: 'SK-10', name: '文案 AI 味硬禁与痕迹检出', stage: 'script',

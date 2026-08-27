@@ -21,6 +21,18 @@
     'caption-flash': '字幕一闪而过',
     'no-caption-track': '开了烧录字幕却无一句对白/旁白',
   };
+  /* 剧本文本面命中码 → 展示文案(同上:判据只在 js/skills.js 的校验项里一份) */
+  const CRAFT = {
+    'no-hook-anchor': '全文未见冲突锚点',
+    'late-hook': '开篇未直接进冲突',
+    'missing-step': '打脸四步缺环节',
+    'step-out-of-order': '打脸四步步序倒置',
+    'long-line': '台词单句超长',
+  };
+  /* 命中 → 一行明细:码文案 + 定位(打脸步名 / 台词摘要 / 镜号) */
+  const craftLine = h => (CRAFT[h.code] || h.code)
+    + (h.step ? `「${h.step}」` : h.name ? `「${h.name}」` : '')
+    + (h.order ? `(镜头${h.order})` : '');
 
   /* ================= 问题清单推导(纯数据,可 vm 沙箱测试) =================
    * 条目:{ kind, sev(high|mid|low), count, label, detail, epid?, epTitle?, cmd?, shotIds?, goto? }
@@ -46,6 +58,17 @@
         out.push(Object.assign({}, base, { kind: 'no-script', sev: 'high', count: 1, label: `「${ep.title}」缺剧本正文`, detail: '无剧本无法拆镜与生成本集理解', goto: `#/project/${p.id}/episode/${ep.id}` }));
         return;
       }
+      /* 剧本文本面校验项(js/skills.js SK-07/08/09,纯本地零 LLM 零计费):开篇钩子锚定 / 打脸四步 / 台词单句长度 →
+       * 低危提醒,只报不拦——发布门 G2 只数高/中危,本项不改门禁状态,也不进 Domain 的阻塞项。
+       * 位置在未分镜等早退分支之前:剧本刚写完还没拆镜时正是这几条最该看得见的时候 */
+      const craft = window.Skills ? [].concat(...Skills.check('script', { p, ep }).map(x => x.hits)) : [];
+      if (craft.length) out.push(Object.assign({}, base, {
+        kind: 'script-craft', sev: 'low', count: craft.length,
+        label: `「${ep.title}」${craft.length} 处剧本方法论提醒`,
+        detail: craft.slice(0, 4).map(craftLine).join(';') + (craft.length > 4 ? ` 等 ${craft.length} 处` : '')
+          + '——判据取自知识库条目,只提醒不拦生成',
+        goto: `#/project/${p.id}/episode/${ep.id}`,
+      }));
       if (!c.total) { out.push(Object.assign({}, base, { kind: 'no-shots', sev: 'mid', count: 1, label: `「${ep.title}」未生成分镜`, detail: '已有剧本未拆镜,可直接智能分镜', cmd: 'episode.generateStoryboard' })); return; }
       if (st.shotsStale) { out.push(Object.assign({}, base, { kind: 'shots-stale', sev: 'mid', count: 1, label: `「${ep.title}」分镜表基于旧剧本/图谱`, detail: '剧本或事件图谱修订后未重新拆镜', goto: `#/project/${p.id}/episode/${ep.id}` })); return; }
       if (c.failed) {
