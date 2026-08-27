@@ -3286,7 +3286,12 @@ const server = http.createServer(async (req, res) => {
         const r = await wfLLM(user.id, {
           action: 'llm.understanding', reason: '本集理解(' + ep.title + ')', opId: sanitizeOpId(b.operationId) || uid('wfund'), step: 'main', wfName: 'understanding',
           model: st.defLLM || 'qwen-turbo', system: Prompts.get('und.system', st.promptOverrides),
-          user: WfCore.buildUndUser({ dsText: WfCore.dimsText(st.directorSetting), styleText: Domain.styleOf(p), eventsText: WfCore.eventsOfEpisode(p, ep), content: (ep.content || '').slice(0, 6000) }),
+          user: WfCore.buildUndUser({
+            dsText: WfCore.dimsText(st.directorSetting), styleText: Domain.styleOf(p), eventsText: WfCore.eventsOfEpisode(p, ep), content: (ep.content || '').slice(0, 6000),
+            // 雇佣专家方法论 + 协作记忆(导演板块):与浏览器 understanding.js 委托点同源注入
+            personaNote: WfCore.personaNote(ExpertsData.expertOf(st.hiredExpert, tree.customExperts)),
+            memText: WfCore.memBlock(tree.agentMemory, ep.title || '', '导演'),
+          }),
           temperature: 0.5, max_tokens: 1500, projectId: p.id, mockKind: 'und',
         });
         if (!WfCore.undValid(r.parsed)) { if (r.charge) proxyRefund(user.id, r.charge, '理解结构不完整'); return fail(res, 502, '本集理解返回结构不完整(已退费)', 502); }
@@ -3320,6 +3325,9 @@ const server = http.createServer(async (req, res) => {
           // 二十二轮:projType 与浏览器同源推导(experts-data.projTypeOf)——雇佣解说剧导演后服务端工作流提示词同样带「解说模式」标注
           projType: ExpertsData.projTypeOf(st.hiredExpert, tree.customExperts),
           directorNote: WfCore.directorNote(st.directorSetting), conceptNote: WfCore.conceptInject(p),
+          // 雇佣专家方法论 + 协作记忆(分镜板块):与浏览器 sb-llm.js 委托点同源注入
+          personaNote: WfCore.personaNote(ExpertsData.expertOf(st.hiredExpert, tree.customExperts)),
+          memText: WfCore.memBlock(tree.agentMemory, ep.title || '', '分镜'),
           langText: WfCore.langOf(p), genres: p.genres, eventsText: WfCore.eventsOfEpisode(p, ep),
           content: (ep.content || '').slice(0, 12000),
         };
@@ -3328,7 +3336,10 @@ const server = http.createServer(async (req, res) => {
           const ru = await wfLLM(user.id, {
             action: 'llm.smartSB', reason: '智能分镜(' + ep.title + ')', opId, step: 'und', wfName: 'smart-storyboard',
             model: c.sbModel || st.defLLM || 'qwen-turbo', system: Prompts.get('und.system', ov),
-            user: WfCore.buildUndUser({ dsText: WfCore.dimsText(st.directorSetting), styleText: ctxBase.styleText, eventsText: ctxBase.eventsText, content: (ep.content || '').slice(0, 6000) }),
+            user: WfCore.buildUndUser({
+              dsText: WfCore.dimsText(st.directorSetting), styleText: ctxBase.styleText, eventsText: ctxBase.eventsText, content: (ep.content || '').slice(0, 6000),
+              personaNote: ctxBase.personaNote, memText: WfCore.memBlock(tree.agentMemory, ep.title || '', '导演'),
+            }),
             temperature: 0.5, max_tokens: 1500, projectId: p.id, mockKind: 'und',
           });
           if (!WfCore.undValid(ru.parsed)) { if (ru.charge) proxyRefund(user.id, ru.charge, '理解结构不完整'); return fail(res, 502, '本集理解返回结构不完整(已退费)', 502); }
@@ -3419,10 +3430,14 @@ const server = http.createServer(async (req, res) => {
         const targets = (ep.shots || []).filter(s => !s.final && Domain.shotVideoReady(s, true) && !(s.video && s.video.status === 'generating'));
         if (!targets.length) return fail(res, 400, '没有可审片的已出片镜头(需先生成视频)', 400);
         const opBase = sanitizeOpId(b.operationId) || uid('wfrv');
-        const reviewCtx = { kbReviewText: KB.reviewBlock(), tplReviewText: st.tplReview || '', directorNote: WfCore.directorNote(st.directorSetting), styleText: Domain.styleOf(p) };
+        const reviewCtx = {
+          kbReviewText: KB.reviewBlock(), tplReviewText: st.tplReview || '', directorNote: WfCore.directorNote(st.directorSetting), styleText: Domain.styleOf(p),
+          personaNote: WfCore.personaNote(ExpertsData.expertOf(st.hiredExpert, tree.customExperts)), // 雇佣专家方法论(与浏览器 review.js 委托点同源)
+        };
         const reports = [], failed = [];
         for (const s of targets) {
           const opId = opBase + '_s' + (s.order + 1); // 每镜独立 operation(与前端逐镜计费口径一致)
+          const rctx = Object.assign({}, reviewCtx, { memText: WfCore.memBlock(tree.agentMemory, s.plot || '', '成片') }); // 协作记忆逐镜召回(成片板块,与浏览器同算法)
           // 画面:当前视频首帧优先(与被审对象同源);/uploads/ 路径服务端直读转 base64(与前端 fetch+FileReader 同义)
           let dataUrl = null;
           const img = (s.video && s.video.frame) || s.image;
@@ -3444,7 +3459,7 @@ const server = http.createServer(async (req, res) => {
                 const r = await wfLLM(user.id, {
                   action: 'llm.review', reason: '审片:镜头' + (s.order + 1), opId, step: 'main', wfName: 'smart-review',
                   model, system: Prompts.get('review.system', ov),
-                  messages: [{ role: 'user', content: [{ type: 'text', text: WfCore.buildReviewPrompt(p, ep, s, true, reviewCtx) }, { type: 'image_url', image_url: { url: dataUrl } }] }],
+                  messages: [{ role: 'user', content: [{ type: 'text', text: WfCore.buildReviewPrompt(p, ep, s, true, rctx) }, { type: 'image_url', image_url: { url: dataUrl } }] }],
                   temperature: 0.3, max_tokens: 2500, projectId: p.id, mockKind: 'shotReview',
                 });
                 report = WfCore.normalizeReport(r.parsed, p, ep, s, model, 'vision', { uid, now: nowStr });
@@ -3456,7 +3471,7 @@ const server = http.createServer(async (req, res) => {
               const r = await wfLLM(user.id, {
                 action: 'llm.review', reason: '审片:镜头' + (s.order + 1), opId, step: 'main', wfName: 'smart-review',
                 model: st.defLLM || 'qwen-turbo', system: Prompts.get('review.system', ov),
-                user: WfCore.buildReviewPrompt(p, ep, s, false, reviewCtx),
+                user: WfCore.buildReviewPrompt(p, ep, s, false, rctx),
                 temperature: 0.3, max_tokens: 2500, projectId: p.id, mockKind: 'shotReview',
               });
               report = WfCore.normalizeReport(r.parsed, p, ep, s, r.model || 'text', 'text', { uid, now: nowStr });

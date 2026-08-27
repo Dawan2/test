@@ -28,6 +28,8 @@
       kbReviewText: (window.KB && KB.reviewBlock) ? KB.reviewBlock() : '',
       tplReviewText: (window.getSettings && getSettings().tplReview) || '',
       directorNote: window.directorInject ? directorInject(p.style) : '',
+      personaNote: WfCore.personaNote(window.hiredExpert ? hiredExpert() : null), // 雇佣专家方法论(与服务端 /api/wf/smart-review 同源)
+      memText: WfCore.memBlock(Store.state.agentMemory, s.plot || '', '成片'), // 协作记忆按板块召回(与对话层同算法)
       styleText: styleOf(p),
     });
   }
