@@ -72,12 +72,22 @@
   }
 
   /* ---- 🧠 专家自进化:把导演助手记忆里用户的纠正/偏好沉淀,一次 LLM 调用蒸馏为 ≤4 条「进化条款」追加进该专家 persona ----
-   * 仅自定义专家可用(预置 EXPERTS 不挂此按钮);收费 1 积分,失败/无新增退费 */
+   * 仅自定义专家可用(预置 EXPERTS 不挂此按钮);收费 1 积分,失败/无新增退费。
+   * 记忆源按该专家的生效板块过滤(判据双端单源 WfCore.expertBoards/memForBoards):蒸馏是写死进 persona,
+   * 别的板块的沉淀混进来会让该专家在自己每条链路上都带着不属于它的口径;板块或条目取不到即在扣费前跳过。 */
   async function evolveExpert(e, done) {
     if (!e) return;
     if (!API.isReady()) return U.toast('需要真实 LLM 在线才能进化,请先到「模型配置」完成配置', 'error', 3000);
-    const mem = (Store.state.agentMemory || []).map(m => m && m.text).filter(Boolean);
-    if (!mem.length) return U.toast('暂无使用记录(导演助手记忆)可供进化,先与导演助手协作几轮再来', 'info', 3500);
+    const boards = WfCore.expertBoards({
+      expert: e, projects: Store.myProjects(), hiredId: (Store.state.settings || {}).hiredExpert,
+      boards: (window.AGENT_BOARDS || []).map(b => b.key),
+    });
+    if (!boards.length) {
+      return U.toast(`「${e.name}」还没在任何板块生效(全局雇佣或到「制片 → 智能体分工」按板块雇佣),无法确定该蒸馏哪个板块的沉淀`, 'info', 4000);
+    }
+    const bt = boards.join('/');
+    const mem = WfCore.memForBoards(Store.state.agentMemory, boards).map(m => m.text);
+    if (!mem.length) return U.toast(`「${bt}」板块暂无使用记录(导演助手记忆)可供进化,先在该板块与导演助手协作几轮再来`, 'info', 4000);
     if (!U.requireCredits(1, '专家自进化')) return;
     // 计费走标准五件套展开式(登记→扣费→执行→失败退费),任务监控可对账
     const tk = Tasks.start({ type: '专家自进化', model: 'LLM', target: e.name, cost: 1 });
@@ -85,8 +95,8 @@
     try {
       const out = await API.chatJSON({
         model: (Store.state.settings || {}).defLLM || API.getConfig().model,
-        system: '你是专家人设进化器。根据用户与创作助手的历史协作记忆(用户的纠正/偏好/已确认决定),为指定专家蒸馏「进化条款」。只返回 JSON {"clauses":["条款1","条款2"]}(1-4条)。要求:与该专家人设领域相关、具体可执行、不重复其已有条款;每条≤40字。',
-        messages: [{ role: 'user', content: `专家:「${e.name}」(${e.role || '其他'})人设:\n${e.persona}\n\n历史协作记忆:\n${mem.map((t, i) => (i + 1) + '. ' + t).join('\n')}` }],
+        system: `你是专家人设进化器。根据用户与创作助手在「${bt}」板块的历史协作记忆(用户的纠正/偏好/已确认决定),为该板块的指定专家蒸馏「进化条款」。只返回 JSON {"clauses":["条款1","条款2"]}(1-4条)。要求:与该专家人设领域及「${bt}」板块职责相关、具体可执行、不重复其已有条款;每条≤40字。`,
+        messages: [{ role: 'user', content: `专家:「${e.name}」(${e.role || '其他'})生效板块:${bt}\n人设:\n${e.persona}\n\n「${bt}」板块历史协作记忆:\n${mem.map((t, i) => (i + 1) + '. ' + t).join('\n')}` }],
         temperature: 0.3, max_tokens: 600,
         billingAction: 'llm.evolve', operationId: tk.id,
       });

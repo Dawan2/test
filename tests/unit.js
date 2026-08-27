@@ -173,6 +173,13 @@ function loadExperts() {
     EXPERT_ROLES: ['导演', '编剧', '摄像', '策划', '其他'],
     dirFallback: () => ({ 光影: 'fb光影', 色调: 'fb色调', 情感氛围: 'fb氛围', 服化道审美: 'fb服化', 表演气质: 'fb表演' }),
   };
+  /* evolveExpert 的记忆源过滤走 WfCore.expertBoards/memForBoards + window.AGENT_BOARDS 板块词表
+   * (agent.js 的 UI 全局来源,本套件不加载该文件,按其现有板块键镜像一份) */
+  sb.AGENT_BOARDS = ['导演', '剧本', '主体', '分集', '分镜', '生成', '审片', '成片'].map(k => ({ key: k }));
+  loadFile(sb, 'domain.js');    // wf-core 浏览器 UMD 依赖(与 index.html 同顺序)
+  loadFile(sb, 'prompts.js');
+  loadFile(sb, 'knowledge.js');
+  loadFile(sb, 'wf-core.js');
   loadFile(sb, 'experts-data.js'); // 注册表双端单源(experts.js 消费其 EXPERTS/projTypeOf)
   loadFile(sb, 'experts.js');
   return sb;
@@ -1112,7 +1119,9 @@ const expertsTests = [
   } },
   { name: 'evolveExpert:成功蒸馏计费五件套(start→charge→done)并追加进化条款', fn: async () => {
     const sb = loadExperts();
-    sb.Store.state.agentMemory = [{ text: '用户偏好快节奏' }];
+    /* 记忆源按生效板块过滤后,夹具须同时给出雇佣关系与带 scope 的沉淀(全桶不再是蒸馏输入) */
+    sb.Store.myProjects = () => [{ id: 'p1', boards: { 分镜: { expert: 'cx_1' } } }];
+    sb.Store.state.agentMemory = [{ text: '用户偏好快节奏', scope: '分镜' }];
     sb.__apiReady = true;
     sb.__chatJSONResult = { clauses: ['开场三秒内进冲突', '台词更口语化'] };
     const e = { id: 'cx_1', name: '我的专家', persona: '基础人设' };
@@ -1127,7 +1136,8 @@ const expertsTests = [
   } },
   { name: 'evolveExpert:无新增条款=LLM已交付不退费,任务标失败说明(与已有 persona 重复)', fn: async () => {
     const sb = loadExperts();
-    sb.Store.state.agentMemory = [{ text: '记忆' }];
+    sb.Store.myProjects = () => [{ id: 'p1', boards: { 分镜: { expert: 'cx_1' } } }];
+    sb.Store.state.agentMemory = [{ text: '记忆', scope: '分镜' }];
     sb.__apiReady = true;
     sb.__chatJSONResult = { clauses: ['基础人设'] }; // 与 persona 完全一致 → 本地去重后为空
     const e = { id: 'cx_1', name: '我的专家', persona: '基础人设' };
@@ -1138,6 +1148,105 @@ const expertsTests = [
     assertEq(sb.__tasks[0].status, 'failed');
     assert(sb.__tasks[0].reason.includes('无新增条款'));
     assert(!e.persona.includes('【进化条款'), 'persona 不应被改动');
+  } },
+  /* ---- G-11 蒸馏输入按板块过滤:蒸馏是写死进 persona,别的板块的沉淀混进来会让该专家
+   * 在自己每条链路上都带着不属于它的口径。以下四条钉的就是"只吃本板块、取不到就跳过"。 ---- */
+  { name: 'evolveExpert:蒸馏输入按生效板块过滤——导演板块沉淀不进分镜专家(user/system 两侧都无)', fn: async () => {
+    const sb = loadExperts();
+    sb.Store.myProjects = () => [{ id: 'p1', boards: { 分镜: { expert: 'cx_1' }, 导演: { expert: 'cx_other' } } }];
+    sb.Store.state.agentMemory = [
+      { text: '定调:全片低饱和青橙,六维缺口按导演页补', scope: '导演' },
+      { text: '相邻景别不硬切,切换隔一别', scope: '分镜' },
+      { text: '发布门未过项优先补字幕', scope: '成片' },
+      { text: '手工沉淀但没标板块', scope: '' },
+    ];
+    sb.__apiReady = true;
+    sb.__llm = [];
+    sb.API.chatJSON = async req => {
+      sb.__llm.push({ system: req.system, user: ((req.messages || [])[0] || {}).content });
+      return { clauses: ['每镜给出摄影意图'] };
+    };
+    const e = { id: 'cx_1', name: '我的分镜专家', role: '摄像', persona: '基础人设' };
+    await sb.Experts.evolveExpert(e);
+    assertEq(sb.__llm.length, 1, '应只发一次蒸馏请求');
+    const { system, user } = sb.__llm[0];
+    const both = system + '\n' + user;
+    assert(user.includes('相邻景别不硬切'), '本板块沉淀应纳入蒸馏输入:' + user);
+    assert(!both.includes('低饱和青橙') && !both.includes('六维缺口'), '导演板块沉淀不得混进 user/system 任一侧:' + both);
+    assert(!both.includes('优先补字幕'), '成片板块沉淀同样不得混进(该专家未雇在成片板块)');
+    assert(!both.includes('没标板块'), '无 scope 的条目板块归属拿不准,不蒸馏');
+    assert(system.includes('分镜') && user.includes('生效板块:分镜'), '两侧都应点明生效板块,让模型按该板块职责蒸馏');
+    assert(e.persona.includes('- 每镜给出摄影意图'), '过滤后仍应正常追加条款');
+    assertEq(sb.__charges.length, 1, '有可蒸馏条目时计费口径不变(仍扣 1 积分)');
+  } },
+  { name: 'evolveExpert:多板块雇佣时按板块序纳入各板块沉淀(对应板块有条目才纳入)', fn: async () => {
+    const sb = loadExperts();
+    sb.Store.myProjects = () => [
+      { id: 'p1', boards: { 分镜: { expert: 'cx_1' } } },
+      { id: 'p2', boards: { 剧本: { expert: 'cx_1' } } },
+    ];
+    sb.Store.state.agentMemory = [
+      { text: '钩子放前三秒', scope: '剧本' },
+      { text: '两极镜头不衔接', scope: '分镜' },
+      { text: '导演板块的定调偏好', scope: '导演' },
+    ];
+    sb.__apiReady = true;
+    sb.__llm = [];
+    sb.API.chatJSON = async req => {
+      sb.__llm.push({ system: req.system, user: ((req.messages || [])[0] || {}).content });
+      return { clauses: ['钩子与景别同时核'] };
+    };
+    const e = { id: 'cx_1', name: '双板块专家', persona: '基础人设' };
+    await sb.Experts.evolveExpert(e);
+    const { system, user } = sb.__llm[0];
+    assert(user.includes('生效板块:剧本/分镜'), '板块序应取板块词表顺序(剧本在分镜之前):' + user);
+    assert(user.includes('钩子放前三秒') && user.includes('两极镜头不衔接'), '两个生效板块的沉淀都应纳入');
+    assert(!(system + user).includes('定调偏好'), '未雇佣的板块仍被挡在外面');
+  } },
+  { name: 'evolveExpert:生效板块无沉淀即在扣费前跳过(不拿全桶凑数)', fn: async () => {
+    const sb = loadExperts();
+    sb.Store.myProjects = () => [{ id: 'p1', boards: { 分镜: { expert: 'cx_1' } } }];
+    sb.Store.state.agentMemory = [{ text: '导演板块的定调偏好', scope: '导演' }, { text: '没标板块的沉淀' }];
+    sb.__apiReady = true;
+    sb.__chatJSONResult = { clauses: ['不该出现的条款'] };
+    const e = { id: 'cx_1', name: '我的分镜专家', persona: '基础人设' };
+    await sb.Experts.evolveExpert(e);
+    assertEq(sb.__tasks.length, 0, '跳过发生在登记之前:不留任务');
+    assertEq(sb.__charges.length, 0, '跳过不扣费(与原先"暂无使用记录"同口径)');
+    assert(!e.persona.includes('【进化条款'), 'persona 不得被改动');
+    assert(sb.__toasts.some(t => t.includes('分镜') && t.includes('暂无使用记录')), '须明确说是哪个板块没沉淀:' + sb.__toasts.join('|'));
+  } },
+  { name: 'evolveExpert:专家未在任何板块生效即跳过(板块归属拿不准不蒸馏)', fn: async () => {
+    const sb = loadExperts();
+    sb.Store.myProjects = () => [{ id: 'p1', boards: { 分镜: { expert: 'cx_other' } } }];
+    sb.Store.state.agentMemory = [{ text: '相邻景别不硬切', scope: '分镜' }];
+    sb.__apiReady = true;
+    sb.__chatJSONResult = { clauses: ['不该出现的条款'] };
+    const e = { id: 'cx_1', name: '没被雇的专家', persona: '基础人设' };
+    await sb.Experts.evolveExpert(e);
+    assertEq(sb.__tasks.length, 0, '未生效即跳过,不登记任务');
+    assertEq(sb.__charges.length, 0, '未生效即跳过,不扣费');
+    assert(sb.__toasts.some(t => t.includes('还没在任何板块生效')), '须给出可操作的指引:' + sb.__toasts.join('|'));
+  } },
+  { name: 'evolveExpert:全局雇佣的专家按全部板块取沉淀(与 personaFor 的回落同序)', fn: async () => {
+    const sb = loadExperts();
+    sb.Store.state.settings.hiredExpert = 'cx_1'; // 全局雇佣:板块未单独雇人时该专家在各板块生效
+    sb.Store.myProjects = () => [{ id: 'p1', boards: { 分镜: { expert: 'cx_other' } } }];
+    sb.Store.state.agentMemory = [
+      { text: '定调偏好', scope: '导演' },
+      { text: '本板块另有专家,这条不该进', scope: '分镜' },
+    ];
+    sb.__apiReady = true;
+    sb.__llm = [];
+    sb.API.chatJSON = async req => {
+      sb.__llm.push({ user: ((req.messages || [])[0] || {}).content });
+      return { clauses: ['沿用定调偏好'] };
+    };
+    const e = { id: 'cx_1', name: '全局专家', persona: '基础人设' };
+    await sb.Experts.evolveExpert(e);
+    const user = sb.__llm[0].user;
+    assert(user.includes('定调偏好'), '全局雇佣者在未被板块专家顶掉的板块上生效');
+    assert(!user.includes('这条不该进'), '分镜板块已另雇专家,全局雇佣者在该板块不生效');
   } },
 ];
 
@@ -6924,12 +7033,68 @@ const memoryTests = [
     assert(sk.note.includes('仍欠(G-11)') && sk.note.includes('evolveExpert'), 'note 须点名仍欠的自进化面(清 pending 不等于这条没有余量)');
     assert(sk.note.includes('project.release') && sk.note.includes('release-core.js'), 'note 须写明发布留痕的命令化出口与双端单源落点');
     assert(sk.note.includes('不新建存储桶') && sk.note.includes('不改发布门'), 'note 须写明沿用既有桶、不动发布门');
-    // 自进化仍是手动那一半:evolveExpert 读记忆不按板块过滤、只对自定义专家开放(接上了 note 先失效)
+    /* G-11 的两面分别记账:板块过滤这一面已落地,note 须写明判据出处;人手触发与预置专家仍是余量。
+     * 蒸馏输入不得再有第二个取数口——experts.js 里读 agentMemory 的地方只能是经 memForBoards 那一处 */
     const ex = fs.readFileSync(path.join(ROOT, 'js', 'experts.js'), 'utf8');
-    assert(/const mem = \(Store\.state\.agentMemory \|\| \[\]\)\.map\(m => m && m\.text\)/.test(ex), 'evolveExpert 现仍读全量记忆文本(不按 scope 过滤)');
+    assert(sk.note.includes('WfCore.expertBoards') && sk.note.includes('WfCore.memForBoards'), 'note 须写明板块过滤的双端单源判据');
+    assert(/WfCore\.memForBoards\(Store\.state\.agentMemory, boards\)/.test(ex), 'evolveExpert 的记忆源须经 memForBoards 按生效板块过滤');
+    assertEq((ex.match(/Store\.state\.agentMemory/g) || []).length, 1, '蒸馏输入只此一个取数口(绕开过滤的第二处读全桶即红)');
+    assert(/WfCore\.expertBoards\(/.test(ex) && !/AGENT_BOARDS.*filter|role.*===.*'摄像'/.test(ex),
+      '生效板块经 WfCore.expertBoards 推出,不在 experts.js 里另写一份板块判据');
+    assert(sk.note.includes('人手动作') && sk.note.includes('只对自定义专家开放'), 'note 须如实写明 G-11 仍欠人手触发与预置专家两处');
     // SK-04 的第三处余量同步改写:审片/发布两个闭环已回流,其余 wf 步仍不回流
     const sk4 = Skills.byId('core.memoryDual');
     assert(sk4.note.includes('审片/发布两个闭环') && sk4.note.includes('SK-26'), 'SK-04 的 note 须随回流面落地同步改写');
+  } },
+  /* ---- 蒸馏输入的板块面(G-11 的过滤那一半):召回是加权取样给上下文,蒸馏是写死进 persona,
+   * 两者不共用取样口——蒸馏侧只认板块归属,硬过滤、无补召、取不到就回空让调用方跳过。 ---- */
+  { name: 'expertBoards:板块雇佣 > 全局雇佣,板块序取词表;一个都不命中回空数组', fn() {
+    const W = require('../js/wf-core.js');
+    const boards = ['导演', '剧本', '主体', '分集', '分镜', '生成', '审片', '成片'];
+    const call = o => W.expertBoards(Object.assign({ boards }, o));
+    const e = { id: 'cx_1' };
+    // 板块雇佣:命中的板块按词表顺序回,不按项目里的书写顺序
+    assertEq(call({ expert: e, projects: [{ boards: { 分镜: { expert: 'cx_1' }, 剧本: { expert: 'cx_1' } } }] }).join(','),
+      '剧本,分镜', '板块序应取入参词表顺序');
+    // 全局雇佣:未被板块专家顶掉的板块才生效(与 personaFor 同一套先后)
+    assertEq(call({ expert: e, hiredId: 'cx_1', projects: [{ boards: { 分镜: { expert: 'cx_2' } } }] }).join(','),
+      '导演,剧本,主体,分集,生成,审片,成片', '板块另雇专家即顶掉全局雇佣者');
+    // 无项目:按纯全局雇佣状态判(与 personaFor 传 boards=null 同形)
+    assertEq(call({ expert: e, hiredId: 'cx_1' }).length, boards.length, '无项目时全局雇佣者在全部板块生效');
+    assertEq(call({ expert: e, hiredId: 'cx_1', projects: [] }).length, boards.length, '空项目列表与无项目同解');
+    // 跨项目并集:同一专家在不同项目雇在不同板块,两个板块都算生效
+    assertEq(call({ expert: e, projects: [{ boards: { 分镜: { expert: 'cx_1' } } }, { boards: { 成片: { expert: 'cx_1' } } }] }).join(','),
+      '分镜,成片', '跨项目应取并集');
+    // 未生效/入参缺失一律回空——回空是"跳过"的信号,不是"全部板块"的简写
+    assertEq(call({ expert: e, projects: [{ boards: { 分镜: { expert: 'cx_2' } } }] }).length, 0, '没被雇过回空数组');
+    assertEq(call({ expert: e, hiredId: 'cx_2' }).length, 0, '全局雇的是别人回空数组');
+    assertEq(W.expertBoards({ expert: null, boards }).length, 0, '无专家对象回空');
+    assertEq(W.expertBoards({ expert: { name: '无 id' }, boards }).length, 0, '专家无 id 回空(不拿 undefined 去匹配)');
+    assertEq(call({ expert: e, hiredId: 'cx_1', boards: null }).length, 0, '无板块词表回空');
+  } },
+  { name: 'memForBoards:只收 scope 命中的条目(无 scope 不收/空板块回空/按 text 去重/不改入参)', fn() {
+    const W = require('../js/wf-core.js');
+    const mem = [
+      { text: '定调偏好', scope: '导演' },
+      { text: '景别口诀', scope: '分镜' },
+      { text: '景别口诀', scope: '剧本' }, // 同一条偏好在两个板块沉淀过
+      { text: '没标板块' },
+      { text: '空板块名', scope: '' },
+      { text: '' , scope: '分镜' },        // 空正文与召回侧同口径:不算条目
+      null,
+    ];
+    assertEq(W.memForBoards(mem, ['分镜']).map(m => m.text).join(','), '景别口诀', '只收本板块条目');
+    assertEq(W.memForBoards(mem, ['剧本', '分镜']).map(m => m.text).join(','), '景别口诀', '多板块命中同一 text 只蒸一次');
+    assertEq(W.memForBoards(mem, ['导演', '分镜']).map(m => m.text).join(','), '定调偏好,景别口诀', '按桶内顺序保序');
+    assertEq(W.memForBoards(mem, ['成片']).length, 0, '该板块无沉淀回空(不退回全桶)');
+    assertEq(W.memForBoards(mem, []).length, 0, '空板块列表回空');
+    assertEq(W.memForBoards(mem, null).length, 0, '板块列表缺失回空');
+    assertEq(W.memForBoards(mem, ['分镜', null, '']).map(m => m.text).join(','), '景别口诀', '板块列表里的空值不参与匹配');
+    assertEq(W.memForBoards(null, ['分镜']).length, 0, '记忆桶缺失回空');
+    assertEq(mem.length, 7, '入参数组不得被改写(与 memWrite/memSeed 同纪律)');
+    // 与召回侧的分工:同一输入下召回会补全局最近,蒸馏侧不会
+    assert(W.memRecall(mem, '', '成片').length > 0, '召回侧该板块空时仍会补全局最近(上下文用)');
+    assertEq(W.memForBoards(mem, ['成片']).length, 0, '蒸馏侧不补召——写死进 persona 的东西必须是本板块的');
   } },
   /* ---- 记忆播种/板块迁移(W53:补种与迁移的 headless 收口) ----
    * 此前这段派生只在浏览器 memAll() 里,headless 读写记忆桶跑不到。下沉后判据全在这几条上:

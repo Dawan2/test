@@ -144,6 +144,41 @@
     const m = W.memRecall(mem, input, scope);
     return m.length ? '\n历史协作记忆(用户过往的偏好与已确认的修改决定,参考以保持一致):\n' + m.map(t => '- ' + t.text).join('\n') : '';
   };
+  /* ---- 专家自进化的记忆源面(双端唯一一份) ----
+   * 召回(memRecall)是"同板块优先、再补全局最近"的加权取样,给的是对话上下文;蒸馏进 persona 是把沉淀
+   * 写死进专家人设,两者不能共用一个取样口:导演板块的定调偏好蒸馏进分镜专家的人设后,该专家在每条
+   * 分镜链路上都会带着不属于它的口径工作。故蒸馏侧只认板块归属,按下面两步硬过滤,不做加权补召。
+   * 与本文件其余函数同纪律:专家对象/项目树/雇佣状态/板块词表一律经参数注入,函数体不碰环境句柄。 */
+  /* 专家的生效板块(去重保序,板块序取入参词表):判据与 personaFor 同一套——板块雇佣 > 全局雇佣。
+   * o={expert:专家对象, projects:项目列表(可空), hiredId:settings.hiredExpert, boards:板块词表}。
+   * 逐板块算生效专家(该项目该板块的 boards[b].expert,未指定则回落全局雇佣者),命中本专家即计入该板块;
+   * 无项目时按"仅全局雇佣状态"判(与 personaFor 传 boards=null 同形)。
+   * 一个板块都不命中回空数组——该专家没在任何板块工作过,调用方据此跳过蒸馏,不退回全量记忆桶。 */
+  W.expertBoards = function (o) {
+    o = o || {};
+    const e = o.expert;
+    if (!e || !e.id) return [];
+    const list = Array.isArray(o.boards) ? o.boards.filter(Boolean) : [];
+    const projects = Array.isArray(o.projects) && o.projects.length ? o.projects : [null];
+    return list.filter(b => projects.some(p => {
+      const bd = (p && p.boards && p.boards[b]) || null;
+      return ((bd && bd.expert) || o.hiredId) === e.id;
+    }));
+  };
+  /* 蒸馏输入(按板块硬过滤,回条目数组):只收 scope 落在 boards 里的条目。
+   * boards 为空即回空数组;无 scope 的条目(板块不明的手工沉淀)一律不收——板块归属拿不准就不蒸馏,
+   * 不拿全桶凑数。去重按 text(同一条偏好在多板块沉淀过时只蒸一次)。 */
+  W.memForBoards = function (mem, boards) {
+    const bs = Array.isArray(boards) ? boards.filter(Boolean) : [];
+    if (!bs.length) return [];
+    const seen = new Set();
+    return (Array.isArray(mem) ? mem : []).filter(m => {
+      if (!m || !m.text || bs.indexOf(m.scope) < 0) return false;
+      if (seen.has(m.text)) return false;
+      seen.add(m.text);
+      return true;
+    });
+  };
   /* 审片侧三步(分镜评审/整集共性汇总/四维成片评审)的人设+记忆注入段:
    * 这三步的 user 模板是纯指令 + JSON 清单,注入段独立成段拼在提示词最前(不进模板变量,不受用户覆盖影响);
    * personaNote 以「。」起头(与 directorNote 同通道口径),独立成行时去掉句首标点。
