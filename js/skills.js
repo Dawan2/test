@@ -59,6 +59,12 @@
     words.forEach(w => { const i = t.indexOf(w); if (i >= 0 && (at < 0 || i < at)) { at = i; word = w; } });
     return { at, word };
   };
+  /* 词表中最晚出现的那个词及其位置(集尾判定用);无命中回 {at:-1} */
+  const lastOf = (t, words) => {
+    let at = -1, word = '';
+    words.forEach(w => { const i = t.lastIndexOf(w); if (i > at) { at = i; word = w; } });
+    return { at, word };
+  };
 
   /* SK-07 开篇钩子锚定:KB「钩子六型」的"前3秒必须冲突锚定,直接进冲突,背景后面补"落到剧本文本上——
    * 只判开篇窗口内有没有冲突锚点(直接进台词,或命中六型的字面冲突信号),不判钩子选得好不好。
@@ -96,7 +102,7 @@
    * 命中步数低于 FACESLAP_MIN 时视为本集本就不是打脸段落,直接不产出结论——
    * 不是每集都该有打脸,拿"没写打脸"当缺陷报是噪音。 */
   const FACESLAP_MIN = 2;
-  /* 各步信号词只收该步独有的字面:跨步通用词(当众/跪下/真相大白式的钩子用语)一律不收——
+  /* 各步信号词只收该步独有的字面:哪一步都可能写的通用词(如"当众""跪下")一律不收——
    * 一个词同时属于两步会把步序判成假倒置,宁可漏判也不制造噪音 */
   const FACESLAP_STEPS = [
     { step: '羞辱', words: ['羞辱', '嘲讽', '讥讽', '嘲笑', '哄笑', '奚落', '轻蔑', '不屑', '瞧不起', '看不起', '废物', '丢人', '辱骂'] },
@@ -285,6 +291,96 @@
     return { pass: !hits.length, level, hits };
   };
 
+  /* ---- 分集段校验宿主(S-01 分集半):判定输入是分集表本身 ----
+   * 两条都要集序:六阶段覆盖看全表按比例摊到六段后每段有没有判得动的正文,付费卡点看集尾与下一集集首——
+   * 故一律现取 p.episodes(集序取数组序,与 Domain 同口径),取不到集序即无判定输入,不冒充结论。
+   * 判定基面与判定下限沿用剧本段:去空白正文、短于 SCRIPT_MIN 的集视为无正文。
+   * 与剧本段同纪律:纯本地词法命中、零 LLM、零计费,结论一律 warn 不升 fail;
+   * 阶段配比是否得当、卡点掐得准不准这类语义判断仍归 LLM 审片(G-10),本层不冒充。 */
+  const epsOf = o => (o && o.p && o.p.episodes) || [];
+  const epText = e => compact(e && e.content);
+
+  /* SK-14 六阶段结构覆盖:KB「六阶段结构」的六段区间(开篇期 1-10 集 … 结局期 86-100 集)现取条目正文解析,
+   * 本层不写第二份段名与区间;条目「集数少按比例缩放」落到当前集数上,按累计边界四舍五入摊成不重叠区间。
+   *   stage-uncovered   该段区间内没有一集有判得动的正文 → warn(这一段弧线在分集表上是空的)
+   *   stage-thin        该段正文字数不足按集数摊到的份额三分之一 → warn(有集但被压成过场)
+   *   early-no-reversal 开篇期区间内找不到反转信号 → warn(条目「前3集必须出现第一个大反转」)
+   * 集数少于六段时按比例缩放必把某段摊成零集,无判定输入,直接不产出结论。 */
+  const STRUCT_STAGES = (() => {
+    const re = /([\u4e00-\u9fa5]{2}期)[((](\d+)-(\d+)/g;
+    const t = String(KB.section('六阶段结构') || '');
+    const out = [];
+    for (let m = re.exec(t); m; m = re.exec(t)) out.push({ name: m[1], from: +m[2], to: +m[3] });
+    return out;
+  })();
+  /* 反转信号词:反转五式五类各取其字面可判定的信号(身份/立场/真相/感情/命运反转) */
+  const REVERSAL_SIGNALS = [
+    '反转', '逆转', '翻盘', '其实', '原来', '竟然', '居然', '没想到', '真相', '假的', '骗',
+    '冒充', '身份', '揭穿', '揭露', '曝光', '背叛', '出轨', '幕后', '摊牌', '翻脸', '认错',
+  ];
+  const THIN_RATIO = 3; // 份额的几分之一算被压成过场:取三分之一,分集长度天然不均,宁可漏判也不制造噪音
+  CHECKS['eps.stageCoverage'] = function (obj) {
+    const eps = epsOf(obj);
+    if (STRUCT_STAGES.length < 2 || eps.length < STRUCT_STAGES.length) return { pass: true, level: 'info', hits: [] };
+    const n = eps.length;
+    const len = eps.map(e => epText(e).length);
+    const total = len.reduce((a, b) => a + b, 0);
+    const arc = STRUCT_STAGES[STRUCT_STAGES.length - 1].to; // 条目给的全剧刻度(1-100)
+    const bound = x => Math.round(x * n / arc);
+    const hits = [];
+    STRUCT_STAGES.forEach((st, i) => {
+      const from = bound(st.from - 1) + 1, to = Math.max(from, bound(st.to));
+      const idx = [];
+      for (let k = from; k <= to; k++) idx.push(k - 1);
+      const base = { stage: st.name, from, to };
+      const sum = idx.reduce((a, k) => a + len[k], 0);
+      if (!idx.some(k => len[k] >= SCRIPT_MIN)) { hits.push(Object.assign({ code: 'stage-uncovered', len: sum }, base)); return; }
+      if (sum * THIN_RATIO < total * idx.length / n) hits.push(Object.assign({ code: 'stage-thin', len: sum }, base));
+      if (i > 0) return; // 「前3集必须出现第一个大反转」只约束开篇期
+      const head = idx.map(k => epText(eps[k])).join('');
+      const sig = firstOf(head, REVERSAL_SIGNALS);
+      if (sig.at < 0) hits.push(Object.assign({ code: 'early-no-reversal', len: sum }, base));
+    });
+    return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
+  };
+
+  /* SK-15 付费卡点位置:KB「付费卡点」的"卡在情绪最高那一拍——反转即将揭晓、爽点即将兑现的前一秒"与
+   * "卡点之后第一集立刻兑现"落到集与集之间——卡点位置就是集尾,兑现位置就是下一集集首。
+   *   flat-ending       集尾窗口内一个卡点信号都没有,而本集别处有 → warn(情绪最高拍写在集中段,卡点没落在集尾)
+   *   payoff-not-cashed 集尾有卡点信号,下一集开篇窗口却找不到兑现信号 → warn(承诺的爽点落空)
+   * 末集不判 flat-ending(全剧收束不需要再卡);全集一个信号都没有的段落归剧本段结论(SK-07),此处不重复报;
+   * 下一集正文短于判定下限时不判兑现(无判定输入)。两组词表都不新写:
+   * 卡点信号 = 冲突信号(SK-07 那套)+ 反转信号(SK-14 那套),情绪最高那一拍的字面就是这两类;
+   * 兑现信号 = 打脸四步的反击/释放两步词表,爽点兑现的字面就是那两步。 */
+  const PAYOFF_TAIL = 120; // 集尾窗口字数(去空白):与开篇窗口同一口播口径,覆盖结尾十余秒
+  const PAYOFF_SIGNALS = HOOK_SIGNALS.concat(REVERSAL_SIGNALS);
+  const CASH_SIGNALS = FACESLAP_STEPS.slice(2).reduce((a, g) => a.concat(g.words), []);
+  CHECKS['eps.payoffPlacement'] = function (obj) {
+    const o = obj || {};
+    const eps = epsOf(o);
+    if (!eps.length) return { pass: true, level: 'info', hits: [] };
+    const pick = o.ep ? eps.filter(e => e === o.ep || (e.id && e.id === o.ep.id)) : eps;
+    const hits = [];
+    pick.forEach(e => {
+      const i = eps.indexOf(e);
+      const t = epText(e);
+      if (t.length < SCRIPT_MIN) return;
+      const order = i + 1;
+      const sig = firstOf(t.slice(-PAYOFF_TAIL), PAYOFF_SIGNALS);
+      if (sig.at < 0) {
+        const back = lastOf(t, PAYOFF_SIGNALS);
+        if (i + 1 < eps.length && back.at >= 0) hits.push({ code: 'flat-ending', epId: e.id, order, at: back.at, name: back.word });
+        return;
+      }
+      const nt = epText(eps[i + 1]);
+      if (nt.length < SCRIPT_MIN) return;
+      if (firstOf(nt.slice(0, HOOK_HEAD), CASH_SIGNALS).at < 0) {
+        hits.push({ code: 'payoff-not-cashed', epId: e.id, order, next: order + 1, name: sig.word });
+      }
+    });
+    return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
+  };
+
   /* 短名单 30 条内部能力(SK-01…SK-30):id 取 `stage.name` 形态,与 SK 编号一一对应。
    * covers 写该能力实际作用到的主线步骤(缺省=stage 本身);gaps 记该条已知贯通缺口编号(G-xx 图谱既有,S-xx 本轮新登记)。 */
   const REG = [
@@ -386,13 +482,19 @@
     /* ---- 分集 ---- */
     {
       id: 'eps.structureStage', sk: 'SK-14', name: '六阶段结构注入与分集覆盖校验', stage: 'eps', wave: 'W2',
-      kinds: ['inject', 'check'], pending: ['check'], kb: ['六阶段结构'], experts: ['ex_structure'],
-      gaps: ['G-13', 'G-04', 'S-01'],
-      note: 'kb 顺序与节拍板拆解注入点一致;拆集补服务端属 W3,覆盖校验属 W4',
+      kinds: ['inject', 'check'], kb: ['六阶段结构'], checks: ['eps.stageCoverage'],
+      cmds: ['episode.preflight'], experts: ['ex_structure'], gaps: ['G-13', 'G-04', 'S-01'],
+      note: 'kb 顺序与节拍板拆解注入点一致;拆集补服务端属 W3,覆盖校验属 W4。'
+        + '校验面按条目区间比例摊到当前集数,判每段有无判得动的正文与开篇期有无反转信号;'
+        + '各段该写什么戏(核心冲突爆发/线索汇聚)是语义面,待 G-10',
     },
     {
       id: 'eps.payoffPoint', sk: 'SK-15', name: '付费卡点位置校验', stage: 'eps', wave: 'W4',
-      kinds: ['check'], pending: ['check'], kb: ['付费卡点'], experts: ['ex_pleasure'], gaps: ['G-10', 'G-04', 'S-01'],
+      kinds: ['check'], kb: ['付费卡点'], checks: ['eps.payoffPlacement'],
+      cmds: ['episode.preflight'], experts: ['ex_pleasure'], gaps: ['G-10', 'G-04', 'S-01'],
+      note: '卡点位置就是集尾、兑现位置就是下一集集首,故判定输入是集序而非单集正文;'
+        + '词表不新写(卡点信号取 SK-07 冲突信号 + SK-14 反转信号,兑现信号取打脸四步的反击/释放两步);'
+        + '经就绪检查与问题中心消费,结论只报不拦',
     },
     {
       id: 'eps.frontPipeline', sk: 'SK-16', name: '主线前段编排', stage: 'eps',

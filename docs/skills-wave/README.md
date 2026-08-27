@@ -31,8 +31,11 @@
 | [w6-integration-log.md](./w6-integration-log.md) | 周期 1 成果收敛到集成分支的记录:冲突解法、合并后测试数字、剩余分叉 | 想知道主干现在是什么状态 |
 | [w6-extract-subjects-wf.md](./w6-extract-subjects-wf.md) | 提取主体接入 `/api/wf/extract-subjects`(前段命令吃到人设与协作记忆,提示词拼装/结果规整下沉服务端) | 改提取主体链路前 |
 | [w8-split-episodes-inject.md](./w8-split-episodes-inject.md) | 剧本拆集端点补齐人设/记忆注入(`WF_BOARD` 加「剧本」板块、`buildSplitUser` 注入位、两端同装配口) | 改拆集提示词或新增 `/api/wf/*` LLM 步前 |
+| [w8-script-check.md](./w8-script-check.md) | SK-07/08/09 剧本段三条校验项,闭合 S-01 的剧本半 | 加校验项前;或想知道剧本正文怎么被判定 |
+| [w9-eps-structure-check.md](./w9-eps-structure-check.md) | SK-14/SK-15 分集段两条校验项,与 W8 成对闭合 S-01(六阶段覆盖 + 付费卡点位置) | 同上;或想知道分集表与集序怎么被判定 |
 | [w9-integration-log.md](./w9-integration-log.md) | 剩余分支收敛到集成分支的记录:包含性实测、并集型冲突解法、合并后测试数字、剩余未合 | 想知道主干现在是什么状态 |
 | [w11-preflight-film-assert.md](./w11-preflight-film-assert.md) | 就绪检查消费面并集补断言:字幕面被摘掉的两种写法实测、双端行为/结构断言分工、五种摘法转红验证 | 改 `episode.preflight` 的 `result.checks` 或新增校验面前 |
+| [w13-integration-log.md](./w13-integration-log.md) | SK-14/15 分集段与 W11 断言收敛到集成分支的记录:四面并集冲突解法、被并集断言接住的转红点、合并后测试数字 | 想知道主干现在是什么状态 |
 
 ## 一分钟摘要(周期 1 收敛后)
 
@@ -40,7 +43,7 @@
 - 主线七步在代码里齐了:`Domain.workflow` 已含"审片"步(G-03),`js/skills.js` 的 `STAGES` 七步全部 `wfStep: true`。
 - 贯通缺口已收口的部分:专家人设(G-01)与协作记忆(G-02 由 agent-flow 覆盖)进 `/api/wf/*`,CLI/MCP 同链路吃到;剧本拆集(G-04)补上机读入口,headless 可从"一份整部剧本"起跑,其 LLM 步也已接入同一注入链(见 [w8-split-episodes-inject.md](./w8-split-episodes-inject.md))。
 - 空挂已清:`settings.tplVideo`(G-05)与 `KB.SECTIONS`(G-15/G-08 的 KB 侧)都有了消费方,并有断言防回退。
-- 校验宿主三面齐了:剧本面(S-01,SK-07/08/09)、主体面(S-03,SK-12/13)、成片字幕面(S-06,SK-28)共六条 `Skills.CHECKS` 校验项,两端就绪检查按主线步序同挂 `result.checks`,问题中心同挂低危提醒——纯本地零 LLM 零计费,只报不拦。三面并集与步序由行为断言(浏览器端真跑命令看回执)+ 双端源级断言(段内同一条 `checks` 表达式 + 按登记 `cmds` 反查漏消费)锁死,见 [w11-preflight-film-assert.md](./w11-preflight-film-assert.md)。
+- 校验宿主四面齐了:剧本面(SK-07/08/09)、主体面(S-03,SK-12/13)、分集面(SK-14/15)、成片字幕面(S-06,SK-28)共八条 `Skills.CHECKS` 校验项,剧本面与分集面成对闭合 S-01;两端就绪检查按主线步序同挂 `result.checks`,问题中心同挂低危提醒——纯本地零 LLM 零计费,只报不拦。四面并集与步序由行为断言(浏览器端真跑命令看回执)+ 双端源级断言(段内同一条 `checks` 表达式 + 按登记 `cmds` 反查漏消费)锁死,见 [w11-preflight-film-assert.md](./w11-preflight-film-assert.md)。
 - 人设/记忆注入面覆盖五条工作流:理解、分镜、审片、提取主体、剧本拆集(`WfCore.WF_BOARD` 五键单源,服务端唯一装配口 `wfPersonaNote` 由契约断言锁死调用点数)。
 - 词表分叉已收口:景别/运镜/视角/角度四张词表的单一来源在 `js/wf-core.js`,`camera.js`/`review.js`/`sb-io.js`/`agent.js` 全派生(G-07,见 `w4-shot-size-glossary.md`)。
 
@@ -49,4 +52,4 @@
 - **缺口编号**:`G-01…G-15` 出自资产图谱,**冻结在 15 项不再新增**;新登记的缺口一律走短名单的 `S-xx` 命名空间。判定标准文档里提议的 `G-16`(发布后→上游回路)按此规则改记为 `S-08`。
 - `docs/Agent贯通落地-G1-G5.md` 里的 `G1–G5` 是该文自带的历史编号,与本目录的 `G-0x` 不是同一套,对应关系见该文与 [w5-cycle1-audit.md](./w5-cycle1-audit.md) 第 2.18 节。
 - 文档描述功能本身,不写功能溯源。
-- 动工前先看 [w9-integration-log.md](./w9-integration-log.md) 的"剩余未合与残留"(更早的分叉登记在 [w6-integration-log.md](./w6-integration-log.md) 第 5 节),避免重做已落地的部分。
+- 动工前先看 [w13-integration-log.md](./w13-integration-log.md) 的"剩余未合与残留"(更早的分叉登记在 [w9-integration-log.md](./w9-integration-log.md) 与 [w6-integration-log.md](./w6-integration-log.md) 第 5 节),避免重做已落地的部分。
