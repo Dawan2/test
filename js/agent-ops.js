@@ -53,35 +53,12 @@
    * 模型照协议输出不再必得"⊘ 暂不支持"(此前提示词宣称 9 动作、注册表只 8 个且互有出入,白扣对话轮) */
   const actProtocol = () => Object.keys(ACT_CMD).join('|');
   /* cmd+args 动作协议(二十二轮):命令白名单与参数面由 cmd-registry.js 单源生成——
-   * Agent 可执行面从 6 个固定中文动作扩到「全部领域命令 × 全参数空间」(confirmAll/shotIds/maxRetry 等) */
-  const cmdProtocol = () => {
-    const list = (window.Commands && Commands.list) ? Commands.list() : [];
-    const T = { boolean: 'bool', number: '数字', string: '文本', array: '数组' };
-    return list.map(c => {
-      const args = (c.args || []).filter(a => ['pid', 'epid', 'ui'].indexOf(a.name) < 0); // pid/epid 上下文自动注入,ui 不开放
-      const at = args.length
-        ? args.map(a => `"${a.name}":${T[a.type] || a.type}${a.required ? '(必填)' : ''}${a.desc ? '—' + a.desc : ''}`).join(' ')
-        : '无参数';
-      return `· ${c.name}(${c.label}${c.risk === 'read' ? ',只读' : ''}): ${at}`;
-    }).join('\n');
-  };
+   * Agent 可执行面从 6 个固定中文动作扩到「全部领域命令 × 全参数空间」(confirmAll/shotIds/maxRetry 等);
+   * 协议文本与参数整形下沉 wf-core.js(/api/wf/agent 服务端管线同源),此处按浏览器数据源委托 */
+  const cmdProtocol = () => WfCore.agentCmdProtocol((window.Commands && Commands.list) ? Commands.list() : []);
   /* run 类 op 的参数白名单与类型整形(cmd-registry 单源):未声明的键丢弃,防模型幻觉参数污染执行/计费 */
   function sanitizeCmdArgs(cmdName, raw) {
-    const meta = (typeof CmdRegistry !== 'undefined' && CmdRegistry.byName[cmdName]) || null;
-    if (!meta) return {};
-    const src = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
-    const out = {};
-    (meta.args || []).forEach(a => {
-      if (['pid', 'epid', 'ui'].indexOf(a.name) >= 0) return; // 上下文注入,不接受模型填写
-      let v = src[a.name];
-      if (v === undefined || v === null) return;
-      if (a.type === 'boolean') v = !!v;
-      else if (a.type === 'number') { v = +v; if (!isFinite(v)) return; }
-      else if (a.type === 'array') { if (!Array.isArray(v)) return; v = v.map(x => String(x)).slice(0, 50); }
-      else v = String(v);
-      out[a.name] = v;
-    });
-    return out;
+    return WfCore.sanitizeCmdArgs((typeof CmdRegistry !== 'undefined' && CmdRegistry.byName[cmdName]) || null, raw);
   }
   /* 结构化回执 → 一句话摘要(与 run 结果 ok/error/cost 对齐,Agent 据此如实汇报,不凭"已发起"声称成功);
    * 二十二轮:消化 r.next(Domain 重推的下一步建议)一并回执——Agent 拿到结构化「下一步」可自主推进多步任务 */

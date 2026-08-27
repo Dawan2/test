@@ -1351,6 +1351,37 @@ CMD.ff = async (a, f) => {
   return POST('/api/ffmpeg/' + sub, body, f, { timeoutMs: 300000 });
 };
 
+/* ---- Agent 单轮对话(服务端管线 /api/wf/agent):KB/专家 persona/协作记忆/状态摘要注入由服务端拼装,
+ * 返回 {reply,thinking,ops,receipts}(计费 llm.agent,失败退费)。默认只解析不执行;
+ * --apply 时 run 类 ops 逐条走 EXEC 同链路执行(pid/epid 上下文注入,各命令按自身规则计费,单条失败不中断) ---- */
+CMD.agent = async (a, f) => {
+  const text = (a.join(' ') || f.text || '').trim();
+  need(text, '用法:hujing agent "自然语言指令" --pid X [--epid Y] [--scope 导演|分镜|成片…] [--apply]');
+  need(f.pid, '缺 --pid');
+  const body = { pid: f.pid, text, operationId: crypto.randomUUID() };
+  if (f.epid) body.epid = f.epid;
+  if (f.scope) body.scope = f.scope;
+  const d = await POST('/api/wf/agent', body, f, { timeoutMs: 240000 });
+  if (!f.apply || !(d.ops || []).length) return d;
+  const applied = [];
+  for (const op of d.ops) {
+    const cmd = EXEC[op.cmd];
+    if (!cmd) { applied.push({ cmd: op.cmd, ok: false, error: 'CLI 未注册该命令' }); continue; }
+    const args = Object.assign({}, op.args, { pid: f.pid, epid: f.epid });
+    if (cmd.needs.includes('ep') && !args.epid) { applied.push({ cmd: op.cmd, ok: false, error: '该命令需 --epid 上下文' }); continue; }
+    if (cmd.needs.includes('s') && !args.sid) { applied.push({ cmd: op.cmd, ok: false, error: '该命令需镜头 sid(ops.args 未给出)' }); continue; }
+    try {
+      const r = await cmd.run(args, f);
+      applied.push({ cmd: op.cmd, ok: !!r.ok, status: r.status, result: r.result, error: r.error });
+    } catch (e) {
+      if (e instanceof CliError && e.exit === 6) { applied.push({ cmd: op.cmd, ok: false, error: e.message }); break; } // 积分不足中止后续
+      applied.push({ cmd: op.cmd, ok: false, error: String((e && e.message) || e).slice(0, 120) });
+    }
+  }
+  d.applied = applied;
+  return d;
+};
+
 /* ---- 协作记忆(双端消费):Agent 对话层沉淀的用户偏好/已确认决定,存 state.agentMemory;
  * wf 端点与对话层按 WfCore.memRecall 同算法召回注入。list 支持 --recall 预览实际注入条目 ---- */
 CMD.memory = async (a, f) => {
@@ -1454,6 +1485,9 @@ ${CmdRegistry.META.map(m => '  exec ' + (m.name + (CmdRegistry.usageOf(m) ? ' ' 
   (exit 映射:ok→0 | blocked→2/6/4 | failed→5;--args '{"pid":".."}' 可整体传参)
 
 工具
+  agent "自然语言指令" --pid X [--epid Y] [--scope 板块] [--apply]
+                                                   Agent 单轮对话(服务端拼装 KB/专家/记忆/状态注入,计费 llm.agent;
+                                                   返回 reply+run 类 ops,--apply 时逐条经 exec 同链路执行)
   upload <文件> | download <url> <保存路径>        素材上下行
   llm --user 提示 [--system 设] [--json]           LLM 透传(服务端 key;--json 返回 parsed)
   tts --text 文本 [--voice 音色]                   语音合成

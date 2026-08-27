@@ -132,6 +132,10 @@ function loadAgentOps() {
     renderShots() {}, composeVideo() {}, batchGenVideos: async () => {},
   });
   loadFile(sb, 'cmd-registry.js'); // run 类 op 参数白名单/类型整形的数据源(与 index.html 同顺序)
+  loadFile(sb, 'domain.js');    // wf-core 浏览器 UMD 依赖(与 index.html 同顺序)
+  loadFile(sb, 'prompts.js');
+  loadFile(sb, 'knowledge.js');
+  loadFile(sb, 'wf-core.js');   // agent-ops cmdProtocol/sanitizeCmdArgs 委托 WfCore(单一来源)
   loadFile(sb, 'agent-ops.js');
   return sb;
 }

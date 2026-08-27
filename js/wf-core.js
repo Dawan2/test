@@ -310,6 +310,102 @@ ${JSON.stringify(brief)}`;
     return { natural: dim('natural'), continuity: dim('continuity'), framing: dim('framing'), pacing: dim('pacing'), overall: String(out.overall || '') };
   };
 
+  /* ================= Agent 单轮对话(/api/wf/agent 服务端管线) =================
+   * 服务端拼装对话注入(KB/专家 persona/协作记忆/状态摘要)→ LLM → 解析 run 类 ops;
+   * 浏览器面板仍走 agent.js 原路径(数据类 ops/预览确认/冲突闸是浏览器工作台语义),
+   * 本组函数供服务端端点与 CLI `agent`/MCP hujing_agent 消费;命令词表经参数注入(cmd-registry 单源)。 */
+  /* run 类命令协议文本(浏览器 AgentOps.cmdProtocol 委托本函数,数据源各端自取:Commands.list()/CmdRegistry.META) */
+  W.agentCmdProtocol = function (metaList) {
+    const T = { boolean: 'bool', number: '数字', string: '文本', array: '数组' };
+    return (metaList || []).map(c => {
+      const args = (c.args || []).filter(a => ['pid', 'epid', 'ui'].indexOf(a.name) < 0); // pid/epid 上下文自动注入,ui 不开放
+      const at = args.length
+        ? args.map(a => `"${a.name}":${T[a.type] || a.type}${a.required ? '(必填)' : ''}${a.desc ? '—' + a.desc : ''}`).join(' ')
+        : '无参数';
+      return `· ${c.name}(${c.label}${c.risk === 'read' ? ',只读' : ''}): ${at}`;
+    }).join('\n');
+  };
+  /* run 类 op 参数白名单与类型整形(meta=注册表条目):未声明的键丢弃,防模型幻觉参数污染执行/计费 */
+  W.sanitizeCmdArgs = function (meta, raw) {
+    if (!meta) return {};
+    const src = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+    const out = {};
+    (meta.args || []).forEach(a => {
+      if (['pid', 'epid', 'ui'].indexOf(a.name) >= 0) return; // 上下文注入,不接受模型填写
+      let v = src[a.name];
+      if (v === undefined || v === null) return;
+      if (a.type === 'boolean') v = !!v;
+      else if (a.type === 'number') { v = +v; if (!isFinite(v)) return; }
+      else if (a.type === 'array') { if (!Array.isArray(v)) return; v = v.map(x => String(x)).slice(0, 50); }
+      else v = String(v);
+      out[a.name] = v;
+    });
+    return out;
+  };
+  /* 状态摘要注入文本(Domain 单源推导):集级列计数/审片/下一步,项目级各集一行(≤8 集)+ 项目级建议 */
+  W.agentStateText = function (p, ep, online) {
+    const fmtEp = e => {
+      const st = Domain.episodeState(p, e, online);
+      const c = st.counts;
+      const seg = [];
+      if (c.total) {
+        seg.push(`共${c.total}镜`);
+        if (c.done) seg.push(`${c.done}已出片`);
+        if (c.generating) seg.push(`${c.generating}生成中`);
+        if (c.failed) seg.push(`${c.failed}失败`);
+        if (c.noVideo) seg.push(`${c.noVideo}未生成`);
+        if (c.unconfirmed) seg.push(`${c.unconfirmed}待确认`);
+        if (c.stale) seg.push(`${c.stale}已过期`);
+      } else seg.push('未拆镜');
+      if (e.lastReview && typeof e.lastReview.avg === 'number') seg.push(`审片均分${e.lastReview.avg}`);
+      return seg.join('/') + (st.action && st.action.label ? `;下一步:${st.action.label}` : '');
+    };
+    if (ep) return `★ 工作台状态(${ep.title || ep.id}):${fmtEp(ep)}`;
+    if (!p) return '';
+    const rows = (p.episodes || []).slice(0, 8).map(e => `- ${e.title || e.id}:${fmtEp(e)}`);
+    const wf = Domain.workflow(p, online);
+    return `★ 项目状态(${p.name || p.id},共 ${(p.episodes || []).length} 集):\n${rows.join('\n')}${wf.recommendedAction ? '\n项目级下一步建议:' + wf.recommendedAction.label : ''}`;
+  };
+  /* 分镜表压缩注入(≤20 镜,超长按整镜截断,不切半截喂模型) */
+  W.agentShotsBrief = function (ep) {
+    const all = (ep && ep.shots) || [];
+    if (!all.length) return '(本集暂无分镜)';
+    const shots = all.slice(0, 20).map((s, i) => ({
+      镜头: i + 1, 剧情: (s.plot || '').slice(0, 50), 运镜: s.camera || '',
+      提示词: (s.prompt || '').slice(0, 60), 台词: (s.dialogue || '').slice(0, 30), 状态: (s.video && s.video.status) || 'none',
+    }));
+    let json = JSON.stringify(shots);
+    if (json.length > 6000) {
+      const kept = [];
+      for (const s of shots) { if (JSON.stringify(kept.concat(s)).length > 5900) break; kept.push(s); }
+      json = JSON.stringify(kept) + `\n…(共 ${all.length} 镜,其余因长度省略)`;
+    }
+    return json + (all.length > 20 ? `\n(共 ${all.length} 镜,仅列前 20)` : '');
+  };
+  /* 单轮 system(ctx={kbText,personaNote,memText,styleText,cmdText}) */
+  W.buildAgentSystem = function (ctx) {
+    return `你是「虎鲸导演助手」,短剧制作智能体(服务端单轮模式:没有浏览器工作台,只给回复与可选的领域命令动作)。${ctx.kbText || ''}${ctx.personaNote || ''}${ctx.memText || ''}
+用户给自然语言指令或提问:纯咨询/建议类直接专业作答;需要驱动制作流程时额外输出动作类 ops。
+返回 JSON {"reply":"中文回复","thinking":"一句话思考摘要","ops":[操作]}。
+ops 仅支持统一领域命令:{"op":"run","cmd":"命令名","args":{参数}}(pid/epid 由调用方注入无需填写;执行按各命令规则扣费)。命令白名单与参数面:
+${ctx.cmdText || '(无可用命令)'}
+纯咨询类 ops 返回 [];不确定是否该执行时不要输出 ops,在 reply 里说明建议与代价。项目风格:${ctx.styleText || ''}。`;
+  };
+  /* 单轮 user(ctx={stateText,scriptBrief,shotsText,text}) */
+  W.buildAgentUser = function (ctx) {
+    return `${ctx.stateText ? ctx.stateText + '\n' : ''}${ctx.scriptBrief ? '剧本摘要:' + ctx.scriptBrief + '\n' : ''}${ctx.shotsText ? '当前分镜表:\n' + ctx.shotsText + '\n' : ''}
+用户指令:${ctx.text}`;
+  };
+  /* 单轮结果规整:reply 兜底 + ops 白名单过滤(仅 run 类且 cmd 在注册表词表内,args 经 sanitizeCmdArgs 整形,≤5 条) */
+  W.agentNormalize = function (out, byName) {
+    out = out || {};
+    const ops = (Array.isArray(out.ops) ? out.ops : [])
+      .filter(o => o && o.op === 'run' && byName[String(o.cmd || '').trim()])
+      .slice(0, 5)
+      .map(o => { const cmd = String(o.cmd).trim(); return { op: 'run', cmd, args: W.sanitizeCmdArgs(byName[cmd], o.args) }; });
+    return { reply: String(out.reply || '').trim() || '(助手无回复内容)', thinking: String(out.thinking || ''), ops };
+  };
+
   /* ================= LLM 主体提取(自 episode-util.js 下沉) =================
    * 浏览器解析向导(llmExtractSubjects)与 CLI project.extractSubjects 共用提示词与规整,双端逐字节一致 */
   const STOP_WORDS = ['他们', '我们', '你们', '大家', '众人', '有人', '人们', '人们', '这时', '突然', '然后', '于是', '只见', '只听'];

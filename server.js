@@ -843,6 +843,7 @@ const WfCore = require('./js/wf-core.js');
 const Prompts = require('./js/prompts.js');
 const KB = require('./js/knowledge.js');
 const ExpertsData = require('./js/experts-data.js'); // 专家注册表双端单源(二十二轮):wf 端点据 hiredExpert 推导 projType
+const CmdRegistry = require('./js/cmd-registry.js'); // 领域命令词表单源:/api/wf/agent 的 run 类 ops 协议与白名单过滤
 const BILLING_ACTIONS = Object.assign({}, BILLING.DEFAULT_ACTIONS, CONFIG.billingActions || {});
 /* 前端 COST 键 → 服务端动作(同步投影用;config 覆盖价格后前端自动跟随) */
 const COST_PROJECTION = {
@@ -1593,6 +1594,7 @@ function wfMockOut(kind) {
   if (kind === 'shotReview') return { score: 8.2, dimensions: { technical: { score: 8, comment: 'mock 技术评语', suggestion: 'mock 建议' }, matching: { score: 8, comment: 'mock 匹配评语', suggestion: 'mock 建议' }, directing: { score: 8, comment: 'mock 导演评语', suggestion: 'mock 建议' } }, issues: [] };
   if (kind === 'sum') return { summary: 'mock 整集总评', issues: [] };
   if (kind === 'cut') return { natural: { score: 8, comment: 'mock' }, continuity: { score: 8, comment: 'mock' }, framing: { score: 8, comment: 'mock' }, pacing: { score: 8, comment: 'mock' }, overall: 'mock 整集剪辑总评' };
+  if (kind === 'agent') return { reply: 'mock 回复:当前状态已同步,建议按工作台状态推进下一步。', thinking: 'mock 思考', ops: [] };
   return { reply: 'mock' };
 }
 async function wfLLM(userId, opt) {
@@ -1613,7 +1615,8 @@ async function wfLLM(userId, opt) {
   if (!execLock(lockKey)) { const e = new Error('该操作正在执行中,请勿并发重复提交'); e.httpStatus = 409; throw e; }
   try {
     opMarkExecuting(userId, charge.opId, opt.action);
-    const messages = opt.messages || [{ role: 'user', content: opt.user }];
+    // opt.system 进 messages(此前被静默丢弃:注释与全部调用方均传 system,拼装却只取 user——工作流提示词缺人设/协议段)
+    const messages = opt.messages || (opt.system ? [{ role: 'system', content: opt.system }, { role: 'user', content: opt.user }] : [{ role: 'user', content: opt.user }]);
     // llmModel 配置后强制覆盖(与 /api/llm/chat 同规则:Agent/Coding Plan 路由模型优先,链式互备)
     const models = CONFIG.llmModel ? [CONFIG.llmModel].concat(CONFIG.llmModelFallbacks || []) : [opt.model || 'qwen-turbo'];
     let r = null, model = models[0];
@@ -3536,6 +3539,51 @@ const server = http.createServer(async (req, res) => {
         });
       } catch (e) {
         return fail(res, e.httpStatus || 502, e.message || '智能审片失败', e.httpStatus || 502);
+      } finally { rateLimitDone(user.id); }
+    }
+
+    /* Agent 单轮对话(服务端管线):{pid,epid?,text,scope?} → 拼装注入(KB/专家 persona/协作记忆/状态摘要)
+     * → wfLLM(llm.agent,失败退费) → 规整 {reply,thinking,ops,receipts}。
+     * ops 只解析不执行(run 类命令白名单过滤,调用方按需走 hujing exec / Commands.execute 执行并各自计费);
+     * 浏览器工作台面板仍走 agent.js 原路径(数据类 ops/预览确认/冲突闸是工作台语义,本端点面向 CLI/MCP/外部编排)。 */
+    if (pathname === '/api/wf/agent' && req.method === 'POST') {
+      if (!CONFIG.apiKey && !(process.env.MOCK_LLM === '1' || CONFIG.mockLlm)) return fail(res, 503, '服务端未配置 LLM key,请创建 config.json 并填入 apiKey', 503);
+      if (!rateLimitOk(user.id)) return fail(res, 429, '请求过于频繁,请稍候', 429);
+      try {
+        const b = await readJSONBody(req, 1024 * 1024);
+        const text = String(b.text || '').trim();
+        if (!text) return fail(res, 400, '缺少 text(用户指令)', 400);
+        const { tree, p, ep } = wfLoadCtx(user.id, String(b.pid || ''), String(b.epid || ''));
+        if (!p) return fail(res, 404, '项目不存在', 404);
+        if (b.epid && !ep) return fail(res, 404, '分集不存在', 404);
+        const st = (tree && tree.settings) || {};
+        const scope = String(b.scope || (ep ? '分镜' : '')).slice(0, 12); // 记忆召回板块(与对话层同词表:剧本/导演/分镜/成片…)
+        const opId = sanitizeOpId(b.operationId) || uid('wfag');
+        const r = await wfLLM(user.id, {
+          action: 'llm.agent', reason: 'Agent 对话(' + ((ep && ep.title) || p.name) + ')', opId, step: 'main', wfName: 'agent',
+          model: st.defLLM || 'qwen-turbo',
+          system: WfCore.buildAgentSystem({
+            kbText: KB.block(),
+            personaNote: WfCore.personaNote(ExpertsData.expertOf(st.hiredExpert, tree.customExperts)),
+            memText: WfCore.memBlock(tree.agentMemory, text, scope),
+            styleText: Domain.styleOf(p),
+            cmdText: WfCore.agentCmdProtocol(CmdRegistry.META),
+          }),
+          user: WfCore.buildAgentUser({
+            stateText: WfCore.agentStateText(p, ep || null, true),
+            scriptBrief: String((ep ? ep.content : p.script) || '').slice(0, 500),
+            shotsText: ep ? WfCore.agentShotsBrief(ep) : '',
+            text,
+          }),
+          temperature: 0.4, max_tokens: 2500, projectId: p.id, mockKind: 'agent',
+        });
+        const out = WfCore.agentNormalize(r.parsed, CmdRegistry.byName);
+        return ok(res, {
+          reply: out.reply, thinking: out.thinking, ops: out.ops,
+          receipts: [{ action: 'llm.agent', opId, step: 'main', model: r.model || 'mock-llm', cached: !!r.cached, mock: !!r.mock }],
+        });
+      } catch (e) {
+        return fail(res, e.httpStatus || 502, e.message || 'Agent 对话失败', e.httpStatus || 502);
       } finally { rateLimitDone(user.id); }
     }
 
