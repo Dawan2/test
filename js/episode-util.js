@@ -243,13 +243,18 @@ ${partials.map((s, i) => `第${i + 1}部分:${s}`).join('\n').slice(0, 8000)}` }
   /* ---------- LLM 剧本分集(无明显集标记时) ----------
    * 提示词与锚点切分下沉 wf-core.js 双端单源(服务端 /api/wf/split-episodes 同函数字面):
    * LLM 只回每集标题+开头原文锚句,本地按锚点切原文——正文逐字不动、不重写;
-   * 长文(>WfCore.SPLIT_LLM_MAX)不调 LLM,返回 null 由调用方回退本地段落均分(同样保原文完整) */
-  async function llmSplitEpisodes(text, model, opId) {
+   * 长文(>WfCore.SPLIT_LLM_MAX)不调 LLM,返回 null 由调用方回退本地段落均分(同样保原文完整);
+   * p 传入时按剧本板块注入生效专家方法论与协作记忆(与服务端 wfPersonaNote 同一装配口) */
+  async function llmSplitEpisodes(text, model, opId, p) {
     if (text.length > WfCore.SPLIT_LLM_MAX) return null;
+    const board = WfCore.WF_BOARD['split-episodes'];
     const out = await API.chatJSON({
       model,
       system: '你是专业的短剧策划编辑。',
-      messages: [{ role: 'user', content: WfCore.buildSplitUser(text, WfCore.splitTargetCount(text)) }],
+      messages: [{ role: 'user', content: WfCore.buildSplitUser(text, WfCore.splitTargetCount(text), {
+        personaNote: window.personaNoteFor ? personaNoteFor(p, board) : '',
+        memText: WfCore.memBlock(Store.state.agentMemory, (p && p.name) || '', board),
+      }) }],
       temperature: 0.4, max_tokens: 2000,
       operationId: opId, // 稳定计费操作键(与所属任务同 id,解析重试不重复扣)
     });

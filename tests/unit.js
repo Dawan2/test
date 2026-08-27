@@ -3214,18 +3214,19 @@ const contractTests = [
     assert(mcpSrc.includes("require('./js/cmd-registry.js')"), 'mcp.js 应 require 注册表');
     assert(mcpSrc.includes('CmdRegistry.names()'), 'mcp.js hujing_exec 词表应由 CmdRegistry.names() 生成');
   } },
-  { name: '专家人设单源:/api/wf/* 三条工作流均经 wfPersonaNote 注入,板块键取自 WF_BOARD', fn() {
+  { name: '专家人设单源:/api/wf/* 各条工作流均经 wfPersonaNote 注入,板块键取自 WF_BOARD', fn() {
     const WfCore = require('../js/wf-core.js');
     const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
     const agentSrc = fs.readFileSync(path.join(ROOT, 'js', 'agent.js'), 'utf8');
-    assertEq(Object.keys(WfCore.WF_BOARD).join(','), 'understanding,smart-storyboard,smart-review', 'WF_BOARD 应覆盖三条服务端工作流');
+    assertEq(Object.keys(WfCore.WF_BOARD).join(','), 'understanding,smart-storyboard,smart-review,split-episodes', 'WF_BOARD 应覆盖各条服务端工作流');
     Object.values(WfCore.WF_BOARD).forEach(b => assert(agentSrc.includes("key: '" + b + "'"), 'WF_BOARD 板块「' + b + '」应是 AGENT_BOARDS 已有板块'));
     assert(srv.includes('function wfPersonaNote('), 'server.js 应有唯一的生效专家装配口 wfPersonaNote');
     assert(srv.includes('WfCore.WF_BOARD.understanding'), '/api/wf/understanding 未注入生效专家方法论');
     assert(srv.includes("WfCore.WF_BOARD['smart-storyboard']"), '/api/wf/smart-storyboard 未注入生效专家方法论');
     assert(srv.includes("WfCore.WF_BOARD['smart-review']"), '/api/wf/smart-review 未注入生效专家方法论');
-    // 1 定义 + 5 调用(理解 / 分镜 / 分镜内部理解步 / 审片 / Agent 对话):新增 LLM 步漏注入时此断言先红
-    assertEq((srv.match(/wfPersonaNote\(/g) || []).length, 6, 'wfPersonaNote 调用点数应与 wf 工作流 LLM 步一致');
+    assert(srv.includes("WfCore.WF_BOARD['split-episodes']"), '/api/wf/split-episodes 未注入生效专家方法论');
+    // 1 定义 + 6 调用(理解 / 分镜 / 分镜内部理解步 / 审片 / Agent 对话 / 拆集):新增 LLM 步漏注入时此断言先红
+    assertEq((srv.match(/wfPersonaNote\(/g) || []).length, 7, 'wfPersonaNote 调用点数应与 wf 工作流 LLM 步一致');
     // 服务端不得留第二条装配路径(直接 personaNote(expertOf(...))):否则板块专家在部分端点静默失效
     assertEq((srv.match(/WfCore\.personaNote\(/g) || []).length, 0, 'server.js 应只经 wfPersonaNote 装配,不直接调 WfCore.personaNote');
   } },
@@ -3953,6 +3954,17 @@ const splitTests = [
     assert(u.includes('划分为 3 集'), '应带目标集数');
     assert(u.includes('"anchor"') && u.includes('逐字引用原文'), '应为锚点协议(只回标题+锚句,正文本地切)');
     assert(u.includes('剧本正文示例'), '应带全文');
+    // 人设/记忆注入位:空注入与未注入逐字节一致(未雇佣且无记忆时提示词不变)
+    assertEq(W.buildSplitUser('剧本正文示例', 3, {}), u, '空 ctx 提示词应与三参调用逐字节一致');
+    assertEq(W.buildSplitUser('剧本正文示例', 3, { personaNote: '', memText: '' }), u, '空注入串提示词应逐字节一致');
+    const inj = W.buildSplitUser('剧本正文示例', 3, {
+      personaNote: W.personaNote({ name: '冷峻悬疑导演', persona: '克制叙事,善用信息差' }, W.WF_BOARD['split-episodes']),
+      memText: W.memBlock([{ text: '女主统一叫林晚晴', scope: '剧本' }], '测试项目', W.WF_BOARD['split-episodes']),
+    });
+    assert(inj.includes('专家方法论(冷峻悬疑导演·剧本板块):克制叙事'), '应注入剧本板块生效专家方法论');
+    assert(inj.includes('历史协作记忆') && inj.includes('- 女主统一叫林晚晴'), '应注入剧本板块协作记忆');
+    assert(inj.indexOf('专家方法论') < inj.indexOf('剧本:\n剧本正文示例'), '注入段应在剧本正文之前');
+    assert(!inj.includes('\n。专家方法论'), '独立成行时应去掉人设串句首标点');
   } },
   { name: 'splitByAnchors:按锚点切原文(首集从头起)、倒序/重复锚点跳过、结构不合法抛错', fn() {
     const W = require('../js/wf-core.js');
@@ -3995,6 +4007,11 @@ const splitTests = [
     ['WfCore.splitMode', 'WfCore.buildSplitUser', 'WfCore.splitByAnchors', 'WfCore.localSplitEpisodes', 'WfCore.splitInflight'].forEach(fn2 =>
       assert(srv.includes(fn2), '服务端拆集应复用 ' + fn2));
     assert(/proxyRefund\(user\.id, r\.charge/.test(srv), '拆集 LLM 步失败应退费(不本地冒充)');
+    // 人设/记忆注入两端同一装配口(服务端 wfPersonaNote、浏览器 personaNoteFor,板块键都取 WF_BOARD)
+    assert(srv.includes("wfPersonaNote(tree, p, WfCore.WF_BOARD['split-episodes'])"), '服务端拆集 LLM 步应经 wfPersonaNote 注入生效专家');
+    assert(srv.includes("WfCore.memBlock(tree.agentMemory, p.name || '', WfCore.WF_BOARD['split-episodes'])"), '服务端拆集 LLM 步应按剧本板块召回协作记忆');
+    assert(eu.includes("WfCore.WF_BOARD['split-episodes']") && eu.includes('personaNoteFor(p, board)') && eu.includes('WfCore.memBlock('), '浏览器拆集应与服务端同板块同装配口注入');
+    assert(pu.includes('llmSplitEpisodes(scriptText, API.getConfig().model, tk.id, p)'), 'splitCore 应把项目传下去(浏览器注入所需数据面)');
     const cli = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
     assert(cli.includes("POST('/api/wf/split-episodes'"), 'CLI 拆集应走服务端工作流端点');
     assert(!cli.includes('划分为'), 'CLI 不应内联分集提示词');

@@ -111,7 +111,7 @@
     return '。专家方法论(' + (ex.name || '雇佣专家') + (board ? '·' + board + '板块' : '') + '):' + persona.slice(0, 200);
   };
   /* 工作流→板块映射(键与 agent.js AGENT_BOARDS 板块键同名):决定该工作流优先取哪个板块雇佣的专家 */
-  W.WF_BOARD = { understanding: '导演', 'smart-storyboard': '分镜', 'smart-review': '成片' };
+  W.WF_BOARD = { understanding: '导演', 'smart-storyboard': '分镜', 'smart-review': '成片', 'split-episodes': '剧本' };
   /* 生效专家方法论(双端唯一装配口):板块雇佣专家 > 全局雇佣专家 > 不注入,与 Agent 身份解析同序。
    * o={experts:全部专家(预置+自定义),hiredId:settings.hiredExpert,boards:p.boards,board:板块键};
    * 数据一律由调用方注入(浏览器 allExperts()/Store,服务端 ExpertsData/state 树),本模块不碰环境 */
@@ -212,12 +212,18 @@
     }
     return eps;
   };
-  /* LLM 分集提示词(锚点协议:只回标题+开头原文锚句,正文由本地按锚点切,逐字不动) */
-  W.buildSplitUser = (text, n) => `将以下剧本按剧情节奏划分为 ${n} 集,返回 JSON 数组,每个元素:
+  /* LLM 分集提示词(锚点协议:只回标题+开头原文锚句,正文由本地按锚点切,逐字不动);
+   * ctx={personaNote,memText} 生效专家方法论与协作记忆(剧本板块),两端经同一注入口拼装——
+   * personaNote 以「。」起头(与 directorNote 同通道口径),独立成行时去掉句首标点;
+   * 无注入时提示词与接入前逐字节一致 */
+  W.buildSplitUser = function (text, n, ctx) {
+    ctx = ctx || {};
+    return `将以下剧本按剧情节奏划分为 ${n} 集,返回 JSON 数组,每个元素:
 {"title":"第X集 标题","anchor":"该集正文开头的原文第一句(≤30字,必须逐字引用原文,不要改写)"}
 要求:每集剧情相对完整、节奏卡点合理;第一集 anchor 为全文开头第一句;anchor 必须能在原文中逐字找到。
-剧本:
+${ctx.personaNote ? ctx.personaNote.replace(/^。/, '') + '\n' : ''}${ctx.memText ? ctx.memText.trim() + '\n' : ''}剧本:
 ${text}`;
+  };
   /* 锚点定位切原文:按返回顺序在原文找锚句,越界/倒序/重复锚点跳过;结构不合法抛错(调用方决定退费/回退) */
   W.splitByAnchors = function (text, out) {
     if (!Array.isArray(out) || out.length < 2) throw new Error('LLM 未返回有效分集数组');
