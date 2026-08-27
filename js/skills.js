@@ -771,12 +771,16 @@
     {
       id: 'eps.frontPipeline', sk: 'SK-16', name: '主线前段编排', stage: 'eps',
       covers: ['script', 'subjects', 'eps', 'shots'], wave: 'W3', kinds: ['orchestrate'], gaps: ['G-04'],
-      cmds: ['project.splitEpisodes', 'project.extractSubjects'],
       steps: [
+        { cmd: 'project.extractSubjects', args: {}, note: '提取主体:整部剧本先立主体库,下游每镜才锁得住参考' },
+        { cmd: 'project.splitEpisodes', args: {}, note: '剧本拆集:整本切成分集,拿到集 id 后本编排转入集内两步' },
         { cmd: 'episode.understanding', args: {}, note: '本集理解:先出人物/情绪/场景口径' },
         { cmd: 'episode.generateStoryboard', args: {}, note: '智能分镜:按理解口径拆镜' },
       ],
-      note: '拆集与主体提取的领域命令已就位(cmds 登记,G-04);两步前置进 steps 会改本编排产出,单列一轮处置',
+      note: '四步按主线步序排(主体→分集→集内理解→分镜,与 Domain.workflow 同序),'
+        + 'cmds 面由 steps 推出不写第二份;G-04 的服务端工作流出口四步都已就位,headless 可从一份整部剧本起跑。'
+        + 'args 一律留空:授权位(拆集 overwrite——已有分集时未授权即拒,防误删已分镜数据)与'
+        + '模式位(拆集 local、提取 mode)属调用方决策,编排层只给步序不预设授权',
     },
     /* ---- 分镜 ---- */
     {
