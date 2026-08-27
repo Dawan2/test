@@ -2499,6 +2499,19 @@ const issuesTests = [
     assert(it.goto && !it.cmd, '一致性问题走导航自查,不挂命令处置(不触发任何生成)');
     assertEq(list.filter(x => x.sev !== 'low').length, 0, '一致性提醒不得产出高/中危(门禁状态不变)');
   } },
+  { name: 'collect:成片字幕读不顺 → 低危提醒(不进高/中危,不改发布门 G2)', fn() {
+    const sb = loadIssues();
+    const done = cleanEp().shots[0];
+    const ep = cleanEp({ composed: false, sbConfig: { subtitle: true }, shots: [Object.assign({}, done, { dialogue: '我'.repeat(130) })] });
+    const list = sb.Issues.collect({ id: 'p1', subjects: [], episodes: [ep] });
+    const it = list.find(x => x.kind === 'caption-unreadable');
+    assert(it, '超烧录上限的台词应入清单');
+    assertEq(it.sev, 'low', '字幕可读性是提醒级(发布门 G2 只数高/中危)');
+    assertEq(it.count, 1);
+    assert(it.detail.includes('镜头1') && it.detail.includes('截断'), '明细应定位到镜号与原因,实际:' + it.detail);
+    assert(it.goto && !it.cmd, '字幕问题回分集页改台词/裁剪,不挂命令处置(不触发任何生成与合成)');
+    assertEq(list.filter(x => x.sev !== 'low').length, 0, '字幕提醒不得产出高/中危(门禁状态不变)');
+  } },
   { name: 'collect:素材更新过期镜(assetVer 抬升)→ stale-shots 带镜头号', fn() {
     const sb = loadIssues();
     const ep = cleanEp({ shots: [Object.assign({}, cleanEp().shots[0], { characters: ['主角'], video: { status: 'done', url: 'http://x/v.mp4', assetVer: 1 } })], composed: false });
@@ -3252,6 +3265,10 @@ const refIntegrity = (p, ep) => Skills.check('subjects', { p, ep }).find(x => x.
 const crossShot = (p, shots) => Skills.check('subjects', { p, ep: { id: 'ep1', shots } }).find(x => x.skill === 'subjects.crossShot');
 /* 主体带真实图的项目夹具:n 个角色各有权威图(参考图组 5 张上限用例) */
 const manySubjP = n => ({ id: 'p1', subjects: Array.from({ length: n }, (_, i) => ({ id: 'c' + i, name: '角色' + i, kind: 'character', image: '/uploads/a/c' + i + '.png' })) });
+/* 成片字幕夹具:镜头缺省带分镜图(进得了合成序列),段时长由 Domain.subtitleSegs 按预估/裁剪推出,用例只摆内容 */
+const capShot = (order, over) => Object.assign({ id: 'sh' + order, order, dialogue: '', narration: '', image: '/uploads/a/f' + order + '.png' }, over || {});
+const capEp = (shots, over) => Object.assign({ id: 'ep1', sbConfig: { subtitle: true }, shots }, over || {});
+const caption = ep => Skills.check('film', { p: { id: 'p1' }, ep }, { online: true }).find(x => x.skill === 'film.subtitleQC');
 
 const skillsTests = [
   { name: 'refIntegrity:干净夹具全 pass(引用齐备且有真实参考图 → info 无命中)', fn() {
@@ -3389,6 +3406,76 @@ const skillsTests = [
     const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
     assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 只数高/中危 —— 低危提醒不改门禁状态');
     ['episode.generateVideos', 'shot.generateVideo'].forEach(n => assert(!Skills.byId('subjects.crossShot').cmds.includes(n), '生成侧消费待 G-06,条目不得挂未接的命令面:' + n));
+  } },
+  { name: 'subtitleTiming:干净夹具全 pass(台词短、停留够 → info 无命中)', fn() {
+    const r = caption(capEp([capShot(0, { dialogue: '快走别回头' }), capShot(1, { narration: '雨声渐起' })]));
+    assertEq(r.pass, true); assertEq(r.level, 'info'); assertEq(r.hits.length, 0, '读得完的字幕不应产出命中');
+    // 段时长/段文本与真实合成 items、SRT 同一份构造(本层不另切一份段)
+    const segs = DomainMod.subtitleSegs(capEp([capShot(0, { dialogue: '快走别回头' }), capShot(1, { narration: '雨声渐起' })]), true);
+    assertEq(segs.map(x => x.text + '@' + x.start + '-' + x.end).join(','), '快走别回头@0-3,雨声渐起@3-6', '段起止=逐段累计时长');
+  } },
+  { name: 'subtitleTiming:超烧录上限 → caption-truncated(fail);关掉烧录只报一屏放不下', fn() {
+    const long = '我'.repeat(130);
+    const r = caption(capEp([capShot(0, { dialogue: long })]));
+    assertEq(r.pass, false); assertEq(r.level, 'fail', '合成时确定被截断,是确定性内容丢失');
+    assertEq(r.hits.map(h => h.code + '@' + h.order).join(','), 'caption-truncated@1');
+    assertEq(r.hits[0].chars, 130); assertEq(r.hits[0].limit, DomainMod.SUB_BURN_MAX, '截断线取 Domain 单源常量');
+    assertEq(r.hits[0].shotId, 'sh0', 'hits 应带镜头 id 供调用方跳转');
+    const off = caption(capEp([capShot(0, { dialogue: long })], { sbConfig: { subtitle: false } }));
+    assertEq(off.level, 'warn', '不烧录时 SRT 保留全文,只剩一屏放不下的提醒');
+    assertEq(off.hits.map(h => h.code).join(','), 'caption-too-long');
+  } },
+  { name: 'subtitleTiming:视频被裁短而台词没删 → read-too-fast(带实测字/秒)', fn() {
+    const s = capShot(0, { dialogue: '我'.repeat(30), video: { status: 'done', url: '/uploads/v.mp4' } });
+    const r = caption(capEp([s], { tlTrims: { sh0: { start: 1, end: 3 } } }));
+    assertEq(r.level, 'warn', '读得急是提醒级,不与确定性截断同级');
+    assertEq(r.hits.map(h => h.code + '@' + h.order).join(','), 'read-too-fast@1');
+    assertEq(r.hits[0].dur, 2, '段时长应取时间线裁剪出入点差(与真实合成同口径)');
+    assertEq(r.hits[0].cps, 15); assertEq(r.hits[0].limit, 9);
+  } },
+  { name: 'subtitleTiming:停留不足最短可读时长 → caption-flash;整集无对白且开着烧录 → no-caption-track', fn() {
+    const s = capShot(0, { dialogue: '快跑', video: { status: 'done', url: '/uploads/v.mp4' } });
+    const flash = caption(capEp([s], { tlTrims: { sh0: { start: 1, end: 1.4 } } }));
+    assertEq(flash.hits.map(h => h.code + ':' + h.dur).join(','), 'caption-flash:0.5', '裁剪短于半秒按合成下限 0.5s 计');
+    const empty = caption(capEp([capShot(0), capShot(1)]));
+    assertEq(empty.hits.map(h => h.code + '@' + h.order).join(','), 'no-caption-track@0', '开了烧录却一句都没有,整集级命中一次');
+    assertEq(empty.level, 'warn');
+    assertEq(caption(capEp([capShot(0), capShot(1)], { sbConfig: { subtitle: false } })).hits.length, 0, '没开烧录时无字幕轨不是问题');
+  } },
+  { name: 'subtitleTiming:纯函数(不改入参、同输入同结论);时间轴未成形不产出结论', fn() {
+    const ep = capEp([capShot(0, { dialogue: '我'.repeat(130) })]);
+    const snap = JSON.stringify(ep);
+    assertEq(JSON.stringify(caption(ep)), JSON.stringify(caption(ep)), '同输入应给同结论(无隐藏状态)');
+    assertEq(JSON.stringify(ep), snap, '校验项不得改动领域对象');
+    const bare = caption(capEp([{ id: 'sh9', order: 0, dialogue: '我'.repeat(130) }])); // 无视频无底图:不进合成序列
+    assertEq(bare.pass, true); assertEq(bare.level, 'info'); assertEq(bare.hits.length, 0, '无在列素材段=时间轴未成形,不冒充通过判定');
+    assertEq(Skills.check('film', {}).find(x => x.skill === 'film.subtitleQC').level, 'info', '无分集上下文不产出结论');
+  } },
+  { name: 'subtitleTiming:切段口径单源——合成 items 与 SRT 现取 Domain,不各写一份', fn() {
+    [['js/sb-io.js', 'Store'], ['cli.js', 'Domain']].forEach(([f, ns]) => {
+      const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+      assert(src.includes(ns + '.segDurationOf(s, true)') && src.includes(ns + '.segDurationOf(s, false)'), f + ' 合成段时长应取单源 segDurationOf');
+      assert(src.includes('SUB_BURN_MAX'), f + ' 烧录截断线应取单源常量,不再手写 120');
+      assert(!/Math\.min\(15, [^)]*estShotDuration/.test(src), f + ' 不应再内联第二份段时长口径');
+    });
+    const dsrc = fs.readFileSync(path.join(ROOT, 'js', 'domain.js'), 'utf8');
+    assert(dsrc.includes('D.subtitleSegs = ') && dsrc.includes('D.composeSeqOf(ep, online)'), '字幕段应由 composeSeqOf 在列镜头推导');
+  } },
+  { name: 'subtitleTiming:消费点——就绪检查双端附结论 + 问题中心低危(不改门禁、不新增计费)', fn() {
+    [['js/commands.js', 'js'], ['cli.js', '']].forEach(([f]) => {
+      const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+      assert(/Skills\.check\('film'/.test(src), f + ' 就绪检查应跑成片字幕面校验项');
+    });
+    const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
+    assert(/Skills\.check\('film'/.test(isrc), '问题中心应复用同一校验项,不写第二份判定');
+    assert(isrc.includes("kind: 'caption-unreadable', sev: 'low'"), '字幕提醒须挂低危');
+    const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
+    assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 只数高/中危 —— 低危提醒不改门禁状态');
+    assertEq(require('../js/cmd-registry.js').byName['episode.preflight'].risk, 'read', '就绪检查应仍是 read 类零计费');
+    const sk = Skills.byId('film.subtitleQC');
+    assertEq(sk.pending.length, 0, '校验面已落地,不应再挂 pending');
+    assertEq(sk.checks.join(','), 'film.subtitleTiming');
+    assertEq(Skills.check('film', { p: { id: 'p1' }, ep: capEp([capShot(0, { dialogue: '走' })]) }).length, 1, '成片步现有一条已落地校验项');
   } },
 ];
 
