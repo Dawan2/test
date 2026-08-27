@@ -135,6 +135,49 @@
     return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
   };
 
+  /* 字幕可读性判据(成片字幕/对白面的三条阈值):
+   *   CAP_CPS       阅读速度上限(字/秒):超出即观众看不完一条字幕
+   *   CAP_MIN_DUR   单条最短停留(秒):低于此值字幕一闪而过
+   *   CAP_ONE_SCREEN 一屏可容纳字数:超出即一条字幕塞满画面,建议拆条
+   * 烧录硬截断上限不在此处再写一份,现取 Domain.SUB_BURN_MAX(与合成时的截断同一常量)。 */
+  const CAP_CPS = 9;
+  const CAP_MIN_DUR = 1;
+  const CAP_ONE_SCREEN = 40;
+
+  /* SK-28 成片字幕时间轴与阅读速度(S-06):判定输入是合成时间轴段——段序列/段时长/段文本现取
+   * Domain.subtitleSegs(与真实合成 items、SRT 软字幕同一份构造:composeSeqOf 在列镜头、
+   * 裁剪出入点差定时长、文本取台词优先旁白),本层不写第二份切段与取文本。
+   *   caption-truncated 烧录字幕开启且单条超硬上限 → fail(合成时确定被截断,这段对白必丢字)
+   *   caption-too-long  单条字数超一屏可容纳量 → warn(未到截断线但一条塞满画面,建议拆条)
+   *   read-too-fast     单条字数/停留秒数超阅读速度上限 → warn(字幕跟不上,常见于视频被裁短而台词没删)
+   *   caption-flash     单条停留不足最短可读时长 → warn(字幕一闪而过)
+   *   no-caption-track  烧录字幕开启但全集在列段无一条文本 → warn(成片不出字,对白/旁白多半漏填)
+   * 结论只报不拦:不进 blockers、不改发布门口径、不改计费动作。 */
+  CHECKS['film.subtitleTiming'] = function (obj, ctx) {
+    const o = obj || {};
+    const ep = o.ep;
+    if (!ep) return { pass: true, level: 'info', hits: [] };
+    const segs = Domain.subtitleSegs(ep, (ctx || {}).online);
+    if (!segs.length) return { pass: true, level: 'info', hits: [] }; // 无在列素材段=时间轴尚未成形,不冒充通过判定
+    const burn = !!(ep.sbConfig && ep.sbConfig.subtitle);
+    const hits = [];
+    let texted = 0;
+    segs.forEach(sg => {
+      const chars = sg.text.replace(/\s/g, '').length;
+      if (!chars) return;
+      texted++;
+      const dur = sg.dur > 0 ? sg.dur : 0;
+      const at = { shotId: sg.id, order: sg.order, chars, dur };
+      if (burn && chars > Domain.SUB_BURN_MAX) hits.push(Object.assign({ code: 'caption-truncated', limit: Domain.SUB_BURN_MAX }, at));
+      else if (chars > CAP_ONE_SCREEN) hits.push(Object.assign({ code: 'caption-too-long', limit: CAP_ONE_SCREEN }, at));
+      if (dur > 0 && chars / dur > CAP_CPS) hits.push(Object.assign({ code: 'read-too-fast', cps: Math.round(chars / dur * 10) / 10, limit: CAP_CPS }, at));
+      if (dur < CAP_MIN_DUR) hits.push(Object.assign({ code: 'caption-flash', limit: CAP_MIN_DUR }, at));
+    });
+    if (burn && !texted) hits.push({ code: 'no-caption-track', shotId: '', order: 0, chars: 0, dur: 0, limit: 0 });
+    const level = hits.some(h => h.code === 'caption-truncated') ? 'fail' : hits.length ? 'warn' : 'info';
+    return { pass: !hits.length, level, hits };
+  };
+
   /* 短名单 30 条内部能力(SK-01…SK-30):id 取 `stage.name` 形态,与 SK 编号一一对应。
    * covers 写该能力实际作用到的主线步骤(缺省=stage 本身);gaps 记该条已知贯通缺口编号(G-xx 图谱既有,S-xx 本轮新登记)。 */
   const REG = [
@@ -323,8 +366,11 @@
     },
     {
       id: 'film.subtitleQC', sk: 'SK-28', name: '字幕时间轴与阅读速度校验', stage: 'film', wave: 'W4',
-      kinds: ['check'], pending: ['check'], cmds: ['episode.compose'], gaps: ['S-06'],
-      note: '判定输入是合成时间轴段与软字幕产物,SRT 现无结构化质检结论(S-06)',
+      kinds: ['check'], checks: ['film.subtitleTiming'], cmds: ['episode.compose', 'episode.preflight'],
+      gaps: ['S-06'],
+      note: '判定输入是合成时间轴段:段序列/段时长/段文本现取 Domain.subtitleSegs(与真实合成 items、'
+        + 'SRT 软字幕同一份构造),烧录截断线现取 Domain.SUB_BURN_MAX——本层不写第二份切段口径;'
+        + '经就绪检查与问题中心消费(S-06 结构化质检结论落地),结论只报不拦',
     },
     {
       id: 'film.deliverContract', sk: 'SK-29', name: '交付契约门', stage: 'film', wave: 'W4',
