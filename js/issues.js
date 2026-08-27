@@ -1,5 +1,5 @@
 /* ============ issues.js 问题中心(协同层,第三阶段) ============
- * 项目级待处理问题单一聚合:失败镜/过期镜/未分镜/缺剧本/低分审片/待确认/成片过期/主体缺图/跨镜主体不一致,
+ * 项目级待处理问题单一聚合:失败镜/过期镜/未分镜/缺剧本/低分审片/待确认/成片过期/主体缺图/跨镜主体不一致/字幕读不顺,
  * 逐项由 Domain.episodeState(blockers/counts)推导——与流程条/下一步/跑批/CLI 同一口径,不自造第二套状态。
  * 每项问题带可操作处置:命令类(episode.generateVideos shotIds 子集重生成/智能分镜/重新合成)经统一命令层
  * ui 模式执行;导航类跳对应页面。入口:项目页「问题」按钮(角标=未解决数,Bus 事件驱动实时刷新)。 */
@@ -12,6 +12,14 @@
     'ref-image-drift': '参考图与其余镜不是同一张',
     'ref-lock-gap': '未进参考图组(形象无锁)',
     'alias-drift': '引用名与其余镜不统一',
+  };
+  /* 成片字幕命中码 → 展示文案(同上:判据在校验项,本层只管展示) */
+  const CAPTION = {
+    'caption-truncated': '超烧录上限,合成时被截断',
+    'caption-too-long': '一条字幕塞满画面,建议拆条',
+    'read-too-fast': '停留太短,字幕读不完',
+    'caption-flash': '字幕一闪而过',
+    'no-caption-track': '开了烧录字幕却无一句对白/旁白',
   };
 
   /* ================= 问题清单推导(纯数据,可 vm 沙箱测试) =================
@@ -66,6 +74,16 @@
         label: `「${ep.title}」${consist.length} 处跨镜主体参考不一致`,
         detail: consist.slice(0, 4).map(h => `镜头${h.order}「${h.name}」${CONSIST[h.code] || h.code}`).join(';')
           + (consist.length > 4 ? ` 等 ${consist.length} 处` : '') + '——同一主体形象易在镜间漂移',
+        goto: `#/project/${p.id}/episode/${ep.id}`,
+      }));
+      /* 成片字幕/对白可读性(js/skills.js 校验项,纯本地零 LLM 零计费):以合成时间轴段判阅读速度与截断 →
+       * 低危提醒,只报不拦——发布门 G2 只数高/中危,本项不改门禁状态,也不进 Domain 的阻塞项 */
+      const caption = window.Skills ? (Skills.check('film', { p, ep }, { online: on }).find(x => x.skill === 'film.subtitleQC') || {}).hits || [] : [];
+      if (caption.length) out.push(Object.assign({}, base, {
+        kind: 'caption-unreadable', sev: 'low', count: caption.length,
+        label: `「${ep.title}」${caption.length} 处字幕读不顺`,
+        detail: caption.slice(0, 4).map(h => (h.order ? `镜头${h.order}` : '整集') + (h.chars ? `(${h.chars}字/${h.dur}秒)` : '') + (CAPTION[h.code] || h.code)).join(';')
+          + (caption.length > 4 ? ` 等 ${caption.length} 处` : '') + '——成片字幕与 SRT 同一时间轴,合成前改台词/裁剪最省事',
         goto: `#/project/${p.id}/episode/${ep.id}`,
       }));
     });
