@@ -2936,13 +2936,18 @@ const contractTests = [
     assert(mcpSrc.includes("require('./js/cmd-registry.js')"), 'mcp.js 应 require 注册表');
     assert(mcpSrc.includes('CmdRegistry.names()'), 'mcp.js hujing_exec 词表应由 CmdRegistry.names() 生成');
   } },
-  { name: 'skill 索引引用键单源:kb/prompts/cmds/experts 全部命中既有注册表,stage ⊆ 主线七步', fn() {
+  { name: 'skill 索引引用键单源:kb/prompts/settings/cmds/experts 全部命中既有注册表,stage ⊆ 主线七步', fn() {
     const Skills = require('../js/skills.js');
     const Domain = require('../js/domain.js');
     const wfStepKeys = Domain.workflow({ id: 'p1', episodes: [], subjects: [] }).steps.filter(s => !s.side).map(s => s.key);
+    // 提示词模板三件套等偏好键取自 gsettings.js 的 DEFAULTS(不在测试里手抄第二份)
+    const gsSrc = fs.readFileSync(path.join(ROOT, 'js', 'gsettings.js'), 'utf8');
+    const defBlock = gsSrc.slice(gsSrc.indexOf('const DEFAULTS = {'), gsSrc.indexOf('const DIR_DIMS'));
+    const settingKeys = [...defBlock.matchAll(/(?:^|[{,]\s*)([A-Za-z]\w*):/g)].map(m => m[1]);
+    assert(settingKeys.includes('tplImage') && settingKeys.includes('tplVideo') && settingKeys.includes('tplReview'), '偏好键提取应含模板三件套');
     const bad = Skills.validate({
       Prompts: require('../js/prompts.js'), CmdRegistry: require('../js/cmd-registry.js'),
-      ExpertsData: require('../js/experts-data.js'), wfStepKeys,
+      ExpertsData: require('../js/experts-data.js'), settingKeys, wfStepKeys,
     });
     assertEq(bad.join(' | '), '', 'skill 引用键应全部存在于既有注册表');
     // 七步索引:六步与 Domain.workflow 主线步骤键同词表,审片(review)待 G-03 升为一等步骤
@@ -2952,14 +2957,17 @@ const contractTests = [
     assertEq(Skills.stageOf('review').wfStep, false, 'review 尚未进 Domain.workflow,须如实标注');
     // 索引层不复制正文:块文本逐字节等于 KB 原文/压缩块
     const KB = require('../js/knowledge.js');
-    assertEq(Skills.block('shots', { ids: ['shots.grammar'] }), KB.DR_SHOT + KB.DR_AXIS, '分镜注入块应逐字节等于 KB 条目拼接');
+    assertEq(Skills.block('shots', { ids: ['shots.shotLanguage'] }), KB.DR_SHOT + KB.DR_AXIS, '分镜注入块应逐字节等于 KB 条目拼接');
     assertEq(Skills.block('review'), KB.reviewBlock(), '审片注入块应逐字节等于 KB.reviewBlock()');
     const src = fs.readFileSync(path.join(ROOT, 'js', 'skills.js'), 'utf8');
     const body = src.slice(src.indexOf('function (KB) {')); // 只查 factory 体(UMD 头与文件头注释不计)
     ['window', 'Store', 'document', 'location', 'fetch'].forEach(w => assert(!body.includes(w), 'skills.js 模块体不得出现环境句柄:' + w));
     // 编排型步骤只引用已注册命令(playbook 不内联新命令语义)
     const names = require('../js/cmd-registry.js').names();
-    Skills.list().filter(s => s.kind === 'orchestrate').forEach(s => {
+    const orch = Skills.list().filter(s => s.kinds.includes('orchestrate') && !s.pending.includes('orchestrate'));
+    assert(orch.length >= 3, '编排面已落地的条目不应少于 3 条(主线前段/审片修订闭环/一键成片投影)');
+    assertEq(Skills.playbooks().map(p => p.id).join(','), orch.map(s => s.id).join(','), 'playbooks() 应投影全部已落地编排条目');
+    orch.forEach(s => {
       const pb = Skills.playbook(s.id);
       assert(pb && pb.steps.length, s.id + ' 应有 playbook 步骤');
       pb.steps.forEach(st => assert(names.includes(st.cmd), s.id + ' 步骤命令未注册:' + st.cmd));
@@ -2967,6 +2975,48 @@ const contractTests = [
     // 校验型扩展点:登记的校验项必须有实现(不挂空项),check 结果数与该步登记数一致
     [].concat(...Skills.list().map(s => s.checks)).forEach(id => assert(typeof Skills.CHECKS[id] === 'function', '校验项未注册实现:' + id));
     assertEq(Skills.check('review', {}).length, Skills.list('review').reduce((n, s) => n + s.checks.length, 0), 'check 结果数应等于该步已登记校验项数');
+  } },
+  { name: 'skill 索引对齐短名单 30 条:SK 编号连续、波次配比 9/5/16、四类单源键全覆盖', fn() {
+    const Skills = require('../js/skills.js');
+    const list = Skills.list();
+    assertEq(list.length, 30, 'skill 索引应为短名单 30 条内部能力');
+    assertEq(list.map(s => s.sk).join(','), Array.from({ length: 30 }, (_, i) => 'SK-' + String(i + 1).padStart(2, '0')).join(','), 'SK 编号应连续且按短名单顺序登记');
+    // 波次配比与短名单一致:W2 单源打底 9 / W3 双端贯通 5 / W4 校验闸门 16
+    const byWave = list.reduce((m, s) => { m[s.wave] = (m[s.wave] || 0) + 1; return m; }, {});
+    assertEq(JSON.stringify(byWave), JSON.stringify({ W2: 9, W3: 5, W4: 16 }), '波次配比应为 W2:9 / W3:5 / W4:16');
+    // 四类既有单源键全覆盖:KB 17 条 / Prompts 6 key / 命令 8 条 / 专家 16 位(新增单源键必须进索引)
+    const uniq = k => [...new Set([].concat(...list.map(s => s[k])))];
+    const KB = require('../js/knowledge.js');
+    const kbKeys = Object.keys(KB).filter(k => typeof KB[k] === 'string');
+    assertEq(kbKeys.filter(k => !uniq('kb').includes(k)).join(','), '', 'KB 全部条目应被 skill 索引引用');
+    assertEq(require('../js/prompts.js').list().map(x => x.key).filter(k => !uniq('prompts').includes(k)).join(','), '', 'Prompts 全部 key 应被 skill 索引引用');
+    assertEq(require('../js/cmd-registry.js').names().filter(k => !uniq('cmds').includes(k)).join(','), '', '全部领域命令应被 skill 索引引用');
+    assertEq(require('../js/experts-data.js').EXPERTS.map(e => e.id).filter(k => !uniq('experts').includes(k)).join(','), '', '全部专家 id 应被 skill 索引引用');
+    // 贯通层条目走 stage='*',不混进任一步的注入块
+    assertEq(list.filter(s => s.stage === Skills.CROSS).map(s => s.sk).join(','), 'SK-01,SK-02,SK-03,SK-04,SK-05', '贯通层五条走 stage=*');
+    assertEq(Skills.block(Skills.CROSS), '', '贯通层索引宿主不产出注入块(正文只从各步条目取)');
+    // 跨步能力经 covers 可查:对白铁律同时作用剧本与分镜
+    assert(Skills.covering('shots').some(s => s.id === 'script.dialogueRule'), 'covers 应能查到跨步条目');
+    assert(Skills.forExpert('ex_hook').some(s => s.id === 'script.hookType'), '专家反查应命中引用它的能力');
+    assert((Skills.gaps()['G-10'] || []).length > 0, '缺口投影应能按缺口编号列出待落地能力');
+  } },
+  { name: 'skill 索引不挂假出口:未实现的校验/编排面既不登记也不产出结果', fn() {
+    const Skills = require('../js/skills.js');
+    const list = Skills.list();
+    list.forEach(s => {
+      assert(s.kinds.length, s.id + ' 须声明机制面');
+      if (s.pending.length) assert(s.gaps.length, s.id + ' 未落地机制面须写明缺口编号');
+      if (s.pending.includes('check')) assertEq(s.checks.length, 0, s.id + ' 校验面未落地不得登记校验项');
+      if (s.pending.includes('orchestrate')) assertEq(s.steps.length, 0, s.id + ' 编排面未落地不得登记步骤');
+      if (s.pending.includes('orchestrate')) assertEq(Skills.playbook(s.id), null, s.id + ' 编排面未落地不应给 playbook');
+    });
+    // CHECKS 尚为空表 → 任一步的 check() 都是空数组(不产出未实现的校验结论)
+    assertEq(Object.keys(Skills.CHECKS).length, 0, '本轮尚无校验项实现,CHECKS 应为空表');
+    Skills.stages().forEach(st => assertEq(Skills.check(st, {}).length, 0, st + ' 步不应产出未实现的校验结论'));
+    // 注入面未落地(如 tplVideo 零消费)的条目不进拼块
+    const KB = require('../js/knowledge.js');
+    assertEq(Skills.block('gen'), '', '生成步注入面待 G-05 定性,现不产出拼块');
+    assertEq(Skills.block('film'), KB.DR_RHYTHM, '成片步注入块应逐字节等于 KB 剪辑节奏条目');
   } },
   { name: 'skill 索引加载点成对:index.html(knowledge 之后 wf-core 之前)+ server/cli/mcp require', fn() {
     const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
