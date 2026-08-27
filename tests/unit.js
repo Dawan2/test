@@ -132,6 +132,10 @@ function loadAgentOps() {
     renderShots() {}, composeVideo() {}, batchGenVideos: async () => {},
   });
   loadFile(sb, 'cmd-registry.js'); // run 类 op 参数白名单/类型整形的数据源(与 index.html 同顺序)
+  loadFile(sb, 'domain.js');    // wf-core 浏览器 UMD 依赖(与 index.html 同顺序)
+  loadFile(sb, 'prompts.js');
+  loadFile(sb, 'knowledge.js');
+  loadFile(sb, 'wf-core.js');   // agent-ops cmdProtocol/sanitizeCmdArgs 委托 WfCore(单一来源)
   loadFile(sb, 'agent-ops.js');
   return sb;
 }
@@ -2689,8 +2693,9 @@ const releaseTests = [
     assertEq(g3.fix.cmd, 'episode.smartReview', 'G3 应挂智能审片(原 episode.review 未注册)');
     assertEq(g3.fix.epid, 'ep1');
     const g9 = r.gates.find(g => g.code === 'g9-subjects');
-    assertEq(g9.fix.type, 'nav', '主体缺图无领域命令,应导航角色页');
-    assertEq(g9.fix.hash, '#/project/p1/roles');
+    assertEq(g9.fix.type, 'command', '主体缺图应挂主体生图命令一键处置');
+    assertEq(g9.fix.cmd, 'subject.generateImage');
+    assertEq((g9.fix.subjectIds || []).join(','), 'sj1', 'G9 只带缺图主体子集');
   } },
   { name: 'G2 问题清零:真实 Issues 数组契约——脏项目 fail 挂问题中心导航,干净项目 pass', fn() {
     const sb = loadRelease();
@@ -2850,7 +2855,7 @@ const contractTests = [
     const cmds = sb.Commands.list();
     const names = cmds.map(c => c.name);
     const withCmd = r.gates.filter(g => g.fix && g.fix.cmd);
-    assert(withCmd.length >= 4, '脏项目应至少挂出 G1/G3/G4/G6 四个命令类处置,实际 ' + withCmd.length);
+    assert(withCmd.length >= 5, '脏项目应至少挂出 G1/G3/G4/G6/G9 五个命令类处置,实际 ' + withCmd.length);
     withCmd.forEach(g => {
       assert(names.includes(g.fix.cmd), g.code + ' 的 fix.cmd 未注册:' + g.fix.cmd);
       const meta = cmds.find(c => c.name === g.fix.cmd);
@@ -2858,6 +2863,7 @@ const contractTests = [
     });
     assertEq(r.gates.find(g => g.code === 'g4-stale').fix.shotIds.join(','), 'sh1', 'G4 只带过期镜子集');
     assertEq(r.gates.find(g => g.code === 'g6-failed').fix.shotIds.join(','), 'sh2', 'G6 只带失败镜子集');
+    assertEq(r.gates.find(g => g.code === 'g9-subjects').fix.subjectIds.join(','), 'sj1', 'G9 只带缺图主体子集');
   } },
   { name: 'Issues 命令类条目的 cmd 同样在注册表内(与 fixIssue 执行路径一致)', fn() {
     const sb = loadContract();
@@ -2879,7 +2885,7 @@ const contractTests = [
     const { okRoute } = appRoutes();
     const r = sb.Release.collect(contractDirtyP(), { online: false });
     const withHash = r.gates.filter(g => g.fix && g.fix.hash);
-    assert(withHash.length >= 2, '脏项目应挂出 G5/G9 导航类处置');
+    assert(withHash.length >= 1, '脏项目应挂出 G5 导航类处置(G9 已改命令类)');
     withHash.forEach(g => assert(okRoute(g.fix.hash), g.code + ' fix.hash 不是有效路由:' + g.fix.hash));
   } },
   { name: 'js 全量 location.hash 字面量/模板均命中 app.js 路由表', fn() {

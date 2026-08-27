@@ -62,6 +62,33 @@
     const parts = W.DIR_DIMS.filter(d => ds[d]).map(d => d + ':' + String(ds[d]).slice(0, 40));
     return parts.length ? '。导演设定:' + parts.join(';') : '';
   };
+  /* 雇佣专家方法论注入(通道与 directorNote 同款;ex=浏览器 hiredExpert() 或服务端 ExpertsData.expertOf 结果,
+   * 无专家或空 persona 返回空串不注入,行为与未雇佣时一致;persona 截断 ≤200 字) */
+  W.personaNote = function (ex) {
+    const persona = ex && ex.persona ? String(ex.persona).trim() : '';
+    return persona ? '。专家方法论(' + (ex.name || '雇佣专家') + '):' + persona.slice(0, 200) : '';
+  };
+  /* 协作记忆召回(自 agent.js 下沉,双端同算法;mem=state.agentMemory 数组经参数注入):
+   * 同板块记忆优先(该板块 Agent 越用越懂该板块),再补全局最近,最后按输入关键词命中加权补召 */
+  W.memRecall = function (mem, input, scope) {
+    mem = Array.isArray(mem) ? mem.filter(m => m && m.text) : [];
+    if (!mem.length) return [];
+    const scoped = scope ? mem.filter(m => m.scope === scope).slice(-4) : [];
+    const recent = mem.slice(-3).filter(m => !scoped.includes(m));
+    const rest = mem.filter(m => !scoped.includes(m) && !recent.includes(m));
+    const toks = (String(input || '').match(/[一-龥a-zA-Z0-9]{2,}/g) || []);
+    const scored = rest.map(m => {
+      let sc = toks.reduce((a, t) => a + (m.text.includes(t) ? t.length : 0), 0);
+      if (scope && m.scope === scope) sc += 3; // 同板块加权
+      return { m, sc };
+    }).filter(x => x.sc > 0).sort((a, b) => b.sc - a.sc).slice(0, 3).map(x => x.m);
+    const seen = new Set();
+    return scoped.concat(recent, scored).filter(m => { if (seen.has(m.text)) return false; seen.add(m.text); return true; });
+  };
+  W.memBlock = function (mem, input, scope) {
+    const m = W.memRecall(mem, input, scope);
+    return m.length ? '\n历史协作记忆(用户过往的偏好与已确认的修改决定,参考以保持一致):\n' + m.map(t => '- ' + t.text).join('\n') : '';
+  };
   /* 导演设定五维文本(understanding.js DIMS_DIR 下沉) */
   W.dimsText = ds => W.DIR_DIMS.filter(d => ds && ds[d]).map(d => `${d}:${ds[d]}`).join('\n');
   /* 章节事件图谱(自 understanding.js 下沉):sourceRev 失配(或旧数据无 sourceRev 且正文改过)不注入,防"新正文+旧图谱" */
@@ -86,13 +113,13 @@
     if (!u) return '';
     return W.UND_DIMS.filter(d => u[d]).map(d => `【${d}】${u[d]}`).join('\n');
   };
-  /* ctx: {dsText, styleText, eventsText, content(已截 6000)} */
+  /* ctx: {dsText, styleText, eventsText, content(已截 6000), personaNote?, memText?} */
   W.buildUndUser = function (ctx) {
     return `基于导演风格与本集剧本,生成本集导演理解,返回 JSON:
 {"剧情脉络":"1-3句","情绪曲线":"1-3句","节奏规划":"1-3句","视觉基调":"1-3句","关键场面":"1-3句","悬念与期待":"2-4条,本集应埋的悬念点与观众期待感设计(如信息延迟揭露、结尾钩子、反转伏笔),用分号分隔"}
 ${ctx.dsText ? '已确认的全局导演设定:\n' + ctx.dsText : '(未设置全局导演风格,按项目风格理解)'}
-项目风格:${ctx.styleText}
-${ctx.eventsText ? '本集事件图谱(剧情骨架,理解需覆盖以下事件的因果链):\n' + ctx.eventsText + '\n' : ''}本集剧本(前 6000 字):
+项目风格:${ctx.styleText}${ctx.personaNote || ''}
+${ctx.memText ? ctx.memText.trim() + '\n' : ''}${ctx.eventsText ? '本集事件图谱(剧情骨架,理解需覆盖以下事件的因果链):\n' + ctx.eventsText + '\n' : ''}本集剧本(前 6000 字):
 ${ctx.content}`;
   };
   W.undValid = out => !!(out && out.剧情脉络);
@@ -130,7 +157,7 @@ ${ctx.content}`;
   };
   /* 智能分镜系统人设(知识库条目同源;ov=用户提示词覆盖表) */
   W.sbSystem = ov => Prompts.get('sb.system', ov) + KB.DR_SHOT + KB.DR_AXIS;
-  /* 拆镜 user 模板(自 genShotsLLM 下沉;o={count,mode,optimize,adv,feedback},ctx={styleText,projType,directorNote,conceptNote,langText,genres,understandingText,eventsText,content(截 12000),subjects}) */
+  /* 拆镜 user 模板(自 genShotsLLM 下沉;o={count,mode,optimize,adv,feedback},ctx={styleText,projType,directorNote,conceptNote,personaNote,memText,langText,genres,understandingText,eventsText,content(截 12000),subjects}) */
   W.buildSBUser = function (p, ep, o, ctx) {
     const withForms = sj => sj.name + ((sj.forms || []).length ? `(形态:${sj.forms.map(f => f.name).join('/')})` : '');
     const subs = (ctx.subjects !== undefined ? ctx.subjects : (p.subjects || []));
@@ -140,7 +167,7 @@ ${ctx.content}`;
     return `将以下剧集剧本拆分为约 ${o.count} 个专业分镜(拆解规则优先,可略超),返回 JSON 数组,每个元素:
 {"plot":"剧情内容(一句话)","camera":"运镜(从 固定镜头/推镜头/拉镜头/摇镜头/移镜头/跟镜头/环绕镜头/俯拍/仰拍/特写 中选)","view":"视角(正面/侧面/背面)","angle":"拍摄角度(仰拍/平视/俯拍/高角度)","shotSize":"景别(大全景/全景/中景/近景/特写/超级特写)","characters":["出场人物名"],"scene":"场景名","props":["道具名"],"narration":"旁白(没有则空字符串)","dialogue":"台词(没有则空字符串)","prompt":"文生视频中文画面提示词","duration":时长秒数,"strategy":"生成策略(ref/frames/fusion)"}
 要求:
-- 项目风格:${ctx.styleText}${p.globalSetting ? ',全局美学设定:' + p.globalSetting : ''};项目类型:${ctx.projType === 'narration' ? '解说模式(重旁白叙述)' : '剧情模式(重台词表演)'}${ctx.directorNote || ''}${ctx.conceptNote || ''}
+- 项目风格:${ctx.styleText}${p.globalSetting ? ',全局美学设定:' + p.globalSetting : ''};项目类型:${ctx.projType === 'narration' ? '解说模式(重旁白叙述)' : '剧情模式(重台词表演)'}${ctx.directorNote || ''}${ctx.conceptNote || ''}${ctx.personaNote || ''}
 ${ctx.langText ? '- 语言要求:' + ctx.langText.slice(1) : ''}
 ${(ctx.genres || []).length ? '- 题材看点:' + ctx.genres.join('/') : ''}
 ${ctx.understandingText ? '- 本集导演理解(必须遵循):\n' + ctx.understandingText : ''}
@@ -152,7 +179,7 @@ ${o.adv ? `- 视觉风格:${o.adv.visual};全片总时长约 ${o.adv.totalSec} �
 - ${W.PROMPT5}
 - ${o.optimize ? 'prompt 要电影级详尽:构图/光影/氛围/风格限定词' : 'prompt 简洁准确,一句话'}
 - characters/scene/props 优先使用已登记主体:人物[${charNames}]、场景[${sceneNames}]、物品[${propNames}];主体带「(形态:…)」时,剧情涉及该特定形态须输出「名-形态」全称(如 安仲凯-少年期)
-${o.feedback ? '★ 上一轮评审意见(必须逐条修订后再输出):\n' + o.feedback + '\n' : ''}
+${ctx.memText ? ctx.memText.trim() + '\n' : ''}${o.feedback ? '★ 上一轮评审意见(必须逐条修订后再输出):\n' + o.feedback + '\n' : ''}
 ${ctx.eventsText ? '★ 本集事件图谱(剧情骨架,分镜需依序覆盖以下事件,不得遗漏转折点):\n' + ctx.eventsText + '\n' : ''}
 剧本:
 ${ctx.content}`;
@@ -195,7 +222,7 @@ ${ctx.content}`;
   };
 
   /* ================= 智能审片(自 review.js 下沉) ================= */
-  /* 单镜评审提示词(自 buildReviewPrompt 下沉;ctx={kbReviewText,tplReviewText,directorNote,styleText,globalSetting}) */
+  /* 单镜评审提示词(自 buildReviewPrompt 下沉;ctx={kbReviewText,tplReviewText,directorNote,personaNote,memText,styleText,globalSetting}) */
   W.buildReviewPrompt = function (p, ep, s, hasImage, ctx) {
     const spec = s.cameraSpec ? Domain.cameraDescribe(s.cameraSpec) + (s.cameraSpec.aperture ? ' · ' + s.cameraSpec.aperture : '') : '未指定';
     const dur = (Domain && Domain.estShotDuration ? Domain.estShotDuration(s) : (s.duration || 5));
@@ -210,13 +237,13 @@ ${ctx.content}`;
 拆解规则检查:若单镜台词超过 40 字未拆镜、单镜同时承载环境交代+人物动作+情绪变化+大量对白(信息过载)、或相邻镜头景别毫无递进变化,必须在 issues 中指出(类型:运镜/景别偏差)并建议按"全景→中景→近景→特写"路径拆镜。
 评审口径(专业知识库条目,评分与案例判断以此为准):
 ${ctx.kbReviewText || ''}
-分镜信息:
+${ctx.memText ? ctx.memText.trim() + '\n' : ''}分镜信息:
 - 剧情内容:${s.plot}
 - 运镜:${s.camera} · 机位:${spec}
 - 出场:人物[${(s.characters || []).join('、') || '无'}] 场景[${s.scene || '无'}] 物品[${(s.props || []).join('、') || '无'}]
 - 旁白:${s.narration || '无'} · 台词:${s.dialogue || '无'} · 时长约 ${dur} 秒
 - 画面提示词 Prompt:${s.prompt}
-- 项目风格:${ctx.styleText}${p.globalSetting ? ' · 全局设定:' + p.globalSetting : ''}${ctx.directorNote || ''}
+- 项目风格:${ctx.styleText}${p.globalSetting ? ' · 全局设定:' + p.globalSetting : ''}${ctx.directorNote || ''}${ctx.personaNote || ''}
 ${ctx.tplReviewText ? '- 评审模板要求:' + ctx.tplReviewText.replace(/\{shot\}/g, (s.plot || '').slice(0, 30)).replace(/\{style\}/g, p.style) : ''}
 ${hasImage ? '附图是该分镜当前生成画面,请结合实际画面与 Prompt 的匹配度评审。' : '本次无画面参考,基于分镜脚本与提示词的可执行性评审。'}`;
   };
@@ -240,6 +267,18 @@ ${hasImage ? '附图是该分镜当前生成画面,请结合实际画面与 Prom
       dimensions: { technical: dim('technical'), matching: dim('matching'), directing: dim('directing') },
       issues, optimized: false,
     };
+  };
+  /* 审片报告→修正意见串(自 review.js optimizeShot 下沉):issues 建议优先,否则匹配层建议 */
+  W.reviewFixes = r => ((r && r.issues) || []).map(it => it.suggestion).filter(Boolean).join('; ')
+    || String((r && r.dimensions && r.dimensions.matching && r.dimensions.matching.suggestion) || '');
+  /* 一键优化重写提示词(自 review.js optimizeShot 下沉,双端单一来源:浏览器审片闭环与 CLI produce 修订重抽共用) */
+  W.buildOptimizeUser = (styleText, prompt, fixes) => `根据以下审片意见重写分镜提示词,返回 {"prompt":"重写后的中文提示词","changes":"一句话说明改了什么"}。要求:保持原剧情与风格(${styleText}),逐条落实修正意见。
+原提示词:${prompt}
+审片意见:${fixes}`;
+  /* LLM 优化失败的本地规则回退(同下沉):提取意见中的英文修正词直接追加 */
+  W.localOptimizedPrompt = function (prompt, fixes) {
+    const enFix = (String(fixes || '').match(/'[^']+'/g) || []).join(', ');
+    return (prompt || '') + (enFix ? ',' + enFix.replace(/'/g, '') : ',加强时间轴控制,主体一致,电影感光影');
   };
   /* 整集报告快照哈希(自 reviewSnapshotHashOf 下沉):镜头 ID 集顺序 + 每镜视频版本/地址——
    * 新增/删除/调序/重生成/后处理任一变化 → 整集报告判旧;服务端写 lastReview 与浏览器同函数字面 */
@@ -269,6 +308,175 @@ ${JSON.stringify(brief)}`;
     const clamp = v => Math.max(0, Math.min(10, Math.round((+v || 7) * 10) / 10));
     const dim = k => ({ score: clamp(out[k] && out[k].score), comment: String((out[k] || {}).comment || '暂无评语') });
     return { natural: dim('natural'), continuity: dim('continuity'), framing: dim('framing'), pacing: dim('pacing'), overall: String(out.overall || '') };
+  };
+
+  /* ================= Agent 单轮对话(/api/wf/agent 服务端管线) =================
+   * 服务端拼装对话注入(KB/专家 persona/协作记忆/状态摘要)→ LLM → 解析 run 类 ops;
+   * 浏览器面板仍走 agent.js 原路径(数据类 ops/预览确认/冲突闸是浏览器工作台语义),
+   * 本组函数供服务端端点与 CLI `agent`/MCP hujing_agent 消费;命令词表经参数注入(cmd-registry 单源)。 */
+  /* run 类命令协议文本(浏览器 AgentOps.cmdProtocol 委托本函数,数据源各端自取:Commands.list()/CmdRegistry.META) */
+  W.agentCmdProtocol = function (metaList) {
+    const T = { boolean: 'bool', number: '数字', string: '文本', array: '数组' };
+    return (metaList || []).map(c => {
+      const args = (c.args || []).filter(a => ['pid', 'epid', 'ui'].indexOf(a.name) < 0); // pid/epid 上下文自动注入,ui 不开放
+      const at = args.length
+        ? args.map(a => `"${a.name}":${T[a.type] || a.type}${a.required ? '(必填)' : ''}${a.desc ? '—' + a.desc : ''}`).join(' ')
+        : '无参数';
+      return `· ${c.name}(${c.label}${c.risk === 'read' ? ',只读' : ''}): ${at}`;
+    }).join('\n');
+  };
+  /* run 类 op 参数白名单与类型整形(meta=注册表条目):未声明的键丢弃,防模型幻觉参数污染执行/计费 */
+  W.sanitizeCmdArgs = function (meta, raw) {
+    if (!meta) return {};
+    const src = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+    const out = {};
+    (meta.args || []).forEach(a => {
+      if (['pid', 'epid', 'ui'].indexOf(a.name) >= 0) return; // 上下文注入,不接受模型填写
+      let v = src[a.name];
+      if (v === undefined || v === null) return;
+      if (a.type === 'boolean') v = !!v;
+      else if (a.type === 'number') { v = +v; if (!isFinite(v)) return; }
+      else if (a.type === 'array') { if (!Array.isArray(v)) return; v = v.map(x => String(x)).slice(0, 50); }
+      else v = String(v);
+      out[a.name] = v;
+    });
+    return out;
+  };
+  /* 状态摘要注入文本(Domain 单源推导):集级列计数/审片/下一步,项目级各集一行(≤8 集)+ 项目级建议 */
+  W.agentStateText = function (p, ep, online) {
+    const fmtEp = e => {
+      const st = Domain.episodeState(p, e, online);
+      const c = st.counts;
+      const seg = [];
+      if (c.total) {
+        seg.push(`共${c.total}镜`);
+        if (c.done) seg.push(`${c.done}已出片`);
+        if (c.generating) seg.push(`${c.generating}生成中`);
+        if (c.failed) seg.push(`${c.failed}失败`);
+        if (c.noVideo) seg.push(`${c.noVideo}未生成`);
+        if (c.unconfirmed) seg.push(`${c.unconfirmed}待确认`);
+        if (c.stale) seg.push(`${c.stale}已过期`);
+      } else seg.push('未拆镜');
+      if (e.lastReview && typeof e.lastReview.avg === 'number') seg.push(`审片均分${e.lastReview.avg}`);
+      return seg.join('/') + (st.action && st.action.label ? `;下一步:${st.action.label}` : '');
+    };
+    if (ep) return `★ 工作台状态(${ep.title || ep.id}):${fmtEp(ep)}`;
+    if (!p) return '';
+    const rows = (p.episodes || []).slice(0, 8).map(e => `- ${e.title || e.id}:${fmtEp(e)}`);
+    const wf = Domain.workflow(p, online);
+    return `★ 项目状态(${p.name || p.id},共 ${(p.episodes || []).length} 集):\n${rows.join('\n')}${wf.recommendedAction ? '\n项目级下一步建议:' + wf.recommendedAction.label : ''}`;
+  };
+  /* 分镜表压缩注入(≤20 镜,超长按整镜截断,不切半截喂模型) */
+  W.agentShotsBrief = function (ep) {
+    const all = (ep && ep.shots) || [];
+    if (!all.length) return '(本集暂无分镜)';
+    const shots = all.slice(0, 20).map((s, i) => ({
+      镜头: i + 1, 剧情: (s.plot || '').slice(0, 50), 运镜: s.camera || '',
+      提示词: (s.prompt || '').slice(0, 60), 台词: (s.dialogue || '').slice(0, 30), 状态: (s.video && s.video.status) || 'none',
+    }));
+    let json = JSON.stringify(shots);
+    if (json.length > 6000) {
+      const kept = [];
+      for (const s of shots) { if (JSON.stringify(kept.concat(s)).length > 5900) break; kept.push(s); }
+      json = JSON.stringify(kept) + `\n…(共 ${all.length} 镜,其余因长度省略)`;
+    }
+    return json + (all.length > 20 ? `\n(共 ${all.length} 镜,仅列前 20)` : '');
+  };
+  /* 单轮 system(ctx={kbText,personaNote,memText,styleText,cmdText}) */
+  W.buildAgentSystem = function (ctx) {
+    return `你是「虎鲸导演助手」,短剧制作智能体(服务端单轮模式:没有浏览器工作台,只给回复与可选的领域命令动作)。${ctx.kbText || ''}${ctx.personaNote || ''}${ctx.memText || ''}
+用户给自然语言指令或提问:纯咨询/建议类直接专业作答;需要驱动制作流程时额外输出动作类 ops。
+返回 JSON {"reply":"中文回复","thinking":"一句话思考摘要","ops":[操作]}。
+ops 仅支持统一领域命令:{"op":"run","cmd":"命令名","args":{参数}}(pid/epid 由调用方注入无需填写;执行按各命令规则扣费)。命令白名单与参数面:
+${ctx.cmdText || '(无可用命令)'}
+纯咨询类 ops 返回 [];不确定是否该执行时不要输出 ops,在 reply 里说明建议与代价。项目风格:${ctx.styleText || ''}。`;
+  };
+  /* 单轮 user(ctx={stateText,scriptBrief,shotsText,text}) */
+  W.buildAgentUser = function (ctx) {
+    return `${ctx.stateText ? ctx.stateText + '\n' : ''}${ctx.scriptBrief ? '剧本摘要:' + ctx.scriptBrief + '\n' : ''}${ctx.shotsText ? '当前分镜表:\n' + ctx.shotsText + '\n' : ''}
+用户指令:${ctx.text}`;
+  };
+  /* 单轮结果规整:reply 兜底 + ops 白名单过滤(仅 run 类且 cmd 在注册表词表内,args 经 sanitizeCmdArgs 整形,≤5 条) */
+  W.agentNormalize = function (out, byName) {
+    out = out || {};
+    const ops = (Array.isArray(out.ops) ? out.ops : [])
+      .filter(o => o && o.op === 'run' && byName[String(o.cmd || '').trim()])
+      .slice(0, 5)
+      .map(o => { const cmd = String(o.cmd).trim(); return { op: 'run', cmd, args: W.sanitizeCmdArgs(byName[cmd], o.args) }; });
+    return { reply: String(out.reply || '').trim() || '(助手无回复内容)', thinking: String(out.thinking || ''), ops };
+  };
+
+  /* ================= LLM 主体提取(自 episode-util.js 下沉) =================
+   * 浏览器解析向导(llmExtractSubjects)与 CLI project.extractSubjects 共用提示词与规整,双端逐字节一致 */
+  const STOP_WORDS = ['他们', '我们', '你们', '大家', '众人', '有人', '人们', '人们', '这时', '突然', '然后', '于是', '只见', '只听'];
+  /* 姓名不可能以这些虚词/代词开头或结尾(过滤"他从井底""生身体里"这类叙述碎片) */
+  const BAD_PREFIX = '他她我你它这那在从把被向对跟和与就都也还又再很太真没不好让使令但可是因为所以如果已经正将更最越并而其于之乎者也皆';
+  const BAD_SUFFIX = '的了着过吗呢吧啊嘛呀哪哈哦唉嗯';
+  /* 名称中不该出现的成分:说话动词(答这个/说一遍/喊大 这类台词碎片即由此产生)与常用叙述短语 */
+  const NAME_BAD_VERBS = '说问答喊叫嚷嘲怒吼惊叹询'; // 「道/笑」可能出现在真名(道长/笑笑)中,不在此列
+  const NAME_BAD_PHRASES = ['这个', '那个', '什么', '怎么', '为什么', '一遍', '一下', '一点', '一些', '一样', '起来', '出来', '过去', '过来', '回去', '知道', '明白', '东西', '事情', '地方', '时候', '问题', '意思', '声音', '样子', '的话', '没有', '不是', '就是', '还是'];
+  /* 名称可信性校验(LLM 与本地启发式结果共用入口) */
+  W.isPlausibleName = function (kind, name) {
+    name = String(name || '').trim();
+    if (name.length < 2 || name.length > (kind === 'character' ? 6 : 8)) return false;
+    if (BAD_PREFIX.includes(name[0]) || BAD_SUFFIX.includes(name[name.length - 1])) return false;
+    if (kind === 'character' && [...name].some(ch => NAME_BAD_VERBS.includes(ch))) return false;
+    if (NAME_BAD_PHRASES.some(w => name.includes(w))) return false;
+    if (STOP_WORDS.some(w => name.includes(w))) return false;
+    return true;
+  };
+  /* 提取 user 模板:text 超 15000 字截断;types={character,scene,prop},mode='fine' 提示词/人设详尽 */
+  W.buildExtractUser = function (text, mode, types) {
+    const trunc = text.length > 15000;
+    const t = trunc ? text.slice(0, 15000) : text;
+    const want = [];
+    if (types.character) want.push('characters(人物)');
+    if (types.scene) want.push('scenes(场景)');
+    if (types.prop) want.push('items(物品)');
+    const user = `分析以下短剧剧本,提取其中出现的${want.join('、')}主体,返回 JSON,格式:
+{"characters":[{"name":"角色名","aliases":["其他称谓"],"description":"一句话角色设定","prompt":"文生图中文画面提示词","persona":{"五官":"","发型":"","身材":"","服饰":"","性格":"","特技":"","弱点":"","语气":""}}],"scenes":[{"name":"场景名","aliases":["其他称谓"],"description":"一句话描述","prompt":"文生图中文画面提示词"}],"items":[{"name":"物品名","aliases":["其他称谓"],"description":"一句话描述","prompt":"文生图中文画面提示词"}]}
+要求:
+- 人物的 persona 为八维度人设:外形(五官/发型/身材/服饰)+ 内在(性格/特技/弱点/语气),每维一句话;人物的 prompt 以外形维度为主撰写
+- ${mode === 'fine' ? '精细模式:prompt 与 persona 必须详尽,包含外貌/服装/神态/风格限定词' : '普通模式:prompt 简洁,persona 每维简短即可'}
+- 只提取剧本中真实出现的主体,不要编造;未要求的类别返回空数组
+- 名字必须是真正的名称:人物为真实人名或稳定称谓(如 林晚晴、王管家、大小姐),严禁把台词碎片、动词短语、叙述片段当作名字(如「答这个」「说一遍」「喊大」均为反面例子);场景/物品也须为具体专名,不要泛化词
+- 去重合并:同一主体的不同称谓必须合并为一个主体(如 林晚晴/晚晴/大小姐 是同一人时只输出一个),name 用最稳定正式的全称,其余称谓列入 aliases;场景/物品同理
+- 每类最多 12 个主体
+剧本${trunc ? '(原文过长,已截取前 15000 字)' : ''}:
+${t}`;
+    return { user, truncated: trunc };
+  };
+  /* 提取结果规整:逐字段白名单 + 可信性校验(拦截台词碎片) + 别名合并去重 → {character,scene,prop} */
+  W.normalizeExtracted = function (out) {
+    out = out || {};
+    const norm = (arr, evidence, kind) => (Array.isArray(arr) ? arr : []).slice(0, 12)
+      .map(o => o && ({ name: String(o.name || '').trim().slice(0, 12), o }))
+      .filter(x => x && x.name && W.isPlausibleName(kind, x.name))
+      .map(({ name, o }) => ({
+        name,
+        evidence,
+        prompt: String(o.prompt || '').trim(),
+        description: String(o.description || ''),
+        persona: kind === 'character' && o.persona && typeof o.persona === 'object' ? o.persona : undefined,
+        aliases: Array.isArray(o.aliases) ? o.aliases.map(a => String(a || '').trim().slice(0, 12)).filter(a => a && a !== name).slice(0, 5) : undefined,
+      }));
+    /* 别名合并:LLM 偶发把同一主体拆成多条(name/aliases 交叉命中即并入先出者,被并者名字转入 aliases) */
+    const dedupeAlias = list => {
+      const merged = [];
+      list.forEach(s => {
+        const hit = merged.find(x => x.name === s.name || (x.aliases || []).includes(s.name) || (s.aliases || []).includes(x.name));
+        if (!hit) { merged.push(s); return; }
+        hit.aliases = [...new Set([...(hit.aliases || []), s.name, ...(s.aliases || [])])].filter(a => a !== hit.name);
+        if (!hit.prompt && s.prompt) hit.prompt = s.prompt;
+        if (!hit.persona && s.persona) hit.persona = s.persona;
+      });
+      return merged;
+    };
+    return {
+      character: dedupeAlias(norm(out.characters, 'LLM 语义提取', 'character')),
+      scene: dedupeAlias(norm(out.scenes, 'LLM 语义提取', 'scene')),
+      prop: dedupeAlias(norm(out.items, 'LLM 语义提取', 'prop')),
+    };
   };
 
   return W;
