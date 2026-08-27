@@ -33,6 +33,7 @@
 | [w8-split-episodes-inject.md](./w8-split-episodes-inject.md) | 剧本拆集端点补齐人设/记忆注入(`WF_BOARD` 加「剧本」板块、`buildSplitUser` 注入位、两端同装配口) | 改拆集提示词或新增 `/api/wf/*` LLM 步前 |
 | [w9-integration-log.md](./w9-integration-log.md) | 剩余分支收敛到集成分支的记录:包含性实测、并集型冲突解法、合并后测试数字、剩余未合 | 想知道主干现在是什么状态 |
 | [w11-preflight-film-assert.md](./w11-preflight-film-assert.md) | 就绪检查消费面并集补断言:字幕面被摘掉的两种写法实测、双端行为/结构断言分工、五种摘法转红验证 | 改 `episode.preflight` 的 `result.checks` 或新增校验面前 |
+| [w14-review-skills-check.md](./w14-review-skills-check.md) | 审片路径接入 `Skills.check` 只读消费(报告独立字段 `checks` + 弹窗/导出展示,只报不拦)、SK-03/SK-04 的 infra 面记账诚实位对齐 | 改审片报告结构、往审片路径加校验面,或动 `pending` 记账前 |
 
 ## 一分钟摘要(周期 1 收敛后)
 
@@ -41,6 +42,8 @@
 - 贯通缺口已收口的部分:专家人设(G-01)与协作记忆(G-02 由 agent-flow 覆盖)进 `/api/wf/*`,CLI/MCP 同链路吃到;剧本拆集(G-04)补上机读入口,headless 可从"一份整部剧本"起跑,其 LLM 步也已接入同一注入链(见 [w8-split-episodes-inject.md](./w8-split-episodes-inject.md))。
 - 空挂已清:`settings.tplVideo`(G-05)与 `KB.SECTIONS`(G-15/G-08 的 KB 侧)都有了消费方,并有断言防回退。
 - 校验宿主三面齐了:剧本面(S-01,SK-07/08/09)、主体面(S-03,SK-12/13)、成片字幕面(S-06,SK-28)共六条 `Skills.CHECKS` 校验项,两端就绪检查按主线步序同挂 `result.checks`,问题中心同挂低危提醒——纯本地零 LLM 零计费,只报不拦。三面并集与步序由行为断言(浏览器端真跑命令看回执)+ 双端源级断言(段内同一条 `checks` 表达式 + 按登记 `cmds` 反查漏消费)锁死,见 [w11-preflight-film-assert.md](./w11-preflight-film-assert.md)。
+- 校验结论已进审片路径(G-10 的第一半):审片报告按镜只读消费剧本面与主体面,命中挂报告独立字段 `checks` 并在弹窗/导出各列一区——不并入 `issues`、不参与评分与达标线、不改发布门计数与计费动作;发布门那一半(SK-29 方法论门)仍 `pending`,见 [w14-review-skills-check.md](./w14-review-skills-check.md)。
+- 记账诚实位:`SK-03`/`SK-04`/`SK-23` 的 `infra` 面仍 `pending`(改 `pending` 会动 `Skills.gaps()` 投影,单列一轮),但三条 `note` 已一律写明 G-01/G-02/G-03 的已落地实况,并由断言钉在三处出口的实况上。
 - 人设/记忆注入面覆盖五条工作流:理解、分镜、审片、提取主体、剧本拆集(`WfCore.WF_BOARD` 五键单源,服务端唯一装配口 `wfPersonaNote` 由契约断言锁死调用点数)。
 - 词表分叉已收口:景别/运镜/视角/角度四张词表的单一来源在 `js/wf-core.js`,`camera.js`/`review.js`/`sb-io.js`/`agent.js` 全派生(G-07,见 `w4-shot-size-glossary.md`)。
 
