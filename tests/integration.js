@@ -438,7 +438,7 @@ async function main() {
     const exNone = await req('POST', '/api/wf/extract-subjects', { pid: 'ghost_p' }, token);
     report('wf/extract-subjects 项目不存在 404', exNone.status === 404, 'HTTP ' + exNone.status);
 
-    /* 24(W61):理解/分镜两步的闭环结论按板块回流既有 state.agentMemory(与浏览器同一份 WfCore 派生)。
+    /* 25(W61):理解/分镜两步的闭环结论按板块回流既有 state.agentMemory(与浏览器同一份 WfCore 派生)。
      * 上文 understanding/smart-storyboard 都已成功跑过,此处只查记忆桶实况:各一条、按板块落位、
      * 文案是可判定的数字与缺口;失败调用(404/400)一条不写。 */
     const memW = ((await req('GET', '/api/state', null, token)).data.state.agentMemory) || [];
