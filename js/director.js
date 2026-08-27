@@ -93,7 +93,7 @@
       const crawl = setInterval(() => { if (st.step === 0 && st.failStep !== 0) setTarget(0, Math.min(0.9, (Date.now() - t0) / (STEPS[0].est * 1000))); }, 300);
       try {
         if (API.isReady()) {
-          const llm = await EpisodeUtil.llmExtractSubjects(scriptText, extractMode, types, model, tk.id); // 七轮:任务 id 作稳定计费操作键
+          const llm = await EpisodeUtil.llmExtractSubjects(scriptText, extractMode, types, model, tk.id, p); // 七轮:任务 id 作稳定计费操作键
           found = {
             character: llm.character.length ? llm.character : local.character,
             scene: llm.scene.length ? llm.scene : local.scene,

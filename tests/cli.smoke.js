@@ -155,6 +155,10 @@ async function main() {
   report('exec compose 无素材 → blocked intercepted', r.code === 2 && r.out.error && r.out.error.code === 'intercepted', 'exit=' + r.code);
   r = cli('exec', 'episode.generateStoryboard', '--pid', pid, '--epid', epid);
   report('exec generateStoryboard(服务端工作流)→ ok+分镜写回', r.code === 0 && r.out && r.out.ok && r.out.result && r.out.result.shots >= 1, 'exit=' + r.code + ' ' + JSON.stringify(r.out && r.out.result || r.out));
+  r = cli('exec', 'project.extractSubjects', '--pid', pid); // 服务端工作流通道(人设/记忆由 /api/wf/extract-subjects 注入)
+  report('exec project.extractSubjects(服务端工作流)→ ok+主体入库', r.code === 0 && r.out && r.out.ok && r.out.result && r.out.result.added >= 1 && r.out.result.total > r.out.result.added, 'exit=' + r.code + ' ' + JSON.stringify((r.out && r.out.result) || r.out));
+  r = cli('exec', 'project.extractSubjects', '--pid', pidB); // 无剧本无分集正文 → blocked,零调用零计费
+  report('exec project.extractSubjects 无剧本 → blocked no-script', r.code === 2 && r.out && r.out.error && r.out.error.code === 'no-script', 'exit=' + r.code);
   r = cli('exec', 'episode.bogus', '--pid', pid, '--epid', epid);
   report('exec 未知命令 → exit 2', r.code === 2 && /未注册命令|可用/.test(String(r.out && r.out.error || r.err)), 'exit=' + r.code);
 
@@ -166,6 +170,7 @@ async function main() {
     const pidC = r.out && r.out.id;
     r = cli('project-script', pidC, '--script-file', scriptFile);
     report('project-script 写入剧本原文(拆集输入就位)', r.code === 0 && r.out && r.out.chars > 20 && r.out.episodes === 0, JSON.stringify(r.out || {}).slice(0, 60));
+    await sleep(1100); // 上文智能分镜与提取主体也是 wf 端点,进本段前先让限流窗口过去
     r = cli('exec', 'project.splitEpisodes', '--pid', pidC);
     report('exec project.splitEpisodes 标记切分 → ok+2 集(零 LLM)', r.code === 0 && r.out && r.out.ok && r.out.result.count === 2 && r.out.result.mode === 'markers', 'exit=' + r.code + ' ' + JSON.stringify(r.out && r.out.result || r.out).slice(0, 90));
     report('拆集后 next 指向下一步(Domain 重推)', !!(r.out && r.out.next && r.out.next.key), JSON.stringify((r.out && r.out.next) || {}).slice(0, 60));

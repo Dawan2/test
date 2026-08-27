@@ -120,13 +120,18 @@
   }
 
   /* ---------- LLM 主体提取(失败时调用方回退本地启发式;opId 供稳定计费操作键,解析重试不重复扣) ----------
-   * 提示词与结果规整下沉 wf-core.js 双端单源(CLI project.extractSubjects 同源),此处只保留浏览器 API 调用 */
-  async function llmExtractSubjects(text, mode, types, model, opId) {
-    const { user, truncated } = WfCore.buildExtractUser(text, mode, types);
+   * 提示词与结果规整下沉 wf-core.js 双端单源(CLI project.extractSubjects 走 /api/wf/extract-subjects 同源),
+   * 此处只保留浏览器 API 调用;p 传入时按主体板块注入生效专家方法论与协作记忆(与服务端同一装配口) */
+  async function llmExtractSubjects(text, mode, types, model, opId, p) {
+    const board = WfCore.WF_BOARD['extract-subjects'];
+    const { user, truncated } = WfCore.buildExtractUser(text, mode, types, {
+      personaNote: window.personaNoteFor ? personaNoteFor(p, board) : '',
+      memText: WfCore.memBlock(Store.state.agentMemory, (p && p.name) || '', board),
+    });
     // R1 收敛:统一走 API.chatJSONRobust(重试+修复内置)
     const out = await API.chatJSONRobust({
       model,
-      system: '你是专业的短剧剧本分析助手。',
+      system: WfCore.EXTRACT_SYSTEM,
       user,
       temperature: 0.3, max_tokens: 4000,
       operationId: opId,

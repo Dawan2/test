@@ -111,7 +111,7 @@
     return '。专家方法论(' + (ex.name || '雇佣专家') + (board ? '·' + board + '板块' : '') + '):' + persona.slice(0, 200);
   };
   /* 工作流→板块映射(键与 agent.js AGENT_BOARDS 板块键同名):决定该工作流优先取哪个板块雇佣的专家 */
-  W.WF_BOARD = { understanding: '导演', 'smart-storyboard': '分镜', 'smart-review': '成片' };
+  W.WF_BOARD = { understanding: '导演', 'smart-storyboard': '分镜', 'smart-review': '成片', 'extract-subjects': '主体' };
   /* 生效专家方法论(双端唯一装配口):板块雇佣专家 > 全局雇佣专家 > 不注入,与 Agent 身份解析同序。
    * o={experts:全部专家(预置+自定义),hiredId:settings.hiredExpert,boards:p.boards,board:板块键};
    * 数据一律由调用方注入(浏览器 allExperts()/Store,服务端 ExpertsData/state 树),本模块不碰环境 */
@@ -567,8 +567,11 @@ ${ctx.cmdText || '(无可用命令)'}
     if (STOP_WORDS.some(w => name.includes(w))) return false;
     return true;
   };
-  /* 提取 user 模板:text 超 15000 字截断;types={character,scene,prop},mode='fine' 提示词/人设详尽 */
-  W.buildExtractUser = function (text, mode, types) {
+  /* 提取 user 模板:text 超 15000 字截断;types={character,scene,prop},mode='fine' 提示词/人设详尽;
+   * ctx={personaNote,memText} 生效专家方法论与协作记忆(主体板块),两端经同一注入口拼装——
+   * personaNote 以「。」起头(与 directorNote 同通道口径),独立成行时去掉句首标点 */
+  W.buildExtractUser = function (text, mode, types, ctx) {
+    ctx = ctx || {};
     const trunc = text.length > 15000;
     const t = trunc ? text.slice(0, 15000) : text;
     const want = [];
@@ -584,10 +587,12 @@ ${ctx.cmdText || '(无可用命令)'}
 - 名字必须是真正的名称:人物为真实人名或稳定称谓(如 林晚晴、王管家、大小姐),严禁把台词碎片、动词短语、叙述片段当作名字(如「答这个」「说一遍」「喊大」均为反面例子);场景/物品也须为具体专名,不要泛化词
 - 去重合并:同一主体的不同称谓必须合并为一个主体(如 林晚晴/晚晴/大小姐 是同一人时只输出一个),name 用最稳定正式的全称,其余称谓列入 aliases;场景/物品同理
 - 每类最多 12 个主体
-剧本${trunc ? '(原文过长,已截取前 15000 字)' : ''}:
+${ctx.personaNote ? ctx.personaNote.replace(/^。/, '') + '\n' : ''}${ctx.memText ? ctx.memText.trim() + '\n' : ''}剧本${trunc ? '(原文过长,已截取前 15000 字)' : ''}:
 ${t}`;
     return { user, truncated: trunc };
   };
+  /* 提取 system(浏览器解析向导与 /api/wf/extract-subjects 同一句) */
+  W.EXTRACT_SYSTEM = '你是专业的短剧剧本分析助手。';
   /* 提取结果规整:逐字段白名单 + 可信性校验(拦截台词碎片) + 别名合并去重 → {character,scene,prop} */
   W.normalizeExtracted = function (out) {
     out = out || {};

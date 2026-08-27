@@ -425,6 +425,18 @@ async function main() {
     await sleep(1100);
     const rvNone = await req('POST', '/api/wf/smart-review', { pid: demoPid, epid: 'ep_c1' }, token);
     report('wf/smart-review 无已出片镜 400', rvNone.status === 400, 'HTTP ' + rvNone.status);
+
+    // 22. 提取主体(项目级工作流):无分集正文项目走 p.script;只出候选不写回 state
+    await sleep(1100);
+    const ex = await req('POST', '/api/wf/extract-subjects', { pid: wfPid, operationId: 'it.wf.ex1' }, token);
+    const exFound = (ex.data && ex.data.found) || {};
+    report('wf/extract-subjects 200 返回三类候选', ex.status === 200 && (exFound.character || []).length >= 1 && (exFound.scene || []).length >= 1 && (exFound.prop || []).length >= 1, 'HTTP ' + ex.status + ' ' + JSON.stringify(ex.data || ex.msg || ex).slice(0, 200));
+    report('提取候选带别名/提示词(入库口径归调用方,端点不写回 state)', (exFound.character || [])[0] && Array.isArray(exFound.character[0].aliases) && !!exFound.character[0].prompt, JSON.stringify((exFound.character || [])[0] || {}).slice(0, 150));
+    const sX = await req('GET', '/api/state', null, token);
+    report('提取主体不写回 state(项目 subjects 未被端点改写)', !((sX.data.state.projects.find(x => x.id === wfPid) || {}).subjects || []).length, JSON.stringify(((sX.data.state.projects.find(x => x.id === wfPid) || {}).subjects || []).slice(0, 2)));
+    await sleep(1100);
+    const exNone = await req('POST', '/api/wf/extract-subjects', { pid: 'ghost_p' }, token);
+    report('wf/extract-subjects 项目不存在 404', exNone.status === 404, 'HTTP ' + exNone.status);
   }
 
   /* ============ 测试 22(G-04):剧本拆集工作流 /api/wf/split-episodes(headless 主线起点) ============

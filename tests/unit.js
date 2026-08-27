@@ -3214,18 +3214,19 @@ const contractTests = [
     assert(mcpSrc.includes("require('./js/cmd-registry.js')"), 'mcp.js 应 require 注册表');
     assert(mcpSrc.includes('CmdRegistry.names()'), 'mcp.js hujing_exec 词表应由 CmdRegistry.names() 生成');
   } },
-  { name: '专家人设单源:/api/wf/* 三条工作流均经 wfPersonaNote 注入,板块键取自 WF_BOARD', fn() {
+  { name: '专家人设单源:/api/wf/* 各条工作流均经 wfPersonaNote 注入,板块键取自 WF_BOARD', fn() {
     const WfCore = require('../js/wf-core.js');
     const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
     const agentSrc = fs.readFileSync(path.join(ROOT, 'js', 'agent.js'), 'utf8');
-    assertEq(Object.keys(WfCore.WF_BOARD).join(','), 'understanding,smart-storyboard,smart-review', 'WF_BOARD 应覆盖三条服务端工作流');
+    assertEq(Object.keys(WfCore.WF_BOARD).join(','), 'understanding,smart-storyboard,smart-review,extract-subjects', 'WF_BOARD 应覆盖各条服务端工作流');
     Object.values(WfCore.WF_BOARD).forEach(b => assert(agentSrc.includes("key: '" + b + "'"), 'WF_BOARD 板块「' + b + '」应是 AGENT_BOARDS 已有板块'));
     assert(srv.includes('function wfPersonaNote('), 'server.js 应有唯一的生效专家装配口 wfPersonaNote');
     assert(srv.includes('WfCore.WF_BOARD.understanding'), '/api/wf/understanding 未注入生效专家方法论');
     assert(srv.includes("WfCore.WF_BOARD['smart-storyboard']"), '/api/wf/smart-storyboard 未注入生效专家方法论');
     assert(srv.includes("WfCore.WF_BOARD['smart-review']"), '/api/wf/smart-review 未注入生效专家方法论');
-    // 1 定义 + 5 调用(理解 / 分镜 / 分镜内部理解步 / 审片 / Agent 对话):新增 LLM 步漏注入时此断言先红
-    assertEq((srv.match(/wfPersonaNote\(/g) || []).length, 6, 'wfPersonaNote 调用点数应与 wf 工作流 LLM 步一致');
+    assert(srv.includes("WfCore.WF_BOARD['extract-subjects']"), '/api/wf/extract-subjects 未注入生效专家方法论');
+    // 1 定义 + 6 调用(理解 / 分镜 / 分镜内部理解步 / 审片 / Agent 对话 / 提取主体):新增 LLM 步漏注入时此断言先红
+    assertEq((srv.match(/wfPersonaNote\(/g) || []).length, 7, 'wfPersonaNote 调用点数应与 wf 工作流 LLM 步一致');
     // 服务端不得留第二条装配路径(直接 personaNote(expertOf(...))):否则板块专家在部分端点静默失效
     assertEq((srv.match(/WfCore\.personaNote\(/g) || []).length, 0, 'server.js 应只经 wfPersonaNote 装配,不直接调 WfCore.personaNote');
   } },
@@ -3332,6 +3333,31 @@ const contractTests = [
       const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
       assert(src.includes("require('./js/skills.js')"), f + ' 应 require skill 索引(四端同一份注册表)');
     });
+  } },
+  { name: '提取主体走 wf 通道:CLI 不再直打 /api/llm/chat,两端按主体板块注入人设与记忆', fn() {
+    const WfCore = require('../js/wf-core.js');
+    const cliSrc = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    const euSrc = fs.readFileSync(path.join(ROOT, 'js', 'episode-util.js'), 'utf8');
+    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    // CLI 提取主体段落:直打 /api/llm/chat 会绕过服务端注入(人设/记忆),此断言封死回潮
+    const from = cliSrc.indexOf("EXEC['project.extractSubjects']");
+    const seg = cliSrc.slice(from, cliSrc.indexOf('CmdRegistry.META.forEach', from));
+    assert(from > 0 && seg.includes("POST('/api/wf/extract-subjects'"), 'CLI project.extractSubjects 应走 /api/wf/extract-subjects');
+    assert(!seg.includes('/api/llm/chat'), 'CLI project.extractSubjects 不应再直打 /api/llm/chat');
+    assert(srv.includes("pathname === '/api/wf/extract-subjects'"), 'server.js 应提供 /api/wf/extract-subjects 端点');
+    assert(srv.includes("action: 'llm.extract'"), '提取主体计费动作应服务端定死为 llm.extract');
+    // 浏览器解析向导同一板块同一注入口(否则两端提示词再度分叉)
+    assert(euSrc.includes("WfCore.WF_BOARD['extract-subjects']") && euSrc.includes('personaNoteFor(p, board)') && euSrc.includes('WfCore.memBlock('), '浏览器 llmExtractSubjects 应按主体板块注入人设与记忆');
+    const types = { character: true, scene: true, prop: true };
+    const base = WfCore.buildExtractUser('剧本正文', 'normal', types);
+    assertEq(WfCore.buildExtractUser('剧本正文', 'normal', types, { personaNote: '', memText: '' }).user, base.user, '无专家无记忆时提取提示词应与未注入时逐字节一致');
+    const injected = WfCore.buildExtractUser('剧本正文', 'normal', types, {
+      personaNote: WfCore.personaNote({ name: '选角指导', persona: '先定人物关系再定形象' }, '主体'),
+      memText: WfCore.memBlock([{ text: '女主统一叫林晚晴', scope: '主体' }], '', '主体'),
+    }).user;
+    assert(injected.includes('专家方法论(选角指导·主体板块):先定人物关系再定形象'), '提取提示词应含板块专家方法论');
+    assert(injected.includes('女主统一叫林晚晴'), '提取提示词应含主体板块协作记忆');
+    assert(injected.indexOf('专家方法论') < injected.indexOf('剧本:'), '注入段应在剧本正文之前');
   } },
   { name: 'MCP resources/prompts(§2.7):initialize 声明能力;list/get 实跑;模板参数代入与流程序列', fn() {
     const { spawnSync } = require('child_process');
