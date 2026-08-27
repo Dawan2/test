@@ -1,6 +1,8 @@
 /* ============ issues.js 问题中心(协同层,第三阶段) ============
- * 项目级待处理问题单一聚合:失败镜/过期镜/未分镜/缺剧本/低分审片/待确认/成片过期/主体缺图/跨镜主体不一致/字幕读不顺,
- * 逐项由 Domain.episodeState(blockers/counts)推导——与流程条/下一步/跑批/CLI 同一口径,不自造第二套状态。
+ * 项目级待处理问题单一聚合:失败镜/过期镜/未分镜/缺剧本/未审片/审片记录过期/低分审片/待确认/成片过期/
+ * 主体缺图/跨镜主体不一致/提示词稳定词/字幕读不顺,
+ * 逐项由 Domain.episodeState(blockers/counts/审片三态)推导——与流程条/下一步/跑批/CLI 同一口径,
+ * 方法论提醒逐项由 Skills.check 的校验项结论推导,两处判据都是双端单源模块里那一份,不自造第二套状态。
  * 每项问题带可操作处置:命令类(episode.generateVideos shotIds 子集重生成/智能分镜/重新合成)经统一命令层
  * ui 模式执行;导航类跳对应页面。入口:项目页「问题」按钮(角标=未解决数,Bus 事件驱动实时刷新)。 */
 (function () {
@@ -57,6 +59,15 @@
   /* 命中 → 一行明细:镜号区间(整集级命中无镜号)+ 码文案 + 景别走向 */
   const sizeLine = h => (h.order ? `镜头${h.order}${h.to > h.order ? '-' + h.to : ''}` : '整集')
     + (SIZE[h.code] || h.code) + (h.base ? `(${h.base}→${h.name})` : h.name ? `(${h.name})` : '');
+  /* 分镜提示词稳定词面命中码 → 展示文案(同上:判据只在 js/skills.js 的校验项里一份) */
+  const LEX = {
+    'no-stable-word': '提示词一个稳定词都没写',
+    'stable-word-partial': '稳定词只写了一部分',
+    'vague-word': '模糊词等于没写',
+  };
+  /* 命中 → 一行明细:镜号 + 码文案 + 命中的模糊词 / 该补的稳定词字面 */
+  const lexLine = h => `镜头${h.order}${LEX[h.code] || h.code}`
+    + (h.code === 'vague-word' ? `(${h.name})` : h.miss ? `(该补:${h.miss})` : '');
 
   /* ================= 问题清单推导(纯数据,可 vm 沙箱测试) =================
    * 条目:{ kind, sev(high|mid|low), count, label, detail, epid?, epTitle?, cmd?, shotIds?, goto? }
@@ -127,7 +138,17 @@
         out.push(Object.assign({}, base, { kind: 'stale-shots', sev: 'mid', count: c.stale, label: `「${ep.title}」${c.stale} 镜素材已更新(过期)`, detail: `镜头 ${ss.map(s => s.order + 1).slice(0, 8).join('、')}${ss.length > 8 ? '…' : ''} 生成后输入有变化,建议重生成`, goto: `#/project/${p.id}/episode/${ep.id}` }));
       }
       if (c.unconfirmed && !c.generating) out.push(Object.assign({}, base, { kind: 'unconfirmed', sev: 'low', count: c.unconfirmed, label: `「${ep.title}」${c.unconfirmed} 镜待确认`, detail: '未确认镜头不参与批量生成,先过确认闸', goto: `#/project/${p.id}/episode/${ep.id}` }));
-      if (!st.reviewStale && st.reviewAvg !== null && st.reviewAvg !== undefined && st.reviewAvg < 7) { // 判旧(rev/快照失配)的旧分不再报问题;「需重审」语义由分集页/报告页「旧版」标记承接
+      /* 审片步骤未完成:与 Domain 主线审片步(no-review/review-stale)同一口径,判据不写第二份。
+       * 挂载位置在此处即"该集已有镜头"——未拆镜/分镜判旧在上面已早退,故有镜头(或已出片/已合成)
+       * 而审片没过,主线断点就落在审片这一步,以前问题中心只报低分、这两态一条都看不见。
+       * 判旧那条与发布门 G3「视为未审」同口径(reviewStale 时 reviewAvg 恒为 null,三态互斥不重复报);
+       * 处置走导航到分集页自己发起整集审片,不挂命令(审片是计费动作,问题中心不代按)。 */
+      if (st.reviewStale) {
+        out.push(Object.assign({}, base, { kind: 'review-stale', sev: 'mid', count: 1, label: `「${ep.title}」审片记录已过期(视为未审)`, detail: `剧本/图谱修订或镜头重抽后旧结论不再算数,${c.total} 镜需重新整集审片`, goto: `#/project/${p.id}/episode/${ep.id}` }));
+      } else if (st.reviewAvg === null || st.reviewAvg === undefined) {
+        out.push(Object.assign({}, base, { kind: 'no-review', sev: 'mid', count: 1, label: `「${ep.title}」未审片`, detail: `已有 ${c.total} 镜${c.done ? `、${c.done} 镜已出片` : ''}${ep.composed ? `、成片已合成` : ''},审片步骤未完成——主线卡在审片`, goto: `#/project/${p.id}/episode/${ep.id}` }));
+      }
+      if (!st.reviewStale && st.reviewAvg !== null && st.reviewAvg !== undefined && st.reviewAvg < 7) { // 判旧(rev/快照失配)的旧分不再报问题;「需重审」语义由上面 review-stale 那条承接
         const lows = ((ep.lastReview || {}).perShot || []).filter(x => x.score < 7);
         out.push(Object.assign({}, base, { kind: 'low-review', sev: 'mid', count: lows.length || 1, label: `「${ep.title}」审片均分 ${st.reviewAvg} 低于达标线`, detail: lows.length ? `低分镜:${lows.map(x => (x.order + 1) + '镜' + x.score + '分').slice(0, 6).join('、')}` : '整体质量待修订(可让助手按问题清单优化提示词)', goto: `#/project/${p.id}/episode/${ep.id}` }));
       }
@@ -142,14 +163,25 @@
           + (consist.length > 4 ? ` 等 ${consist.length} 处` : '') + '——同一主体形象易在镜间漂移',
         goto: `#/project/${p.id}/episode/${ep.id}`,
       }));
-      /* 分镜景别递进与跳切(js/skills.js SK-18 校验项,纯本地零 LLM 零计费):级差经 WfCore.sizeGap 判,
-       * 连续同景别/两极对切/整集无递进 → 低危提醒,只报不拦——发布门 G2 只数高/中危,本项不改门禁状态 */
-      const sizes = window.Skills ? (Skills.check('shots', { p, ep }).find(x => x.skill === 'shots.sizeProgression') || {}).hits || [] : [];
+      /* 分镜面校验项(js/skills.js,纯本地零 LLM 零计费)一次跑完按条目分挂,不重复跑整面:
+       *   SK-18 景别递进与跳切:级差经 WfCore.sizeGap 判,连续同景别/两极对切/整集无递进;
+       *   SK-19 抽卡稳定词:判该镜真实生成请求那条提示词里稳定词写没写全、有没有写模糊词。
+       * 两条都是低危提醒,只报不拦——发布门 G2 只数高/中危,本项不改门禁状态,也不进 Domain 的阻塞项 */
+      const shotChecks = window.Skills ? Skills.check('shots', { p, ep }) : [];
+      const sizes = (shotChecks.find(x => x.skill === 'shots.sizeProgression') || {}).hits || [];
       if (sizes.length) out.push(Object.assign({}, base, {
         kind: 'shot-size-linkage', sev: 'low', count: sizes.length,
         label: `「${ep.title}」${sizes.length} 处景别衔接提醒`,
         detail: sizes.slice(0, 4).map(sizeLine).join(';') + (sizes.length > 4 ? ` 等 ${sizes.length} 处` : '')
           + '——判据取自知识库条目,只提醒不拦生成',
+        goto: `#/project/${p.id}/episode/${ep.id}`,
+      }));
+      const lex = (shotChecks.find(x => x.skill === 'shots.promptEightDim') || {}).hits || [];
+      if (lex.length) out.push(Object.assign({}, base, {
+        kind: 'shot-stable-lexicon', sev: 'low', count: lex.length,
+        label: `「${ep.title}」${lex.length} 处提示词稳定词/用词提醒`,
+        detail: lex.slice(0, 4).map(lexLine).join(';') + (lex.length > 4 ? ` 等 ${lex.length} 处` : '')
+          + '——判的是该镜真实发出去的那条提示词,判据取自知识库条目,只提醒不拦生成',
         goto: `#/project/${p.id}/episode/${ep.id}`,
       }));
       /* 成片字幕/对白可读性(js/skills.js 校验项,纯本地零 LLM 零计费):以合成时间轴段判阅读速度与截断 →
@@ -210,7 +242,7 @@
     const list2 = list || collect(p); // §3.4:调用方可传入共享重算结果(防抖轮内 badge 与弹窗同一快照)
     const hi = list2.filter(x => x.sev === 'high').length, mid = list2.filter(x => x.sev === 'mid').length, low = list2.length - hi - mid;
     bodyEl.innerHTML = list2.length ? `
-      <div class="hint" style="margin-bottom:10px">全项目待处理问题聚合(失败/过期/未分镜/低分/待确认/缺图,与流程条同一套状态推导):
+      <div class="hint" style="margin-bottom:10px">全项目待处理问题聚合(失败/过期/未分镜/未审/低分/待确认/缺图,与流程条同一套状态推导):
         <span class="tag red" style="font-size:10px">高 ${hi}</span> <span class="tag yellow" style="font-size:10px">中 ${mid}</span> <span class="tag" style="font-size:10px">低 ${low}</span>
         ——命令类问题一键处置(经统一命令层,含确认闸/预审),导航类跳转对应页面。</div>
       ${list2.map((it, idx) => issueRow(p, it, idx)).join('')}` : '<div class="empty"><p class="small muted">🎉 项目无待处理问题,主线畅通。</p></div>';

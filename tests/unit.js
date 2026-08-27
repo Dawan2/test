@@ -2749,9 +2749,12 @@ function loadIssues() {
   loadFile(sb, 'issues.js');
   return sb;
 }
-/* 齐备分集夹具:全 done+确认+已审高分+成片就绪(无问题基准) */
+/* 齐备分集夹具:全 done+确认+已审高分+成片就绪(无问题基准)。
+ * 提示词写全三面稳定词:SK-19 稳定词面判的是真实生成请求那条提示词,写全了本面才真的干净——
+ * 少写一面这里就该报提醒(那正是「SK-19 漂移」用例的夹具),干净基准不能靠这一面判不出结论来充。 */
+const CLEAN_PROMPT = 'q,五官不变形,人体结构正常,动作不僵硬';
 function cleanEp(over) {
-  const s = { id: 'sh0', order: 0, name: '', plot: 'p', prompt: 'q', camera: '固定镜头', duration: 5, characters: [], scene: '', props: [], confirm: true, video: { status: 'done', url: 'http://x/v.mp4' } };
+  const s = { id: 'sh0', order: 0, name: '', plot: 'p', prompt: CLEAN_PROMPT, camera: '固定镜头', duration: 5, characters: [], scene: '', props: [], confirm: true, video: { status: 'done', url: 'http://x/v.mp4' } };
   return Object.assign({ id: 'ep1', title: '第一集', content: '剧本正文', shots: [s], lastReview: { avg: 8, perShot: [{ shotId: 'sh0', order: 0, score: 8 }] } }, over || {});
 }
 const issuesTests = [
@@ -2916,6 +2919,60 @@ const issuesTests = [
     assert(list.some(x => x.kind === 'no-shots'), '未拆镜中危不被分集提醒吞掉');
     assertEq(sb.Issues.collect({ id: 'p2', episodes: [{ id: 'ep1', title: '第一集', content: OK, shots: [] }] }).filter(x => x.kind.startsWith('eps-')).length, 0,
       '单集项目摊不出六段、也没有下一集可兑现,不产出提醒(不给存量小样制造噪音)');
+  } },
+  { name: 'collect:已生成未审 → 恰一条 no-review 中危(审完即消失,已审集与未拆镜集都不误报)', fn() {
+    const sb = loadIssues();
+    const ep = cleanEp({ composed: false });
+    delete ep.lastReview; // 已出片、已确认,主线只差审片这一步
+    const p = { id: 'p1', subjects: [], episodes: [ep] };
+    const list = sb.Issues.collect(p);
+    assertEq(list.map(x => x.kind).join(','), 'no-review', '已生成未审的集应恰有一条未审问题');
+    assertEq(list[0].sev, 'mid', '未审是主线断点(中危;发布门 G2 只数高/中危故计入 warn,不新增 fail 门)');
+    assertEq(list[0].epid, 'ep1');
+    assert(list[0].detail.includes('1 镜') && list[0].detail.includes('已出片'), '明细应给该集镜头与出片进度,实际:' + list[0].detail);
+    assert(list[0].goto === '#/project/p1/episode/ep1' && !list[0].cmd, '未审走导航回分集页自己发起整集审片,不挂命令(审片是计费动作)');
+    // 审完(有未判旧的达标记录)即消失,与 Domain 审片步同口径
+    ep.lastReview = { avg: 8, perShot: [{ shotId: 'sh0', order: 0, score: 8 }] };
+    assertEq(sb.Issues.collect(p).length, 0, '审完的集不应再报未审(已审完的集不误报)');
+    // 还没拆镜的集:主线断点在分镜,不越过早退分支抢报未审
+    assert(!sb.Issues.collect({ id: 'p3', subjects: [], episodes: [{ id: 'ep1', title: '一', content: '剧本正文', shots: [] }] })
+      .some(x => x.kind === 'no-review'), '未拆镜的集不报未审');
+    assertEq(sb.Issues.collect({ id: 'p0', subjects: [], episodes: [] }).length, 0, '空项目零条');
+  } },
+  { name: 'collect:审片记录判旧 → review-stale 中危(与发布门 G3「视为未审」同口径,不与未审/低分重复报)', fn() {
+    const sb = loadIssues();
+    const ep = cleanEp({ composed: false });
+    ep.lastReview = { avg: 9, perShot: [{ shotId: 'sh0', order: 0, score: 9 }], sourceRev: 0, graphRev: 0, snapshotHash: 'bogus-stale' };
+    const p = { id: 'p1', subjects: [], episodes: [ep] };
+    const list = sb.Issues.collect(p);
+    assertEq(list.map(x => x.kind).join(','), 'review-stale', '判旧的记录应恰报一条(三态互斥:不再叠未审那条)');
+    assertEq(list[0].sev, 'mid');
+    assert(list[0].label.includes('视为未审'), '文案应与发布门 G3 同一口径,实际:' + list[0].label);
+    assert(list[0].goto && !list[0].cmd, '重审同样走导航,不挂命令');
+    // 重新审片(快照对齐)后消失
+    ep.lastReview.snapshotHash = sb.Domain.reviewSnapshotHashOf(ep);
+    assertEq(sb.Issues.collect(p).length, 0, '快照对齐后不应再报');
+  } },
+  { name: 'collect:提示词稳定词/用词漂移 → 低危提醒(不进高/中危,不改发布门 G2;写全即无)', fn() {
+    const sb = loadIssues();
+    // 判据在 js/skills.js 的 SK-19 校验项(判该镜真实生成请求那条提示词),本处只验消费
+    const drift = Object.assign({}, cleanEp().shots[0], { prompt: 'q,五官不变形' }); // 三面稳定词只写了一面
+    const list = sb.Issues.collect({ id: 'p1', subjects: [], episodes: [cleanEp({ composed: false, shots: [drift] })] });
+    const it = list.find(x => x.kind === 'shot-stable-lexicon');
+    assert(it, '稳定词漂移应入清单');
+    assertEq(it.sev, 'low', 'SK-19 是 warn 级提醒(发布门 G2 只数高/中危,不抬成发布门 fail)');
+    assertEq(it.count, 1);
+    assert(it.detail.includes('镜头1') && it.detail.includes('该补:结构正常、不僵硬'), '明细应定位到镜号并列出该补的字面,实际:' + it.detail);
+    assert(it.goto && !it.cmd, '用词问题回分集页改提示词,不挂命令处置(不触发任何生成)');
+    assertEq(list.filter(x => x.sev !== 'low').length, 0, '稳定词提醒不得产出高/中危(门禁状态不变)');
+    // 模糊词逐词一条,展示文案带命中的那个词
+    const vague = Object.assign({}, cleanEp().shots[0], { prompt: CLEAN_PROMPT + ',画面很酷' });
+    const vg = sb.Issues.collect({ id: 'p2', subjects: [], episodes: [cleanEp({ composed: false, shots: [vague] })] })
+      .find(x => x.kind === 'shot-stable-lexicon');
+    assert(vg && vg.detail.includes('模糊词等于没写(很酷)'), '模糊词命中应译成人话并带命中词,实际:' + (vg && vg.detail));
+    // 无漂移(三面稳定词写全)即无本条
+    assertEq(sb.Issues.collect({ id: 'p3', subjects: [], episodes: [cleanEp({ composed: false })] })
+      .filter(x => x.kind === 'shot-stable-lexicon').length, 0, '写全稳定词的镜不产出提醒');
   } },
   { name: 'collect:素材更新过期镜(assetVer 抬升)→ stale-shots 带镜头号', fn() {
     const sb = loadIssues();
@@ -5134,8 +5191,10 @@ const skillsTests = [
     assertEq(require('../js/cmd-registry.js').byName['episode.preflight'].risk, 'read', '就绪检查应仍是 read 类零计费');
     ['js/sb-gen.js', 'js/produce.js'].forEach(f =>
       assert(!fs.readFileSync(path.join(ROOT, f), 'utf8').includes('Skills.'), f + ' 生成动作里不加校验拦截(结论只报不拦)'));
+    // 问题中心已补本面的投影(W54 定的产品口径):挂低危提醒,判据仍只在校验项里一份
     const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
-    assert(!isrc.includes('shots.promptEightDim'), '本面只经就绪检查消费,问题中心不新挂提醒(要不要挂的产品口径未定)');
+    assert(isrc.includes("x.skill === 'shots.promptEightDim'"), '问题中心应读同一校验项结论,不写第二份判定');
+    assert(isrc.includes("kind: 'shot-stable-lexicon', sev: 'low'"), '稳定词提醒须挂低危(发布门 G2 只数高/中危,warn 不抬成发布门 fail)');
     const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
     assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 只数高/中危 —— 本轮不改门禁口径');
   } },
@@ -5806,7 +5865,9 @@ const skillsTests = [
     const facts = {
       'core.personaCtx': ['G-01', /function wfPersonaNote\(/.test(srv), ['浏览器多轮', '未收进提示词注册表']],
       'core.memoryDual': ['G-02', typeof W.memRecall === 'function' && typeof W.memBlock === 'function', ['memAll', 'SK-26']],
-      'review.stage': ['G-03', wfSteps.includes('review'), ['SK-24', '未审片']],
+      // 「问题中心只报低分不报未审片」那处余量随 W54 补掉(投影落在 js/issues.js,由 issues 套件钉行为),
+      // 仍欠的只剩审片报告的语义面 → 点名锚点随之换成 SK-24 与 G-10
+      'review.stage': ['G-03', wfSteps.includes('review'), ['SK-24', 'G-10']],
     };
     Object.keys(facts).forEach(id => {
       const [gap, landed, owed] = facts[id];
@@ -5820,6 +5881,12 @@ const skillsTests = [
       const owedText = (s.note || '').split('仍欠').slice(1).join('仍欠');
       owed.forEach(k => assert(owedText.includes(k), id + ' 的 note 须在「仍欠」段里点名:' + k));
     });
+    /* SK-23 的 note 说问题中心已补未审/判旧两条投影 —— 这里钉住实况:说了没做先红。
+     * 判旧与均分一律现取 Domain.episodeState 那份推导(与主线审片步、发布门 G3 同口径),投影层不写第二份判定。 */
+    const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
+    ["kind: 'no-review', sev: 'mid'", "kind: 'review-stale', sev: 'mid'"].forEach(k =>
+      assert(isrc.includes(k), '问题中心应已挂未审/判旧两条中危投影:' + k));
+    assert(!/reviewStaleByScript|lastReview\.avg/.test(isrc), '审片判旧与均分只经 Domain.episodeState 取,问题中心不写第二份判定');
     // infra 面已无 pending;别人的未落地面一字未动(不借本轮顺手清别人的账)
     assertEq(Skills.list().filter(s => s.pending.includes('infra')).length, 0, 'infra 面已全部落地');
     /* 编排面最后两条也已落地:SK-26 的回流面(审片/发布两个闭环把可判定结论写回记忆桶)与 SK-05 的
