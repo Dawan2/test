@@ -141,7 +141,9 @@
 
   /* ---------- 规范文本信息全文提取(普通模式解析主流程 + 剧本页「AI 生成」共用) ----------
    * 全文分块通读(map)→ 汇总(reduce)产出 一句话卖点/故事梗概/故事大纲;逐集按完整正文生成集纲;
-   * 人物小传合并进主体库(文本级,不生图)。prog 进度回调,shouldStop 返回 true 则中断(返回 false)。 */
+   * 人物小传合并进主体库(文本级,不生图)。prog 进度回调,shouldStop 返回 true 则中断(返回 false)。
+   * 人设:前三步(通读/汇总/集纲)同一句策划人设,走注册表单键 digest.planSystem 的三个取用口;
+   * 末步人物小传是另一个角色(剧本分析助手),同 extract.system。 */
   async function aiScriptDigest(p, prog, shouldStop) {
     if (!API.isReady()) throw new Error('需要真实 LLM(请登录后端)');
     const model = (Store.state.settings || {}).defLLM || API.getConfig().model;
@@ -162,7 +164,7 @@
       if (stop()) return false;
       say(`通读剧本 ${i + 1}/${chunks.length}…`);
       const o = await API.chatJSON({
-        model, system: '你是资深短剧策划。',
+        model, system: Prompts.get('digest.planSystem'),
         messages: [{ role: 'user', content: `这是剧本的第 ${i + 1}/${chunks.length} 部分,概括本部分剧情,返回 JSON {"summary":"≤150字,保留关键人物/事件/转折"}:\n${chunks[i]}` }],
         temperature: 0.4, max_tokens: 500,
       });
@@ -172,7 +174,7 @@
     if (stop()) return false;
     say('汇总卖点/梗概/大纲…');
     const out = await API.chatJSON({
-      model, system: '你是资深短剧策划。',
+      model, system: Prompts.get('digest.planSystem'),
       messages: [{ role: 'user', content: `以下是一部短剧剧本各部分的连续剧情概括(共 ${chunks.length} 部分,已覆盖全文)。据此返回 JSON:
 {"logline":"一句话卖点(≤40字,可用 | 分隔三层钩子)","synopsis":"故事梗概(≤220字,涵盖开端/发展/结局)","outline":"故事大纲(4-6句,按起承转合梳理主线与关键转折)"}
 ${partials.map((s, i) => `第${i + 1}部分:${s}`).join('\n')}` }],
@@ -197,7 +199,7 @@ ${partials.map((s, i) => `第${i + 1}部分:${s}`).join('\n')}` }],
         say(`生成集纲 ${gi + 1}/${groups.length}…`);
         const idxs = groups[gi];
         const o2 = await API.chatJSON({
-          model, system: '你是资深短剧策划。',
+          model, system: Prompts.get('digest.planSystem'),
           messages: [{ role: 'user', content: `为以下各集分别写一句话集纲,返回 JSON {"outlines":[{"no":集号数字,"outline":"≤40字,概括本集核心剧情与钩子"}]}。必须逐集都写,依据各集完整正文:
 ${idxs.map(i => `【第${i + 1}集 ${p.episodes[i].title}】\n${p.episodes[i].content || '(空)'}`).join('\n\n')}` }],
           temperature: 0.4, max_tokens: 2000,
