@@ -10,8 +10,9 @@
 { "mcpServers": { "hujing": { "command": "node", "args": ["C:/Users/EDY/modelvideo-hujing/mcp.js"] } } }
 ```
 
-- 31 个工具(`hujing_*`),stdio 传输,零依赖;工具调用 = 包装 cli.js,计费/幂等/退费语义与 CLI 完全一致。
+- 33 个工具(`hujing_*`),stdio 传输,零依赖;工具调用 = 包装 cli.js,计费/幂等/退费语义与 CLI 完全一致。
 - 工具结果:stdout 纯 JSON 原样透传;非零 exit 时 `isError:true` 并附 exit code 语义。
+- 例外一个只读工具:`hujing_playbook` 直读注册表 `js/skills.js` 答复(主线编排 playbook 步骤表 + 就绪检查各面已登记校验项),不起 CLI 子进程、不打服务端、零计费,未登录也答得出;步骤只给命令名与步序,授权位(`overwrite`/`confirmAll`/`riskyCompose`)与子集位留空由你按情况自己定。
 - resources:只读状态直读——`hujing://projects`、`hujing://project/{pid}/show`、`hujing://project/{pid}/workflow`、`hujing://project/{pid}/episode/{epid}/workflow`,不必记工具参数面。
 - prompts:`hujing_new_drama`(新剧开工流程)/`hujing_failed_shots`(失败镜排查流程)两个模板,一次拿到正确的工具调用序列。
 
