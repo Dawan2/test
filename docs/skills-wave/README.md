@@ -1,23 +1,42 @@
 # docs/skills-wave · 主线 skill 层方案索引
 
 主线口径:**剧本 → 主体 → 分集 → 分镜 → 生成 → 审片 → 成片**。
-本目录只放方案文档,不含实现;基线为 `master @ 9adcf0f`(二十三轮收尾)。
+本目录放方案、判定标准、落地记账与核验件;实现落在 `js/` 与 `server.js`/`cli.js`/`mcp.js`。
+
+## 索引
 
 | 文档 | 内容 | 什么时候看 |
 |---|---|---|
 | [w1-pipeline-skill-map.md](./w1-pipeline-skill-map.md) | 现有 skill/专家/智能体资产清单(五层)、主线七步对照表、15 项缺口(G-01…G-15)、建议纳入与建议丢弃的 skill 概念、UMD/注册表单一来源接入方案 | 想知道"现在有什么、缺什么" |
 | [w1-architecture-spec.md](./w1-architecture-spec.md) | 分层与扩展点、W2/W3/W4 可执行拆分(范围/接口契约/验收/风险)、全波通用验收标准、禁止项 | 想知道"接下来怎么改、改完怎么验" |
+| [w1-inventory.md](./w1-inventory.md) | 仓库真实盘点:文件级清单、UI–CLI–server–MCP 四端加载矩阵、持久化键位 | 想查某个资产在哪一端加载、落哪个键 |
+| [w1-relevance-rubric.md](./w1-relevance-rubric.md) | 相关性判定标准:R1–R4 正向维度 + C1 成本、否决项 V1–V11、三档判定与降级去向 | 判断某个能力该不该做 |
+| [w1-selected-skills.md](./w1-selected-skills.md) | 入选短名单 30 条内部能力 SK-01…SK-30、波次配比、键位覆盖、新登记缺口 S-01…S-07 | 查某条能力的编号、波次与落点 |
+| [w1-feishu-doc-a-extract.md](./w1-feishu-doc-a-extract.md) | 外部资料 A 的结构化提取(成片产线清单),含抓取阻塞与计数出入的如实记录 | 追溯短名单的素材来源 |
+| [w1-feishu-doc-b-extract.md](./w1-feishu-doc-b-extract.md) | 外部资料 B 的结构化提取(视频能力集合 53 条,12 层分类)与许可约束 | 同上 |
+| [w1-feishu-raw-notes.md](./w1-feishu-raw-notes.md) | 抓取记录与交叉核对:七条抓取路径的实测过程,供复现 | 需要重跑抓取或核对原文时 |
+| [w2-kb-sections-wiring.md](./w2-kb-sections-wiring.md) | `KB.SECTIONS` 升为按键取用面、5 个消费点改按键取用、压缩块由 `DIGESTS` 同键拼装 | 改知识库条目或注入点前 |
+| [w2-skills-align-30.md](./w2-skills-align-30.md) | `js/skills.js` 索引对齐短名单 30 条的落地口径与记账(pending 纪律) | 往注册表加条目前 |
+| [w3-g01-expert-persona.md](./w3-g01-expert-persona.md) | G-01 雇佣专家 persona 进 `/api/wf/*`:板块雇佣 > 全局雇佣,双端唯一装配口 | 改人设注入链路前 |
+| [w3-g02-memory.md](./w3-g02-memory.md) | G-02 长期记忆双端复核件(零代码槽):覆盖度取证与 5 项残留登记 | 改记忆召回/注入前 |
+| [w3-g03-review-step.md](./w3-g03-review-step.md) | G-03 审片升为 `Domain.workflow` 主线一等步骤及四个消费面接通 | 改主线步骤集合前 |
+| [w3-g04-headless-front.md](./w3-g04-headless-front.md) | G-04 剧本拆集下沉 `wf-core` + `/api/wf/split-episodes` + 领域命令/CLI/MCP 入口 | 改拆集或 headless 起跑链路前 |
+| [w4-g05-tpl-video.md](./w4-g05-tpl-video.md) | G-05 `settings.tplVideo` 定性与接入(改在提示词成型阶段,不动生成指纹) | 改模板三件套前 |
+| [w4-subject-ref-check.md](./w4-subject-ref-check.md) | SK-12 分镜↔主体引用完备性校验(`Skills.CHECKS` 首条实现,只报不拦) | 加校验项前 |
+| [w4-sk13-consistency.md](./w4-sk13-consistency.md) | SK-13 跨镜头主体一致性校验,与 SK-12 成对闭合 S-03 | 同上 |
+| [w5-cycle1-audit.md](./w5-cycle1-audit.md) | 周期 1 逐项目独立核验报告:成熟度分档、分叉风险实测、合入次序建议 | 想知道每项做到哪一步、分叉在哪 |
+| [w6-integration-log.md](./w6-integration-log.md) | 周期 1 成果收敛到集成分支的记录:冲突解法、合并后测试数字、剩余分叉 | 想知道主干现在是什么状态 |
 
-## 一分钟摘要
+## 一分钟摘要(周期 1 收敛后)
 
-- 资产不缺,缺索引:知识在 `js/knowledge.js`(17 条目)、提示词在 `js/prompts.js`(6 条)、人设在 `js/experts-data.js`(16 专家)、编排在 `js/cmd-registry.js`(8 命令)、执行面在 `js/agent-ops.js`,层与层之间**没有按主线步骤的索引**。
-- 主线七步在代码里只有六步:`Domain.workflow` 无"审片"步骤(只有 `episodeState.needs_human` 与发布门 G3)。
-- 最重的贯通缺口:专家人设与长期记忆**只在浏览器生效**,`/api/wf/*` 与 CLI/MCP 拿不到,导致"同一条主线、两端不同产出"。
-- 已存在的空挂:`settings.tplVideo`(专家雇佣三件套之一)零消费方;`KB.SECTIONS`(知识库按名取用入口)零消费方。
-- 本轮建议新增的模块只有一个:`js/skills.js`(UMD 注册表,只存对 `KB`/`Prompts`/`CmdRegistry` 的引用,不复制任何文本)。
+- 资产不缺,缺索引:知识在 `js/knowledge.js`(17 条目)、提示词在 `js/prompts.js`(6 条)、人设在 `js/experts-data.js`(16 专家)、编排在 `js/cmd-registry.js`,层与层之间的按主线步骤索引由 `js/skills.js`(30 条内部能力)承担。
+- 主线七步在代码里齐了:`Domain.workflow` 已含"审片"步(G-03),`js/skills.js` 的 `STAGES` 七步全部 `wfStep: true`。
+- 贯通缺口已收口的部分:专家人设(G-01)与协作记忆(G-02 由 agent-flow 覆盖)进 `/api/wf/*`,CLI/MCP 同链路吃到;剧本拆集(G-04)补上机读入口,headless 可从"一份整部剧本"起跑。
+- 空挂已清:`settings.tplVideo`(G-05)与 `KB.SECTIONS`(G-15/G-08 的 KB 侧)都有了消费方,并有断言防回退。
 
 ## 阅读约定
 
-- 缺口编号 `G-xx` 在两份文档中通用。
+- **缺口编号**:`G-01…G-15` 出自资产图谱,**冻结在 15 项不再新增**;新登记的缺口一律走短名单的 `S-xx` 命名空间。判定标准文档里提议的 `G-16`(发布后→上游回路)按此规则改记为 `S-08`。
+- `docs/Agent贯通落地-G1-G5.md` 里的 `G1–G5` 是该文自带的历史编号,与本目录的 `G-0x` 不是同一套,对应关系见该文与 [w5-cycle1-audit.md](./w5-cycle1-audit.md) 第 2.18 节。
 - 文档描述功能本身,不写功能溯源。
-- W2 动工前须以当时 `master` 复核缺口是否已被并行分支覆盖(见图谱文档第 3 节末尾提示)。
+- 动工前先看 [w6-integration-log.md](./w6-integration-log.md) 的"剩余分叉",避免重做已落地的部分。
