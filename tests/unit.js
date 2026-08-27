@@ -5545,7 +5545,7 @@ const skillsTests = [
     const wfSteps = DomainMod.workflow({ id: 'p1', episodes: [], subjects: [] }).steps.map(x => x.key);
     // 每条:缺口出口的实况判据 + note 里必须点名的那几处余量(接上了就要同步改 note,不许静默扩面)
     const facts = {
-      'core.personaCtx': ['G-01', /function wfPersonaNote\(/.test(srv), ['sb.reviewSystem', 'review.finalSystem', '共性汇总']],
+      'core.personaCtx': ['G-01', /function wfPersonaNote\(/.test(srv), ['共性汇总', '未收进提示词注册表']],
       'core.memoryDual': ['G-02', typeof W.memRecall === 'function' && typeof W.memBlock === 'function', ['memAll', 'SK-26']],
       'review.stage': ['G-03', wfSteps.includes('review'), ['SK-24', '未审片']],
     };
@@ -5557,7 +5557,9 @@ const skillsTests = [
       assert(s.gaps.includes(gap), id + ' 应仍写明缺口编号 ' + gap + '(关联索引口径:落地不摘标记)');
       assert(new RegExp(gap + ' 已落地').test(s.note || ''), id + ' 的 note 须如实说明 ' + gap + ' 已落地(读者不该读成没做)');
       assert(/仍欠/.test(s.note || ''), id + ' 的 note 须写明仍欠什么(清了 pending 不等于这条没有余量)');
-      owed.forEach(k => assert((s.note || '').includes(k), id + ' 的 note 须点名仍欠的那一处:' + k));
+      // 点名断言只认「仍欠」之后那段:锚点写在"已落地"那半里不算交账(否则余量补完了 note 也能蒙过去)
+      const owedText = (s.note || '').split('仍欠').slice(1).join('仍欠');
+      owed.forEach(k => assert(owedText.includes(k), id + ' 的 note 须在「仍欠」段里点名:' + k));
     });
     // infra 面已无 pending;别人的未落地面一字未动(不借本轮顺手清别人的账)
     assertEq(Skills.list().filter(s => s.pending.includes('infra')).length, 0, 'infra 面已全部落地');
@@ -5576,9 +5578,10 @@ const skillsTests = [
     assert(rsrc.includes("if (fails > 0) overall = 'fail'"), '发布门 overall 计数口径逐字未动');
     assert(!/lastReview\.checks|report\.checks/.test(rsrc), '发布门不读审片报告的校验命中字段');
   } },
-  { name: 'infra 余量实况:审片侧三步两端都没有人设/记忆通道(接上了 note 先失效)', fn() {
+  { name: 'infra 余量:审片侧三步接上人设/记忆通道(模板唯一装配口,缺省无雇佣时逐字节不变)', fn() {
+    const W = require('../js/wf-core.js');
     const wfSrc = fs.readFileSync(path.join(ROOT, 'js', 'wf-core.js'), 'utf8');
-    // 三步的 user 模板是双端唯一来源:模板里没有这两个 ctx 字段,即两端都注入不进去
+    // 三步的 user 模板是双端唯一来源:通道只能开在模板上,开了两端才同时接上
     const defOf = name => {
       const i = wfSrc.indexOf('W.' + name + ' =');
       assert(i >= 0, 'wf-core 应有 ' + name);
@@ -5586,21 +5589,55 @@ const skillsTests = [
       return wfSrc.slice(i, j < 0 ? wfSrc.length : j);
     };
     ['sbReviewUser', 'buildSumUser', 'buildCutUser'].forEach(n => {
-      const src = defOf(n);
-      assert(!/personaNote/.test(src), n + ' 现无人设通道:接上了要同步改 SK-03 的 note(不许静默扩面)');
-      assert(!/memText/.test(src), n + ' 现无记忆通道:接上了要同步改 SK-04 的 note');
+      assert(/W\.reviewCtxNote\(ctx\)/.test(defOf(n)), n + ' 应经唯一注入段装配口 reviewCtxNote 拼人设/记忆(三步不各写一份拼法)');
     });
-    // 两个欠覆盖的系统人设键确实登记在 SK-03 名下(note 那句「两键都在本条登记内」不是空话)
+    // 缺省/空注入逐字节不变:未雇佣专家且无沉淀记忆时,三步提示词与接通道前完全一致
+    const shots = [{ plot: '女主被当众羞辱', camera: '固定镜头', cameraSpec: { shotSize: '中景' }, characters: ['林晚晴'], narration: '', dialogue: '', prompt: 'p' }];
+    const reports = [{ shot: { order: 0 }, report: { score: 6.2, issues: [{ type: '运镜/景别偏差' }] } }];
+    const brief = [{ 镜号: 1, 景别: '中景' }];
+    const persona = W.personaNote({ name: '冷峻悬疑导演', persona: '克制叙事,善用信息差' }, W.WF_BOARD['smart-review']);
+    const mem = W.memBlock([{ text: '女主统一叫林晚晴', scope: '成片' }], '第一集', '成片');
+    [['sbReviewUser', () => W.sbReviewUser(shots, '漫剧'), c => W.sbReviewUser(shots, '漫剧', undefined, c)],
+      ['buildSumUser', () => W.buildSumUser(reports), c => W.buildSumUser(reports, c)],
+      ['buildCutUser', () => W.buildCutUser(brief), c => W.buildCutUser(brief, c)],
+    ].forEach(([n, bare, withCtx]) => {
+      const base = bare();
+      assertEq(withCtx(undefined), base, n + ' 不传 ctx 应与接通道前逐字节一致');
+      assertEq(withCtx({}), base, n + ' 空 ctx 应逐字节一致');
+      assertEq(withCtx({ personaNote: '', memText: '' }), base, n + ' 空注入串应逐字节一致(未雇佣且无记忆时等于没接)');
+      const inj = withCtx({ personaNote: persona, memText: mem });
+      assert(inj.endsWith(base), n + ' 注入段应独立拼在提示词最前,正文一字不改');
+      assert(inj.includes('专家方法论(冷峻悬疑导演·成片板块):克制叙事'), n + ' 应注入生效专家方法论');
+      assert(inj.includes('历史协作记忆') && inj.includes('- 女主统一叫林晚晴'), n + ' 应注入协作记忆');
+      assert(!inj.startsWith('。'), n + ' 独立成段时应去掉人设串句首标点');
+    });
+    // 服务端:三步都经既有装配口取 ctx,且不新开 wfPersonaNote 调用点(评审步复用同板块的那一次)
+    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    assert(srv.includes('WfCore.sbReviewUser(shots, ctxBase.styleText, ov, ctxBase)'), '服务端分镜评审步应复用拆镜步的分镜板块 ctx');
+    assert(srv.includes("const epCtx = { personaNote: reviewCtx.personaNote, memText: WfCore.memBlock(tree.agentMemory, ep.title || '', '成片') }"),
+      '服务端集级两步应复用逐镜步的成片板块人设,记忆按集标题召回');
+    assert(srv.includes('WfCore.buildSumUser(reports, epCtx)') && srv.includes('WfCore.buildCutUser(WfCore.buildCutBrief(ep, reports), epCtx)'),
+      '共性汇总与四维成片评审两步都要带 ctx');
+    // 浏览器:同板块键同装配口(personaNoteFor + WfCore.memBlock),不各写一份板块映射
+    const sbl = fs.readFileSync(path.join(ROOT, 'js', 'sb-llm.js'), 'utf8');
+    const rvIdx = sbl.indexOf('async function llmReview(');
+    const rvSrc = sbl.slice(rvIdx, sbl.indexOf('\n  }', rvIdx));
+    assert(rvIdx > 0 && rvSrc.includes("personaNoteFor(p, WfCore.WF_BOARD['smart-storyboard'])")
+      && rvSrc.includes("WfCore.memBlock(Store.state.agentMemory, ep.title || '', '分镜')"), '浏览器分镜评审应与拆镜步同板块同装配口');
+    const rv = fs.readFileSync(path.join(ROOT, 'js', 'review.js'), 'utf8');
+    assert(rv.includes('function episodeReviewCtx(p, ep)'), '浏览器集级两步应有唯一 ctx 装配口');
+    assert(rv.includes("personaNoteFor(p, WfCore.WF_BOARD['smart-review'])")
+      && rv.includes("WfCore.memBlock(Store.state.agentMemory, ep.title || '', '成片')"), '浏览器集级 ctx 应取成片板块人设与记忆');
+    assert(rv.includes('WfCore.buildSumUser(reports, episodeReviewCtx(p, ep))') && rv.includes('WfCore.buildCutUser(brief, episodeReviewCtx(p, ep))'),
+      '浏览器共性汇总与四维评审都要带 ctx');
+    // 两个系统人设键仍登记在 SK-03 名下;共性汇总步仍是内联 system = SK-03 note 里点名的剩余余量
     const sk3 = Skills.byId('core.personaCtx');
     ['sb.reviewSystem', 'review.finalSystem'].forEach(k => assert(sk3.prompts.includes(k), 'SK-03 应登记 ' + k));
-    // 第三步(整集共性汇总)两端仍是内联 system,未登记为提示词键——故不在 SK-03 的 prompts 里
     ['server.js', path.join('js', 'review.js')].forEach(rel => {
-      const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-      assert(src.includes("system: '你是短剧审片总监。'"), rel + ' 的整集共性汇总仍是内联 system');
+      assert(fs.readFileSync(path.join(ROOT, rel), 'utf8').includes("system: '你是短剧审片总监。'"), rel + ' 的整集共性汇总仍是内联 system');
     });
     assertEq(require('../js/prompts.js').list().filter(x => x.key.includes('sum')).length, 0, '共性汇总步尚未登记提示词键');
     // 已覆盖的那几步反向钉住:接住人设与记忆的步不得退回去
-    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
     assert(/personaNote: wfPersonaNote\(tree, p, WfCore\.WF_BOARD\['smart-review'\]\)/.test(srv), '逐镜审片步应仍带人设');
     assert(/memText: WfCore\.memBlock\(tree\.agentMemory, s\.plot \|\| '', '成片'\)/.test(srv), '逐镜审片步应仍带记忆召回');
   } },
@@ -5792,6 +5829,20 @@ const memoryTests = [
     assertEq(W.memBlock(mem, '', '分镜'), HEAD + W.memRecall(mem, '', '分镜').map(m => '- ' + m.text).join('\n'),
       'memBlock 应是 memRecall 的逐条投影(不另排序、不另截断)');
     assert(W.memBlock(mem, '', '分镜').startsWith('\n'), '段头应自带前导换行(拼进提示词时不粘上一段)');
+  } },
+  { name: 'reviewCtxNote 注入段字面:人设去句首标点、记忆去前导换行、各自独立成段;脏/空入参回空串', fn() {
+    const W = require('../js/wf-core.js');
+    [undefined, null, {}, { personaNote: '', memText: '' }, { personaNote: '  ', memText: '\n' }].forEach(bad => {
+      assertEq(W.reviewCtxNote(bad), '', '空/脏 ctx 应回空串(空串=提示词与未接通道时逐字节一致):' + JSON.stringify(bad));
+    });
+    const persona = W.personaNote({ name: '冷峻悬疑导演', persona: '克制叙事' }, '成片');
+    assert(persona.startsWith('。'), '人设串本身以「。」起头(与 directorNote 同通道口径)');
+    assertEq(W.reviewCtxNote({ personaNote: persona }), '专家方法论(冷峻悬疑导演·成片板块):克制叙事\n', '只有人设时去句首标点并独立成段');
+    const mem = W.memBlock([{ text: '女主统一叫林晚晴' }], '', '');
+    assert(mem.startsWith('\n'), '记忆块本身自带前导换行');
+    assertEq(W.reviewCtxNote({ memText: mem }), mem.trim() + '\n', '只有记忆时去掉前导换行,段尾留一个换行');
+    assertEq(W.reviewCtxNote({ personaNote: persona, memText: mem }),
+      '专家方法论(冷峻悬疑导演·成片板块):克制叙事\n' + mem.trim() + '\n', '两段都有时人设在前、记忆在后,各占一段');
   } },
   { name: '协作记忆双端单源(源级):对话层/wf 端点/CLI 全部委托 WfCore,写入两端同结构同上限', fn() {
     const ag = fs.readFileSync(path.join(ROOT, 'js', 'agent.js'), 'utf8');

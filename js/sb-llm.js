@@ -98,11 +98,15 @@
   }
 
   /* 多角色评审打分(二十一轮:brief/user 拼装与结果钳制下沉 wf-core.js) */
-  async function llmReview(shots, p, model, opId, step) {
+  async function llmReview(shots, p, ep, model, opId, step) {
     const out = await API.chatJSON({
       model,
       system: Prompts.get('sb.reviewSystem'),
-      messages: [{ role: 'user', content: WfCore.sbReviewUser(shots, styleOf(p)) }],
+      // 评审步与拆镜步同注入口径(分镜板块生效专家方法论 + 协作记忆):与服务端 /api/wf/smart-storyboard 评审步同一装配口
+      messages: [{ role: 'user', content: WfCore.sbReviewUser(shots, styleOf(p), undefined, {
+        personaNote: window.personaNoteFor ? personaNoteFor(p, WfCore.WF_BOARD['smart-storyboard']) : '',
+        memText: WfCore.memBlock(Store.state.agentMemory, ep.title || '', '分镜'),
+      }) }],
       temperature: 0.4, max_tokens: 1800,
       billingAction: 'llm.smartSB', operationId: opId, step, // 评审轮次并入聚合计费(九轮:独立步骤槽位)
     });
@@ -117,7 +121,7 @@
     const rs = await Promise.allSettled(labels.slice(0, planN).map(async lb => {
       const shots = await genShotsLLM(p, ep, { model: c.sbModel, count: c.shotCount, mode: c.sbMode, optimize: c.autoOptimize, opId, step: 'gen' + lb });
       let score = null, comments = [];
-      try { const rv = await llmReview(shots, p, c.sbModel, opId, 'rev' + lb); score = rv.score; comments = rv.comments; }
+      try { const rv = await llmReview(shots, p, ep, c.sbModel, opId, 'rev' + lb); score = rv.score; comments = rv.comments; }
       catch (e) { U.toast(`方案 ${lb} 评审打分失败(不影响采用):` + e.message, 'info', 3000); }
       return { label: lb, shots, score, comments };
     }));
@@ -274,7 +278,7 @@
           if (c.sbAutoFix) {
             for (let round = 1; round <= 2; round++) {
               try {
-                const rv = await llmReview(shots, p, c.sbModel, tk.id, 'rev' + round);
+                const rv = await llmReview(shots, p, ep, c.sbModel, tk.id, 'rev' + round);
                 if (rv.score >= 90) { U.toast(`评审通过(${rv.score} 分),质量达标`, 'success', 2500); break; }
                 if (round >= 2) { U.toast(`评审 ${rv.score} 分,已达最大修订轮次,按当前版本发布`, 'info', 3000); break; }
                 U.toast(`评审 ${rv.score} 分,按评审意见自动修订重拆(第 ${round} 轮)…`, 'info', 3500);
