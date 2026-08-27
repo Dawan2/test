@@ -139,7 +139,7 @@
       const text = KB.pick(...keys);
       const seeded = Store.state.agentMemory.find(m => m.kb === kb);
       if (seeded) { seeded.text = text; return; } // 条目正文改过:同键沉淀跟随更新
-      if (Store.state.agentMemory.some(m => (m.text || '').includes(legacy))) return;
+      if (legacy && Store.state.agentMemory.some(m => (m.text || '').includes(legacy))) return;
       Store.state.agentMemory.push({ text, kb, time: Store.now(), scope });
     });
     Store.save();
