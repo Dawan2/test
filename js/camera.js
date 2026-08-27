@@ -1,4 +1,6 @@
-/* ============ camera.js 机位/摄影专业参数体系 ============ */
+/* ============ camera.js 机位/摄影专业参数体系 ============
+ * 本模块只管几何与器材(方位角/仰角几何、机身/镜头/焦距/光圈、多机位渠道):
+ * 景别/运镜/视角/角度四张词表的单一来源在 js/wf-core.js(双端共享),此处一律派生,不另存一份。 */
 (function () {
   const CAM = {};
 
@@ -27,19 +29,9 @@
     { name: '左前', deg: 315, arrow: '↖', en: 'front-left quarter view' },
   ];
 
-  /* ---- 仰角档 / 景别档 ---- */
-  CAM.ELEVATIONS = [
-    { name: '仰拍', deg: -30, en: 'low-angle shot' },
-    { name: '平视', deg: 0, en: 'eye-level shot' },
-    { name: '俯拍', deg: 30, en: 'elevated shot' },
-    { name: '高角度', deg: 60, en: 'high-angle shot' },
-  ];
-  CAM.SHOT_SIZES = [
-    { name: '特写', dist: 0.6, en: 'close-up' },
-    { name: '近景', dist: 0.8, en: 'medium close-up' },
-    { name: '中景', dist: 1, en: 'medium shot' },
-    { name: '全景', dist: 1.4, en: 'wide shot' },
-  ];
+  /* ---- 仰角档 / 景别档(词表单一来源在 wf-core.js,本处只是浏览器侧派生出口) ---- */
+  CAM.ELEVATIONS = WfCore.CAMERA_ANGLES;
+  CAM.SHOT_SIZES = WfCore.SHOT_SIZES;
 
   /* ---- 摄像机机身 / 镜头 / 焦距 / 光圈 ---- */
   CAM.BODIES = ['Arri Alexa 35', 'Arri Alexa 65', 'Arricam LT', 'ArriFlex 435', 'IMAX Film Camera', 'IMAX Keighley', 'Panavision DXL2', 'Red V-Raptor', 'Sony Venice'];
@@ -63,18 +55,17 @@
     return Domain.cameraDescribe(cs);
   };
 
-  /* ---- 机位选择器弹窗(视角×角度×景别 + 光圈 + 运镜八方向) ----
-     opt: {value: 现有 cameraSpec, camera: 当前运镜, onSave(spec, cameraMove)} */
+  /* ---- 机位选择器弹窗(视角×角度×景别 + 光圈 + 运镜) ----
+     opt: {value: 现有 cameraSpec, camera: 当前运镜, onSave(spec, cameraMove)};
+     四栏取值全部来自 wf-core.js 词表,onSave 回传的运镜是 WfCore.CAMERAS 内的规范名(可直接写回 s.camera) */
   CAM.openSpecPicker = function (opt) {
     const cs = Object.assign({ view: '正面', angle: '平视', shotSize: '中景', aperture: 'ƒ/4' }, opt.value || {});
     let move = opt.camera || '固定镜头';
-    // 调用方传入的是中文运镜名(固定镜头/推镜头…,见 storyboard.js moveMap),反向映射为芯片值做初始高亮
-    const REV_MOVE = { '固定镜头': '固定', '推镜头': '↑ 前推', '拉镜头': '↓ 后拉', '移镜头': '→ 右移', '环绕镜头': '↗ 右环绕', '摇镜头': '↘ 升镜' };
-    if (REV_MOVE[move]) move = REV_MOVE[move];
-    const VIEWS = ['正面', '侧面', '背面'];
-    const ANGLES = CAM.ELEVATIONS.map(e => e.name);
-    const SIZES = CAM.SHOT_SIZES.map(s => s.name);
-    const MOVES = ['固定', '↑ 前推', '↓ 后拉', '← 左移', '→ 右移', '↖ 左环绕', '↗ 右环绕', '↙ 降镜', '↘ 升镜'];
+    const VIEWS = WfCore.VIEWS;
+    const ANGLES = WfCore.ANGLES;
+    const SIZES = WfCore.SIZES;
+    // 运镜芯片取词表内的镜头运动项,芯片值即 s.camera 的规范名(俯拍/仰拍/特写 由角度、景别两栏承担,不重复出芯片)
+    const MOVES = WfCore.CAMERA_MOVES.filter(m => m.axis === 'move');
     U.openModal({
       title: '🎥 机位设置(视角 × 角度 × 景别)',
       body: `
@@ -90,8 +81,8 @@
         <label class="field"><span>光圈</span>
           <div class="model-row">${CAM.APERTURES.map(a => `<div class="model-opt ${cs.aperture === a ? 'sel' : ''}" data-g="aperture" data-v="${a}">${a}</div>`).join('')}</div>
         </label>
-        <label class="field"><span>运镜方向(八方向)</span>
-          <div class="model-row">${MOVES.map((mv, i) => `<div class="model-opt ${mv === move ? 'sel' : ''}" data-move="${mv}">${mv}</div>`).join('')}</div>
+        <label class="field"><span>运镜</span>
+          <div class="model-row">${MOVES.map(mv => `<div class="model-opt ${mv.name === move ? 'sel' : ''}" data-move="${mv.name}">${mv.arrow} ${mv.short}</div>`).join('')}</div>
         </label>
       </div>`,
       footer: `<button class="btn" data-x="cancel">取消</button><button class="btn primary" data-x="ok">应用机位</button>`,

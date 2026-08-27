@@ -103,7 +103,7 @@
   function csvTemplate() {
     return U.toCSV([
       CSV_HEADERS,
-      ['# 列说明:运镜可选 固定镜头/推/拉/摇/移/跟/环绕/俯拍/仰拍/特写;机位视角 正面/侧面/背面;机位角度 仰拍/平视/俯拍/高角度;景别 特写/近景/中景/全景;光圈 ƒ/1.4~ƒ/11;出场人物/物品用「、」分隔;提示词列有内容则导入后直接使用(不再自动生成)'],
+      [`# 列说明(四栏取值取自 wf-core.js 词表单源):运镜可选 ${WfCore.CAMERAS.join('/')};机位视角 ${WfCore.VIEWS.join('/')};机位角度 ${WfCore.ANGLES.join('/')};景别 ${WfCore.SIZES.join('/')};光圈 ƒ/1.4~ƒ/11;出场人物/物品用「、」分隔;提示词列有内容则导入后直接使用(不再自动生成)`],
       [1, '示例镜头', '林雪走进深夜咖啡馆,与陈风对峙', '推镜头', '正面', '平视', '中景', 'ƒ/4', '雨夜,旧账该算了', '你来了', '林雪、陈风', '深夜咖啡馆', '青铜钥匙', '漫剧风格,深夜咖啡馆内景,暖黄灯光', '漫剧风格,推镜头,林雪与陈风对峙,冷色调', 5],
     ]);
   }
@@ -161,7 +161,7 @@
           if (!warned) return U.toast('请先勾选知晓「覆盖不可找回」警告', 'error');
           const tk = Tasks.start({ type: '导入分镜表', model: 'CSV·' + fname, target: ep.title, cost: 2, projectId: p.id, episodeId: ep.id });
           if (!U.charge(2, `导入分镜表(${ep.title},${rows.length}行)`)) { Tasks.fail(tk, '积分不足'); return; }
-          const VIEWS = ['正面', '侧面', '背面'], ANGLES = ['仰拍', '平视', '俯拍', '高角度'], SIZES = ['特写', '近景', '中景', '全景'];
+          const VIEWS = WfCore.VIEWS, ANGLES = WfCore.ANGLES, SIZES = WfCore.SIZES; // 词表单源在 wf-core.js(六档景别全部可导入)
           const newShots = rows.map((r, i) => {
             const ns = blankShot(i, ep.sbConfig);
             ns.name = String(r[1] || '').trim();
