@@ -48,6 +48,9 @@
     const CW = 960;
     const TYPES = ['对白', '旁白', '内心'];
     const TAGC = { '对白': 'cyan', '旁白': 'yellow', '内心': 'purple' };
+    /* AI 生成对白的契约半:返回 JSON 形状与 type 词表就是下面解析/归类的判据,故留在装配口不开放覆盖
+     * (改坏即整轮解析不出气泡);人设句走注册表键 comic.bubbleSystem,用户在「全局默认值 → 核心提示词 skill」改得到 */
+    const BUBBLE_CONTRACT = '根据用户给的剧情简述,生成 2-4 个画面气泡,只返回 JSON 数组,格式:[{"type":"对白","text":"..."}],type 只能是 对白/旁白/内心,text 不超过 30 字。';
 
     main.innerHTML = `
     <div class="page">
@@ -280,7 +283,7 @@
         try {
           U.toast('AI 生成中…', 'info', 1200);
           const r = await API.chatJSON({
-            system: '你是漫剧编剧。根据用户给的剧情简述,生成 2-4 个画面气泡,只返回 JSON 数组,格式:[{"type":"对白","text":"..."}],type 只能是 对白/旁白/内心,text 不超过 30 字。',
+            system: Prompts.get('comic.bubbleSystem') + BUBBLE_CONTRACT,
             messages: [{ role: 'user', content: '剧情:' + plot }],
             temperature: 0.8, max_tokens: 600,
             billingAction: 'llm.tool', operationId: aiOpId, // 服务端白名单计费(与本地 COST.tool 同价)
