@@ -269,6 +269,21 @@ function loadSbIo() {
   return sb;
 }
 
+/* storyboard.js:仅取 buildShotPrompt(分镜提示词单一出口)——顶层依赖 Voice/WfCore,projects.js 全局经 stub 注入 */
+function loadStoryboard() {
+  const sb = makeSandbox();
+  installCommon(sb);
+  sb.Voice = { NARRATOR_PRESETS: [] };
+  sb.styleOf = p => p.style || '漫剧';
+  sb.negOf = () => ',负面提示词:模糊';
+  loadFile(sb, 'domain.js');
+  loadFile(sb, 'prompts.js');
+  loadFile(sb, 'knowledge.js');
+  loadFile(sb, 'wf-core.js'); // buildShotPrompt 经 WfCore.fillTplVideo 套文生视频模板(双端同一填充函数)
+  loadFile(sb, 'storyboard.js');
+  return sb;
+}
+
 function loadUnderstanding() {
   const sb = makeSandbox();
   installCommon(sb);
@@ -3031,6 +3046,53 @@ const contractTests = [
     assert(pipe.includes('regen-stale') && pipe.includes('shotIds'), 'regen-stale 应带 shotIds 执行批量重生成(不再只跳页面)');
     const sb2 = fs.readFileSync(path.join(ROOT, 'js/storyboard.js'), 'utf8');
     assert(sb2.includes('nx.run'), 'storyboard 下一步按钮应承接 nx.run 动作');
+  } },
+  /* ---- 文生视频模板 tplVideo:消费方契约(防回退成"写入即失效"的死字段) ---- */
+  { name: 'tplVideo 接入(§G-05):拆镜要求行 + 兜底提示词按模板成型;无模板时提示词逐字节不变', fn() {
+    const WfCore = require('../js/wf-core.js');
+    const p = { style: '漫剧', subjects: [] };
+    const ep = { sbConfig: { batchCamera: '固定镜头', narratorVoice: '旁白·沉稳男声' } };
+    const mkUser = tpl => WfCore.buildSBUser(p, ep, { count: 8 }, { styleText: '漫剧', projType: 'drama', content: '剧本内容', tplVideoText: tpl });
+    assertEq(mkUser(''), mkUser(undefined), '无模板时两种缺省写法应同一份 user 提示词');
+    assertEq(mkUser(''), WfCore.buildSBUser(p, ep, { count: 8 }, { styleText: '漫剧', projType: 'drama', content: '剧本内容' }), '不传 tplVideoText 时提示词应与接入前一致(不留空行)');
+    const withTpl = mkUser('{style}风格,{shot},电影感运镜,光影氛围浓郁');
+    assert(withTpl.includes('- 文生视频提示词模板(每镜 prompt 须在五段式结构内落实以下要素):漫剧风格,本镜画面内容,电影感运镜,光影氛围浓郁'), '拆镜要求应带填充后的模板行,实际:\n' + withTpl.split('\n').filter(l => l.includes('模板')).join('\n'));
+    // 模型未给 prompt 的兜底:有模板按模板成型,无模板回落原骨架;模型给了 prompt 则模板不覆盖
+    const ctx = tpl => ({ uid: x => x + '_1', now: () => 't', directorNote: '。导演设定:高对比', tplVideoText: tpl });
+    const bare = WfCore.normalizeLLMShot({ plot: '女主转身' }, 0, p, ep, 'LLM', false, ctx(''));
+    assertEq(bare.prompt, WfCore.normalizeLLMShot({ plot: '女主转身' }, 0, p, ep, 'LLM', false, { uid: x => x + '_1', now: () => 't', directorNote: '。导演设定:高对比' }).prompt, '无模板兜底提示词应与接入前一致');
+    const tpled = WfCore.normalizeLLMShot({ plot: '女主转身' }, 0, p, ep, 'LLM', false, ctx('{style}风格,{shot},光影氛围浓郁'));
+    assert(tpled.prompt.includes('光影氛围浓郁') && tpled.prompt.includes('女主转身') && tpled.prompt.includes('。导演设定:高对比'), '兜底应按模板成型且保留导演设定,实际:' + tpled.prompt);
+    assertEq(WfCore.normalizeLLMShot({ plot: '女主转身', prompt: '模型给的提示词' }, 0, p, ep, 'LLM', false, ctx('{style}风格,{shot}')).prompt, '模型给的提示词', '模型已给 prompt 时模板不得覆盖');
+  } },
+  { name: 'tplVideo 接入(§G-05):本地拼装单一出口 buildShotPrompt 套模板;未设置时输出不变', fn() {
+    const sb = loadStoryboard();
+    const p = { style: '漫剧', globalSetting: '水墨质感' };
+    const o = { plot: '女主转身离开', camera: '推镜头', scene: '宴会厅', characters: ['女主'] };
+    assertEq(sb.SB.buildShotPrompt(p, o), '漫剧风格,女主转身离开,推镜头,宴会厅,女主,水墨质感,负面提示词:模糊', '未设置模板时应为原骨架');
+    sb.Store.state.settings.tplVideo = '{style}风格,{shot},电影感运镜,光影氛围浓郁';
+    assertEq(sb.SB.buildShotPrompt(p, o), '漫剧风格,女主转身离开,推镜头,宴会厅,女主,电影感运镜,光影氛围浓郁,水墨质感,负面提示词:模糊', '设置模板后应按模板成型(全局设定与负面约束仍在尾部)');
+    assertEq(sb.SB.tplVideoOf(), '{style}风格,{shot},电影感运镜,光影氛围浓郁', '模板取 settings 原值(不并 DEFAULTS),与服务端 st.tplVideo 同源');
+  } },
+  { name: 'tplVideo 接入(§G-05):浏览器与服务端同一装配口注入(不存在只写不读的死字段)', fn() {
+    const files = { 'js/wf-core.js': 0, 'js/sb-llm.js': 0, 'server.js': 0, 'js/storyboard.js': 0 };
+    Object.keys(files).forEach(f => { files[f] = fs.readFileSync(path.join(ROOT, f), 'utf8'); });
+    assert(files['js/wf-core.js'].includes('W.fillTplVideo') && files['js/wf-core.js'].includes('W.tplVideoNote'), 'wf-core 应是模板填充的双端单一来源');
+    assert(files['js/sb-llm.js'].includes('tplVideoText: tplVideoOf()'), '浏览器拆镜应注入 tplVideoText(取 SB.tplVideoOf)');
+    assert((files['js/sb-llm.js'].match(/tplVideoText:/g) || []).length >= 2, '浏览器侧拆镜 user 与逐镜规整两处都应注入模板');
+    assert(files['server.js'].includes('tplVideoText: st.tplVideo'), '服务端 /api/wf/smart-storyboard 应从 settings 注入同一模板');
+    assert(files['server.js'].includes('tplVideoText: ctxBase.tplVideoText'), '服务端逐镜规整应沿用同一模板(与浏览器同口径)');
+    assert(files['js/storyboard.js'].includes('function tplVideoOf()') && files['js/storyboard.js'].includes('WfCore.fillTplVideo'), '本地拼装出口应走同一填充函数');
+    // settings 三件套均有消费方:tplImage(主体图提示词)/tplVideo(分镜画面提示词)/tplReview(审片提示词)
+    const consumers = {
+      tplImage: ['js/episode-util.js', 'js/persona.js'],
+      tplVideo: ['js/sb-llm.js', 'js/storyboard.js', 'server.js'],
+      tplReview: ['js/review.js', 'server.js'],
+    };
+    Object.entries(consumers).forEach(([key, fl]) => fl.forEach(f => {
+      const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+      assert(src.includes(key), key + ' 应在 ' + f + ' 有读取方(三件套不得留写入即失效的键)');
+    }));
   } },
 ];
 

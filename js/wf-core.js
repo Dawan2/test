@@ -80,6 +80,20 @@
     for (const x of ep.shots) { if (x.id === s.id) break; start += dur(x); }
     return fmtT(start) + ' - ' + fmtT(start + dur(s));
   };
+  /* 文生视频模板填充(settings.tplVideo,雇佣风格专家时被 tpl.tplVideo 覆写):{style}=项目风格 {shot}=本镜内容。
+   * 模板为空即返回空串,调用方回落原骨架——未设置模板时提示词与接入前逐字节一致。
+   * 取值一律用 settings 原值(不并浏览器 DEFAULTS),保证浏览器与 /api/wf/* 同一雇佣状态下拼装结果相同 */
+  W.fillTplVideo = function (tpl, styleText, shotText) {
+    const t = String(tpl || '').trim();
+    if (!t) return '';
+    return t.replace(/\{style\}/g, styleText || '').replace(/\{shot\}/g, shotText || '');
+  };
+  /* 拆镜要求行:模板作为逐镜 prompt 的要素要求({shot} 位置以"本镜画面内容"示意,由模型按镜填写);
+   * 无模板返回空串(拼在既有要求行尾,不留空行) */
+  W.tplVideoNote = function (tpl, styleText) {
+    const t = W.fillTplVideo(tpl, styleText, '本镜画面内容');
+    return t ? '\n- 文生视频提示词模板(每镜 prompt 须在五段式结构内落实以下要素):' + t : '';
+  };
 
   /* ================= 本集理解(自 understanding.js 下沉) ================= */
   W.undToText = function (u) {
@@ -130,7 +144,7 @@ ${ctx.content}`;
   };
   /* 智能分镜系统人设(知识库条目同源;ov=用户提示词覆盖表) */
   W.sbSystem = ov => Prompts.get('sb.system', ov) + KB.DR_SHOT + KB.DR_AXIS;
-  /* 拆镜 user 模板(自 genShotsLLM 下沉;o={count,mode,optimize,adv,feedback},ctx={styleText,projType,directorNote,conceptNote,langText,genres,understandingText,eventsText,content(截 12000),subjects}) */
+  /* 拆镜 user 模板(自 genShotsLLM 下沉;o={count,mode,optimize,adv,feedback},ctx={styleText,projType,directorNote,conceptNote,langText,genres,understandingText,eventsText,content(截 12000),subjects,tplVideoText}) */
   W.buildSBUser = function (p, ep, o, ctx) {
     const withForms = sj => sj.name + ((sj.forms || []).length ? `(形态:${sj.forms.map(f => f.name).join('/')})` : '');
     const subs = (ctx.subjects !== undefined ? ctx.subjects : (p.subjects || []));
@@ -149,7 +163,7 @@ ${o.adv ? `- 视觉风格:${o.adv.visual};全片总时长约 ${o.adv.totalSec} �
 - 剧本缺少旁白/台词时请补写,须贴合剧情与人物性格
 - strategy 按画面动态选型:静态对白/动作幅度小→ref(分镜图参考);大动作/打斗/需衔接上一镜→frames(首尾帧链);多主体同框且一致性要求高→fusion(多图融合)
 - ${W.SPLIT_RULES}
-- ${W.PROMPT5}
+- ${W.PROMPT5}${W.tplVideoNote(ctx.tplVideoText, ctx.styleText)}
 - ${o.optimize ? 'prompt 要电影级详尽:构图/光影/氛围/风格限定词' : 'prompt 简洁准确,一句话'}
 - characters/scene/props 优先使用已登记主体:人物[${charNames}]、场景[${sceneNames}]、物品[${propNames}];主体带「(形态:…)」时,剧情涉及该特定形态须输出「名-形态」全称(如 安仲凯-少年期)
 ${o.feedback ? '★ 上一轮评审意见(必须逐条修订后再输出):\n' + o.feedback + '\n' : ''}
@@ -157,7 +171,7 @@ ${ctx.eventsText ? '★ 本集事件图谱(剧情骨架,分镜需依序覆盖以
 剧本:
 ${ctx.content}`;
   };
-  /* 逐字段白名单规整(自 normalizeLLMShot 下沉;ctx={uid,now,directorNote,phImage(可空:服务端推文模式不留占位图)}) */
+  /* 逐字段白名单规整(自 normalizeLLMShot 下沉;ctx={uid,now,directorNote,tplVideoText,phImage(可空:服务端推文模式不留占位图)}) */
   W.normalizeLLMShot = function (raw, i, p, ep, modelName, tweet, ctx) {
     raw = raw || {};
     const s = W.blankShot(i, ep.sbConfig, ctx.uid);
@@ -170,7 +184,10 @@ ${ctx.content}`;
     s.narration = String(raw.narration || '');
     s.dialogue = String(raw.dialogue || '');
     s.voice = s.dialogue && s.characters[0] ? '角色音·' + s.characters[0] : ep.sbConfig.narratorVoice;
-    s.prompt = (String(raw.prompt || '') || `${Domain.styleOf(p)}风格,${s.camera},${s.plot.slice(0, 40)}${ctx.directorNote || ''}`) + Domain.negOf(p);
+    // 模型没给 prompt 时的兜底:有文生视频模板按模板成型,无模板回落原骨架
+    const fbShot = `${s.camera},${s.plot.slice(0, 40)}`;
+    const fbPrompt = W.fillTplVideo(ctx.tplVideoText, Domain.styleOf(p), fbShot) || `${Domain.styleOf(p)}风格,${fbShot}`;
+    s.prompt = (String(raw.prompt || '') || fbPrompt + (ctx.directorNote || '')) + Domain.negOf(p);
     s.cameraSpec = {
       view: W.VIEWS.includes(raw.view) ? raw.view : '正面',
       angle: W.ANGLES.includes(raw.angle) ? raw.angle : '平视',

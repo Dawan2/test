@@ -3322,6 +3322,7 @@ const server = http.createServer(async (req, res) => {
           directorNote: WfCore.directorNote(st.directorSetting), conceptNote: WfCore.conceptInject(p),
           langText: WfCore.langOf(p), genres: p.genres, eventsText: WfCore.eventsOfEpisode(p, ep),
           content: (ep.content || '').slice(0, 12000),
+          tplVideoText: st.tplVideo || '', // 文生视频模板(雇佣风格专家/全局配置写入):与浏览器 sb-llm.js 同一取值口径
         };
         // Step1 本集理解:存在且未过期复用(0 调用);否则同 opId step 'und' 聚合并写回
         if (!(ep.understanding && !Domain.understandingStale(ep))) {
@@ -3346,7 +3347,7 @@ const server = http.createServer(async (req, res) => {
           });
           if (!Array.isArray(r.parsed) || !r.parsed.length) { if (r.charge) proxyRefund(user.id, r.charge, '未返回有效分镜数组'); throw Object.assign(new Error('LLM 未返回有效分镜数组(已退费)'), { httpStatus: 502 }); }
           const trimmed = r.parsed.length > count + 3 ? r.parsed.slice(0, count + 3) : r.parsed; // 拆解规则优先,最多容忍 count+3
-          return trimmed.map((raw, i) => WfCore.normalizeLLMShot(raw, i, p, ep, c.sbModel || 'LLM', c.sbMode === 'tweet', { uid, now: nowStr, directorNote: ctxBase.directorNote, phImage: null })); // 服务端推文模式不留占位图(真实出图走 gen-shot-image)
+          return trimmed.map((raw, i) => WfCore.normalizeLLMShot(raw, i, p, ep, c.sbModel || 'LLM', c.sbMode === 'tweet', { uid, now: nowStr, directorNote: ctxBase.directorNote, tplVideoText: ctxBase.tplVideoText, phImage: null })); // 服务端推文模式不留占位图(真实出图走 gen-shot-image)
         };
         const reviewShots = async (shots, stepTag) => {
           const r = await wfLLM(user.id, {

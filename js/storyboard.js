@@ -455,19 +455,27 @@
     return WfCore.blankShot(order, cfg, Store.uid); // 二十一轮:结构单一来源 wf-core.js(uid 经参数注入)
   }
 
+  /* 文生视频模板取值(settings 原值,不并 gsettings DEFAULTS):与服务端 /api/wf/* 读 st.tplVideo 同源,
+   * 未保存偏好且未雇佣专家时为空 → 不套模板,拼装结果与接入前一致 */
+  function tplVideoOf() { return (Store.state.settings || {}).tplVideo || ''; }
+
   /* 新建/转换分镜默认提示词单一出口(字段全可选):
-   * 风格 + (情绪氛围) + 剧情 + (运镜/场景/出场主体) + 全局设定 + 负面约束,去空去重拼接 */
+   * 有文生视频模板({style}=项目风格 {shot}=本镜要素)按模板成型,否则
+   * 风格 + (情绪氛围) + 剧情 + (运镜/场景/出场主体);末尾统一接全局设定 + 负面约束,去空去重拼接 */
   function buildShotPrompt(p, o) {
     o = o || {};
-    const parts = [
-      styleOf(p) + '风格',
+    const shot = [
       o.emotion ? o.emotion + '氛围' : '',
       (o.plot || '').trim(),
       o.camera || '',
       o.scene || '',
       (o.characters || []).filter(Boolean).join('、'),
-      p.globalSetting || '',
-    ].filter((x, i, arr) => x && arr.indexOf(x) === i);
+    ];
+    const tpl = tplVideoOf();
+    const parts = (tpl
+      ? [WfCore.fillTplVideo(tpl, styleOf(p), shot.filter(Boolean).join(','))]
+      : [styleOf(p) + '风格'].concat(shot)
+    ).concat([p.globalSetting || '']).filter((x, i, arr) => x && arr.indexOf(x) === i);
     return parts.join(',') + negOf(p);
   }
 
@@ -669,7 +677,7 @@
   /* window.SB 透出(批次 E 拆分):本地成员 + 共享给 sb-views.js/sb-gen.js 的常量与辅助;
    * 拆分前成员 syncFrames/framePH/batchGenVideos/shotVersions/estShotDuration 已移入 sb-gen.js,
    * 由 sb-gen.js 末尾 Object.assign 回挂 window.SB,外部调用点(sb-io/produce/timeline 等)不变。 */
-  window.SB = { blankShot, buildShotPrompt, CAMERAS, renderShots, defaultSBConfig, snapshotShot, prevEpTail, onEpPage, ttsShot, genAudio, TRANSITIONS, VOICES, PROMPT5_SECS, SPLIT_RULES, PROMPT5, STRATEGIES };
+  window.SB = { blankShot, buildShotPrompt, tplVideoOf, CAMERAS, renderShots, defaultSBConfig, snapshotShot, prevEpTail, onEpPage, ttsShot, genAudio, TRANSITIONS, VOICES, PROMPT5_SECS, SPLIT_RULES, PROMPT5, STRATEGIES };
   window.STRATEGIES = STRATEGIES; // 供 agent.js 等板块读取(单一来源,不再硬编码拷贝)
   window.CAMERAS = CAMERAS;
 })();
