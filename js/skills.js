@@ -338,7 +338,8 @@
       id: 'review.stage', sk: 'SK-23', name: '审片升为主线一等步骤', stage: 'review', wave: 'W3',
       kinds: ['infra'], pending: ['infra'], prompts: ['review.system', 'review.finalSystem'],
       cmds: ['episode.smartReview'], gaps: ['G-03'],
-      note: 'STAGES 里 review 的 wfStep 现为 false,本条落地后与 Domain.workflow 步骤集合同步改真',
+      note: 'G-03 已落地:Domain.workflow 含审片步、STAGES 里 review 的 wfStep 已为 true;'
+        + '本条 pending 的 infra 面留的是注册表侧记账收敛(改 pending 会动 gaps 投影,单列一轮)',
     },
     {
       id: 'review.methodDim', sk: 'SK-24', name: '方法论维度进审片报告', stage: 'review', wave: 'W4',

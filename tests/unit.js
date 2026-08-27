@@ -3381,7 +3381,7 @@ const contractTests = [
     // 波次配比与短名单一致:W2 单源打底 9 / W3 双端贯通 5 / W4 校验闸门 16
     const byWave = list.reduce((m, s) => { m[s.wave] = (m[s.wave] || 0) + 1; return m; }, {});
     assertEq(JSON.stringify(byWave), JSON.stringify({ W2: 9, W3: 5, W4: 16 }), '波次配比应为 W2:9 / W3:5 / W4:16');
-    // 四类既有单源键全覆盖:KB 17 条 / Prompts 6 key / 命令 10 条 / 专家 16 位(新增单源键必须进索引)
+    // 四类既有单源键全覆盖:KB 17 条 / Prompts 6 key / 命令 11 条 / 专家 16 位(新增单源键必须进索引)
     const uniq = k => [...new Set([].concat(...list.map(s => s[k])))];
     const KB = require('../js/knowledge.js');
     const kbKeys = Object.keys(KB.SECTIONS);
@@ -4152,7 +4152,92 @@ const splitTests = [
   } },
 ];
 
-const SUITES = { 'agent-ops': agentOpsTests, experts: expertsTests, produce: produceTests, commands: commandsTests, store: storeTests, 'sb-gen': sbGenTests, pipeline: pipelineTests, 'sb-views': sbViewsTests, 'sb-io': sbIoTests, understanding: understandingTests, billing: billingTests, domain: domainTests, bus: busTests, issues: issuesTests, plans: plansTests, continuity: continuityTests, release: releaseTests, contract: contractTests, skills: skillsTests, tasks: tasksTests, split: splitTests };
+/* ================= 套件 21:协作记忆双端单源(wf-core memRecall/memBlock,G-02) =================
+ * 召回算法自 agent.js 下沉后是对话层与 /api/wf/* 工作流端点的唯一一份,此前只有经 evolveExpert
+ * 的间接使用,没有直接断言(W6 收敛记录列为主干最薄处)。本套件锁住召回口径与注入块字面。 */
+const memoryTests = [
+  { name: 'memRecall 召回顺序:同板块末 4 条在前,全局最近 3 条随后;不传板块时只吃全局最近 3 条', fn() {
+    const W = require('../js/wf-core.js');
+    const mem = [
+      { text: 'M1', scope: '分镜' }, { text: 'M2', scope: '分镜' }, { text: 'M3', scope: '分镜' },
+      { text: 'M4', scope: '分镜' }, { text: 'M5', scope: '分镜' },
+      { text: 'G1', scope: '剧本' }, { text: 'G2', scope: '' }, { text: 'G3', scope: '成片' },
+    ];
+    const txt = (input, scope) => W.memRecall(mem, input, scope).map(m => m.text).join(',');
+    // 同板块 5 条只有末 4 条进"优先段";被挤出的 M1 仍可经同板块加权补召(见下一条),故落在队尾
+    assertEq(txt('', '分镜'), 'M2,M3,M4,M5,G1,G2,G3,M1', '同板块末 4 条应排在全局最近 3 条之前');
+    assertEq(W.memRecall(mem, '', '分镜').slice(0, 4).map(m => m.scope).join(','), '分镜,分镜,分镜,分镜', '优先段应全是本板块条目');
+    assertEq(txt('', ''), 'G1,G2,G3', '不传板块:无优先段,零关键词时只剩全局最近 3 条');
+  } },
+  { name: 'memRecall 加权补召:同板块被挤出的旧条目仍补召(≤3 条);关键词命中按命中长度排序', fn() {
+    const W = require('../js/wf-core.js');
+    const many = ['M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8'].map(t => ({ text: t, scope: '分镜' }))
+      .concat([{ text: 'G1', scope: '' }, { text: 'G2', scope: '' }, { text: 'G3', scope: '' }]);
+    assertEq(W.memRecall(many, '', '分镜').map(m => m.text).join(','), 'M5,M6,M7,M8,G1,G2,G3,M1,M2,M3',
+      '同板块加权补召上限 3 条(M4 应被挤出)');
+    // 关键词分支:命中 token 越长得分越高;整条无命中且非本板块的旧条目不进召回
+    const kb = [
+      { text: 'A 提到 红色高跟鞋', scope: '' }, { text: 'B 提到 冷色调', scope: '' }, { text: 'C 无关条目', scope: '' },
+      { text: 'X1', scope: '' }, { text: 'X2', scope: '' }, { text: 'X3', scope: '' },
+    ];
+    assertEq(W.memRecall(kb, '红色高跟鞋 冷色调', '').map(m => m.text).join(' | '),
+      'X1 | X2 | X3 | A 提到 红色高跟鞋 | B 提到 冷色调', '命中长 token 的条目应排在命中短 token 之前,未命中的 C 不召回');
+    assertEq(W.memRecall(kb, '', '').map(m => m.text).join(','), 'X1,X2,X3', '零关键词时加权段为空');
+  } },
+  { name: 'memRecall 去重按 text:同一条内容在优先段与最近段各出现一次时只注入一次', fn() {
+    const W = require('../js/wf-core.js');
+    const mem = [
+      { text: '夜景冷色调', scope: '分镜' }, { text: 'X1', scope: '' }, { text: 'X2', scope: '' },
+      { text: '夜景冷色调', scope: '分镜' }, // 同文本重复沉淀(改名/重复「记住…」都会产生)
+    ];
+    const out = W.memRecall(mem, '', '分镜');
+    assertEq(out.map(m => m.text).join(','), '夜景冷色调,X1,X2', '重复 text 只保留首次出现');
+    assertEq(W.memBlock(mem, '', '分镜').split('- 夜景冷色调').length - 1, 1, '注入块不得出现两行同文本');
+  } },
+  { name: 'memRecall/memBlock 脏入参:非数组/空/无 text 条目一律回空,不注入时提示词逐字节不变', fn() {
+    const W = require('../js/wf-core.js');
+    [null, undefined, 'not-an-array', 42, {}].forEach(bad => {
+      assertEq(JSON.stringify(W.memRecall(bad, '林晚晴', '分镜')), '[]', '非数组入参应回空数组:' + JSON.stringify(bad));
+      assertEq(W.memBlock(bad, '林晚晴', '分镜'), '', '非数组入参不得产出注入块:' + JSON.stringify(bad));
+    });
+    assertEq(JSON.stringify(W.memRecall([], 'x', '分镜')), '[]', '空数组应回空');
+    assertEq(JSON.stringify(W.memRecall([null, {}, { text: '' }, { scope: '分镜' }], 'x', '分镜')), '[]', '无 text 的条目应全部过滤掉');
+    assertEq(W.memBlock([{ text: '' }, null], '', '分镜'), '', '全是无效条目时应回空串(空串=提示词与未沉淀记忆时逐字节一致)');
+  } },
+  { name: 'memBlock 段头与逐条字面:段头固定、每条 "- " 前缀、顺序与 memRecall 一致', fn() {
+    const W = require('../js/wf-core.js');
+    const HEAD = '\n历史协作记忆(用户过往的偏好与已确认的修改决定,参考以保持一致):\n';
+    assertEq(W.memBlock([{ text: 'a' }, { text: 'b' }], '', ''), HEAD + '- a\n- b', '注入块字面(段头 + 逐条 "- ")');
+    const mem = [
+      { text: 'M1', scope: '分镜' }, { text: 'M2', scope: '分镜' }, { text: 'G1', scope: '' },
+      { text: 'G2', scope: '' }, { text: 'G3', scope: '' },
+    ];
+    assertEq(W.memBlock(mem, '', '分镜'), HEAD + W.memRecall(mem, '', '分镜').map(m => '- ' + m.text).join('\n'),
+      'memBlock 应是 memRecall 的逐条投影(不另排序、不另截断)');
+    assert(W.memBlock(mem, '', '分镜').startsWith('\n'), '段头应自带前导换行(拼进提示词时不粘上一段)');
+  } },
+  { name: '协作记忆双端单源(源级):对话层/wf 端点/CLI 全部委托 WfCore,写入两端同结构同上限', fn() {
+    const ag = fs.readFileSync(path.join(ROOT, 'js', 'agent.js'), 'utf8');
+    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    const cli = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    // 召回面:三端不得各抄一份算法
+    assert(ag.includes('WfCore.memRecall(') && ag.includes('WfCore.memBlock('), 'agent.js 对话层应委托 WfCore 召回');
+    assert(!/const scoped = mem\.filter/.test(ag), 'agent.js 不应再内联召回算法');
+    assert((srv.match(/WfCore\.memBlock\(/g) || []).length >= 4, 'wf 工作流端点应按板块注入协作记忆(理解/分镜/审片/提取主体/Agent 对话)');
+    assert(cli.includes('WfCore.memRecall('), 'CLI memory list --recall 应与注入侧同算法预览');
+    // 写入面:CLI 与浏览器各写一份(注释已标注),字段集/截断/上限须一致——任一侧漂移此断言先红
+    const fields = s => [...s.matchAll(/(\w+):/g)].map(m => m[1]).sort().join(',');
+    const cliEntry = cli.match(/const entry = \{([^}]*)\};/);
+    const agPush = ag.match(/mem\.push\(\{([^}]*)\}\);/);
+    assert(cliEntry && agPush, '两端写入口的条目字面都应可定位');
+    assertEq(fields(cliEntry[1]), 'scope,text,time', 'CLI memory add 条目字段集');
+    assertEq(fields(agPush[1]), 'scope,text,time', '浏览器 memRemember 条目字段集应与 CLI 同集');
+    assert(cliEntry[1].includes('slice(0, 120)') && agPush[1].includes('slice(0, 120)'), '两端都应截 120 字');
+    assert(ag.includes('agentMemory = mem.slice(-50)') && cli.includes('mem.concat([entry]).slice(-50)'), '两端都应按最近 50 条截断');
+  } },
+];
+
+const SUITES = { 'agent-ops': agentOpsTests, experts: expertsTests, produce: produceTests, commands: commandsTests, store: storeTests, 'sb-gen': sbGenTests, pipeline: pipelineTests, 'sb-views': sbViewsTests, 'sb-io': sbIoTests, understanding: understandingTests, billing: billingTests, domain: domainTests, bus: busTests, issues: issuesTests, plans: plansTests, continuity: continuityTests, release: releaseTests, contract: contractTests, skills: skillsTests, tasks: tasksTests, split: splitTests, memory: memoryTests };
 (async () => {
   const filter = process.argv[2];
   let passed = 0, failed = 0;
