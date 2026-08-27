@@ -43,10 +43,13 @@
     REG[name] = Object.assign({ name, risk: 'exec', meter: true, needs: ['p', 'ep'] }, rm, meta, { handler });
   }
 
-  /* 生产就绪检查(read):Domain.episodeState 单源推导,流程条/下一步/CLI 同口径 */
+  /* 生产就绪检查(read):Domain.episodeState 单源推导,流程条/下一步/CLI 同口径;
+   * result.checks 附主体面校验项结论(Skills.check,纯本地零 LLM 零计费)——只报不拦:
+   * 不进 blockers、不改 ok/status,与 CLI exec 同一份结论 */
   reg('episode.preflight', { risk: 'read', meter: false, label: '生产就绪检查' }, async ({ p, ep }) => {
     const st = Domain.episodeState(p, ep, online());
-    return { ok: st.status !== 'blocked' && !st.shotsStale, status: st.status, result: st };
+    const checks = window.Skills ? Skills.check('subjects', { p, ep }, { online: online() }) : [];
+    return { ok: st.status !== 'blocked' && !st.shotsStale, status: st.status, result: Object.assign({}, st, { checks }) };
   });
 
   /* 智能分镜(exec):runSmartSB hooks Promise 化;缺剧本/积分不足走 blocked(预检与 runSmartSB 同口径,防 hooks 不触发悬挂);
