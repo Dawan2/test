@@ -1299,13 +1299,17 @@ CMD.exec = async (a, f) => {
     + CmdRegistry.META.map(m => `    ${m.name} ${CmdRegistry.usageOf(m)} — ${m.label}`).join('\n'));
   need(EXEC[name], '未注册命令:' + name + ';可用:' + CmdRegistry.names().join(', '));
   const cmd = EXEC[name];
-  const args = Object.assign(f.args ? JSON.parse(f.args) : {}, {
-    pid: f.pid, epid: f.epid, sid: f.sid,
-    confirmAll: !!f['confirm-all'], noImage: !!f['no-image'], timeout: f.timeout,
-    overwrite: f.overwrite ? true : undefined, local: f.local ? true : undefined, // 缺省留 undefined,--args 的同名值不被覆盖
-    note: f.note, force: f.force ? true : undefined, minScore: f['min-score'] !== undefined ? +f['min-score'] : undefined, // 发布留痕三参(同上,缺省不覆盖 --args)
-  });
-  Object.keys(args).forEach(k => args[k] === undefined && delete args[k]);
+  /* 参数合流:--args 的 JSON 打底,命令行 flag 覆盖同名项。
+   * 未给的 flag 留 undefined 并**跳过赋值**——Object.assign 会把 undefined 也写进去覆盖掉 --args 里的同名值
+   * (MCP 各工具正是只传 --args,pid 就此被抹掉),故这里逐键判定后再写。 */
+  const flags = {
+    pid: f.pid, epid: f.epid, sid: f.sid, timeout: f.timeout, note: f.note,
+    confirmAll: !!f['confirm-all'], noImage: !!f['no-image'], // 布尔开关恒定义:缺省 false 即"未授权"
+    overwrite: f.overwrite ? true : undefined, local: f.local ? true : undefined,
+    force: f.force ? true : undefined, minScore: f['min-score'] !== undefined ? +f['min-score'] : undefined,
+  };
+  const args = f.args ? JSON.parse(f.args) : {};
+  Object.keys(flags).forEach(k => { if (flags[k] !== undefined) args[k] = flags[k]; });
   if (cmd.needs.includes('p')) need(args.pid, '缺 --pid');
   if (cmd.needs.includes('ep')) need(args.epid, '缺 --epid');
   if (cmd.needs.includes('s')) need(args.sid, '缺 --sid(镜头 id 或序号)');

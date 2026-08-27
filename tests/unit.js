@@ -3483,6 +3483,11 @@ const releaseTests = [
     assert(!/function _checksum/.test(rel), '浏览器不得留第二份 checksum 实现');
     assert(!/djb\(sig\)/.test(cli), 'CLI 不得留第二份 checksum 实现');
     assert(/ReleaseCore\.gates\(/.test(cli) && /ReleaseCore\.gates\(/.test(srv), 'headless 两处发布门也现取单源');
+    /* MCP 各工具只传 --args(不拼 --pid),故 exec 的参数合流必须逐键判定:
+     * Object.assign 会把未给的 flag 当 undefined 一并写进去,把 --args 里的 pid 抹掉(MCP 侧一律"缺 --pid") */
+    const execSeg = cli.slice(cli.indexOf('CMD.exec = async'), cli.indexOf('CMD.upload'));
+    assert(!/Object\.assign\(f\.args/.test(execSeg), 'exec 参数合流不得用 Object.assign 平铺(未给的 flag 会覆盖 --args 同名值)');
+    assert(/if \(flags\[k\] !== undefined\)/.test(execSeg), '未给的 flag 应跳过赋值,--args 打底值保留');
     // UMD 双端:模块内不碰环境句柄(state 与时钟/随机数/落库一律经参数注入)
     const core = fs.readFileSync(path.join(ROOT, 'js/release-core.js'), 'utf8');
     ['window.', 'Store.', 'localStorage', 'fetch(', 'require('].forEach(t =>
