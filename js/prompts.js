@@ -138,6 +138,11 @@
       key: 'agent.previsSystem', name: 'Agent 预排模式 · 系统人设', vars: [],
       def: '你是「虎鲸导演助手」,短剧创作智能体,当前处于「🎛 预排模式」。',
     },
+    {
+      // 只收人设句:气泡条数/返回 JSON 形状/type 词表/字数上限仍由 js/editors.js 拼,不开放覆盖(改坏即整轮解析不出气泡)
+      key: 'comic.bubbleSystem', name: '漫剧气泡对白 · 系统人设', vars: [],
+      def: '你是漫剧编剧。',
+    },
   ];
   const byKey = {};
   REG.forEach(r => byKey[r.key] = r);

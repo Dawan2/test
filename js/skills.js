@@ -885,7 +885,7 @@
       prompts: ['split.system', 'extract.system', 'digest.planSystem', 'graph.system', 'sb.boardSceneSystem', 'sb.boardDraftSystem', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem',
         'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem',
         'narration.system', 'reading.system', 'concept.system', 'light.system',
-        'voice.recommendSystem', 'voice.recommendBatchSystem'],
+        'voice.recommendSystem', 'voice.recommendBatchSystem', 'comic.bubbleSystem'],
       cmds: ['episode.understanding', 'episode.generateStoryboard', 'episode.smartReview'], gaps: ['G-01'],
       note: 'G-01 已落地:服务端 /api/wf/* 各端点经唯一装配口 wfPersonaNote 注入生效人设(板块雇佣 > 全局雇佣),'
         + '浏览器同装配口;infra 面的 pending 已按实况清空(gaps() 只投影 gaps 字段、不看 pending,清账动不到投影),'
@@ -916,10 +916,14 @@
         + '与多轮那三份同为只有浏览器一个消费点的键(用户在「全局默认值」页改得到)。'
         + '分集页事件图谱拆解步的人设句同形收编为独立键 graph.system(取值口在 js/episodes.js 就地经 Prompts.get,'
         + '浏览器隐式读全局默认值页的覆盖表);它与多轮那三条同口径:只有浏览器一个消费点,收编解决的是可覆盖不是可 headless。'
+        + '对话面之外另收了一处:漫剧编辑器 AI 生成对白步的人设句成键 comic.bubbleSystem,'
+        + '装配口在 js/editors.js 就地拼(人设句 + 契约半),浏览器隐式读覆盖表、缺省逐字节不变。'
         + '仍欠:四处的 ops 协议/字段面/命令白名单/返回 JSON 约定仍由各自装配口拼、不开放覆盖'
         + '(那半是 ops 解析契约,用户改坏即整轮无 ops);'
         + '音色推荐两条同理只收人设句——音色库取值范围与返回 JSON 约定仍写在各自调用点、不开放覆盖'
         + '(用户改坏即推荐值落不回音色库,只能退随机);'
+        + '漫剧气泡那处同口径——返回 JSON 形状与 type 词表是解析判据,同样只收人设句不开放契约半;'
+        + '该步也不过本条的 ctx 通道(编辑器工具步不注入生效人设与协作记忆,只是人设句进了注册表);'
         + '多轮那三份与音色推荐两份都没有 Node 第二消费点,两端只落在取值口'
         + '(同一注册表键 + Prompts.get 读覆盖),不是两个消费点',
     },

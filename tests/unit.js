@@ -5330,13 +5330,62 @@ action 二选一:
      * G-13 的余量到此有了唯一判据——不再只是散文里的一个数字(口径与例外见 inlinePersonaHolders 注释) */
     const holders = inlinePersonaHolders();
     assertEq(holders.join(' '),
-      'js/agent-global.js:1 js/agent-ops.js:2 js/editors.js:1 js/experts.js:2 js/gsettings.js:1 '
-      + 'js/plans.js:1 js/proj-planner.js:2 js/proj-shell.js:1 js/proj-upload.js:1 '
-      + 'js/role-editor.js:1 js/sb-views.js:1',
+      'js/agent-global.js:1 js/agent-ops.js:2 js/experts.js:2 js/gsettings.js:1 js/plans.js:1 '
+      + 'js/proj-planner.js:2 js/proj-shell.js:1 js/proj-upload.js:1 js/role-editor.js:1 js/sb-views.js:1',
       '全仓内联人设持有者名单(文件:处数)');
     assert(!holders.some(x => x.startsWith('js/beatboard.js:')), 'js/beatboard.js 应已退出持有者名单(本处已收编)');
-    assertEq(holders.length, 11, '持有者文件数');
-    assertEq(holders.reduce((n, x) => n + Number(x.split(':')[1]), 0), 14, '全仓内联人设处数');
+    assertEq(holders.length, 10, '持有者文件数');
+    assertEq(holders.reduce((n, x) => n + Number(x.split(':')[1]), 0), 13, '全仓内联人设处数');
+  } },
+  { name: '漫剧气泡对白人设:经 Prompts.get(comic.bubbleSystem) 取值,缺省逐字节等于收编前的内联字面', fn() {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const PERSONA = '你是漫剧编剧。';
+    const INLINE = PERSONA + '根据用户给的剧情简述,生成 2-4 个画面气泡,只返回 JSON 数组,格式:[{"type":"对白","text":"..."}],type 只能是 对白/旁白/内心,text 不超过 30 字。';
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'editors.js'), 'utf8');
+    // 契约半仍留在装配口:从源码现取那个常量,与注册表人设句拼回去应与收编前那一整条逐字节相同
+    const m = src.match(/const BUBBLE_CONTRACT = '([^']*)';/);
+    assert(m, 'js/editors.js 应把契约半留成装配口常量 BUBBLE_CONTRACT');
+    assertEq(Prompts.get('comic.bubbleSystem'), PERSONA, '缺省人设句应与收编前的内联字面逐字节相同');
+    assertEq(Prompts.get('comic.bubbleSystem') + m[1], INLINE, '缺省整条(人设句 + 契约半)应与收编前逐字节相同');
+    // 只收人设句:覆盖只换开头那一句,返回 JSON 形状/type 词表/字数上限逐字节不受影响
+    assertEq(Prompts.get('comic.bubbleSystem', { 'comic.bubbleSystem': '你是气泡编剧。' }) + m[1],
+      '你是气泡编剧。' + INLINE.slice(PERSONA.length), '覆盖只换人设句,契约半逐字节不变');
+    assertEq(Prompts.list().filter(x => x.def.includes('只返回 JSON 数组') || x.def.includes('"type"')).length, 0,
+      '返回 JSON 形状与 type 词表不做成可覆盖变量(注册表里不该出现它)');
+    // 契约半为什么不开放:它就是下面解析/归类的判据,词表两侧必须同集(改一侧即红)
+    const types = (src.match(/const TYPES = \[([^\]]*)\]/) || [])[1] || '';
+    assert(types, 'js/editors.js 应有气泡类型词表 TYPES');
+    types.split(',').map(s => s.trim().replace(/'/g, '')).forEach(t =>
+      assert(m[1].includes(t), '契约半的 type 词表应与解析侧 TYPES 同集:' + t));
+    // 取值口:人设句只剩注册表一份(浏览器隐式读 Store.settings.promptOverrides,该步无 Node 消费点)
+    assert(src.includes("system: Prompts.get('comic.bubbleSystem') + BUBBLE_CONTRACT,"),
+      '漫剧气泡步应经注册表取人设句、契约半就地拼');
+    assert(!src.includes(PERSONA), 'js/editors.js 不应再内联人设句(覆盖不会跟过去)');
+    const item = Prompts.list().find(x => x.key === 'comic.bubbleSystem');
+    assert(item && !item.vars.length && item.name.includes('漫剧气泡'),
+      '注册表应登记漫剧气泡人设条目(无变量,可在全局默认值页在线改写)');
+    assert(Skills.byId('core.personaCtx').prompts.includes('comic.bubbleSystem'), 'SK-03 应登记 comic.bubbleSystem');
+    /* 记账:契约半有意不收 + 该步不过 ctx 通道,两件事都写在「仍欠」段里(写在"已落地"那半不算交账) */
+    const owed = (Skills.byId('core.personaCtx').note || '').split('仍欠').slice(1).join('仍欠');
+    ['漫剧气泡', 'ctx 通道'].forEach(k => assert(owed.includes(k), 'SK-03 的仍欠段须点名:' + k));
+    /* 全仓持有者名单:按"以 你是 开头的字符串字面"逐文件普查,一处新增/一处收编都会改动这张名单。
+     * 三类持有者混在同一张表里如实计数——注册表 def(js/prompts.js,单源)、专家人设库(js/experts-data.js,
+     * 另一份单源)、其余即注册表之外仍各写一份的内联人设(含 js/api.js 两处兜底缺省与 js/gsettings.js 的
+     * 输入框占位文案);收编即从名单上减一处,漏改这张表先红。 */
+    const files = [].concat(
+      fs.readdirSync(ROOT).filter(f => f.endsWith('.js')),
+      fs.readdirSync(path.join(ROOT, 'js')).filter(f => f.endsWith('.js')).map(f => 'js/' + f)).sort();
+    const census = files.map(f => [f, (fs.readFileSync(path.join(ROOT, f), 'utf8').match(/['"`]你是/g) || []).length])
+      .filter(x => x[1]).map(x => x[0] + ':' + x[1]);
+    assertEq(census.join(' '), [
+      'js/agent-global.js:1', 'js/agent-ops.js:2', 'js/api.js:2', 'js/experts-data.js:16', 'js/experts.js:2',
+      'js/gsettings.js:2', 'js/plans.js:1', 'js/proj-planner.js:2', 'js/proj-shell.js:1', 'js/proj-upload.js:1',
+      'js/prompts.js:26', 'js/role-editor.js:1', 'js/sb-views.js:1', 'js/wf-core.js:1',
+    ].join(' '), '全仓人设字面持有者名单(逐文件计数)');
+    assert(!census.some(x => x.startsWith('js/editors.js:')), 'js/editors.js 收编后应已不在持有者名单上');
+    assertEq(Prompts.list().filter(x => x.def.startsWith('你是')).length, 26,
+      '名单里 js/prompts.js 那 26 处就是注册表 def 本身(注册表条数变了这张名单也要跟着改)');
   } },
   { name: '审片升为主线一等步骤(G-03):板块 Agent 有审片席;plans/工作区/CLI 都映射 episode.smartReview', fn() {
     const D = require(path.join(ROOT, 'js/domain.js'));
