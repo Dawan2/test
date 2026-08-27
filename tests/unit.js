@@ -3835,6 +3835,24 @@ function loadPersona(ov) {
 function personaSubject() {
   return { name: '林晚晴', prompt: '', persona: { 五官: '剑眉星目', 发型: '银色长直发及腰', 身材: '', 服饰: '墨色风衣', 性格: '外冷内热', 特技: '', 弱点: '', 语气: '' } };
 }
+/* 导演设定五维生成(window.genDirectorSetting)沙箱:该步 LLM 请求的 system/user 原样截获,ov 写进 Store 覆盖表
+ * (加载序与 index.html 同:prompts → gsettings;gsettings 加载期只强依赖 Voice.NARRATOR_PRESETS) */
+function loadGsettings(ov, fail) {
+  const sb = makeSandbox();
+  installCommon(sb);
+  sb.Voice = { NARRATOR_PRESETS: [] }; // gsettings.js 顶层 const VOICE_LIST 取它(voice.js 在 index.html 中更前)
+  sb.__apiReady = true;
+  sb.__llm = [];
+  sb.API.chatJSON = async req => {
+    sb.__llm.push({ system: req.system, user: ((req.messages || [])[0] || {}).content });
+    if (fail) throw new Error('上游 500');
+    return { 光影: 'L', 色调: 'C', 情感氛围: 'M', 服化道审美: 'A', 表演气质: 'P' };
+  };
+  if (ov) sb.Store.state.settings.promptOverrides = ov;
+  loadFile(sb, 'prompts.js');
+  loadFile(sb, 'gsettings.js');
+  return sb;
+}
 /* 全脏项目夹具:过期镜(done+旧指纹)/失败镜/未确认镜各一 + 低分审片 + 主体缺图 → G1-G6/G9 同时触发 */
 function contractDirtyP() {
   const mk = (id, order, over) => Object.assign({
@@ -4801,6 +4819,87 @@ const contractTests = [
     assertEq(Object.keys(g).length, 20, '缺口投影键数应不变');
     assertEq(g['G-13'].join(','), 'script.hookType,script.aiToneBan,subjects.refDiscipline,eps.structureStage,gen.videoTpl,film.rhythmInject',
       'G-13 的六条关联索引逐字节不变(只收一面不摘标记)');
+    assertEq(Skills.validate({ Prompts }).join(' | '), '', '新键须被 skill 索引引用且引用键都存在');
+  } },
+  { name: '导演设定生成人设:经 Prompts.get(dirset.system) 取值,缺省逐字节等于收编前的内联字面', fn: async () => {
+    const Prompts = require('../js/prompts.js');
+    const DEF = '你是资深影视导演。'; // 收编前写死在 js/gsettings.js 的那一句
+    assertEq(Prompts.get('dirset.system'), DEF, '缺省人设句应与收编前的内联字面逐字节相同');
+    const item = Prompts.list().find(x => x.key === 'dirset.system');
+    assert(item && !item.vars.length && item.name.startsWith('导演设定生成') && item.name.includes('系统人设'),
+      '注册表应登记导演设定生成人设条目(无变量,可在全局默认值页在线改写)');
+    assertEq(Prompts.list().filter(x => x.def === DEF).length, 1, '该人设句应恰好命中注册表一条(同 def 开两个键即红)');
+    /* 沙箱真跑这一步:该步恰好发一次 LLM,真实发出的 system 就是注册表取值 */
+    const sb = loadGsettings();
+    const ds = await sb.genDirectorSetting('漫剧', '第一段:女主被当众羞辱。');
+    assertEq(sb.__llm.length, 1, '导演设定生成应恰好发一次 LLM');
+    assertEq(sb.__llm[0].system, DEF, '该步真实发出的 system 应逐字节等于缺省人设句');
+    assertEq(Object.keys(ds).sort().join(','), ['style'].concat(sb.DIR_DIMS).sort().join(','), '返回应是 style + 五维');
+    /* 覆盖后 system 跟随、user 半(风格/五维 JSON 字段契约/剧本前段摘取)逐字节不变、解析口径不变 */
+    const sb2 = loadGsettings({ 'dirset.system': '你是覆盖生效的导演。' });
+    const ds2 = await sb2.genDirectorSetting('漫剧', '第一段:女主被当众羞辱。');
+    assertEq(sb2.__llm[0].system, '你是覆盖生效的导演。', '写覆盖后该步 system 应跟随');
+    assertEq(sb2.__llm[0].user, sb.__llm[0].user, 'user 半应逐字节不变(JSON 字段契约与正文摘取未开放覆盖)');
+    assertEq(JSON.stringify(ds2), JSON.stringify(ds), '覆盖只换人设句,返回解析口径不变');
+    /* 只收人设句:五维返回 JSON 的字段契约仍留在 user 半,不做成可覆盖变量 */
+    ['"光影"', '"色调"', '"情感氛围"', '"服化道审美"', '"表演气质"'].forEach(f =>
+      assertEq(Prompts.list().filter(x => x.def.includes(f)).length, 0, '返回 JSON 契约不进注册表:' + f));
+    /* 不与 und.system 复用:两句差「影视/短剧」两字,角色(制定全剧导演设定五维 / 本集理解)与产物落点都不同 */
+    assert(Prompts.get('und.system') !== DEF, '导演设定人设不得与 und.system 同字面(同字面才谈得上复用)');
+    ['concept.system', 'light.system', 'sb.reviewSystem', 'review.finalSystem'].forEach(k =>
+      assert(Prompts.get(k) !== DEF, '导演设定人设不得与既有键 ' + k + ' 同字面'));
+    /* LLM 失败仍走按风格的本地模板回退,且回退文案不随人设覆盖变动(覆盖只作用于 LLM 那一路) */
+    const sb3 = loadGsettings({ 'dirset.system': '你是覆盖生效的导演。' }, true);
+    const fb = await sb3.genDirectorSetting('漫剧', '');
+    const sb4 = loadGsettings(null, true);
+    assertEq(JSON.stringify(fb), JSON.stringify(await sb4.genDirectorSetting('漫剧', '')), '回退模板文案不随人设覆盖变动');
+    assert(fb.光影 && fb.style === '漫剧', 'LLM 失败应回退到按风格的默认导演设定');
+  } },
+  { name: '导演设定生成人设(源级):js/gsettings.js 零内联,全仓内联人设持有者名单精确到文件:处数', fn() {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const gs = fs.readFileSync(path.join(ROOT, 'js', 'gsettings.js'), 'utf8');
+    // 取值口与该步 user 半锚点配对:键换到别的步上即红
+    assert(/system: Prompts\.get\('dirset\.system'\),[\s\S]{0,400}风格的短剧制定导演设定/.test(gs),
+      'dirset.system 应就在导演设定生成步的取值口上(浏览器隐式读 Store 覆盖表),且与该步 user 半锚点配对');
+    /* 收严:该人设句字面全仓扫一遍,恰好只剩 js/prompts.js —— 谁在别处抄第二份(哪怕原文件仍走注册表)当场红 */
+    const ALL = ['server.js', 'cli.js', 'mcp.js', 'index.html']
+      .concat(fs.readdirSync(path.join(ROOT, 'js')).filter(n => n.endsWith('.js')).map(n => 'js/' + n)).sort();
+    const holders = ALL.filter(rel => fs.readFileSync(path.join(ROOT, rel), 'utf8').includes(Prompts.get('dirset.system')));
+    assertEq(holders.join(','), 'js/prompts.js', '该人设句字面应只剩注册表一份(全仓持有者名单逐字节比对)');
+    // 纯浏览器链路:没有服务端/CLI 对端,那两处不得长出第二份 user 半
+    ['server.js', 'cli.js'].forEach(rel => assert(!fs.readFileSync(path.join(ROOT, rel), 'utf8').includes('风格的短剧制定导演设定'),
+      rel + ' 不应出现该步的 user 半(导演设定生成只在浏览器偏好学习页)'));
+    /* 全仓内联人设持有者名单:本槽新立,精确到「文件:处数」而不是只报一个总数 ——
+     * 判据(内联人设字面)= 直接写在 system 值位置、赋给具名人设常量、或由装配函数直接 return 的以「你是」开头的字面,
+     * 注册表 js/prompts.js 自身是唯一来源不计入。收编一处名单里那一处就得减,少减/多减/挪到别的文件都当场红。
+     * 不在本判据内的两类另有归属,不混进这个数:js/experts-data.js 的预置专家 persona 是产品数据(用户雇佣时可改),
+     * index.html 里那句是输入框 placeholder(不发给模型)。 */
+    const RE = /(?:system:\s*|return\s*|(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*)(?:'|`)你是/g;
+    const inlinePersonaHolders = ALL.filter(rel => rel !== 'js/prompts.js')
+      .map(rel => [rel, (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(RE) || []).length])
+      .filter(([, n]) => n).map(([rel, n]) => rel + ':' + n);
+    assertEq(inlinePersonaHolders.join(', '),
+      'js/agent-global.js:1, js/agent-ops.js:2, js/beatboard.js:1, js/editors.js:1, js/episode-util.js:3, js/episodes.js:1, '
+      + 'js/experts.js:2, js/persona.js:2, js/plans.js:1, js/proj-shell.js:1, js/proj-upload.js:1, js/role-editor.js:1, '
+      + 'js/sb-board.js:2, js/sb-views.js:1, js/wf-core.js:1',
+      '全仓内联人设持有者名单应精确到文件:处数(G-13 余量清单,收编一处即须同步减)');
+    assertEq(inlinePersonaHolders.reduce((a, x) => a + Number(x.split(':')[1]), 0), 21, 'G-13 余量总处数');
+    // 本槽的落点:js/gsettings.js 整条从名单上消失(该文件此后零内联人设)
+    assert(!inlinePersonaHolders.some(x => x.startsWith('js/gsettings.js')),
+      'js/gsettings.js 应已零内联人设(工坊那份人设字面在 js/experts.js,不记在本文件名下)');
+    assert(!RE.test(gs.replace(/placeholder="[^"]*"/g, '')), 'js/gsettings.js 不得再有内联人设字面');
+    // 记账:SK-03 登记新键,note 随实况改写(仍欠段的 ops 协议锚点由 infra 记账用例另钉)
+    const sk3 = Skills.byId('core.personaCtx');
+    assert(sk3.prompts.includes('dirset.system'), 'SK-03 应登记 dirset.system');
+    assert(sk3.note.includes('dirset.system') && sk3.note.includes('零内联人设'),
+      'SK-03 的 note 须写明该步已收编、且 js/gsettings.js 至此零内联');
+    assert(sk3.note.includes('und.system') && sk3.note.includes('不与'), 'SK-03 的 note 须交代为什么不复用 und.system');
+    // 缺口未闭合(名单还有 21 处):标记不摘,G-13 的关联索引逐字节不变
+    const g = Skills.gaps();
+    assertEq(Object.keys(g).length, 20, '缺口投影键数应不变');
+    assertEq(g['G-13'].join(','), 'script.hookType,script.aiToneBan,subjects.refDiscipline,eps.structureStage,gen.videoTpl,film.rhythmInject',
+      'G-13 的六条关联索引逐字节不变(只收一处不预支摘标记)');
     assertEq(Skills.validate({ Prompts }).join(' | '), '', '新键须被 skill 索引引用且引用键都存在');
   } },
   { name: 'Agent 单轮人设:经 WfCore.buildAgentSystem(agent.system) 取值,缺省逐字节等于收编前的模板串', fn() {
