@@ -282,7 +282,8 @@
    * 条目改写到关键词不在了判据自然退空——不拿失配的字面制造假命中。 */
   const MULTI_DECL = (String(KB.section('多镜头写法') || '').match(/须声明"([^"]*)"/) || [])[1] || '';
   const DECL_WORDS = ['参考图', '一致'].filter(w => MULTI_DECL.indexOf(w) >= 0);
-  /* 大幅动作词:首尾帧两端画面插不出来的那一类动作(位移大、姿态变化剧烈) */
+  /* 大幅动作词:位移大、姿态变化剧烈的那一类动作——首尾帧两端画面插不出来,抽卡也稳不住;
+   * SK-13 的首尾帧插值面与 SK-20 的动态感准入面共用本表,不写第二份 */
   const BIG_MOTION = ['奔跑', '狂奔', '飞奔', '疾驰', '追逐', '打斗', '厮打', '翻滚', '跳跃', '跃起',
     '摔倒', '扑倒', '坠落', '爆炸', '冲刺', '急转', '挥拳', '旋转'];
   /* 镜头切换信号:一镜之内出现多次即是把好几个镜头挤进一条提示词 */
@@ -546,6 +547,66 @@
       }
       if (!s.confirm && !s.final && !Domain.shotVideoReady(s, online)) push('unconfirmed-pending');
     });
+    return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
+  };
+
+  /* ---- 分镜段动态感准入基面(SK-20 动态感面):判定输入分两段取,取哪一段跟着判据走 ----
+   * 动作幅度判 s.prompt 优先 s.plot 那段动作描述(与请求装配同口径):装配段(轴线规则/运镜/机位/
+   * 美术风格/负面约束)本就不写动作,把负面约束里"不要打斗"这类禁写词算进来只会造假命中;
+   * 运镜条数判 Domain.buildVideoRequest 装出的真实提示词——运镜是装配时按 s.camera 追加的,
+   * 一镜给了几个运镜只在装好的那条上看得全;镜长取该请求的 duration(与合成段时长同一份估长)。
+   * 运镜词表现取 WfCore 运镜表里 axis='move' 那几项(角度/景别两轴的取值不是运镜,收进来会把机位描述
+   * 算成第二个运镜),本层不写第二份词表。判据字面一律现取条目正文,条目改写到字面不在了判据自然退空。
+   * 与其余段同纪律:纯本地词法与计数、零 LLM 零计费,结论一律 warn 只报不拦。 */
+  const GC_RULES = String(KB.section('抽卡军规') || '');
+  const BIG_MOTION_RULE = GC_RULES.indexOf('大动态') >= 0;        // 军规①「动作写慢写连续…不写这类大动态」
+  const ONE_MOVE_RULE = GC_RULES.indexOf('一次只给一个运镜') >= 0; // 军规②「运镜写稳写简单」
+  const FLAT_RHYTHM_RULE = String(KB.section('剪辑节奏') || '').indexOf('镜头长度分布') >= 0;
+  const RHYTHM_MIN = 4; // 整集级结论的判定下限:可判定镜数少于此不下整集断言(三两镜谈不上长度分布)
+  /* 运镜判据的取值:词表内的运镜全名,另收其去掉"镜头"二字的简写(条目示例里两种形态都写得到);
+   * 同一运镜命中全名或简写只计一次,不会把一个运镜算成两个 */
+  const moveNames = () => wfCore().CAMERA_MOVES.filter(x => x.axis === 'move').map(x => x.name);
+
+  /* SK-20 镜头动态感准入(剪辑节奏与抽卡军规的校验半):逐镜看这一镜的动态写得进不进模型的稳定区间,
+   * 再回看整集镜长有没有分布。
+   *   motion-overrun      动作描述里写了大幅动作 → warn(军规①;首尾帧镜的同一判据归 SK-13 的插值面,
+   *                       本项不重复报——那一镜的插值风险已如实报过)
+   *   camera-move-crowded 一镜给了两个以上运镜 → warn(军规②「一次只给一个运镜」,hit 列出命中的运镜名;
+   *                       提示词里另写了运镜而与 s.camera 不是同一个时也在此命中)
+   *   rhythm-flat         整集每一镜的真实镜长都一样 → warn(剪辑节奏「节奏=镜头长度分布」,
+   *                       整集级一条,不逐镜重复报)
+   * 提示词还没写的镜与数据残缺装不出请求的镜无判定输入,不产出结论;单镜入口无整集节奏可比。
+   * 这一镜该快该慢、动态感够不够这类语义判断仍归 LLM 审片(G-10),本项只判文本层与计数看得见的部分;
+   * 节拍板五段式产出上的动态感准入(S-04)仍无判定输入,不在本项冒充。 */
+  CHECKS['shots.motionDiscipline'] = function (obj) {
+    const o = obj || {};
+    const p = o.p;
+    const list = shotsOf(o);
+    if (!p || !list.length) return { pass: true, level: 'info', hits: [] };
+    const moves = moveNames();
+    const hits = [];
+    const durs = [];
+    list.forEach(s => {
+      const base = promptOf(s);
+      if (!base) return; // 提示词还没写,无判定输入
+      let q;
+      try { q = Domain.buildVideoRequest(p, o.ep, s); } catch (_) { return; } // 数据残缺装不出请求即无判定输入
+      const at = { shotId: s.id, order: (+s.order || 0) + 1 };
+      const push = (code, name, extra) => hits.push(Object.assign({ code }, at, { name }, extra || {}));
+      durs.push(q.duration);
+      if (BIG_MOTION_RULE && q.strategy !== 'frames') {
+        const m = firstOf(compact(base), BIG_MOTION);
+        if (m.at >= 0) push('motion-overrun', m.word, { at: m.at });
+      }
+      if (ONE_MOVE_RULE) {
+        const t = compact(q.prompt);
+        const got = moves.filter(n => t.indexOf(n) >= 0 || t.indexOf(n.replace(/镜头$/, '镜')) >= 0);
+        if (got.length > 1) push('camera-move-crowded', got.join('、'), { count: got.length, limit: 1 });
+      }
+    });
+    if (FLAT_RHYTHM_RULE && durs.length >= RHYTHM_MIN && durs.every(d => d === durs[0])) {
+      hits.push({ code: 'rhythm-flat', shotId: '', order: 0, name: durs[0] + '秒', count: durs.length, limit: 0 });
+    }
     return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
   };
 
@@ -867,10 +928,17 @@
         + '八维填得全不全这类语义判断仍归 G-10',
     },
     {
-      id: 'shots.motionGate', sk: 'SK-20', name: '镜头动态感准入校验', stage: 'shots', wave: 'W4',
-      kinds: ['check'], pending: ['check'], kb: ['剪辑节奏', '抽卡军规'], cmds: ['episode.generateStoryboard'],
-      gaps: ['S-04'],
-      note: '节拍板五段式产出是判定输入,现无对应领域命令(S-04)',
+      id: 'shots.motionGate', sk: 'SK-20', name: '镜头动态感准入校验', stage: 'shots',
+      covers: ['shots', 'gen'], wave: 'W4',
+      kinds: ['check'], kb: ['剪辑节奏', '抽卡军规'], checks: ['shots.motionDiscipline'],
+      cmds: ['episode.generateStoryboard', 'episode.preflight'],
+      gaps: ['G-10', 'S-04'],
+      note: '校验面落在分镜表这一份判定输入上:动作幅度判逐镜动作描述(大幅动作词与 SK-13 首尾帧插值面共用一份,'
+        + '首尾帧镜归那一面不重复报)、运镜条数判 Domain.buildVideoRequest 装出的真实提示词'
+        + '(运镜词表现取 WfCore 运镜表 axis=move 那几项)、镜长分布取该请求的 duration;'
+        + '经就绪检查消费(所属分镜面已在双端单源面表里,两端实现不必改),结论只报不拦、不拦生成动作。'
+        + 'S-04 未清账:节拍板五段式产出那一份判定输入仍无领域命令出口,该面不在本条冒充;'
+        + '这一镜该快该慢、动态感够不够属语义面,待 G-10',
     },
     /* ---- 生成 ---- */
     {
