@@ -3577,7 +3577,7 @@ const server = http.createServer(async (req, res) => {
           // 集级两步(共性汇总/四维评审)复用逐镜步的成片板块人设,记忆按集标题召回(逐镜步按该镜 plot 召回)
           const epCtx = { personaNote: reviewCtx.personaNote, memText: WfCore.memBlock(tree.agentMemory, ep.title || '', '成片') };
           try {
-            const r = await wfLLM(user.id, { action: 'llm.review', reason: '整集共性汇总(' + ep.title + ')', opId: opBase + '_sum', step: 'main', wfName: 'smart-review', model: st.defLLM || 'qwen-turbo', system: '你是短剧审片总监。', user: WfCore.buildSumUser(reports, epCtx), temperature: 0.4, max_tokens: 1200, projectId: p.id, mockKind: 'sum' });
+            const r = await wfLLM(user.id, { action: 'llm.review', reason: '整集共性汇总(' + ep.title + ')', opId: opBase + '_sum', step: 'main', wfName: 'smart-review', model: st.defLLM || 'qwen-turbo', system: Prompts.get('review.sumSystem', ov), user: WfCore.buildSumUser(reports, epCtx), temperature: 0.4, max_tokens: 1200, projectId: p.id, mockKind: 'sum' });
             common = WfCore.normalizeSum(r.parsed);
           } catch (e) { sumErr = e.message; }
           try {

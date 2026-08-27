@@ -556,7 +556,7 @@
     try {
       if (!sumTried) throw new Error('LLM 未配置');
       const out = await API.chatJSON({
-        system: '你是短剧审片总监。',
+        system: Prompts.get('review.sumSystem'), // 人设走注册表单源(js/prompts.js),与服务端 smart-review 汇总步同字面
         messages: [{ role: 'user', content: WfCore.buildSumUser(reports, episodeReviewCtx(p, ep)) }], // 二十一轮:共性汇总 user 模板下沉 wf-core.js
         temperature: 0.4, max_tokens: 1200,
         billingAction: 'llm.review', operationId: tk.id + '_sum',
