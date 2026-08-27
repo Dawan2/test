@@ -198,6 +198,8 @@ node cli.js export <pid> <epid> --out ./out        # 下载 mp4 + srt
 - **音色选择弹窗** `Voice.pickModal`:系统/收藏 tab + 场景/年龄/性别三维筛选+重置+网格(▶试听/☆收藏/多情感绿标)。
 - **声音设置弹窗** `Voice.settingModal`:音色行联动选择、语速 0.5-2.0x/音量 0-10/语调 0.5-2.0x 滑块、情感八档(非多情感音色禁用并警示)、▶ 试听(Web Speech API speechSynthesis,zh-CN)。
 - 接入:分集工作区参数配置面板「⚙ 配音设置」(存 project.narration)、角色卡「🎙 绑定音色/✨ 推荐/🎵 音色参考」、角色页头部「✨ 批量配音色」(全部角色一次 LLM 调用按人设推荐,弹窗逐角色改选+▶试听,确认后批量绑定,免费辅助不计费);生成音频的历史与任务名带"叙事氛围·1.2x·开心"参数标签;复刻音色功能已下线(2026-08 产品决策,音色库只含系统音色);旧字符串 voice 自动兼容。
+- **配音渲染清单(双端单源,js/domain.js)**:生效音色配置(`Domain.voiceCfgOf`:镜头声音设置 → 项目旁白 → 镜头人物音色 → 本集旁白音色)与配音文本(`Domain.audioTextOf`)只有一处推导,浏览器逐镜配音、批量配音、跑批同步语音与 CLI 合成同读同一份;`Voice.norm` 的缺省与钳制下沉 `Domain.normVoiceCfg`。
+- **渲染凭据 `s.audioMeta`**:配音成功即随音轨落库——音色名 + 语速/音量/语调/情感 + 上游实际音色 id(取服务端 TTS 回执)+ 时长 + 参数文本签名 `sig`;离线占位如实标 `offline:true` 且不写音轨地址(不拿占位冒充真实配音)。合成取音轨走 `Domain.audioTrackOf`(离线占位不混音),合成写回 `ep.composedAudio` 清单摘要(几镜混入真实音轨 / 几镜离线占位 / 几镜判旧),浏览器与 `cli.js compose` 同字段同口径;`hujing shots <pid> <epid>` 的 `audio` 字段即逐镜清单。配音参数或配音文本改动后 `Domain.audioStale` 判旧(工作区标"建议重配音"、合成前如实提示);**旧数据兼容**:`s.audio` 布尔 + `s.audioUrl` 的存量镜按已知事实读出并标 `legacy`,参数留空不臆造、无 `sig` 不判旧。逐镜配音计费走 `Tasks.run`(登记→扣费→执行→失败退费,动作 tts.gen)。
 
 ## 统一导出
 
