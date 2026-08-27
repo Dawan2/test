@@ -3088,6 +3088,85 @@ const contractTests = [
     const sb2 = fs.readFileSync(path.join(ROOT, 'js/storyboard.js'), 'utf8');
     assert(sb2.includes('nx.run'), 'storyboard 下一步按钮应承接 nx.run 动作');
   } },
+  /* ---- 机位词表单源(景别/运镜/视角/角度):结构表在 wf-core.js,消费方一律派生 ---- */
+  { name: '词表单源:CAMERAS/VIEWS/ANGLES/SIZES 是结构表的名称投影,取值与顺序逐项锁定', fn() {
+    const W = require('../js/wf-core.js');
+    assertEq(W.CAMERAS.join('/'), '固定镜头/推镜头/拉镜头/摇镜头/移镜头/跟镜头/环绕镜头/俯拍/仰拍/特写', '运镜取值全集与顺序不得漂移(s.camera 白名单)');
+    assertEq(W.VIEWS.join('/'), '正面/侧面/背面', '视角取值与顺序不得漂移');
+    assertEq(W.ANGLES.join('/'), '仰拍/平视/俯拍/高角度', '角度取值与顺序不得漂移');
+    assertEq(W.SIZES.join('/'), '大全景/全景/中景/近景/特写/超级特写', '景别阶梯取值与顺序不得漂移(索引即级差)');
+    assertEq(W.CAMERAS.join('/'), W.CAMERA_MOVES.map(x => x.name).join('/'), 'CAMERAS 应为 CAMERA_MOVES 的名称投影');
+    assertEq(W.ANGLES.join('/'), W.CAMERA_ANGLES.map(x => x.name).join('/'), 'ANGLES 应为 CAMERA_ANGLES 的名称投影');
+    assertEq(W.SIZES.join('/'), W.SHOT_SIZES.map(x => x.name).join('/'), 'SIZES 应为 SHOT_SIZES 的名称投影');
+    // 结构表附加列自洽:景别 dist 随阶梯单调收紧;运镜 move 项带芯片列,角度/景别别名项不带(由对应栏承担)
+    W.SHOT_SIZES.forEach((x, i) => { if (i) assert(x.dist < W.SHOT_SIZES[i - 1].dist, '景别 dist 应随阶梯单调递减:' + x.name); });
+    W.CAMERA_MOVES.forEach(m => assertEq(!!(m.arrow && m.short), m.axis === 'move', '运镜芯片列应只在 axis=move 项上:' + m.name));
+    W.CAMERA_MOVES.filter(m => m.axis !== 'move').forEach(m =>
+      assert(W.ANGLES.includes(m.name) || W.SIZES.includes(m.name), 'axis=angle/size 的别名项须确属角度或景别栏:' + m.name));
+  } },
+  { name: '词表单源:景别级差 sizeGap 语义(同级 0/相邻 1/隔级 2/两极 4-5/阶梯外 -1)', fn() {
+    const W = require('../js/wf-core.js');
+    assertEq(W.sizeGap('中景', '中景'), 0, '同级');
+    assertEq(W.sizeGap('全景', '中景'), 1, '相邻');
+    assertEq(W.sizeGap('全景', '近景'), 2, '隔一级(KB 推荐)');
+    assertEq(W.sizeGap('大全景', '特写'), 4, '两极(须过渡)');
+    assertEq(W.sizeGap('大全景', '超级特写'), 5, '两极');
+    assertEq(W.sizeGap('远景', '中景'), -1, '阶梯外词不判定');
+    assertEq(W.sizeGap('', '中景'), -1, '空值不判定');
+    assertEq(W.sizeGap(undefined, undefined), -1, '缺字段不判定');
+  } },
+  { name: '词表单源:整份词表字面只在 wf-core.js,其余源文件不得出现第二份(含退役的 4 档景别)', fn() {
+    const W = require('../js/wf-core.js');
+    const files = fs.readdirSync(path.join(ROOT, 'js')).filter(f => f.endsWith('.js') && f !== 'wf-core.js').map(f => 'js/' + f)
+      .concat(['server.js', 'cli.js', 'mcp.js', 'index.html']);
+    // 整份词表的两种常见字面形态:数组字面 'a', 'b', … 与斜杠拼接串 a/b/…
+    // (三项的 VIEWS 只查数组字面——"正面/侧面/背面" 作为三视图行文出现在多处生图提示词里,不是词表)
+    const whole = [];
+    [W.CAMERAS, W.VIEWS, W.ANGLES, W.SIZES].forEach(list => {
+      whole.push(list.map(x => "'" + x + "'").join(', '));
+      if (list.length >= 4) whole.push(list.join('/'));
+    });
+    // 退役字面:4 档景别(camera.js/review.js/sb-io.js/agent.js 各存一份即本次归一的病灶)
+    const retired = ["'特写', '近景', '中景', '全景'", '特写/近景/中景/全景', "'特写', dist"];
+    const offLadder = ['远景', '大特写', '超特写', '中近景']; // 阶梯外景别词:词表闭合性回归
+    const bad = [];
+    files.forEach(rel => {
+      const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      whole.forEach(t => { if (src.includes(t)) bad.push(rel + ' 复制了整份词表:' + t.slice(0, 20) + '…'); });
+      retired.forEach(t => { if (src.includes(t)) bad.push(rel + ' 残留退役词表:' + t); });
+      offLadder.forEach(t => { if (src.includes(t)) bad.push(rel + ' 出现阶梯外景别词:' + t); });
+    });
+    assertEq(bad.join('; '), '', '四张词表须由 WfCore.CAMERAS/VIEWS/ANGLES/SIZES 派生,不得复制');
+  } },
+  { name: '词表单源:四处消费方按词表派生(机位选择器/景别衔接检查/CSV 导入/改镜协议)', fn() {
+    const cam = fs.readFileSync(path.join(ROOT, 'js/camera.js'), 'utf8');
+    assert(cam.includes('WfCore.CAMERA_ANGLES') && cam.includes('WfCore.SHOT_SIZES'), 'camera.js 仰角/景别档应派生自结构表');
+    assert(cam.includes('WfCore.CAMERA_MOVES') && !/REV_MOVE/.test(cam), '机位选择器运镜芯片应取词表,不再自建反向映射表');
+    assert(/data-move="\$\{mv\.name\}"/.test(cam), '运镜芯片值应是 CAMERAS 内的规范名(可直接写回 s.camera)');
+    const rv = fs.readFileSync(path.join(ROOT, 'js/review.js'), 'utf8');
+    assert(rv.includes('WfCore.sizeGap('), '离线景别衔接检查应经 WfCore.sizeGap 判级差(不再自建 4 档阶梯)');
+    const io = fs.readFileSync(path.join(ROOT, 'js/sb-io.js'), 'utf8');
+    assert(io.includes('WfCore.VIEWS') && io.includes('WfCore.SIZES'), 'CSV 导入白名单与模板列说明应取词表');
+    const ag = fs.readFileSync(path.join(ROOT, 'js/agent.js'), 'utf8');
+    assert(/运镜限:\$\{WfCore\.CAMERAS\.join/.test(ag), '导演助手改镜协议的四栏取值应取词表');
+  } },
+  { name: '词表单源:拆镜模板四栏取值由词表拼装(派生后与归一前逐字节一致)', fn() {
+    const W = require('../js/wf-core.js');
+    const user = W.buildSBUser({ style: '漫剧', subjects: [] }, { title: 'e', sbConfig: {} },
+      { count: 5, mode: 'create' }, { styleText: '漫剧', projType: 'drama', content: '正文' });
+    assert(user.includes('"camera":"运镜(从 固定镜头/推镜头/拉镜头/摇镜头/移镜头/跟镜头/环绕镜头/俯拍/仰拍/特写 中选)"'), '运镜栏字面等价');
+    assert(user.includes('"view":"视角(正面/侧面/背面)"'), '视角栏字面等价');
+    assert(user.includes('"angle":"拍摄角度(仰拍/平视/俯拍/高角度)"'), '角度栏字面等价');
+    assert(user.includes('"shotSize":"景别(大全景/全景/中景/近景/特写/超级特写)"'), '景别栏字面等价');
+    // 拆镜规则与五段式里的景别词须落在阶梯内(两极那句此前写了阶梯外的"远景")
+    ['远景', '大特写'].forEach(t => assert(!W.SPLIT_RULES.includes(t) && !W.PROMPT5.includes(t), '拆镜规则不得用阶梯外景别词:' + t));
+  } },
+  { name: '词表单源:知识库「景别运镜」正文与景别阶梯逐项对应', fn() {
+    const W = require('../js/wf-core.js');
+    const text = require('../js/knowledge.js').section('景别运镜');
+    W.SIZES.forEach(n => assert(text.includes(n), '「景别运镜」正文应覆盖阶梯档位:' + n));
+    ['远景', '大特写', '中近景'].forEach(t => assert(!text.includes(t), '「景别运镜」正文不得出现阶梯外景别词:' + t));
+  } },
 ];
 
 /* ================= 套件 18:tasks.js(任务中心:§3.1 桌面通知/标题角标,§3.2 进度模型) ================= */
