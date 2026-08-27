@@ -175,10 +175,11 @@
       } else gates.push(gate('g8-humanreview', '真人素材审核无 rejected', 'warn', 'HumanReview 模块未加载,无法校验'));
     } catch (e) { gates.push(gate('g8-humanreview', '真人素材审核', 'warn', '校验异常:' + e.message)); }
 
-    /* G9 主体缺图 0(主体参考图走角色页逐主体生成,无对应领域命令——导航类处置) */
-    const noImg = (p.subjects || []).filter(s => !s.image).length;
+    /* G9 主体缺图 0(fix 走 subject.generateImage 命令,带缺图主体 id 子集,与角色页逐主体生图同链路) */
+    const noImgList = (p.subjects || []).filter(s => !s.image);
+    const noImg = noImgList.length;
     gates.push(gate('g9-subjects', '主体角色图齐全 = 0 缺图', noImg ? 'fail' : 'pass', noImg ? noImg + ' 位主体缺参考图' : (p.subjects || []).length + ' 位全部就位',
-      noImg ? { fix: { type: 'nav', hash: '#/project/' + p.id + '/roles' } } : null));
+      noImg ? { fix: { type: 'command', cmd: 'subject.generateImage', subjectIds: noImgList.map(s => s.id) } } : null));
 
     /* G10 计费账目核对(离线/无接口 warn;在线时 CLI 端真正跑 /api/billing/usage 对账) */
     try {
@@ -372,7 +373,7 @@ ${summary.stale.length ? summary.stale.map(s => ' - ' + s).join('\n') : ' (无)'
   }
 
   /* ---------- 门禁 fix 统一执行器(发布门弹窗与制作台共用) ----------
-   * command 类走统一命令层(ui 模式保留决策闸,带 epid/shotIds 子集);nav 类跳转/开对应面板。
+   * command 类走统一命令层(ui 模式保留决策闸,带 epid/shotIds/subjectIds 子集);nav 类跳转/开对应面板。
    * onDone(r) 处置落定后回调(调用方重收门禁/重绘);opts.issuesAsSection:制作台单屏内「问题清零」导航不另开弹窗,仅重绘。 */
   function execFix(p, g, main, onDone, opts) {
     const fix = g && g.fix;
@@ -386,7 +387,7 @@ ${summary.stale.length ? summary.stale.map(s => ' - ' + s).join('\n') : ' (无)'
       return;
     }
     if (fix.type === 'command' && window.Commands && typeof Commands.execute === 'function') {
-      return Commands.execute(fix.cmd, { pid: p.id, epid: fix.epid, shotIds: fix.shotIds, main, ui: true })
+      return Commands.execute(fix.cmd, { pid: p.id, epid: fix.epid, shotIds: fix.shotIds, subjectIds: fix.subjectIds, main, ui: true })
         .then(Commands.digest)
         .then(r => { if (onDone) onDone(r); });
     }

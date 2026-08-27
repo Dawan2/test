@@ -144,7 +144,9 @@
   reg('episode.smartReview', { label: '智能审片' }, ({ p, ep, args }) => metered(REG['episode.smartReview'], async () => {
     if (!window.Review || !window.SB || !SB.autoSmartReview) return fail('unavailable', '审片模块未加载');
     ensureSBCfg(p, ep);
-    const r = await SB.autoSmartReview(p, ep, sinkOf(args), ep.shots, args.ui ? false : args.quiet !== false);
+    // shotIds 子集复审(与 CLI/服务端同参):修订重抽后只复检指定镜
+    const shots = Array.isArray(args.shotIds) && args.shotIds.length ? (ep.shots || []).filter(s => args.shotIds.includes(s.id)) : ep.shots;
+    const r = await SB.autoSmartReview(p, ep, sinkOf(args), shots, args.ui ? false : args.quiet !== false);
     const out = ok(r);
     if (r && r.manual > 0) out.status = 'needs_human'; // 待人工镜头:质量闸门语义,produce/跑批据此阻断合成
     out.next = nextOf(p, ep);
@@ -174,6 +176,73 @@
     if (!(ep.content || '').trim()) return blocked('no-script', '本分集暂无剧本内容,请先补充剧本');
     const okU = await Understanding.regen(p, ep);
     return okU ? ok({}) : fail('understanding', '本集理解生成失败(已退费)');
+  }));
+
+  /* 主体生图(exec):缺参考图主体批量生成(subjectIds 可指定子集,含已有图重生);
+   * 逐主体走 EpisodeUtil.genSubjectImage(Tasks.run 五件套:登记→扣费→执行→失败退费),发布门 G9 一键处置同入口 */
+  reg('subject.generateImage', { label: '主体生图' }, ({ p, args }) => metered(REG['subject.generateImage'], async () => {
+    if (!window.EpisodeUtil || !EpisodeUtil.genSubjectImage) return fail('unavailable', '主体图模块未加载');
+    const ids = Array.isArray(args.subjectIds) && args.subjectIds.length ? new Set(args.subjectIds) : null;
+    const todo = (p.subjects || []).filter(s => ids ? ids.has(s.id) : !s.image);
+    if (!todo.length) { const r = ok({ total: 0, ok: 0, failed: [] }); r.next = nextOf(p); return r; }
+    const failed = [];
+    let okCnt = 0;
+    for (const s of todo) {
+      if (window.COST && Store.credits() < COST.image) { failed.push({ subjectId: s.id, name: s.name, error: '积分不足' }); continue; }
+      const before = s.image;
+      await EpisodeUtil.genSubjectImage(p, s, null, !!before); // 子集含已有图项时按重新生成语义
+      if (s.image && s.image !== before) okCnt++;
+      else failed.push({ subjectId: s.id, name: s.name, error: '生成失败(已退费)' });
+    }
+    const r = { ok: failed.length === 0, status: failed.length ? 'failed' : 'done', result: { total: todo.length, ok: okCnt, failed } };
+    if (failed.length) r.error = { code: okCnt ? 'partial' : 'gen-failed', message: failed.length + ' 位主体生图失败,可重试' };
+    r.next = nextOf(p);
+    return r;
+  }));
+
+  /* 提取主体(exec):项目剧本(无则各集正文)→ LLM 语义提取角色/场景/道具合并入库——同名同类不覆盖
+   * (缺提示词/人设/描述的补齐),新主体待生图;在线 LLM 失败如实报错(服务端已退费),离线回退本地启发式;
+   * 提示词与规整 wf-core 单源(CLI project.extractSubjects 同源) */
+  reg('project.extractSubjects', { label: '提取主体' }, ({ p, args }) => metered(REG['project.extractSubjects'], async () => {
+    if (!window.EpisodeUtil || !EpisodeUtil.llmExtractSubjects) return fail('unavailable', '主体提取模块未加载');
+    const text = String(p.script || '').trim() || (p.episodes || []).map(e => e.content || '').filter(Boolean).join('\n').trim();
+    if (!text) return blocked('no-script', '项目暂无剧本内容,请先上传剧本');
+    const mode = args.mode === 'fine' ? 'fine' : 'normal';
+    const types = { character: true, scene: true, prop: true };
+    let found, usedLLM = false;
+    if (window.API && API.isReady()) {
+      const model = (Store.state.settings || {}).defLLM || API.getConfig().model;
+      const tk = Tasks.start({ type: '剧本解析', model, target: p.name, projectId: p.id });
+      try { found = await EpisodeUtil.llmExtractSubjects(text, mode, types, model, tk.id); usedLLM = true; Tasks.done(tk); }
+      catch (e) { Tasks.fail(tk, 'LLM 提取失败:' + e.message); return fail('extract', 'LLM 提取失败(已退费):' + e.message); }
+    } else {
+      found = EpisodeUtil.extractSubjects(text, mode, types);
+    }
+    p.subjects = p.subjects || [];
+    let added = 0, skipped = 0;
+    ['character', 'scene', 'prop'].forEach(kind => (found[kind] || []).forEach(s => {
+      const exist = p.subjects.find(x => x.kind === kind && (x.name === s.name || (x.formerNames || []).includes(s.name) || (s.aliases || []).includes(x.name)));
+      if (exist) {
+        if (!exist.prompt && s.prompt) exist.prompt = s.prompt;
+        if (!exist.persona && s.persona) exist.persona = s.persona;
+        if (!exist.description && s.description) exist.description = s.description;
+        skipped++;
+        return;
+      }
+      added++;
+      p.subjects.push({
+        id: Store.uid('sub'), kind, name: s.name, evidence: s.evidence, description: s.description || '',
+        prompt: s.prompt || EpisodeUtil.genPrompt(kind, s.name, Domain.styleOf(p)),
+        persona: s.persona,
+        // 别名入 formerNames:分镜按别名引用时 findSubject 仍能解析到本主体(与解析向导入库口径一致)
+        formerNames: (s.aliases || []).slice(0, 10),
+        image: null, status: 'pending',
+      });
+    }));
+    Store.save();
+    const r = ok({ added, skipped, total: p.subjects.length, llm: usedLLM, truncated: !!found.truncated });
+    r.next = nextOf(p);
+    return r;
   }));
 
   /* 一键成片(exec,编排):就绪检查 → 批量生成 → 智能审片(质量闸门) → 合成成片;

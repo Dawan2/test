@@ -5,23 +5,9 @@
 (function () {
   /* ---------- 启发式文本解析器(离线兜底;在线走 LLM 精确提取) ---------- */
   const SPEECH_VERBS = '说道问答复喊叫嚷嘀咕喃喃冷笑怒吼嘲笑惊呼感叹低语询问嘀咕';
-  const STOP_WORDS = ['他们', '我们', '你们', '大家', '众人', '有人', '人们', '人们', '这时', '突然', '然后', '于是', '只见', '只听'];
-  /* 姓名不可能以这些虚词/代词开头或结尾(过滤"他从井底""生身体里"这类叙述碎片) */
-  const BAD_PREFIX = '他她我你它这那在从把被向对跟和与就都也还又再很太真没不好让使令但可是因为所以如果已经正将更最越并而其于之乎者也皆';
-  const BAD_SUFFIX = '的了着过吗呢吧啊嘛呀哪哈哦唉嗯';
-  /* 名称中不该出现的成分:说话动词(答这个/说一遍/喊大 这类台词碎片即由此产生)与常用叙述短语 */
-  const NAME_BAD_VERBS = '说问答喊叫嚷嘲怒吼惊叹询'; // 「道/笑」可能出现在真名(道长/笑笑)中,不在此列
-  const NAME_BAD_PHRASES = ['这个', '那个', '什么', '怎么', '为什么', '一遍', '一下', '一点', '一些', '一样', '起来', '出来', '过去', '过来', '回去', '知道', '明白', '东西', '事情', '地方', '时候', '问题', '意思', '声音', '样子', '的话', '没有', '不是', '就是', '还是'];
-  /* 名称可信性校验(LLM 与本地启发式结果共用入口:add()/norm 均经此过滤) */
-  function isPlausibleName(kind, name) {
-    name = String(name || '').trim();
-    if (name.length < 2 || name.length > (kind === 'character' ? 6 : 8)) return false;
-    if (BAD_PREFIX.includes(name[0]) || BAD_SUFFIX.includes(name[name.length - 1])) return false;
-    if (kind === 'character' && [...name].some(ch => NAME_BAD_VERBS.includes(ch))) return false;
-    if (NAME_BAD_PHRASES.some(w => name.includes(w))) return false;
-    if (STOP_WORDS.some(w => name.includes(w))) return false;
-    return true;
-  }
+  /* 名称可信性校验(LLM 与本地启发式结果共用入口:add()/norm 均经此过滤;
+   * 算法下沉 wf-core.js 双端单源——CLI project.extractSubjects 同校验) */
+  const isPlausibleName = WfCore.isPlausibleName;
   const SCENE_DICT = ['教室', '办公室', '会议室', '卧室', '客厅', '厨房', '医院', '学校', '公园', '街道', '大街', '小巷', '森林', '海边', '沙滩', '山顶', '山谷', '城市', '小镇', '村庄', '宫殿', '城堡', '寺庙', '实验室', '地下室', '仓库', '车站', '机场', '码头', '餐厅', '咖啡馆', '酒吧', '酒店', '商场', '图书馆', '博物馆', '监狱', '法庭', '战场', '飞船', '太空站', '洞穴', '祭坛', '武馆', '剧院'];
   const PROP_DICT = ['长剑', '短剑', '宝剑', '匕首', '长枪', '手枪', '步枪', '弓箭', '盾牌', '铠甲', '斗篷', '面具', '手机', '电脑', '信件', '信封', '钥匙', '项链', '戒指', '手镯', '古书', '日记', '地图', '盒子', '宝箱', '药瓶', '丹药', '鲜花', '灯笼', '罗盘', '怀表', '照片', '画卷', '玉佩', '令牌', '徽章', '法杖', '魔杖', '水晶球'];
   /* 各类主体上限(本地启发式宁缺毋滥) */
@@ -152,25 +138,10 @@
     };
   }
 
-  /* ---------- LLM 主体提取(失败时调用方回退本地启发式;opId 供稳定计费操作键,解析重试不重复扣) ---------- */
+  /* ---------- LLM 主体提取(失败时调用方回退本地启发式;opId 供稳定计费操作键,解析重试不重复扣) ----------
+   * 提示词与结果规整下沉 wf-core.js 双端单源(CLI project.extractSubjects 同源),此处只保留浏览器 API 调用 */
   async function llmExtractSubjects(text, mode, types, model, opId) {
-    const trunc = text.length > 15000;
-    const t = trunc ? text.slice(0, 15000) : text;
-    const want = [];
-    if (types.character) want.push('characters(人物)');
-    if (types.scene) want.push('scenes(场景)');
-    if (types.prop) want.push('items(物品)');
-    const user = `分析以下短剧剧本,提取其中出现的${want.join('、')}主体,返回 JSON,格式:
-{"characters":[{"name":"角色名","aliases":["其他称谓"],"description":"一句话角色设定","prompt":"文生图中文画面提示词","persona":{"五官":"","发型":"","身材":"","服饰":"","性格":"","特技":"","弱点":"","语气":""}}],"scenes":[{"name":"场景名","aliases":["其他称谓"],"description":"一句话描述","prompt":"文生图中文画面提示词"}],"items":[{"name":"物品名","aliases":["其他称谓"],"description":"一句话描述","prompt":"文生图中文画面提示词"}]}
-要求:
-- 人物的 persona 为八维度人设:外形(五官/发型/身材/服饰)+ 内在(性格/特技/弱点/语气),每维一句话;人物的 prompt 以外形维度为主撰写
-- ${mode === 'fine' ? '精细模式:prompt 与 persona 必须详尽,包含外貌/服装/神态/风格限定词' : '普通模式:prompt 简洁,persona 每维简短即可'}
-- 只提取剧本中真实出现的主体,不要编造;未要求的类别返回空数组
-- 名字必须是真正的名称:人物为真实人名或稳定称谓(如 林晚晴、王管家、大小姐),严禁把台词碎片、动词短语、叙述片段当作名字(如「答这个」「说一遍」「喊大」均为反面例子);场景/物品也须为具体专名,不要泛化词
-- 去重合并:同一主体的不同称谓必须合并为一个主体(如 林晚晴/晚晴/大小姐 是同一人时只输出一个),name 用最稳定正式的全称,其余称谓列入 aliases;场景/物品同理
-- 每类最多 12 个主体
-剧本${trunc ? '(原文过长,已截取前 15000 字)' : ''}:
-${t}`;
+    const { user, truncated } = WfCore.buildExtractUser(text, mode, types);
     // R1 收敛:统一走 API.chatJSONRobust(重试+修复内置)
     const out = await API.chatJSONRobust({
       model,
@@ -179,35 +150,7 @@ ${t}`;
       temperature: 0.3, max_tokens: 4000,
       operationId: opId,
     });
-    const norm = (arr, evidence, kind) => (Array.isArray(arr) ? arr : []).slice(0, 12)
-      .map(o => o && ({ name: String(o.name || '').trim().slice(0, 12), o }))
-      .filter(x => x.name && isPlausibleName(kind, x.name)) // LLM 结果同样过可信性校验,拦截台词碎片
-      .map(({ name, o }) => ({
-        name,
-        evidence,
-        prompt: String(o.prompt || '').trim(),
-        description: String(o.description || ''),
-        persona: kind === 'character' && o.persona && typeof o.persona === 'object' ? o.persona : undefined,
-        aliases: Array.isArray(o.aliases) ? o.aliases.map(a => String(a || '').trim().slice(0, 12)).filter(a => a && a !== name).slice(0, 5) : undefined,
-      }));
-    /* 别名合并:LLM 偶发把同一主体拆成多条(name/aliases 交叉命中即并入先出者,被并者名字转入 aliases) */
-    const dedupeAlias = list => {
-      const out = [];
-      list.forEach(s => {
-        const hit = out.find(x => x.name === s.name || (x.aliases || []).includes(s.name) || (s.aliases || []).includes(x.name));
-        if (!hit) { out.push(s); return; }
-        hit.aliases = [...new Set([...(hit.aliases || []), s.name, ...(s.aliases || [])])].filter(a => a !== hit.name);
-        if (!hit.prompt && s.prompt) hit.prompt = s.prompt;
-        if (!hit.persona && s.persona) hit.persona = s.persona;
-      });
-      return out;
-    };
-    return {
-      character: dedupeAlias(norm(out.characters, 'LLM 语义提取', 'character')),
-      scene: dedupeAlias(norm(out.scenes, 'LLM 语义提取', 'scene')),
-      prop: dedupeAlias(norm(out.items, 'LLM 语义提取', 'prop')),
-      truncated: trunc,
-    };
+    return Object.assign(WfCore.normalizeExtracted(out), { truncated });
   }
 
   /* ---------- 规范文本信息全文提取(普通模式解析主流程 + 剧本页「AI 生成」共用) ----------

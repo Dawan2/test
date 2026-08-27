@@ -21,6 +21,7 @@ const path = require('path');
 const crypto = require('crypto');
 const Domain = require('./js/domain.js'); // 领域单一来源:指纹/就绪/判旧/工作流状态与主应用逐字节一致
 const CmdRegistry = require('./js/cmd-registry.js'); // 领域命令元数据单源:exec 用法/help 文案/needs 校验由此生成(与前端 Commands 同词表)
+const WfCore = require('./js/wf-core.js'); // 工作流提示词单源:produce 修订重抽的重写模板/记忆召回与浏览器同字面
 
 /* ================= 基础设施:配置 / 参数 / 输出 ================= */
 const CFG_DIR = process.env.HUJING_CONFIG_DIR || path.join(os.homedir(), '.hujing');
@@ -1007,13 +1008,15 @@ EXEC['episode.preflight'] = { needs: ['p', 'ep'], meter: false, next: false, run
 } };
 
 /* 批量生成视频(exec):确认闸口径=未确认镜跳过并如实进 skipped(与前端 headless/CLI gen-episode 一致);
- * --confirm-all 显式授权全量(先写回 confirm=true);就绪判定走 Domain.shotVideoReady(离线模拟在线重跑) */
+ * --confirm-all 显式授权全量(先写回 confirm=true);就绪判定走 Domain.shotVideoReady(离线模拟在线重跑);
+ * args.shotIds 子集执行(断点校准/失败镜重试/produce 修订重抽,与前端 Commands 同参) */
 EXEC['episode.generateVideos'] = { needs: ['p', 'ep'], meter: true, run: async (args, f) => {
   if (args.confirmAll) {
     await withProject(args.pid, f, proj => { findEp(proj, args.epid).shots.forEach(s => { if (!s.final) s.confirm = true; }); });
   }
   const { ep } = await execCtx(args, f); // confirmAll 写回后重取最新快照
-  const pend = (ep.shots || []).filter(s => !s.final && !Domain.shotVideoReady(s, true));
+  let pend = (ep.shots || []).filter(s => !s.final && !Domain.shotVideoReady(s, true));
+  if (Array.isArray(args.shotIds) && args.shotIds.length) { const ids = new Set(args.shotIds); pend = pend.filter(s => ids.has(s.id)); }
   const skipped = args.confirmAll ? [] : pend.filter(s => !s.confirm).map(s => ({ shotId: s.id, order: s.order + 1, reason: '未确认' }));
   const todo = pend.filter(s => args.confirmAll || s.confirm);
   if (!todo.length) {
@@ -1087,13 +1090,67 @@ EXEC['episode.compose'] = { needs: ['p', 'ep'], meter: true, run: async (args, f
   return execOk({ url: c.url, count: c.count });
 } };
 
-/* 一键成片(exec,编排):就绪检查 → 批量生成 → 智能审片 → 合成成片,与前端 episode.produce 同步骤同结构;
- * 智能审片依赖浏览器多模态评审引擎,CLI 侧该步如实标 skipped(等效跑批模板关闭审片),不阻断合成 */
+/* produce 闭环辅助:按审片意见逐镜修订提示词(重写模板 wf-core 单源,计费 llm.optimize;LLM 失败回退
+ * 本地规则,无修正意见沿用原提示词),并重置视频态+确认(供 shotIds 子集重抽)。
+ * 单镜异常跳过如实回执;积分不足(402)整轮中止向外抛,不逐镜空烧 */
+async function reviseLowShots(args, f, low) {
+  const okIds = [], failedFix = [];
+  const { state } = await stateGet(f);
+  const p = (state.projects || []).find(x => x.id === args.pid);
+  const ep0 = p && (p.episodes || []).find(e => e.id === args.epid);
+  for (const x of low) {
+    try {
+      const s = ep0 && (ep0.shots || []).find(sh => sh.id === x.shotId);
+      if (!s) { failedFix.push({ shotId: x.shotId, error: '镜头不存在' }); continue; }
+      let newPrompt = '', changes = '';
+      if (x.fixes) {
+        try {
+          const j = await POST('/api/llm/chat', {
+            messages: [{ role: 'system', content: '你是文生视频提示词专家。' }, { role: 'user', content: WfCore.buildOptimizeUser(Domain.styleOf(p), s.prompt, x.fixes) }],
+            jsonMode: true, temperature: 0.6, billingAction: 'llm.optimize', operationId: crypto.randomUUID(),
+          }, f, { timeoutMs: 180000, fullBody: true });
+          if (!j.parsed || !j.parsed.prompt) throw new CliError('LLM 返回为空', 5);
+          newPrompt = String(j.parsed.prompt);
+          changes = String(j.parsed.changes || '已按审片意见修订');
+        } catch (e) {
+          if (e instanceof CliError && e.exit === 6) throw e;
+          newPrompt = WfCore.localOptimizedPrompt(s.prompt, x.fixes); // 与浏览器 optimizeShot 失败回退同规则
+          changes = '本地规则:追加审片建议修正词';
+        }
+      }
+      await withProject(args.pid, f, projLive => {
+        const sL = findShot(findEp(projLive, args.epid), x.shotId);
+        if (newPrompt && newPrompt !== sL.prompt) {
+          sL.promptHistory = sL.promptHistory || [];
+          sL.promptHistory.unshift({ prompt: sL.prompt, time: new Date().toLocaleString('zh-CN') });
+          if (sL.promptHistory.length > 20) sL.promptHistory.length = 20;
+          sL.prompt = newPrompt;
+          sL.history = sL.history || [];
+          sL.history.unshift({ type: '一键优化', model: '审片优化', time: new Date().toLocaleString('zh-CN') });
+        }
+        sL.video = { status: 'none' }; // 重置视频态:批量生成只跑未出片镜,重抽入口与浏览器闭环同语义
+        sL.confirm = true;             // 修订即确认(浏览器闭环 skipConfirmGate 同义)
+      });
+      okIds.push(x.shotId);
+      log('镜 ' + x.order + ' ' + (newPrompt ? '提示词已修订(' + changes.slice(0, 40) + '),待重抽' : '无修正意见,沿用原提示词重抽'));
+    } catch (e) {
+      if (e instanceof CliError && e.exit === 6) throw e;
+      failedFix.push({ shotId: x.shotId, error: String((e && e.message) || e).slice(0, 80) });
+      log('镜 ' + x.order + ' 修订失败:' + ((e && e.message) || e));
+    }
+  }
+  return { revised: okIds, failed: failedFix };
+}
+
+/* 一键成片(exec,编排):就绪检查 → 批量生成 → 智能审片(质量闸门) → 合成成片,与前端 episode.produce 同步骤同结构;
+ * 审片走服务端工作流真实评审,低分镜(<7 分)自动进入 审→改→重抽→复审 闭环(与浏览器 autoSmartReview 同语义):
+ * 按审片意见修订提示词 → episode.generateVideos shotIds 子集重抽 → 子集复审合并整集报告,循环 ≤maxRetry(默认 2);
+ * 仍有低分镜则质量闸门阻断合成(needs_human),--args riskyCompose 放行 */
 EXEC['episode.produce'] = { needs: ['p', 'ep'], meter: true, run: async (args, f) => { // meter:整体钱包差值(与前端 steps 累加同口径)
   const steps = [];
-  const call = async (key, cmdName) => {
+  const call = async (key, cmdName, extra) => {
     let r;
-    try { r = await EXEC[cmdName].run(args, f); }
+    try { r = await EXEC[cmdName].run(extra ? Object.assign({}, args, extra) : args, f); }
     catch (e) { r = e && e.exit === 6 ? execBlocked('no-credits', e.message) : execFail('exception', (e && e.message) || e); }
     steps.push({ step: key, ok: r.ok, status: r.status, result: r.result, error: r.error || null });
     return r;
@@ -1103,11 +1160,25 @@ EXEC['episode.produce'] = { needs: ['p', 'ep'], meter: true, run: async (args, f
   if (st.status === 'blocked' || st.shotsStale) return execBlocked('preflight', '就绪检查未通过:' + (st.blockers.map(b => b.label).join('/') || '分镜已过期'), { steps, blockers: st.blockers });
   if (!(ep.shots || []).length) return execBlocked('no-shots', '未分镜', { steps });
   await call('generateVideos', 'episode.generateVideos'); // 2. 批量生成(失败镜不阻塞,合成前统一拦截)
-  // 3. 智能审片(二十一轮:服务端工作流真实评审;低分镜=质量闸门,默认阻断合成,--args riskyCompose 放行)
+  // 3. 智能审片 + 审→改→重抽→复审闭环(maxRetry 与注册表口径一致:1-5,默认 2)
   if (args.smartReview !== false) {
-    const rv = await call('smartReview', 'episode.smartReview');
-    if (rv.result && (rv.result.lowShots || []).length && !args.riskyCompose) {
-      return { ok: false, status: 'needs_human', error: { code: 'manual-gate', message: '低分 ' + rv.result.lowShots.length + ' 镜(' + rv.result.lowShots.map(x => x.order + '镜' + x.score + '分').join('、') + '),质量闸门已阻断合成(riskyCompose 可放行)' }, result: { steps } };
+    let rv = await call('smartReview', 'episode.smartReview');
+    let low = (rv.result && rv.result.lowShots) || [];
+    const maxRetry = Math.max(1, Math.min(5, +args.maxRetry || 2));
+    for (let attempt = 1; attempt <= maxRetry && low.length; attempt++) {
+      log('低分 ' + low.length + ' 镜,按审片意见修订重抽(第 ' + attempt + '/' + maxRetry + ' 轮)…');
+      let fix;
+      try { fix = await reviseLowShots(args, f, low); }
+      catch (e) { steps.push({ step: 'revise' + attempt, ok: false, status: 'blocked', result: {}, error: { code: 'no-credits', message: e.message } }); break; }
+      steps.push({ step: 'revise' + attempt, ok: fix.revised.length > 0, status: fix.revised.length ? 'done' : 'failed', result: fix, error: null });
+      if (!fix.revised.length) break; // 全部修订失败:不空转重抽,直接进闸门
+      await call('regen' + attempt, 'episode.generateVideos', { shotIds: fix.revised, confirmAll: false });
+      rv = await call('reReview' + attempt, 'episode.smartReview', { shotIds: fix.revised });
+      if (!rv.result || !rv.result.reviewed) break; // 复审失败:保守保留低分名单进闸门
+      low = rv.result.lowShots || [];
+    }
+    if (low.length && !args.riskyCompose) {
+      return { ok: false, status: 'needs_human', error: { code: 'manual-gate', message: '低分 ' + low.length + ' 镜(' + low.map(x => x.order + '镜' + x.score + '分').join('、') + '),修订重抽后仍不达标,质量闸门已阻断合成(riskyCompose 可放行)' }, result: { steps } };
     }
   }
   const c = await call('compose', 'episode.compose'); // 4. 合成成片
@@ -1126,10 +1197,81 @@ EXEC['episode.generateStoryboard'] = { needs: ['p', 'ep'], meter: true, run: asy
   return execOk({ shots: d.shots, plans: d.plans, adopted: d.adopted });
 } };
 EXEC['episode.smartReview'] = { needs: ['p', 'ep'], meter: true, run: async (args, f) => {
-  const d = await POST('/api/wf/smart-review', { pid: args.pid, epid: args.epid, operationId: crypto.randomUUID() }, f, { timeoutMs: 600000 });
+  const d = await POST('/api/wf/smart-review', { pid: args.pid, epid: args.epid, shotIds: args.shotIds, operationId: crypto.randomUUID() }, f, { timeoutMs: 600000 });
   const r = { ok: !(d.failed || []).length, status: (d.failed || []).length ? 'failed' : 'done', result: { avg: d.avg, reviewed: d.reviewed, failed: d.failed || [], lowShots: d.lowShots || [], common: d.common || null, cut: d.cut || null } };
   if ((d.failed || []).length) r.error = { code: 'partial', message: d.failed.length + ' 镜评审失败(已退费),可重试' };
   return r;
+} };
+
+/* 主体生图(exec):缺参考图主体批量生成并回填(subjectIds 可指定子集,含已有图重生);
+ * 逐主体走服务端生图(计费动作服务端推导,失败退费),与 subject-image --gen 同链路;发布门 G9 一键处置同入口 */
+EXEC['subject.generateImage'] = { needs: ['p'], meter: true, run: async (args, f) => {
+  const { p } = await execCtx(args, f);
+  const ids = Array.isArray(args.subjectIds) && args.subjectIds.length ? new Set(args.subjectIds) : null;
+  const todo = (p.subjects || []).filter(s => ids ? ids.has(s.id) : !s.image);
+  if (!todo.length) return execOk({ total: 0, ok: 0, failed: [] });
+  log('主体生图:' + todo.length + ' 位待处理(串行)…');
+  const failed = [];
+  let okCnt = 0;
+  for (const s of todo) {
+    try {
+      await withProject(args.pid, f, async projLive => {
+        const sj = findSubject(projLive, s.id);
+        const prompt = sj.prompt || ((projLive.style || '漫剧') + '风格,' + sj.name + ',' + (sj.description || '角色立绘'));
+        sj.image = (await genImage(prompt, f, {})).url;
+        sj.prompt = sj.prompt || prompt;
+        sj.status = 'done';
+      });
+      okCnt++;
+      log('主体 ' + s.name + ' ✓ (' + okCnt + '/' + todo.length + ')');
+    } catch (e) {
+      if (e instanceof CliError && e.exit === 6) throw e; // 积分不足整体中止(已生成的随补丁保留)
+      failed.push({ subjectId: s.id, name: s.name, error: String((e && e.message) || e).slice(0, 80) });
+      log('主体 ' + s.name + ' ✗ ' + ((e && e.message) || e));
+    }
+  }
+  const r = { ok: failed.length === 0, status: failed.length ? 'failed' : 'done', result: { total: todo.length, ok: okCnt, failed } };
+  if (failed.length) r.error = { code: okCnt ? 'partial' : 'gen-failed', message: failed.length + ' 位主体生图失败(已退费),可重试' };
+  return r;
+} };
+
+/* 提取主体(exec):项目剧本(无则各集正文)→ LLM 语义提取合并入库(同名同类不覆盖,缺提示词/人设的补齐);
+ * 提示词/规整 wf-core 单源(与浏览器解析向导同源),计费 llm.extract;headless 无离线回退——LLM 失败如实报错(服务端已退费) */
+EXEC['project.extractSubjects'] = { needs: ['p'], meter: true, run: async (args, f) => {
+  const { p } = await execCtx(args, f);
+  const text = String(p.script || '').trim() || (p.episodes || []).map(e => e.content || '').filter(Boolean).join('\n').trim();
+  if (!text) return execBlocked('no-script', '项目暂无剧本内容,请先上传剧本');
+  const b = WfCore.buildExtractUser(text, args.mode === 'fine' ? 'fine' : 'normal', { character: true, scene: true, prop: true });
+  const j = await POST('/api/llm/chat', {
+    messages: [{ role: 'system', content: '你是专业的短剧剧本分析助手。' }, { role: 'user', content: b.user }],
+    jsonMode: true, temperature: 0.3, max_tokens: 4000, billingAction: 'llm.extract', operationId: crypto.randomUUID(),
+  }, f, { timeoutMs: 240000, fullBody: true });
+  if (!j.parsed) throw new CliError('LLM 返回无法解析', 5);
+  const found = WfCore.normalizeExtracted(j.parsed);
+  const stat = { added: 0, skipped: 0, total: 0 };
+  await withProject(args.pid, f, projLive => {
+    projLive.subjects = projLive.subjects || [];
+    ['character', 'scene', 'prop'].forEach(kind => (found[kind] || []).forEach(s => {
+      const exist = projLive.subjects.find(x => x.kind === kind && (x.name === s.name || (x.formerNames || []).includes(s.name) || (s.aliases || []).includes(x.name)));
+      if (exist) {
+        if (!exist.prompt && s.prompt) exist.prompt = s.prompt;
+        if (!exist.persona && s.persona) exist.persona = s.persona;
+        if (!exist.description && s.description) exist.description = s.description;
+        stat.skipped++;
+        return;
+      }
+      stat.added++;
+      const sj = newSubject(s.name, kind, s.description);
+      sj.evidence = s.evidence;
+      sj.prompt = s.prompt || '';
+      if (s.persona) sj.persona = s.persona;
+      sj.formerNames = (s.aliases || []).slice(0, 10); // 别名可寻址(与浏览器入库口径一致)
+      sj.status = 'pending';
+      projLive.subjects.push(sj);
+    }));
+    stat.total = projLive.subjects.length;
+  });
+  return execOk({ added: stat.added, skipped: stat.skipped, total: stat.total, truncated: b.truncated });
 } };
 
 /* needs 校验面与注册表单源对齐(执行体各端自治;contract 套件锁死 EXEC 键集 = 注册表词表) */
@@ -1209,6 +1351,68 @@ CMD.ff = async (a, f) => {
   return POST('/api/ffmpeg/' + sub, body, f, { timeoutMs: 300000 });
 };
 
+/* ---- Agent 单轮对话(服务端管线 /api/wf/agent):KB/专家 persona/协作记忆/状态摘要注入由服务端拼装,
+ * 返回 {reply,thinking,ops,receipts}(计费 llm.agent,失败退费)。默认只解析不执行;
+ * --apply 时 run 类 ops 逐条走 EXEC 同链路执行(pid/epid 上下文注入,各命令按自身规则计费,单条失败不中断) ---- */
+CMD.agent = async (a, f) => {
+  const text = (a.join(' ') || f.text || '').trim();
+  need(text, '用法:hujing agent "自然语言指令" --pid X [--epid Y] [--scope 导演|分镜|成片…] [--apply]');
+  need(f.pid, '缺 --pid');
+  const body = { pid: f.pid, text, operationId: crypto.randomUUID() };
+  if (f.epid) body.epid = f.epid;
+  if (f.scope) body.scope = f.scope;
+  const d = await POST('/api/wf/agent', body, f, { timeoutMs: 240000 });
+  if (!f.apply || !(d.ops || []).length) return d;
+  const applied = [];
+  for (const op of d.ops) {
+    const cmd = EXEC[op.cmd];
+    if (!cmd) { applied.push({ cmd: op.cmd, ok: false, error: 'CLI 未注册该命令' }); continue; }
+    const args = Object.assign({}, op.args, { pid: f.pid, epid: f.epid });
+    if (cmd.needs.includes('ep') && !args.epid) { applied.push({ cmd: op.cmd, ok: false, error: '该命令需 --epid 上下文' }); continue; }
+    if (cmd.needs.includes('s') && !args.sid) { applied.push({ cmd: op.cmd, ok: false, error: '该命令需镜头 sid(ops.args 未给出)' }); continue; }
+    try {
+      const r = await cmd.run(args, f);
+      applied.push({ cmd: op.cmd, ok: !!r.ok, status: r.status, result: r.result, error: r.error });
+    } catch (e) {
+      if (e instanceof CliError && e.exit === 6) { applied.push({ cmd: op.cmd, ok: false, error: e.message }); break; } // 积分不足中止后续
+      applied.push({ cmd: op.cmd, ok: false, error: String((e && e.message) || e).slice(0, 120) });
+    }
+  }
+  d.applied = applied;
+  return d;
+};
+
+/* ---- 协作记忆(双端消费):Agent 对话层沉淀的用户偏好/已确认决定,存 state.agentMemory;
+ * wf 端点与对话层按 WfCore.memRecall 同算法召回注入。list 支持 --recall 预览实际注入条目 ---- */
+CMD.memory = async (a, f) => {
+  const sub = a[0] || 'list';
+  if (sub === 'list') {
+    const { state } = await stateGet(f);
+    const mem = Array.isArray(state.agentMemory) ? state.agentMemory : [];
+    if (f.recall !== undefined) return { total: mem.length, recalled: WfCore.memRecall(mem, String(f.recall === true ? '' : f.recall), f.scope || '') };
+    return { total: mem.length, list: f.scope ? mem.filter(m => m.scope === f.scope || !m.scope) : mem };
+  }
+  if (sub === 'add') {
+    need(f.text, '用法:hujing memory add --text 内容 [--scope 导演|剧本|主体|分集|分镜|生成|成片]');
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { rev, state } = await stateGet(f);
+      const mem = Array.isArray(state.agentMemory) ? state.agentMemory : [];
+      const entry = { text: String(f.text).slice(0, 120), time: new Date().toLocaleString('zh-CN'), scope: f.scope || '' }; // 与浏览器 memRemember 同口径(截 120 字,上限 50 条)
+      const meta = {};
+      for (const k in state) if (k !== 'projects') meta[k] = state[k]; // meta 桶整组替换(计费键服务端权威回填,不受影响)
+      meta.agentMemory = mem.concat([entry]).slice(-50);
+      try {
+        const d = await PUT('/api/state', { rev, changes: { meta } }, f);
+        return { rev: d.rev, total: meta.agentMemory.length, added: entry };
+      } catch (e) {
+        if (e.exit === 7 && attempt < 2) { log('rev 冲突,重取最新记忆重试(' + (attempt + 2) + '/3)…'); continue; }
+        throw e;
+      }
+    }
+  }
+  throw new CliError('用法:hujing memory <list|add> [--scope 板块] [--recall 输入文本] [--text 内容]', 2);
+};
+
 /* ---- 逃生舱:裸 state 读写(任意复杂操作) ---- */
 CMD['state-get'] = async (_, f) => {
   const { rev, state } = await stateGet(f);
@@ -1281,10 +1485,15 @@ ${CmdRegistry.META.map(m => '  exec ' + (m.name + (CmdRegistry.usageOf(m) ? ' ' 
   (exit 映射:ok→0 | blocked→2/6/4 | failed→5;--args '{"pid":".."}' 可整体传参)
 
 工具
+  agent "自然语言指令" --pid X [--epid Y] [--scope 板块] [--apply]
+                                                   Agent 单轮对话(服务端拼装 KB/专家/记忆/状态注入,计费 llm.agent;
+                                                   返回 reply+run 类 ops,--apply 时逐条经 exec 同链路执行)
   upload <文件> | download <url> <保存路径>        素材上下行
   llm --user 提示 [--system 设] [--json]           LLM 透传(服务端 key;--json 返回 parsed)
   tts --text 文本 [--voice 音色]                   语音合成
   ff <frames|upscale|merge|cut|suberase|highlight> [--video v] [...]   FFmpeg 工具透传
+  memory list [--scope 板块] [--recall 输入]       协作记忆(对话层/工作流层共用;--recall 预览按召回算法实际注入的条目)
+  memory add --text 内容 [--scope 板块]            写入记忆(截 120 字,上限 50 条,与浏览器 Agent「记住…」同口径)
   state-get [--out f.json] | state-put --file f.json --force           裸状态读写(逃生舱)
 
 exit code:0 成功 | 1 通用 | 2 参数 | 3 未登录 | 4 不存在 | 5 服务端/上游 | 6 积分不足 | 7 冲突`;

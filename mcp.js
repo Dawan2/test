@@ -56,6 +56,7 @@ const TOOLS = [
   { name: 'hujing_release', description: '打发布版本(留痕 releases;通过/条件通过才执行,force 强制)', inputSchema: obj({ pid: pidEp.pid, note: S, minScore: N, force: B }, ['pid']), build: i => ['release', i.pid].concat(i.note ? ['--note', i.note] : [], i.minScore ? ['--min-score', String(i.minScore)] : [], i.force ? ['--force'] : []) },
   { name: 'hujing_exec', description: '统一领域命令透传(与前端 Commands.execute 同名同结构;词表单源 cmd-registry.js):' + CmdRegistry.META.map(m => m.name + '(' + m.label + ')').join('、'), inputSchema: obj({ name: Object.assign({}, S, { description: '命令名:' + CmdRegistry.names().join(' / ') }), args: { type: 'object', description: '命令参数,如 {"pid":"..","epid":".."};各命令参数面见 cmd-registry.js' } }, ['name']), build: i => ['exec', i.name, '--args', JSON.stringify(i.args || {})] },
   { name: 'hujing_llm', description: 'LLM 透传(服务端 key;自由提示词,剧本/文案类辅助)', inputSchema: obj({ user: Object.assign({}, S, { description: '用户提示词' }), system: S, json: Object.assign({}, B, { description: '期望返回 JSON(自动解析)' }) }, ['user']), build: i => ['llm', '--user', i.user].concat(i.system ? ['--system', i.system] : [], i.json ? ['--json'] : []) },
+  { name: 'hujing_agent', description: 'Agent 单轮对话(服务端 /api/wf/agent:KB/专家方法论/协作记忆/状态摘要注入由服务端拼装,计费 llm.agent;返回 reply + run 类领域命令 ops,apply=true 时逐条经 exec 同链路执行并各自计费)', inputSchema: obj({ text: Object.assign({}, S, { description: '自然语言指令或提问' }), pid: pidEp.pid, epid: Object.assign({}, S, { description: '分集 id(缺省为项目级视角)' }), scope: Object.assign({}, S, { description: '记忆召回板块:导演|剧本|主体|分集|分镜|生成|成片(缺省按上下文)' }), apply: Object.assign({}, B, { description: '执行返回的 ops(真实计费)' }) }, ['text', 'pid']), build: i => ['agent', i.text, '--pid', i.pid].concat(i.epid ? ['--epid', i.epid] : [], i.scope ? ['--scope', i.scope] : [], i.apply ? ['--apply'] : []) },
 ];
 
 /* ---- 调 CLI:stdout 纯 JSON 透传;exit code → isError(附 stderr 诊断) ---- */
@@ -75,6 +76,7 @@ function runCli(argv) {
 /* ---- 只读资源(§2.7):高频状态查询暴露成 resource,助手按 URI 直读,不必记工具参数面 ---- */
 const RESOURCES = [
   { uri: 'hujing://projects', name: '项目列表', description: '项目列表(进度摘要),同 hujing_projects 工具', mimeType: 'application/json' },
+  { uri: 'hujing://memory', name: '协作记忆', description: '用户偏好与已确认修改决定(state.agentMemory,按板块沉淀;对话层与 /api/wf/* 工作流同算法召回),同 cli memory list', mimeType: 'application/json' },
 ];
 const RESOURCE_TEMPLATES = [
   { uriTemplate: 'hujing://project/{pid}/show', name: '项目详情', description: '主体/分集/逐镜状态统计,同 hujing_project_show 工具', mimeType: 'application/json' },
@@ -85,6 +87,7 @@ const RESOURCE_TEMPLATES = [
 function resourceArgv(uri) {
   const u = String(uri || '');
   if (u === 'hujing://projects') return ['projects'];
+  if (u === 'hujing://memory') return ['memory', 'list'];
   let m = u.match(/^hujing:\/\/project\/([^/]+)\/show$/);
   if (m) return ['project-show', decodeURIComponent(m[1])];
   m = u.match(/^hujing:\/\/project\/([^/]+)\/workflow$/);

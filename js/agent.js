@@ -153,26 +153,9 @@
     Store.state.agentMemory = mem.slice(-50);
     Store.save();
   }
-  function memRecall(input, scope) {
-    const mem = memAll();
-    if (!mem.length) return [];
-    // 同板块记忆优先(该板块 Agent 越用越懂该板块),再补全局最近
-    const scoped = scope ? mem.filter(m => m.scope === scope).slice(-4) : [];
-    const recent = mem.slice(-3).filter(m => !scoped.includes(m));
-    const rest = mem.filter(m => !scoped.includes(m) && !recent.includes(m));
-    const toks = (String(input || '').match(/[一-龥a-zA-Z0-9]{2,}/g) || []);
-    const scored = rest.map(m => {
-      let sc = toks.reduce((a, t) => a + (m.text.includes(t) ? t.length : 0), 0);
-      if (scope && m.scope === scope) sc += 3; // 同板块加权
-      return { m, sc };
-    }).filter(x => x.sc > 0).sort((a, b) => b.sc - a.sc).slice(0, 3).map(x => x.m);
-    const seen = new Set();
-    return scoped.concat(recent, scored).filter(m => { if (seen.has(m.text)) return false; seen.add(m.text); return true; });
-  }
-  function memBlock(input, scope) {
-    const m = memRecall(input, scope);
-    return m.length ? '\n历史协作记忆(用户过往的偏好与已确认的修改决定,参考以保持一致):\n' + m.map(t => '- ' + t.text).join('\n') : '';
-  }
+  /* 召回算法下沉 wf-core.js(双端同源):对话层与 /api/wf/* 工作流端点同算法消费记忆 */
+  function memRecall(input, scope) { return WfCore.memRecall(memAll(), input, scope); }
+  function memBlock(input, scope) { return WfCore.memBlock(memAll(), input, scope); }
   function openMemoryModal(scope) {
     const all = memAll();
     // 带原始下标的过滤列表(删除/清空按原始下标操作,避免错位)

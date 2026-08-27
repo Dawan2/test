@@ -129,13 +129,19 @@
     },
   ];
 
-  /* 项目生产类型:默认剧情模式;雇佣带 projType:'narration' 的专家(预置或自定义)后按解说模式(重旁白)生产。
+  /* 按 id 查专家对象(预置+自定义,查不到返回 null):浏览器 hiredExpert() 与 server.js /api/wf/*
+   * 取雇佣专家 persona(经 WfCore.personaNote 注入工作流提示词)同源。
    * hiredId = settings.hiredExpert;customs = state.customExperts(可空) */
+  function expertOf(hiredId, customs) {
+    if (!hiredId) return null;
+    return EXPERTS.concat(Array.isArray(customs) ? customs : []).find(e => e && e.id === hiredId) || null;
+  }
+
+  /* 项目生产类型:默认剧情模式;雇佣带 projType:'narration' 的专家(预置或自定义)后按解说模式(重旁白)生产 */
   function projTypeOf(hiredId, customs) {
-    if (!hiredId) return 'drama';
-    const ex = EXPERTS.concat(Array.isArray(customs) ? customs : []).find(e => e && e.id === hiredId);
+    const ex = expertOf(hiredId, customs);
     return ex && ex.projType === 'narration' ? 'narration' : 'drama';
   }
 
-  return { EXPERTS, projTypeOf };
+  return { EXPERTS, projTypeOf, expertOf };
 });
