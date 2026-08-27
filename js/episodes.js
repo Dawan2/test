@@ -1072,7 +1072,7 @@ ${(ep.content || '').slice(0, 8000)}` }],
         const sum = await Tasks.runBatch({ type: '事件图谱', model: (Store.state.settings || {}).defLLM || API.getConfig().model, cost: 1, actionName: '事件图谱拆解' }, p.episodes, async (e, tk) => {
           const out = await Understanding.chatJSONRobust({
             model: (Store.state.settings || {}).defLLM || API.getConfig().model,
-            system: '你是短剧剧本结构分析师。',
+            system: Prompts.get('graph.system'),
             user: `把该集剧本拆成结构化事件序列,返回 JSON {"events":[{"who":"涉及人物(逗号分隔)","where":"场景","what":"发生了什么(一句话,具体动作与冲突)","result":"结果/钩子(对后续剧情的影响)"}]}。要求:按剧情时间顺序,覆盖该集全部关键剧情节点(3-10 个),不漏转折点。\n集标题:${e.title}\n剧本正文:\n${(e.content || '').slice(0, 8000)}`,
             temperature: 0.3, max_tokens: 3000,
             billingAction: 'llm.chat', operationId: tk.id,

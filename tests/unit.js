@@ -4787,6 +4787,44 @@ action 二选一:
     ['agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem'].forEach(k =>
       assert(Skills.byId('core.personaCtx').prompts.includes(k), 'SK-03 应登记 ' + k));
   } },
+  { name: '事件图谱拆解人设:独立键 graph.system,缺省逐字节等于收编前的内联字面、JSON 契约未开放', fn() {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const DEF = '你是短剧剧本结构分析师。';
+    // 缺省不变:收编前写死在 js/episodes.js 那步的 system 字面,收编后逐字节相同
+    assertEq(Prompts.get('graph.system'), DEF, '缺省人设句应与收编前的内联字面逐字节相同');
+    assertEq(Prompts.get('graph.system', { 'graph.system': '结构拆解员。' }), '结构拆解员。', '覆盖 graph.system 时取值跟随');
+    const it = Prompts.list().find(x => x.key === 'graph.system');
+    assert(it && !it.vars.length && it.name.startsWith('事件图谱拆解') && it.name.includes('系统人设'),
+      '注册表应登记 graph.system 条目(无变量,可在全局默认值页在线改写)');
+    assertEq(Prompts.list().filter(x => x.def === DEF).length, 1, '该人设句应恰好命中注册表一条');
+    // 独立一条键:不与既有人设合成,也不复用其中任何一条的字面(同字面才谈得上复用)
+    ['split.system', 'extract.system', 'und.system', 'sb.system', 'sb.reviewSystem'].forEach(k =>
+      assert(Prompts.get(k) !== DEF, '事件图谱拆解人设不得与既有键 ' + k + ' 同字面'));
+    // 覆盖只换这一键:同板块相邻两键逐字节不动(串台即红)
+    const ov = { 'graph.system': '结构拆解员。' };
+    ['split.system', 'extract.system'].forEach(k => assertEq(Prompts.get(k, ov), Prompts.get(k), '覆盖 graph.system 时 ' + k + ' 应逐字节不动'));
+    // 只收人设句:该步返回 JSON 的 events 字段契约仍留在 user 半,不做成可覆盖变量
+    ['"events"', '"result"', '"where"'].forEach(f =>
+      assertEq(Prompts.list().filter(x => x.def.includes(f)).length, 0, '返回 JSON 契约不进注册表:' + f));
+    assert(Skills.byId('core.personaCtx').prompts.includes('graph.system'), 'SK-03 应登记 graph.system');
+  } },
+  { name: '事件图谱拆解人设(源级):js/episodes.js 零内联,取值口就在逐集拆解那步', fn() {
+    const Prompts = require('../js/prompts.js');
+    const ep = fs.readFileSync(path.join(ROOT, 'js', 'episodes.js'), 'utf8');
+    // 取值口与该步 user 半锚点配对:键挪到别的步骤上即红
+    assert(/system: Prompts\.get\('graph\.system'\),[\s\S]{0,600}把该集剧本拆成结构化事件序列/.test(ep),
+      '事件图谱拆解步应就地经 Prompts.get 取人设(浏览器隐式读 Store 覆盖表),且与该步 user 半锚点配对');
+    assertEq((ep.match(/你是短剧剧本结构分析师/g) || []).length, 0, 'js/episodes.js 不应再内联该人设句(覆盖不会跟过去)');
+    // 该人设句的持有者全仓只剩注册表一份:谁在别处抄第二份当场红
+    const holders = ['server.js', 'cli.js', 'mcp.js', 'index.html']
+      .concat(fs.readdirSync(path.join(ROOT, 'js')).filter(n => n.endsWith('.js')).map(n => 'js/' + n))
+      .filter(rel => fs.readFileSync(path.join(ROOT, rel), 'utf8').includes(Prompts.get('graph.system')));
+    assertEq(holders.sort().join(','), 'js/prompts.js', '人设句字面应只剩注册表一份');
+    // 这条链路没有服务端对端:收编解决的是可覆盖,不是可 headless(别处冒出第二个消费点即红)
+    assert(!fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8').includes('把该集剧本拆成结构化事件序列'),
+      'server.js 不应出现事件图谱拆解步(该步只在浏览器分集页链路上)');
+  } },
   { name: '审片升为主线一等步骤(G-03):板块 Agent 有审片席;plans/工作区/CLI 都映射 episode.smartReview', fn() {
     const D = require(path.join(ROOT, 'js/domain.js'));
     const mains = D.workflow({ id: 'p1', episodes: [], subjects: [] }, true).steps.filter(s => !s.side).map(s => s.key);
@@ -6610,6 +6648,13 @@ const skillsTests = [
       assert(esrc.includes("system: '" + persona), 'js/episodes.js 该步应仍是内联人设(收编了就要同步改 SK-10 的仍欠段):' + persona);
       assertEq(P.list().filter(x => x.def.startsWith(persona)).length, 0, '该人设句应仍不在注册表:' + persona);
     });
+    /* 同文件的事件图谱拆解步已收编:三处断言一并翻面——不许再记成欠账、源级不许退回内联、注册表须有它自己那一条 */
+    assert(!owed10.includes('事件图谱'), 'SK-10 的仍欠段不得再点名事件图谱拆解步(那步人设已在注册表)');
+    assert(/事件图谱拆解步内联人设已收进注册表\(独立键 graph\.system/.test(sk10.note),
+      'SK-10 的 note 须写明事件图谱拆解步已收进独立键 graph.system');
+    assert(esrc.includes("system: Prompts.get('graph.system')") && !esrc.includes("system: '你是短剧剧本结构分析师。'"),
+      'js/episodes.js 的事件图谱拆解步应经注册表取人设,不得退回内联');
+    assertEq(P.list().filter(x => x.def === '你是短剧剧本结构分析师。').length, 1, '该人设句应恰好在注册表里一条');
     /* G-13 本身未闭合(内联提示词大头仍在),故关联索引一个不摘:改 note 动不到 gaps() 投影 */
     assertEq((Skills.gaps()['G-13'] || []).join(','),
       'script.hookType,script.aiToneBan,subjects.refDiscipline,eps.structureStage,gen.videoTpl,film.rhythmInject',
