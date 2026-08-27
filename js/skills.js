@@ -302,6 +302,51 @@
     return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
   };
 
+  /* ---- 分镜段生成前置判定基面(SK-19 稳定词面):判定输入是该镜真实的生成请求提示词 ----
+   * 提示词现取 Domain.buildVideoRequest(与真实发送、生成指纹同一构造点),主体定义前置、轴线规则、
+   * 运镜机位、美术风格后缀与负面约束一并在内——判的就是模型最终读到的那一条,本层不另拼第二份提示词;
+   * 判定一律在去空白提示词上做,与其余段同一基面。判定字面从条目正文里现筛,条目改写到字面不在了判据自然退空。 */
+  const GC_LEX = String(KB.section('抽卡军规') || '') + String(KB.section('抽卡公式') || '');
+  /* 稳定词:军规③「必加稳定词」与公式骨架末尾那串约束共有的解剖/动作三面(五官不变形、人体结构正常、动作不僵硬)。
+   * 通用的"稳定"二字不收——运镜与机位描述里也出现得到(平稳横移/固定镜头),收进来会把没写稳定词的镜判成写了;
+   * 第四面「同一角色服装发型一致」不收——有主体参考图组时那句声明由请求装配自带,跨镜锁不锁得住归 SK-13。 */
+  const STABLE_WORDS = ['不变形', '结构正常', '不僵硬'].filter(w => GC_LEX.indexOf(w) >= 0);
+  /* 模糊词:军规⑤自己列在括号里的那串(按 / 切),本层不外扩词表 */
+  const VAGUE_WORDS = String((String(KB.section('抽卡军规') || '').match(/模糊词[((]"([^"]*)"/) || [])[1] || '')
+    .split('/').map(w => w.trim()).filter(Boolean);
+
+  /* SK-19 抽卡稳定词(抽卡两条条目的校验半):逐镜看真实发出去的那条提示词有没有把稳定词写全、有没有写模糊词。
+   *   no-stable-word      整条提示词一个稳定词都没有 → warn(军规③;hit 的 miss 列出该补的字面)
+   *   stable-word-partial 稳定词只写了一部分 → warn(name 给已写的、miss 给缺的)
+   *   vague-word          命中条目自列的模糊词 → warn(军规⑤「等于没写」,逐词一条)
+   * 提示词还没写的镜(prompt/plot 都空)与数据残缺装不出请求的镜无判定输入,不产出结论。
+   * 八维填得全不全、动作写得慢不慢这类语义判断仍归 LLM 审片(G-10),本项只判文本层看得见的字面;
+   * 结论一律 warn 只报不拦:不进 blockers、不改发布门口径、不拦生成动作、不改计费。 */
+  CHECKS['shots.stableLexicon'] = function (obj) {
+    const o = obj || {};
+    const p = o.p;
+    const list = o.s ? [o.s] : ((o.ep && o.ep.shots) || []);
+    if (!p || !list.length || !STABLE_WORDS.length) return { pass: true, level: 'info', hits: [] };
+    const hits = [];
+    list.forEach(s => {
+      if (!String(s.prompt || s.plot || '')) return;
+      let q;
+      try { q = Domain.buildVideoRequest(p, o.ep, s); } catch (_) { return; }
+      const t = compact(q.prompt);
+      const at = { shotId: s.id, order: (+s.order || 0) + 1 };
+      const got = STABLE_WORDS.filter(w => t.indexOf(w) >= 0);
+      if (!got.length) hits.push(Object.assign({ code: 'no-stable-word' }, at, { name: '', miss: STABLE_WORDS.join('、') }));
+      else if (got.length < STABLE_WORDS.length) {
+        hits.push(Object.assign({ code: 'stable-word-partial' }, at,
+          { name: got.join('、'), miss: STABLE_WORDS.filter(w => got.indexOf(w) < 0).join('、') }));
+      }
+      VAGUE_WORDS.forEach(w => {
+        if (t.indexOf(w) >= 0) hits.push(Object.assign({ code: 'vague-word' }, at, { name: w, miss: '' }));
+      });
+    });
+    return { pass: !hits.length, level: hits.length ? 'warn' : 'info', hits };
+  };
+
   /* 字幕可读性判据(成片字幕/对白面的三条阈值):
    *   CAP_CPS       阅读速度上限(字/秒):超出即观众看不完一条字幕
    *   CAP_MIN_DUR   单条最短停留(秒):低于此值字幕一闪而过
@@ -594,13 +639,17 @@
       + '(景别递进是跨镜判定,审片的镜级入口取不到相邻镜,判定输入未定),故不登记 episode.smartReview',
     },
     {
-      id: 'shots.promptEightDim', sk: 'SK-19', name: '抽卡八维公式与军规注入', stage: 'shots',
-      covers: ['shots', 'gen'], wave: 'W2', kinds: ['inject', 'check'], pending: ['check'],
+      id: 'shots.promptEightDim', sk: 'SK-19', name: '抽卡八维公式与军规注入与稳定词校验', stage: 'shots',
+      covers: ['shots', 'gen'], wave: 'W2', kinds: ['inject', 'check'],
       kb: ['抽卡公式', '抽卡军规'], prompts: ['sb.system'], settings: ['tplVideo'],
-      cmds: ['episode.generateStoryboard'], gaps: ['G-15', 'G-05', 'G-10'],
-      note: '索引面 W2 落地;生成前 warn 的校验面属 W4。'
+      checks: ['shots.stableLexicon'],
+      cmds: ['episode.generateStoryboard', 'episode.preflight'], gaps: ['G-15', 'G-05', 'G-10'],
+      note: '索引面 W2 落地;校验面判的是真实生成请求那条提示词(现取 Domain.buildVideoRequest)——'
+        + '稳定词写没写全、有没有写条目自列的模糊词,词表一律从两条条目正文里现筛不写第二份。'
         + '「多镜头写法」移交 SK-17(拆镜人设注入面)后本条不再登记该键,G-06 随之从本条清账;'
-        + '本条两条抽卡条目的提示词落点是生成步人设 WfCore.genPromptSystem(SK-21 同键登记)',
+        + '本条两条抽卡条目的提示词落点是生成步人设 WfCore.genPromptSystem(SK-21 同键登记)。'
+        + '经就绪检查消费(所属分镜面已在双端单源面表里,两端实现不必改),结论只报不拦、不拦生成动作;'
+        + '八维填得全不全这类语义判断仍归 G-10',
     },
     {
       id: 'shots.motionGate', sk: 'SK-20', name: '镜头动态感准入校验', stage: 'shots', wave: 'W4',
