@@ -23,6 +23,7 @@ const Domain = require('./js/domain.js'); // 领域单一来源:指纹/就绪/�
 const CmdRegistry = require('./js/cmd-registry.js'); // 领域命令元数据单源:exec 用法/help 文案/needs 校验由此生成(与前端 Commands 同词表)
 const WfCore = require('./js/wf-core.js'); // 工作流提示词单源:produce 修订重抽的重写模板/记忆召回与浏览器同字面
 const Skills = require('./js/skills.js'); // 主线 skill 索引(按七步索引 KB/Prompts/命令/专家的引用键;与浏览器、server.js 同一份注册表)
+const Issues = require('./js/issues.js'); // 问题中心投影(与浏览器 🩺 问题中心同一份推导;环境差异经 ctx.online 注入)
 const FlowTpl = require('./js/flow-tpl.js'); // 主线中段流程模板单源(步序取 SK-05 投影、参数面取 cmd-registry、状态取 Domain)
 
 /* ================= 基础设施:配置 / 参数 / 输出 ================= */
@@ -394,6 +395,38 @@ CMD.usage = async (a, f) => {
   return {
     projects: Object.fromEntries(Object.entries(d.projects || {}).map(([pid, b]) => [pid, net(b)])),
     unlabeled: net(d.unlabeled || {}),
+  };
+};
+
+/* ---------- 问题中心:全项目待处理问题聚合(只读,零 LLM 零计费) ----------
+ * 与浏览器 🩺 问题中心同一份双端投影 js/issues.js:状态类问题现取 Domain.episodeState,
+ * 低危方法论提醒按投影表 Issues.reminders()(面 → 校验项 → kind/sev/挂载级别)现投,CLI 侧不写第二份口径。
+ * 只列不处置:每条给出 kind/sev/定位与建议出口(cmd 类对应 exec <命令名>,导航类给前端路由),
+ * 处置一律由调用方自己发起对应的领域命令,本命令不代按任何会扣积分的按钮。 */
+CMD.issues = async (a, f) => {
+  need(a[0], '用法:hujing issues <pid> [--sev high|mid|low] [--kind 类型] (只读聚合,stdout 恒为 JSON)');
+  const sev = f.sev === undefined ? '' : String(f.sev);
+  need(!sev || ['high', 'mid', 'low'].includes(sev), '--sev 只能取 high|mid|low');
+  const kind = f.kind === undefined ? '' : String(f.kind);
+  const { state } = await stateGet(f);
+  const p = (state.projects || []).find(x => x.id === a[0]);
+  if (!p) throw new CliError('项目不存在:' + a[0], 4);
+  const all = Issues.collect(p, { online: true }); // CLI 走服务端即在线态(与 release-check/workflow 同口径)
+  const list = all.filter(x => (!sev || x.sev === sev) && (!kind || x.kind === kind));
+  const tally = (arr, k) => arr.reduce((m, x) => { m[x[k]] = (m[x[k]] || 0) + 1; return m; }, {});
+  return {
+    projectId: p.id, projectName: p.name,
+    total: list.length,
+    bySev: Object.assign({ high: 0, mid: 0, low: 0 }, tally(list, 'sev')),
+    byKind: tally(list, 'kind'),
+    blocking: all.filter(x => x.sev === 'high' || x.sev === 'mid').length, // 发布门 G2 数的就是这一批(低危提醒不改门禁状态)
+    reminderKinds: Issues.reminders().map(r => r.kind), // 低危方法论提醒的登记口径(投影表单源)
+    issues: list.map(x => ({
+      kind: x.kind, sev: x.sev, count: x.count,
+      epid: x.epid || '', epTitle: x.epTitle || '',
+      label: x.label, detail: x.detail,
+      cmd: x.cmd || '', shotIds: x.shotIds || [], goto: x.goto || '',
+    })),
   };
 };
 
@@ -1513,6 +1546,8 @@ const HELP = `虎鲸漫剧 CLI —— 面向 AI 助手与人工的全链路命�
   projects                                         项目列表(进度摘要)
   project-show <pid>                               项目详情(主体/分集/镜状态统计)
   workflow <pid> [epid]                            统一工作流状态(流程条/下一步/Agent 同口径)
+  issues <pid> [--sev high|mid|low] [--kind 类型]  问题中心:全项目待处理问题聚合(与浏览器 🩺 问题中心
+                                                   同一份投影;只读零计费,stdout 恒为 JSON)
   flow-template [mid|subjects|eps|shots|gen] [pid] 主线中段流程模板(调用顺序+参数从哪取+断点;
                                                    给 pid 才标注待办与缺前置,只读零计费)
   project-create --name 剧名 [--style 漫剧] [--script-file f.txt]
