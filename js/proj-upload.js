@@ -288,7 +288,7 @@
     let eps = null, llmError = null;
     if (mode === 'llm') {
       try {
-        eps = await EpisodeUtil.llmSplitEpisodes(scriptText, API.getConfig().model, tk.id); // 七轮:任务 id 作稳定计费操作键
+        eps = await EpisodeUtil.llmSplitEpisodes(scriptText, API.getConfig().model, tk.id, p); // 七轮:任务 id 作稳定计费操作键;p 供剧本板块人设/记忆注入
       } catch (e) {
         llmError = e.message;
         Tasks.fail(tk, 'LLM 分集失败,已回退本地均分:' + e.message);

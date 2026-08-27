@@ -3298,6 +3298,7 @@ const server = http.createServer(async (req, res) => {
      * 计费动作服务端定死(不接受客户端标签),提示词/规整与浏览器同源(js/wf-core.js);
      * 失败退费+如实报错(不本地冒充);写回 state 与 /api/state PUT 同路径。 */
     /* 剧本拆集(主线前段 headless 起点):整部剧本 p.script → p.episodes。
+     * LLM 步与其余 wf 工作流同注入链:剧本板块生效专家方法论(wfPersonaNote)+ 协作记忆(WF_BOARD['split-episodes'])。
      * 模式与切分算法经 WfCore 双端单源(markers 零 LLM / llm 锚点切原文 / even 段落均分),
      * 正文逐字保留;LLM 步失败退费+如实报错(不本地冒充,调用方可加 local 走零计费均分)。
      * 覆盖保护:已有分集需 overwrite 显式授权,在飞生成一律拒绝;旧数据在 wfSave 的 state 快照中可恢复。 */
@@ -3321,7 +3322,11 @@ const server = http.createServer(async (req, res) => {
           const r = await wfLLM(user.id, {
             action: 'llm.chat', reason: '剧本拆集(' + (p.name || p.id) + ')', opId: sanitizeOpId(b.operationId) || uid('wfsp'), step: 'main', wfName: 'split-episodes',
             model: st.defLLM || 'qwen-turbo', system: '你是专业的短剧策划编辑。',
-            user: WfCore.buildSplitUser(text, WfCore.splitTargetCount(text)),
+            user: WfCore.buildSplitUser(text, WfCore.splitTargetCount(text), {
+              // 生效专家方法论 + 协作记忆(剧本板块):与其余 wf 工作流同一装配口
+              personaNote: wfPersonaNote(tree, p, WfCore.WF_BOARD['split-episodes']),
+              memText: WfCore.memBlock(tree.agentMemory, p.name || '', WfCore.WF_BOARD['split-episodes']),
+            }),
             temperature: 0.4, max_tokens: 2000, projectId: p.id, mockKind: 'split', mockText: text,
           });
           try { eps = WfCore.splitByAnchors(text, r.parsed); } catch (e) {
