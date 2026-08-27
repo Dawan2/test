@@ -255,7 +255,7 @@ ${partials.map((s, i) => `第${i + 1}部分:${s}`).join('\n').slice(0, 8000)}` }
     const board = WfCore.WF_BOARD['split-episodes'];
     const out = await API.chatJSON({
       model,
-      system: '你是专业的短剧策划编辑。',
+      system: Prompts.get('split.system'), // 人设走注册表单源(js/prompts.js),与服务端 /api/wf/split-episodes 同字面
       messages: [{ role: 'user', content: WfCore.buildSplitUser(text, WfCore.splitTargetCount(text), {
         personaNote: window.personaNoteFor ? personaNoteFor(p, board) : '',
         memText: WfCore.memBlock(Store.state.agentMemory, (p && p.name) || '', board),

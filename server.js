@@ -3321,7 +3321,7 @@ const server = http.createServer(async (req, res) => {
         if (mode === 'llm') {
           const r = await wfLLM(user.id, {
             action: 'llm.chat', reason: '剧本拆集(' + (p.name || p.id) + ')', opId: sanitizeOpId(b.operationId) || uid('wfsp'), step: 'main', wfName: 'split-episodes',
-            model: st.defLLM || 'qwen-turbo', system: '你是专业的短剧策划编辑。',
+            model: st.defLLM || 'qwen-turbo', system: Prompts.get('split.system', st.promptOverrides),
             user: WfCore.buildSplitUser(text, WfCore.splitTargetCount(text), {
               // 生效专家方法论 + 协作记忆(剧本板块):与其余 wf 工作流同一装配口
               personaNote: wfPersonaNote(tree, p, WfCore.WF_BOARD['split-episodes']),

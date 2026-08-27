@@ -3868,11 +3868,35 @@ const contractTests = [
       assert(!src.includes('你是短剧审片总监'), f + ' 不应再内联人设句(覆盖不会跟过去)');
     });
     assert(Skills.byId('core.personaCtx').prompts.includes('review.sumSystem'), 'SK-03 应登记 review.sumSystem');
-    // SK-03 note 点名的剩余余量属实:剧本拆集步两端仍是内联人设(收编它时本条与 note 一并改)
+    // W40 在此点名的剧本拆集步已收编:两端改为跟随注册表 split.system(字面与取值口由下一条钉住),此处只反向钉住不许退回内联
     const eu = fs.readFileSync(path.join(ROOT, 'js', 'episode-util.js'), 'utf8');
     [['js/episode-util.js', eu], ['server.js', srv]].forEach(([f, src]) => {
-      assert(src.includes("system: '你是专业的短剧策划编辑。'"), f + ' 的剧本拆集人设仍是内联(SK-03 仍欠段点名的那一处)');
+      assert(!src.includes("system: '你是专业的短剧策划编辑。'"), f + ' 的剧本拆集人设不应再内联(已收进注册表 split.system)');
     });
+  } },
+  { name: '剧本拆集人设:两端同经 Prompts.get(split.system),缺省逐字节等于内联原字面', fn() {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const WfCore = require('../js/wf-core.js');
+    // 缺省不变:收编前两端写死的人设句字面,收编后仍逐字节相同(只换取值口,不接方法论块/注入块)
+    assertEq(Prompts.get('split.system'), '你是专业的短剧策划编辑。', '缺省人设句应与收编前的内联字面逐字节相同');
+    assertEq(Prompts.get('split.system', { 'split.system': '拆集编辑。' }), '拆集编辑。', '覆盖 split.system 时两端取值跟随');
+    const item = Prompts.list().find(x => x.key === 'split.system');
+    assert(item && !item.vars.length && item.name.includes('拆集'), '注册表应登记剧本拆集人设条目(无变量,可在全局默认值页在线改写)');
+    // 双端消费点:两端都不留人设句字面,服务端显式传覆盖表(Node 无 window 读不到 Store)
+    const eu = fs.readFileSync(path.join(ROOT, 'js', 'episode-util.js'), 'utf8');
+    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    assert(eu.includes("Prompts.get('split.system')"), '浏览器剧本拆集应经注册表取人设');
+    assert(srv.includes("Prompts.get('split.system', st.promptOverrides)"), '服务端剧本拆集应经注册表取人设并显式传覆盖表');
+    [['js/episode-util.js', eu], ['server.js', srv]].forEach(([f, src]) => {
+      assert(!src.includes('你是专业的短剧策划编辑'), f + ' 不应再内联人设句(覆盖不会跟过去)');
+      assert(src.includes('WfCore.buildSplitUser('), f + ' 的 user 半应沿用 wf-core 单源模板');
+    });
+    assert(Skills.byId('core.personaCtx').prompts.includes('split.system'), 'SK-03 应登记 split.system');
+    // SK-03 note 点名的剩余余量属实:主体提取人设句仍是 wf-core 常量,注册表里没有它的键、装配口也就收不了覆盖表
+    assertEq(WfCore.EXTRACT_SYSTEM, '你是专业的短剧剧本分析助手。', '主体提取人设句应仍是 wf-core 常量字面');
+    assertEq(Prompts.list().filter(x => x.def === WfCore.EXTRACT_SYSTEM).length, 0, '主体提取人设句尚未登记提示词键(SK-03 仍欠段点名的那一处)');
+    assertEq(WfCore.extractSystem.length, 0, 'extractSystem 无键可取故不收覆盖表参数(收编它时本条与 note 一并改)');
   } },
   { name: '审片升为主线一等步骤(G-03):板块 Agent 有审片席;plans/工作区/CLI 都映射 episode.smartReview', fn() {
     const D = require(path.join(ROOT, 'js/domain.js'));
@@ -5568,7 +5592,7 @@ const skillsTests = [
     const wfSteps = DomainMod.workflow({ id: 'p1', episodes: [], subjects: [] }).steps.map(x => x.key);
     // 每条:缺口出口的实况判据 + note 里必须点名的那几处余量(接上了就要同步改 note,不许静默扩面)
     const facts = {
-      'core.personaCtx': ['G-01', /function wfPersonaNote\(/.test(srv), ['剧本拆集', '未收进提示词注册表']],
+      'core.personaCtx': ['G-01', /function wfPersonaNote\(/.test(srv), ['主体提取', '未收进提示词注册表']],
       'core.memoryDual': ['G-02', typeof W.memRecall === 'function' && typeof W.memBlock === 'function', ['memAll', 'SK-26']],
       'review.stage': ['G-03', wfSteps.includes('review'), ['SK-24', '未审片']],
     };
