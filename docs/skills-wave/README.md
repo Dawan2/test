@@ -37,13 +37,14 @@
 | [w11-preflight-film-assert.md](./w11-preflight-film-assert.md) | 就绪检查消费面并集补断言:字幕面被摘掉的两种写法实测、双端行为/结构断言分工、五种摘法转红验证 | 改 `episode.preflight` 的 `result.checks` 或新增校验面前 |
 | [w13-integration-log.md](./w13-integration-log.md) | SK-14/15 分集段与 W11 断言收敛到集成分支的记录:四面并集冲突解法、被并集断言接住的转红点、合并后测试数字 | 想知道主干现在是什么状态 |
 | [w15-gen-block.md](./w15-gen-block.md) | SK-21 生成步注入面落地:提示词改写人设装配口 `WfCore.genPromptSystem`、`Skills.block('gen')` 从 0 到逐字节可对账、为什么不注生成请求构造点 | 改生成侧提示词注入或去某条目 `pending` 前 |
+| [w18-gen-prompt-unify.md](./w18-gen-prompt-unify.md) | `gen.promptSystem` 收编两端内联:`WfCore.optimizeSystem` 与 `buildOptimizeUser` 配对、CLI 侧覆盖表显式传参、为什么修订链路不接方法论块 | 改审片修订提示词或往注册表收编内联人设前 |
 
 ## 一分钟摘要(周期 1 收敛后)
 
 - 资产不缺,缺索引:知识在 `js/knowledge.js`(17 条目)、提示词在 `js/prompts.js`(7 条)、人设在 `js/experts-data.js`(16 专家)、编排在 `js/cmd-registry.js`,层与层之间的按主线步骤索引由 `js/skills.js`(30 条内部能力)承担。
 - 主线七步在代码里齐了:`Domain.workflow` 已含"审片"步(G-03),`js/skills.js` 的 `STAGES` 七步全部 `wfStep: true`。
 - 贯通缺口已收口的部分:专家人设(G-01)与协作记忆(G-02 由 agent-flow 覆盖)进 `/api/wf/*`,CLI/MCP 同链路吃到;剧本拆集(G-04)补上机读入口,headless 可从"一份整部剧本"起跑,其 LLM 步也已接入同一注入链(见 [w8-split-episodes-inject.md](./w8-split-episodes-inject.md))。
-- 空挂已清:`settings.tplVideo`(G-05)与 `KB.SECTIONS`(G-15/G-08 的 KB 侧)都有了消费方,并有断言防回退。生成步的注入面亦已出块——`Skills.block('gen')` 逐字节等于提示词改写人设 `WfCore.genPromptSystem` 的方法论段(抽卡公式+抽卡军规),SK-21 的 `pending` 随之清空;G-06 只闭这两条,「多镜头写法」「主体参考」仍未进提示词构造点(见 [w15-gen-block.md](./w15-gen-block.md))。
+- 空挂已清:`settings.tplVideo`(G-05)与 `KB.SECTIONS`(G-15/G-08 的 KB 侧)都有了消费方,并有断言防回退。生成步的注入面亦已出块——`Skills.block('gen')` 逐字节等于提示词改写人设 `WfCore.genPromptSystem` 的方法论段(抽卡公式+抽卡军规),SK-21 的 `pending` 随之清空;G-06 只闭这两条,「多镜头写法」「主体参考」仍未进提示词构造点(见 [w15-gen-block.md](./w15-gen-block.md))。该人设键的取值口已收编到底:审片一键优化与 CLI 修订重抽改经 `WfCore.optimizeSystem` 只取人设句(缺省逐字节不变),覆盖两端一并跟随(见 [w18-gen-prompt-unify.md](./w18-gen-prompt-unify.md))。
 - 校验宿主四面齐了:剧本面(SK-07/08/09)、主体面(S-03,SK-12/13)、分集面(SK-14/15)、成片字幕面(S-06,SK-28)共八条 `Skills.CHECKS` 校验项,剧本面与分集面成对闭合 S-01;两端就绪检查按主线步序同挂 `result.checks`,问题中心同挂低危提醒——纯本地零 LLM 零计费,只报不拦。四面并集与步序由行为断言(浏览器端真跑命令看回执)+ 双端源级断言(段内同一条 `checks` 表达式 + 按登记 `cmds` 反查漏消费)锁死,见 [w11-preflight-film-assert.md](./w11-preflight-film-assert.md)。
 - 人设/记忆注入面覆盖五条工作流:理解、分镜、审片、提取主体、剧本拆集(`WfCore.WF_BOARD` 五键单源,服务端唯一装配口 `wfPersonaNote` 由契约断言锁死调用点数)。
 - 词表分叉已收口:景别/运镜/视角/角度四张词表的单一来源在 `js/wf-core.js`,`camera.js`/`review.js`/`sb-io.js`/`agent.js` 全派生(G-07,见 `w4-shot-size-glossary.md`)。
