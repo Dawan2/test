@@ -2771,6 +2771,43 @@ function loadIssues() {
   loadFile(sb, 'issues.js');
   return sb;
 }
+/* 跨端对照夹具:一个项目里同时摆出状态类问题(缺剧本/未拆镜/失败镜/素材过期/待确认/低分/成片过期/主体缺图)
+ * 与五面方法论提醒(剧本/分集两条/主体一致性/景别衔接/字幕),kind 集合尽量宽。
+ * 纯数据,不带任何环境句柄——Node 与浏览器两条路径读到的应当是同一份结论。 */
+function crossEndP() {
+  const shot = (id, order, over) => Object.assign({
+    id, order, name: '', plot: 'p', prompt: 'q', camera: '固定镜头', duration: 5,
+    characters: [], scene: '', props: [], confirm: true, cameraSpec: { shotSize: '中景' },
+    video: { status: 'done', url: 'http://x/v.mp4' },
+  }, over || {});
+  const OK = '她原来早就知道那份文件是假的。她亮出证据当众揭穿骗局,众人哗然,反派连连道歉。'
+    + '门被推开,那个人竟然出现:「你老婆在我手上,一小时内拿东西来换。」';
+  const FILL = '江城的春天多雨。'.repeat(16);
+  const BG = '江城的春天多雨。'.repeat(20) + '她被人嘲笑,却默默忍住。'; // 开篇铺陈过长:剧本面命中
+  return {
+    id: 'p1',
+    subjects: [
+      { id: 'sj1', name: '主角', kind: 'character', image: 'u', imgVer: 2, forms: [{ id: 'fm1', name: '战损', image: 'u2' }] },
+      { id: 'sj2', name: '玉佩', kind: 'prop', image: '' },
+    ],
+    episodes: [
+      { id: 'ep1', title: '第1集', content: BG, sbConfig: { subtitle: true },
+        shots: [
+          shot('sh0', 0, { characters: ['主角'], dialogue: '我'.repeat(130), video: { status: 'done', url: 'http://x/v.mp4', assetVer: 1 } }),
+          shot('sh1', 1, { characters: ['主角-战损'] }),
+          shot('sh2', 2, { confirm: false, video: null }),
+          shot('sh3', 3, { video: { status: 'failed', error: '上游超时' } }),
+        ],
+        lastReview: { avg: 6, perShot: [{ shotId: 'sh0', order: 0, score: 6 }] },
+        composed: true, composedInputHash: 'stale' },
+      { id: 'ep2', title: '第2集', content: OK + FILL, shots: [] },
+      { id: 'ep3', title: '第3集', content: OK, shots: [] },
+      { id: 'ep4', title: '第4集', content: '', shots: [] },
+      { id: 'ep5', title: '第5集', content: OK, shots: [] },
+      { id: 'ep6', title: '第6集', content: OK, shots: [] },
+    ],
+  };
+}
 /* 齐备分集夹具:全 done+确认+已审高分+成片就绪(无问题基准) */
 function cleanEp(over) {
   const s = { id: 'sh0', order: 0, name: '', plot: 'p', prompt: 'q', camera: '固定镜头', duration: 5, characters: [], scene: '', props: [], confirm: true, video: { status: 'done', url: 'http://x/v.mp4' } };
@@ -2784,6 +2821,7 @@ const issuesTests = [
     const handlers = [];
     sb.Bus = { on: (n, fn) => handlers.push(fn), emit: (n, e) => handlers.forEach(fn => fn(e || { name: n })) };
     loadFile(sb, 'issues.js');
+    loadFile(sb, 'issues-ui.js'); // 弹窗渲染/Bus 订阅/命令处置在浏览器薄封装里(与 index.html 同顺序:issues → issues-ui)
     // 项目页角标按钮桩(常驻)
     const btn = { dataset: { pid: 'p1' }, innerHTML: '', isConnected: true };
     sb.document.querySelector = sel => (sel === '[data-x=pissues][data-pid]' ? btn : null);
@@ -2947,6 +2985,76 @@ const issuesTests = [
     assert(it, '主体图更新后旧成片应判过期');
     assertEq(it.sev, 'mid');
     assert(it.detail.includes('镜头 1'), '过期镜号应入明细');
+  } },
+  { name: '双端单源:Node 无 window 与浏览器路径对同一夹具逐字节同结论(kind 集合全等)', fn() {
+    const NodeIssues = require('../js/issues.js'); // Node 侧:无 window/document/Store,依赖经 require 取
+    assertEq(typeof globalThis.window, 'undefined', '本进程不得有 window(证明 Node 侧真的跑在无浏览器环境里)');
+    const sb = loadIssues();
+    [false, true].forEach(online => {
+      const a = NodeIssues.collect(crossEndP(), { online });
+      const b = sb.Issues.collect(crossEndP(), { online });
+      assertEq(a.map(x => x.kind).sort().join(','), b.map(x => x.kind).sort().join(','),
+        '两端投影的 kind 集合应全等(online=' + online + ')');
+      assertEq(JSON.stringify(a), JSON.stringify(b), '两端结论应逐字节相同(online=' + online + ')');
+      assertEq(NodeIssues.count(crossEndP(), { online }), a.length, 'count 与 collect 同源');
+    });
+    /* 夹具确实摊得开:状态类与方法论提醒两类都在,不是"两端同为空"的假对照 */
+    const kinds = NodeIssues.collect(crossEndP(), { online: false }).map(x => x.kind);
+    const table = NodeIssues.reminders().map(r => r.kind);
+    ['no-script', 'no-shots', 'failed-shots', 'stale-shots', 'unconfirmed', 'low-review', 'composed-stale', 'subject-no-image']
+      .forEach(k => assert(kinds.includes(k), '对照夹具应摊出状态类问题:' + k));
+    table.forEach(k => assert(kinds.includes(k), '对照夹具应摊出投影表登记的每一条方法论提醒:' + k));
+    /* 投影表就是本模块产出的低危提醒全集:表外不得凭空多出一条低危 kind */
+    const lowKinds = NodeIssues.collect(crossEndP(), { online: false }).filter(x => x.sev === 'low' && x.kind !== 'unconfirmed').map(x => x.kind);
+    lowKinds.forEach(k => assert(table.includes(k), '低危提醒必须在投影表里登记:' + k));
+    /* 取表给副本:调用方污染返回值不影响下次取表 */
+    NodeIssues.reminders().push({ kind: '污染' });
+    assertEq(NodeIssues.reminders().length, table.length, 'reminders() 每次应现生成新数组');
+  } },
+  { name: '浏览器薄封装:全局名与成员一个不少,online 由 Media 注入(投影核不碰 window/Store)', fn() {
+    const sb = loadIssues();
+    loadFile(sb, 'issues-ui.js');
+    ['collect', 'count', 'fixIssue', 'openModal', 'badgeHTML', 'reminders'].forEach(k =>
+      assertEq(typeof sb.Issues[k], 'function', 'window.Issues 应仍有成员:' + k));
+    // online 由薄封装从 Media 现取并显式传进投影核(核自己读不到任何环境句柄)
+    const seen = [];
+    const orig = sb.Domain.episodeState;
+    sb.Domain.episodeState = (p, ep, on) => { seen.push(on); return orig(p, ep, on); };
+    const p = { id: 'p1', subjects: [], episodes: [{ id: 'ep1', title: '一', content: '剧本正文', shots: [] }] };
+    sb.Media = { isReady: () => true };
+    sb.Issues.collect(p);
+    assertEq(seen.join(','), 'true', '在线时薄封装应注入 online=true');
+    sb.Media = { isReady: () => false };
+    sb.Issues.count(p);
+    assertEq(seen.join(','), 'true,false', '离线时应注入 online=false');
+    // 投影核纯数据:源级封死环境句柄与前端状态桶(与 domain.js 同纪律)
+    const core = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
+    const body = core.slice(core.indexOf('function (Domain, skills)'));
+    [/\bwindow\b/, /\bdocument\b/, /\bStore\b/, /\bMedia\b/, /\blocation\b/, /\bBus\b/, /\bCommands\b/, /\bU\./]
+      .forEach(re => assert(!re.test(body), '投影核不得引用浏览器环境句柄/前端状态桶:' + re));
+    assert(/module\.exports = I; else root\.Issues = I/.test(core), '应是与 domain.js 同形的 UMD 双端头');
+  } },
+  { name: 'CLI/MCP 出口:issues 只读命令与 hujing_issues 工具复用同一份投影,不新增计费动作', fn() {
+    const { spawnSync } = require('child_process');
+    const cli = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    assert(cli.includes("require('./js/issues.js')"), 'CLI 应 require 双端投影,不在 CLI 侧另写一份问题推导');
+    const seg = cli.slice(cli.indexOf('CMD.issues ='), cli.indexOf('/* ---------- 交付检查'));
+    assert(seg.length > 200, '应能定位到 CLI issues 命令实现段');
+    assert(/Issues\.collect\(p, \{ online: true \}\)/.test(seg), 'CLI 侧应显式注入 online(Node 读不到 Media)');
+    assert(/Issues\.reminders\(\)/.test(seg), '低危提醒的登记口径应表驱动,不在 CLI 侧手写 kind 清单');
+    assert(!/kind: '/.test(seg), 'CLI 不得自写第二份 kind/文案(投影表是唯一来源)');
+    ['operationId', 'Tasks.run', 'POST(', 'billingAction'].forEach(k =>
+      assert(!seg.includes(k), 'issues 是只读聚合,不得出现计费/写状态动作:' + k));
+    // 命令真的注册上了:无服务端也应走到参数校验(exit 2),而不是"未知命令"
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'issues'], { encoding: 'utf8', timeout: 30000 });
+    assertEq(r.status, 2, 'issues 缺 pid 应报参数错误 exit 2,实际 ' + r.status + ' / ' + r.stderr);
+    assert(JSON.parse(String(r.stdout).trim()).error.includes('issues <pid>'), 'stdout 应是 JSON 用法提示');
+    const help = spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'help'], { encoding: 'utf8', timeout: 30000 });
+    assert(String(help.stderr).includes('issues <pid>'), 'help 应登记 issues 命令');
+    // MCP 侧只做包装:工具与只读资源都指向同一条 CLI 命令,不另起一条推导
+    const mcp = fs.readFileSync(path.join(ROOT, 'mcp.js'), 'utf8');
+    assert(/name: 'hujing_issues'/.test(mcp) && /build: i => \['issues', i\.pid\]/.test(mcp), 'MCP 应把 issues 包装成工具');
+    assert(mcp.includes("hujing://project/{pid}/issues") && /return \['issues', decodeURIComponent/.test(mcp), 'MCP 只读资源应可直读问题清单');
   } },
 ];
 
@@ -4756,6 +4864,22 @@ const assertPreflightOrder = (a, b, why) => {
   assert(stages.indexOf(a) >= 0 && stages.indexOf(b) >= 0, '单源面表应含 ' + a + '/' + b + ' 两面');
   assert(stages.indexOf(a) < stages.indexOf(b), '单源面表应按主线步序排列(' + why + ')');
 };
+/* 问题中心的方法论提醒同样收成一张单源表 Issues.reminders()(js/issues.js 已 UMD 化,Node 直 require 得到)。
+ * 故逐面消费点断言的形态也从"文件里出现过 Skills.check('<面>'"改成"这一面在投影表里登记了 kind/sev/挂载级别
+ * + 全模块只此一处按表取值":判据只增不减——原先只证明源码里提到过这一面,现在还证明了它的危险级、
+ * 取的是哪一条校验项、挂在项目级还是分集级,且不存在第二处绕开表的取值点。 */
+const IssuesMod = require('../js/issues.js');
+const assertIssuesProjection = (stage, kind, skill, level) => {
+  const row = IssuesMod.reminders().find(r => r.kind === kind);
+  assert(row, '问题中心投影表应登记提醒条目:' + kind);
+  assertEq(row.stage, stage, kind + ' 应复用 ' + stage + ' 面的校验项结论,不写第二份判定');
+  assertEq(row.skill, skill, kind + ' 的取值点应是 ' + (skill || '整面 hits 合并'));
+  assertEq(row.sev, 'low', kind + ' 须挂低危(发布门 G2 只数高/中危)');
+  assertEq(row.level, level, kind + ' 的挂载级别应是 ' + level);
+  const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
+  assertEq((isrc.match(/\.check\(r\.stage, obj, ck\)/g) || []).length, 1, '问题中心应只此一处按投影表取校验项结论');
+  assert(!/Skills\.check\('/.test(isrc), '投影表收口后不得再出现逐面写死的 Skills.check(<面名>');
+};
 
 const skillsTests = [
   { name: 'hookAnchor:开篇直接进台词/冲突信号 → info;背景铺陈过长 → late-hook(带首个信号位置)', fn() {
@@ -4929,7 +5053,7 @@ const skillsTests = [
     assertPreflightFace('script', '剧本面');
     assertPreflightOrder('script', 'subjects', '剧本在主体之前');
     const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
-    assert(/Skills\.check\('script'/.test(isrc), '问题中心应复用同一校验项,不写第二份判定');
+    assertIssuesProjection('script', 'script-craft', null, 'episode'); // 剧本面是唯一取整面 hits 合并的一处
     assert(isrc.includes("kind: 'script-craft', sev: 'low'"), '剧本方法论提醒须挂低危(发布门 G2 只数高/中危)');
     // 审片报告与发布门的方法论维度仍是 G-10,条目不得挂未接的命令面
     ['script.hookStrength', 'script.faceslapFour'].forEach(id => {
@@ -5186,7 +5310,7 @@ const skillsTests = [
       'subjects.genRefDiscipline,subjects.shotRefIntegrity,subjects.crossShotConsistency,subjects.multiShotPrompt',
       '结论应同时给实现 id 与能力 id');
     const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
-    assert(/Skills\.check\('subjects'/.test(isrc), '问题中心应复用同一校验项,不写第二份判定');
+    assertIssuesProjection('subjects', 'subject-inconsistent', 'subjects.crossShot', 'episode');
     assert(isrc.includes("kind: 'subject-inconsistent', sev: 'low'"), '一致性提醒须挂低危');
     const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
     assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 只数高/中危 —— 低危提醒不改门禁状态');
@@ -5242,7 +5366,7 @@ const skillsTests = [
     assertPreflightOrder('subjects', 'shots', '主体在分镜之前');
     assertPreflightOrder('shots', 'film', '分镜在成片之前');
     const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
-    assert(/Skills\.check\('shots'/.test(isrc), '问题中心应复用同一校验项,不写第二份判定');
+    assertIssuesProjection('shots', 'shot-size-linkage', 'shots.sizeProgression', 'episode');
     assert(isrc.includes("kind: 'shot-size-linkage', sev: 'low'"), '景别衔接提醒须挂低危(发布门 G2 只数高/中危)');
     const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
     assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 只数高/中危 —— 低危提醒不改门禁状态');
@@ -5652,7 +5776,7 @@ const skillsTests = [
   { name: 'subtitleTiming:消费点——就绪检查双端附结论 + 问题中心低危(不改门禁、不新增计费)', fn() {
     assertPreflightFace('film', '成片字幕面');
     const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
-    assert(/Skills\.check\('film'/.test(isrc), '问题中心应复用同一校验项,不写第二份判定');
+    assertIssuesProjection('film', 'caption-unreadable', 'film.subtitleQC', 'episode');
     assert(isrc.includes("kind: 'caption-unreadable', sev: 'low'"), '字幕提醒须挂低危');
     const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
     assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 只数高/中危 —— 低危提醒不改门禁状态');
@@ -5775,7 +5899,8 @@ const skillsTests = [
     assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 仍只数高/中危');
     assert(rsrc.includes("if (fails > 0) overall = 'fail'"), '发布门 overall 计数口径逐字未动');
     const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
-    assert(isrc.includes("x.skill === 'film.subtitleQC'"), '问题中心的成片面只取字幕结论(要不要挂本面的产品口径未定)');
+    assertEq(IssuesMod.reminders().filter(r => r.stage === 'film').map(r => r.skill).join(','), 'film.subtitleQC',
+      '问题中心的成片面只取字幕结论(要不要挂本面的产品口径未定)');
     assert(!isrc.includes('film.deliverContract') && !isrc.includes('upstreamFinalContract'), '问题中心不挂本面');
     // 零计费、不拦合成与成片动作
     assertEq(require('../js/cmd-registry.js').byName['episode.preflight'].risk, 'read', '就绪检查应仍是 read 类零计费');
@@ -5910,7 +6035,8 @@ const skillsTests = [
     assertPreflightOrder('subjects', 'eps', '分集在主体之后');
     assertPreflightOrder('eps', 'shots', '分集在分镜之前');
     const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
-    assert(/Skills\.check\('eps'/.test(isrc), '问题中心应复用同一校验项,不写第二份判定');
+    assertIssuesProjection('eps', 'eps-structure', 'eps.structureStage', 'project'); // 判定输入是整张分集表,故挂项目级
+    assertIssuesProjection('eps', 'eps-payoff', 'eps.payoffPoint', 'episode');
     assert(isrc.includes("kind: 'eps-structure', sev: 'low'") && isrc.includes("kind: 'eps-payoff', sev: 'low'"), '分集面提醒须挂低危(发布门 G2 只数高/中危)');
     // 审片报告与发布门的方法论维度仍是 G-10,条目不得挂未接的命令面
     ['eps.structureStage', 'eps.payoffPoint'].forEach(id => {
