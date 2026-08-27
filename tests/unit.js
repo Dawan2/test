@@ -1353,7 +1353,8 @@ const commandsTests = [
     const r = await sb.Commands.execute('episode.preflight', { pid: 'p1', epid: 'ep1' });
     const checks = r.result.checks || [];
     assertEq(checks.map(x => x.skill).join(','),
-      'script.hookStrength,script.faceslapFour,script.dialogueRule,subjects.refIntegrity,subjects.crossShot,'
+      'script.hookStrength,script.faceslapFour,script.dialogueRule,'
+      + 'subjects.refDiscipline,subjects.refIntegrity,subjects.crossShot,subjects.crossShot,'
       + 'eps.structureStage,eps.payoffPoint,film.subtitleQC',
       'result.checks 应是四面并集,按主线步序 script → subjects → eps → film');
     const cap = checks.find(x => x.skill === 'film.subtitleQC');
@@ -3993,6 +3994,10 @@ const refIntegrity = (p, ep) => Skills.check('subjects', { p, ep }).find(x => x.
 const crossShot = (p, shots) => Skills.check('subjects', { p, ep: { id: 'ep1', shots } }).find(x => x.skill === 'subjects.crossShot');
 /* 主体带真实图的项目夹具:n 个角色各有权威图(参考图组 5 张上限用例) */
 const manySubjP = n => ({ id: 'p1', subjects: Array.from({ length: n }, (_, i) => ({ id: 'c' + i, name: '角色' + i, kind: 'character', image: '/uploads/a/c' + i + '.png' })) });
+/* 主体参考纪律夹具:n 个角色权威三视图之外另有视频参考大头照(imgRef)——取图优先级落在大头照上,不触发三视图回退 */
+const headSubjP = n => ({ id: 'p1', subjects: Array.from({ length: n }, (_, i) => ({ id: 'c' + i, name: '角色' + i, kind: 'character', image: '/uploads/a/c' + i + '.png', imgRef: '/uploads/a/h' + i + '.png' })) });
+const genRef = (p, shots) => Skills.check('subjects', { p, ep: { id: 'ep1', shots } }).find(x => x.id === 'subjects.genRefDiscipline');
+const multiShot = (p, shots) => Skills.check('subjects', { p, ep: { id: 'ep1', shots } }).find(x => x.id === 'subjects.multiShotPrompt');
 /* 成片字幕夹具:镜头缺省带分镜图(进得了合成序列),段时长由 Domain.subtitleSegs 按预估/裁剪推出,用例只摆内容 */
 const capShot = (order, over) => Object.assign({ id: 'sh' + order, order, dialogue: '', narration: '', image: '/uploads/a/f' + order + '.png' }, over || {});
 const capEp = (shots, over) => Object.assign({ id: 'ep1', sbConfig: { subtitle: true }, shots }, over || {});
@@ -4095,6 +4100,121 @@ const skillsTests = [
       assert(!Skills.byId(id).cmds.includes('episode.smartReview'), id + ' 不得挂未接的审片命令面');
     });
   } },
+  { name: 'genRefDiscipline:角色有视频参考大头照 → info;回退到白底三视图 → ref-sheet-fallback', fn() {
+    const KB = require('../js/knowledge.js');
+    assert(/不要用三视图\/多视图/.test(KB.section('主体参考')), '判据单源:KB「主体参考」条目须仍写明不要用三视图/多视图');
+    const clean = genRef(headSubjP(2), [refShot(0, { characters: ['角色0', '角色1'] })]);
+    assertEq(clean.pass, true); assertEq(clean.level, 'info'); assertEq(clean.hits.length, 0, '喂大头照的镜不应产出命中');
+    const p = refP(); // 林小满只有权威三视图,没有 imgRef 大头照
+    const r = genRef(p, [refShot(0, { characters: ['林小满'] })]);
+    assertEq(r.pass, false); assertEq(r.level, 'warn', '参考纪律是提醒级,fail 仍只留给完备性面');
+    assertEq(r.hits.map(h => h.code + '@' + h.order + ':' + h.name).join(','), 'ref-sheet-fallback@1:林小满');
+    assertEq(r.hits[0].shotId, 'sh0', 'hits 应带镜头 id 供调用方跳转');
+    assertEq(DomainMod.shotRefImages(p, refShot(0, { characters: ['林小满'] })).refImages[0].url, p.subjects[0].image,
+      '命中口径与真实生成请求一致:这一镜确实把权威三视图喂了出去');
+    assertEq(genRef(p, [refShot(0, { characters: ['林小满-战损'] })]).hits.length, 0, '形态自带图不是三视图回退');
+    const withHead = refP({ subjects: refP().subjects.map(s => (s.id === 'sj1' ? Object.assign({}, s, { imgRef: '/uploads/a/head.png' }) : s)) });
+    assertEq(genRef(withHead, [refShot(0, { characters: ['林小满'] })]).hits.length, 0, '补出大头照后命中自动消失');
+  } },
+  { name: 'genRefDiscipline:参考人物超条目上限 → ref-person-overflow;有图却被参考图组上限挤出 → ref-cap-dropped', fn() {
+    const KB = require('../js/knowledge.js');
+    assert(/参考人物≤4/.test(KB.section('主体参考')), '上限单源:KB「主体参考」条目须仍写明参考人物≤4(字面失配时校验项会回落默认值)');
+    assertEq(genRef(headSubjP(4), [refShot(0, { characters: ['角色0', '角色1', '角色2', '角色3'] })]).hits.length, 0, '恰好 4 人不算超上限');
+    const r = genRef(headSubjP(5), [refShot(0, { characters: ['角色0', '角色1', '角色2', '角色3', '角色4'] })]);
+    assertEq(r.hits.map(h => h.code + ':' + h.count + '/' + h.limit).join(','), 'ref-person-overflow:5/4', 'hits 应带实际人数与条目上限');
+    assertEq(r.hits[0].order, 1, '命中定位到镜号');
+    // 4 角色 + 场景 + 道具 = 6 个有图主体,参考图组只装得下 5 个:排在最后的道具进不了真实生成请求
+    const p = { id: 'p1', subjects: headSubjP(4).subjects.concat([
+      { id: 'sc1', name: '客厅', kind: 'scene', image: '/uploads/a/sc1.png' },
+      { id: 'pr1', name: '玉佩', kind: 'prop', image: '/uploads/a/pr1.png' },
+    ]) };
+    const shot = refShot(0, { characters: ['角色0', '角色1', '角色2', '角色3'], scene: '客厅', props: ['玉佩'] });
+    assertEq(DomainMod.shotRefImages(p, shot).refImages.length, 5, '参考图组上限 5 张(第 6 个主体进不去真实生成请求)');
+    const d = genRef(p, [shot]);
+    assertEq(d.hits.map(h => h.code + ':' + h.name + '/' + h.limit).join(','), 'ref-cap-dropped:玉佩/5', '被挤出的主体应如实命中且带组容量');
+    assertEq(refIntegrity(p, { id: 'ep1', shots: [shot] }).hits.length, 0, '主体有图,完备性面无话可说——上限挤出只有本项看得见');
+  } },
+  { name: 'genRefDiscipline:解析不到/全程无图归 SK-12 不重复报;纯函数且无判定输入不冒充结论', fn() {
+    const p = refP();
+    const shots = [refShot(0, { characters: ['路人甲'], scene: '客厅', props: ['玉佩'] })]; // 未知名 + data: 内联图 + 缺图
+    const ep = { id: 'ep1', shots };
+    const snap = JSON.stringify([p, ep]);
+    assertEq(genRef(p, shots).hits.length, 0, '这三种都是完备性面的缺陷,参考纪律面不重复报');
+    assertEq(refIntegrity(p, ep).hits.map(h => h.code).join(','), 'unknown-subject,no-ref-image,no-ref-image', '完备性面照报不误');
+    assertEq(JSON.stringify(genRef(p, shots)), JSON.stringify(genRef(p, shots)), '同输入应给同结论(无隐藏状态)');
+    assertEq(JSON.stringify([p, ep]), snap, '校验项不得改动领域对象');
+    assertEq(genRef(p, []).level, 'info', '无镜头即无判定输入');
+    assertEq(genRef(null, shots).hits.length, 0, '无项目上下文不产出结论');
+    assertEq(Skills.check('subjects', { p, s: refShot(0, { characters: ['林小满'] }) }).find(x => x.id === 'subjects.genRefDiscipline').hits.length, 1,
+      '镜级入口只判传入的那一镜');
+  } },
+  { name: 'multiShotPrompt:图生视频缺一致性声明 → img2ref-decl-missing;主体参考图组自带该声明则不报', fn() {
+    const KB = require('../js/knowledge.js');
+    assert(/须声明"基于参考图保持人物样貌与服装一致"/.test(KB.section('多镜头写法')),
+      '判定字面单源:KB「多镜头写法」条目须仍写明那句声明(字面失配时判据退空,不制造假命中)');
+    const bare = { id: 'p1', subjects: [] };
+    const r = multiShot(bare, [refShot(0, { prompt: '她推门而入,雨水顺着伞沿落下', image: '/uploads/a/f0.png' })]);
+    assertEq(r.pass, false); assertEq(r.level, 'warn', '写法提醒是提醒级');
+    assertEq(r.hits.map(h => h.code + '@' + h.order).join(','), 'img2ref-decl-missing@1');
+    assertEq(r.hits[0].shotId, 'sh0', 'hits 应带镜头 id 供调用方跳转');
+    assertEq(multiShot(bare, [refShot(0, { prompt: '她推门而入,雨水顺着伞沿落下' })]).hits.length, 0, '一张图都没送的纯文生视频镜不判本条');
+    const withRef = refShot(0, { characters: ['角色0'], prompt: '她推门而入,雨水顺着伞沿落下', image: '/uploads/a/f0.png' });
+    const q = DomainMod.buildVideoRequest(headSubjP(1), null, withRef);
+    assert(q.prompt.includes('参考图') && q.prompt.includes('一致'), '有主体参考图组时声明由请求装配自带');
+    assertEq(multiShot(headSubjP(1), [withRef]).hits.length, 0, '请求里已有该声明就不报');
+  } },
+  { name: 'multiShotPrompt:首尾帧写大幅动作 → frames-motion-overrun;一镜切太碎 → shot-flow-fragmented', fn() {
+    const p = headSubjP(1);
+    const frames = refShot(0, { characters: ['角色0'], genStrategy: 'frames', firstFrame: '/uploads/a/f0.png', lastFrame: '/uploads/a/f1.png', prompt: '她奔跑着冲下长长的楼梯' });
+    const r = multiShot(p, [frames]);
+    assertEq(r.hits.map(h => h.code + ':' + h.name).join(','), 'frames-motion-overrun:奔跑', 'hits 应给出命中的动作词');
+    assertEq(multiShot(p, [Object.assign({}, frames, { prompt: '她缓缓抬头,目光落在门口' })]).hits.length, 0, '动作幅度收敛的首尾帧镜不报');
+    assertEq(multiShot(p, [Object.assign({}, frames, { genStrategy: 'ref' })]).hits.length, 0, '非首尾帧策略不判两端可插值');
+    const cut = multiShot({ id: 'p1', subjects: [] }, [refShot(0, { prompt: '近景特写脸部,切至全景,切到长街,画面一转到雨夜天台' })]);
+    assertEq(cut.hits.map(h => h.code + ':' + h.count + '/' + h.limit).join(','), 'shot-flow-fragmented:3/2', 'hits 应带切换信号数与上限');
+    assertEq(multiShot({ id: 'p1', subjects: [] }, [refShot(0, { prompt: '近景特写脸部,慢慢拉远成全景,人物缓慢行走,结尾定格微笑' })]).hits.length, 0,
+      '按时间顺序描述的一条镜头流不算太碎');
+  } },
+  { name: 'multiShotPrompt:纯函数(不改入参、同输入同结论);提示词未写与无项目上下文不产出结论', fn() {
+    const p = headSubjP(1);
+    const shots = [refShot(0, { characters: ['角色0'], genStrategy: 'frames', firstFrame: '/uploads/a/f0.png', prompt: '她奔跑着冲下长长的楼梯' })];
+    const ep = { id: 'ep1', shots };
+    const snap = JSON.stringify([p, ep]);
+    assertEq(JSON.stringify(multiShot(p, shots)), JSON.stringify(multiShot(p, shots)), '同输入应给同结论(无隐藏状态)');
+    assertEq(JSON.stringify([p, ep]), snap, '校验项不得改动领域对象');
+    assertEq(multiShot(p, [refShot(0, { characters: ['角色0'], image: '/uploads/a/f0.png' })]).hits.length, 0, '提示词还没写的镜无判定输入');
+    assertEq(multiShot(p, []).level, 'info', '无镜头即无判定输入');
+    assertEq(multiShot(null, shots).hits.length, 0, '无项目上下文不产出结论');
+  } },
+  { name: 'G-06 校验半:SK-11/SK-13 登记与消费(面表推导自动跟上,不拦生成、不改门禁、不开计费)', fn() {
+    const sk11 = Skills.byId('subjects.refDiscipline');
+    assertEq(sk11.pending.length, 0, 'SK-11 校验面已落地,pending 应清空');
+    assertEq(sk11.checks.join(','), 'subjects.genRefDiscipline');
+    assertEq(sk11.gaps.join(','), 'G-13', 'G-06 的校验半落地后本条只剩人设句入注册表那一项');
+    const sk13 = Skills.byId('subjects.crossShot');
+    assertEq(sk13.checks.join(','), 'subjects.crossShotConsistency,subjects.multiShotPrompt', 'SK-13 承接一致性与多镜头写法两条实现');
+    assertEq(sk13.gaps.join(','), 'S-03');
+    assertEq(Skills.gaps()['G-06'], undefined, 'G-06 两半(注入 + 校验)到此清账,缺口投影不再列出任何能力');
+    // 消费点由登记推导:两条都记 episode.preflight,所属面 subjects 早已在双端就绪检查的 checks 表达式里,故两端实现一行未改
+    const consumers = Skills.list().filter(s => !s.pending.includes('check') && s.checks.length && s.cmds.includes('episode.preflight'));
+    ['subjects.refDiscipline', 'subjects.crossShot'].forEach(id => {
+      const s = consumers.find(x => x.id === id);
+      assert(s, id + ' 应登记 episode.preflight 为消费点');
+      assertEq(s.stage, 'subjects', '两条都落在主体面,新增校验项不改就绪检查的面清单');
+    });
+    [['js/commands.js', 'js'], ['cli.js', '']].forEach(([f]) => {
+      const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+      assert(/Skills\.check\('subjects'/.test(src), f + ' 就绪检查应跑主体面校验项(四条同一次调用)');
+      assert(!/Skills\.check\('gen'/.test(src), f + ' 生成步不新开校验面(生成前置结论走主体面)');
+    });
+    assertEq(require('../js/cmd-registry.js').byName['episode.preflight'].risk, 'read', '就绪检查应仍是 read 类零计费');
+    ['js/sb-gen.js', 'js/produce.js'].forEach(f => {
+      const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+      assert(!src.includes('Skills.'), f + ' 生成动作里不加校验拦截(结论只报不拦)');
+    });
+    const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
+    assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 只数高/中危 —— 本轮不改门禁口径');
+  } },
   { name: 'refIntegrity:干净夹具全 pass(引用齐备且有真实参考图 → info 无命中)', fn() {
     const p = refP();
     const ep = { id: 'ep1', shots: [
@@ -4135,7 +4255,8 @@ const skillsTests = [
     assertEq(fed.join(','), '林小满-战损', '只有形态图是可喂模型的真实图');
     r.hits.forEach(h => assert(!fed.includes(h.name), '进了参考图组的主体不应被判缺图:' + h.name));
     assertEq(r.hits.map(h => h.name).join(','), '客厅,玉佩', '未进参考图组的解析名应逐个命中');
-    assertEq(Skills.check('subjects', { p, s: refShot(1, { characters: ['林小满'] }) })[0].hits.length, 0, '镜级入口只判传入的那一镜');
+    assertEq(Skills.check('subjects', { p, s: refShot(1, { characters: ['林小满'] }) })
+      .find(x => x.skill === 'subjects.refIntegrity').hits.length, 0, '镜级入口只判传入的那一镜');
   } },
   { name: 'refIntegrity:纯函数(不改入参、同输入同结论)且无判定输入时不产出结论', fn() {
     const p = refP();
@@ -4222,14 +4343,17 @@ const skillsTests = [
   { name: 'crossShot:消费点——就绪检查两条结论 + 问题中心低危(不改门禁、不新增计费)', fn() {
     const p = refP();
     const conc = Skills.check('subjects', { p, ep: { id: 'ep1', shots: [refShot(0, { characters: ['林小满'] }), refShot(1, { characters: ['小满'] })] } });
-    assertEq(conc.map(x => x.skill).join(','), 'subjects.refIntegrity,subjects.crossShot', '主体面现有两条已落地校验项(完备性 + 一致性)');
-    assertEq(conc[1].id, 'subjects.crossShotConsistency', '结论应同时给实现 id 与能力 id');
+    assertEq(conc.map(x => x.skill).join(','), 'subjects.refDiscipline,subjects.refIntegrity,subjects.crossShot,subjects.crossShot',
+      '主体面现有四条已落地校验项(参考纪律 + 完备性 + 一致性 + 多镜头写法)');
+    assertEq(conc.map(x => x.id).join(','),
+      'subjects.genRefDiscipline,subjects.shotRefIntegrity,subjects.crossShotConsistency,subjects.multiShotPrompt',
+      '结论应同时给实现 id 与能力 id');
     const isrc = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
     assert(/Skills\.check\('subjects'/.test(isrc), '问题中心应复用同一校验项,不写第二份判定');
     assert(isrc.includes("kind: 'subject-inconsistent', sev: 'low'"), '一致性提醒须挂低危');
     const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
     assert(/x\.sev === 'high' \|\| x\.sev === 'mid'/.test(rsrc), '发布门 G2 只数高/中危 —— 低危提醒不改门禁状态');
-    ['episode.generateVideos', 'shot.generateVideo'].forEach(n => assert(!Skills.byId('subjects.crossShot').cmds.includes(n), '生成侧消费待 G-06,条目不得挂未接的命令面:' + n));
+    ['episode.generateVideos', 'shot.generateVideo'].forEach(n => assert(!Skills.byId('subjects.crossShot').cmds.includes(n), '生成动作侧未加拦截/弹窗,条目不得挂未接的命令面:' + n));
   } },
   { name: 'subtitleTiming:干净夹具全 pass(台词短、停留够 → info 无命中)', fn() {
     const r = caption(capEp([capShot(0, { dialogue: '快走别回头' }), capShot(1, { narration: '雨声渐起' })]));
