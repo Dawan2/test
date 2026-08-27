@@ -16,7 +16,7 @@
  *      fs 读取真实源码 runInContext 加载,对 window.Xxx 暴露的成员做断言——被测代码即生产代码;
  *      billing.js 为纯模块直接 require(服务端与测试共享同一份推导逻辑)。
  * 用法:node tests/unit.js            全部套件
- *      node tests/unit.js agent-ops  单套件(agent-ops|billing|bus|commands|continuity|contract|domain|experts|issues|memory|pipeline|plans|produce|release|sb-gen|sb-io|sb-views|skills|split|store|tasks|understanding)
+ *      node tests/unit.js agent-ops  单套件(agent-ops|billing|bus|commands|continuity|contract|domain|experts|flow|issues|memory|pipeline|plans|produce|release|sb-gen|sb-io|sb-views|skills|split|store|tasks|understanding)
  * 约束:无网络、无服务、无浏览器;DOM 重交互(bindPrearr/bindChoices 卡片绑定等)不在本层覆盖,由 e2e 承担。 */
 'use strict';
 const fs = require('fs');
@@ -3638,8 +3638,10 @@ const contractTests = [
       assert(!chain.steps.some(s => s.cmd === n), n + ' 不应串进主线全链(断点补拍 / 三步聚合各有归属)');
       assert(Skills.list().some(s => s.id !== 'core.playbookProjection' && s.cmds.includes(n)), n + ' 应仍被其他条目登记');
     });
-    // 编排面落地不摘缺口标记:计划步骤已接(见 plans 套件),MCP 流程模板补主线中段那一半未接,G-12 仍在
+    /* 编排面落地不摘缺口标记:计划步骤(见 plans 套件)与 MCP 中段流程模板(见 flow 套件)都已接本投影,
+     * 但 G-12 里发布留痕的命令化出口仍未接(SK-25 note 点名),故关联索引仍在 */
     assert(Skills.byId('core.playbookProjection').gaps.includes('G-12'), 'G-12 的关联索引应仍在(落地一面不等于整条清账)');
+    assert(Skills.byId('core.playbookProjection').note.includes('js/flow-tpl.js'), 'note 须写明中段流程模板也由本投影切片(实况同步)');
     // 校验型扩展点:登记的校验项必须有实现(不挂空项),check 结果数与该步登记数一致
     [].concat(...Skills.list().map(s => s.checks)).forEach(id => assert(typeof Skills.CHECKS[id] === 'function', '校验项未注册实现:' + id));
     assertEq(Skills.check('review', {}).length, Skills.list('review').reduce((n, s) => n + s.checks.length, 0), 'check 结果数应等于该步已登记校验项数');
@@ -3811,6 +3813,56 @@ const contractTests = [
     const iLocal = call.indexOf('if (t.local)');
     assert(iLocal >= 0 && iLocal < call.indexOf('await runCli(argv)'), '注册表只读工具应在 runCli 之前直接答复');
     assert(/local: i => playbookView/.test(mcpSrc), '只读工具应由 Skills 投影答复,不拼 cli argv');
+  } },
+  /* G-12 的另一半:主线中段流程模板。工具是 CLI 的薄包装(步骤序列由 js/flow-tpl.js 单源出),
+   * 提示模板的正文由同一份模板渲染,MCP 侧只注入工具名——两处都不得手抄第二条中段命令链。 */
+  { name: 'MCP 中段流程模板:工具与提示模板同取一份投影(不在 MCP 侧手抄步序)', fn() {
+    const { spawnSync } = require('child_process');
+    const FlowTpl = require('../js/flow-tpl.js');
+    const CmdRegistry = require('../js/cmd-registry.js');
+    const reqs = [
+      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'hujing_flow_template', arguments: { segment: 'mid' } } },
+      { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'hujing_flow_template', arguments: { segment: 'review' } } }, // 段外主线步应如实报错
+      { jsonrpc: '2.0', id: 4, method: 'prompts/list' },
+      { jsonrpc: '2.0', id: 5, method: 'prompts/get', params: { name: 'hujing_mid_pipeline', arguments: { pid: 'p1', segment: 'gen' } } },
+      { jsonrpc: '2.0', id: 6, method: 'prompts/get', params: { name: 'hujing_mid_pipeline', arguments: {} } }, // 缺 pid 应 -32602
+    ];
+    // 未登录也答得出静态模板:不给 pid 就不读项目状态,也就不打服务端
+    const env = Object.assign({}, process.env, { HUJING_SERVER: '', HUJING_TOKEN: '' });
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'mcp.js')], { input: reqs.map(x => JSON.stringify(x)).join('\n') + '\n', encoding: 'utf8', timeout: 30000, env });
+    const byId = {};
+    String(r.stdout || '').trim().split('\n').filter(Boolean).forEach(l => { const m = JSON.parse(l); byId[m.id] = m; });
+    const names = ((byId[1].result || {}).tools || []).map(t => t.name);
+    assert(names.includes('hujing_flow_template'), 'tools/list 应含中段流程模板工具,实际:' + names.join(','));
+    const mid = JSON.parse(byId[2].result.content[0].text);
+    assertEq(JSON.stringify(mid), JSON.stringify(FlowTpl.template('mid', null)), '工具产出应逐字节等于模板单源(MCP 只做薄包装)');
+    assertEq(mid.steps.map(s => s.cmd).join(','),
+      'project.extractSubjects,subject.generateImage,project.splitEpisodes,episode.understanding,episode.generateStoryboard,episode.preflight,episode.generateVideos',
+      '中段覆盖主体两步 + 分集 + 分镜两步 + 生成两步');
+    assertEq(byId[3].result.isError, true, '段外主线步应如实报错(不静默回整段)');
+    const pnames = ((byId[4].result || {}).prompts || []).map(p => p.name);
+    assert(pnames.includes('hujing_mid_pipeline'), 'prompts 应含中段流程模板,实际:' + pnames.join(','));
+    const txt = (((byId[5].result || {}).messages || []).map(m => m.content && m.content.text) || []).join('\n');
+    assert(txt.includes('p1'), 'prompts/get 应代入 pid');
+    FlowTpl.template('gen', null).steps.forEach(s => {
+      assert(txt.includes(s.note), '模板正文应带投影旁注:' + s.cmd);
+      s.args.filter(a => a.from).forEach(a => assert(txt.includes(a.from), '模板正文应给参数取数出处:' + s.cmd + '.' + a.name));
+      s.stop.forEach(x => assert(txt.includes(x.code), '模板正文应列出断点码:' + x.code));
+    });
+    assert(txt.includes('hujing_storyboard') === false && txt.includes('hujing_exec(name="episode.generateVideos")'),
+      '生成段正文应给专包装工具或 exec 透传的准确工具名');
+    assertEq(byId[6].error && byId[6].error.code, -32602, '缺必填 pid 应 -32602');
+    // 源级:工具名映射的单源是工具表上的 cmd 字段,且必须与该工具真实拼出的 argv 一致
+    const mcpSrc = fs.readFileSync(path.join(ROOT, 'mcp.js'), 'utf8');
+    assert(/FlowTpl\.brief\(tpl, \{ toolOf \}\)/.test(mcpSrc), '中段提示模板正文须由 FlowTpl.brief 渲染,不在 MCP 侧手写步序');
+    assert(/TOOLS\.find\(x => x\.cmd === cmd\)/.test(mcpSrc), '工具名映射应现取工具表的 cmd 字段(不另写一张映射表)');
+    const declared = [...mcpSrc.matchAll(/cmd: '([^']+)', build: i => \['exec', '([^']+)'/g)];
+    assert(declared.length >= 4, '包装领域命令的工具应登记 cmd 字段,实际 ' + declared.length + ' 个');
+    declared.forEach(m => {
+      assertEq(m[1], m[2], '工具登记的 cmd 应与它拼出的 exec 命令名一致');
+      assert(CmdRegistry.names().includes(m[1]), '登记的 cmd 须是已注册领域命令:' + m[1]);
+    });
   } },
   { name: '命令面板(§3.5):Ctrl+K 绑定存在;条目=注册表命令+导航;缺路由上下文的命令置灰标注', fn() {
     const sb = makeSandbox();
@@ -6432,7 +6484,165 @@ const memoryTests = [
   } },
 ];
 
-const SUITES = { 'agent-ops': agentOpsTests, experts: expertsTests, produce: produceTests, commands: commandsTests, store: storeTests, 'sb-gen': sbGenTests, pipeline: pipelineTests, 'sb-views': sbViewsTests, 'sb-io': sbIoTests, understanding: understandingTests, billing: billingTests, domain: domainTests, bus: busTests, issues: issuesTests, plans: plansTests, continuity: continuityTests, release: releaseTests, contract: contractTests, skills: skillsTests, tasks: tasksTests, split: splitTests, memory: memoryTests };
+/* ================= 套件 23:主线中段流程模板(js/flow-tpl.js,G-12 的 MCP 模板那一半) =================
+ * 模板 = 调用顺序 + 每个参数从哪取 + 断点;步序取 SK-05 投影、参数面取 cmd-registry、
+ * 状态与缺前置取 Domain.workflow,本套件按这三条边界逐项钉:三处任一被抄成第二份即红。 */
+const FLOW_BARE = () => ({ id: 'p_flow', name: '空项目', subjects: [], episodes: [] });
+/* 有整本剧本、无主体、无分集(中段起跑前的典型态) */
+const FLOW_SCRIPT = () => Object.assign(FLOW_BARE(), { script: '第一集 宴会羞辱\n女主在宴会上被当众羞辱。'.repeat(6) });
+/* 主体齐(带图)、分集齐、分镜齐、未出片 */
+const FLOW_TOSHOOT = () => Object.assign(FLOW_SCRIPT(), {
+  subjects: [{ id: 'su1', name: '女主', image: '/uploads/a.png' }],
+  episodes: [{ id: 'e1', title: '第1集', content: '宴会厅冲突爆发,女主离场。'.repeat(4), shots: [{ id: 'sh1', order: 0, confirm: true, prompt: 'x' }] }],
+});
+const flowTests = [
+  { name: 'flow-tpl · 中段登记与主线全链投影逐步对齐(漏登记点名,审片/成片有意不在中段)', fn() {
+    const F = require('../js/flow-tpl.js');
+    const Skills = require('../js/skills.js');
+    const CmdRegistry = require('../js/cmd-registry.js');
+    const proj = F.projection();
+    assertEq(proj.map(x => x.cmd).join(','), Skills.playbook(F.CHAIN_ID).steps.map(s => s.cmd).join(','),
+      '自省表应与主线全链投影逐步对齐(步序不在本层重排)');
+    assertEq(proj.filter(x => !x.registered).map(x => x.cmd).join(','), '',
+      '投影每一步都须在中段登记(不在中段的登记为 null,与漏登记分开)');
+    assertEq(proj.filter(x => !x.mid).map(x => x.cmd).join(','), 'episode.smartReview,episode.compose',
+      '审片与成片有意不在中段(各由自己那段承接),其余七步都在');
+    // 覆盖面由登记推出并按 STAGES 步序排,不在本层另写一份步名清单
+    assertEq(F.stages().join(','), 'subjects,eps,shots,gen', '中段覆盖主体/分集/分镜/生成四步');
+    assertEq(F.segments().join(','), 'mid,subjects,eps,shots,gen', '流程段 = 整段 + 四个主线步');
+    proj.filter(x => x.mid).forEach(x => {
+      assert(Skills.stages().includes(x.stage), x.cmd + ' 的落点须是主线步键:' + x.stage);
+      assert(CmdRegistry.byName[x.cmd], x.cmd + ' 须是已注册领域命令');
+    });
+    // 同一主线步上"看整步 done 不 done"的推进命令至多一条;多条时必须各自按阻塞码分工
+    F.stages().forEach(k => {
+      const loose = proj.filter(x => x.mid && x.stage === k && !x.optional && !x.codes.length);
+      assert(loose.length <= 1, k + ' 步有多条命令时须各自登记阻塞码分工,实际含糊的有:' + loose.map(x => x.cmd).join(','));
+    });
+  } },
+  { name: 'flow-tpl · 步骤序列稳定、可 JSON;段选择是投影的有序切片', fn() {
+    const F = require('../js/flow-tpl.js');
+    const a = JSON.stringify(F.template('mid', null)), b = JSON.stringify(F.template('mid', null));
+    assertEq(a, b, '同输入两次产出应逐字节相同(无隐藏状态)');
+    assertEq(JSON.stringify(JSON.parse(a)), a, '产出须可 JSON 往返(不含函数/循环引用)');
+    const mid = F.template('mid', null);
+    const chain = F.projection().filter(x => x.mid).map(x => x.cmd);
+    assertEq(mid.steps.map(s => s.cmd).join(','), chain.join(','), '中段步序应逐步等于投影的中段切片');
+    assertEq(mid.steps.map(s => s.i).join(','), mid.steps.map((_, i) => i + 1).join(','), '序号应连续');
+    let acc = [];
+    F.stages().forEach(k => { acc = acc.concat(F.template(k, null).steps.map(s => s.cmd)); });
+    assertEq(acc.join(','), chain.join(','), '四段分开取再拼接应等于整段(切片不重不漏、步序不变)');
+    // 不给项目状态就不冒充状态判定
+    mid.steps.forEach(s => assertEq(s.status, s.optional ? 'optional' : null, s.cmd + ' 无项目状态时不应有待办判定'));
+    assertEq(mid.gaps.length, 0);
+    assertEq(mid.next, null);
+    assertEq(mid.state, null);
+    let err = '';
+    try { F.template('review', null); } catch (e) { err = e.message; }
+    assert(/未知流程段/.test(err) && err.includes('mid'), '段外的主线步应如实报错并附可用清单,实际:' + err);
+  } },
+  { name: 'flow-tpl · 参数面与用法串现取 cmd-registry;每个参数都登记了取数出处', fn() {
+    const F = require('../js/flow-tpl.js');
+    const CmdRegistry = require('../js/cmd-registry.js');
+    const src = F.argSources();
+    const miss = [];
+    F.template('mid', null).steps.forEach(s => {
+      const m = CmdRegistry.byName[s.cmd];
+      assertEq(s.args.map(a => a.name + ':' + (a.required ? 1 : 0)).join(','),
+        (m.args || []).map(a => a.name + ':' + (a.required ? 1 : 0)).join(','), s.cmd + ' 参数面应逐项等于命令注册表');
+      assert(s.cli.endsWith(CmdRegistry.usageOf(m)), s.cmd + ' 用法串应以 CmdRegistry.usageOf 结尾(不手拼第二份)');
+      assertEq(s.label, m.label, s.cmd + ' 步骤名应取命令注册表的 label');
+      s.args.forEach(a => { if (!a.from) miss.push(s.cmd + '.' + a.name); });
+    });
+    assertEq(miss.join(','), '', '参数取数出处漏登记(新增命令参数时须同步 ARG_SOURCE)');
+    // 授权位与子集位一律写明由用户/调用方定:模板给步序不代授权
+    ['overwrite', 'confirmAll'].forEach(k => assert(/授权位/.test(src[k]) && /明示/.test(src[k]), k + ' 须写明要用户明示:' + src[k]));
+    ['shotIds', 'subjectIds'].forEach(k => assert(/子集/.test(src[k]), k + ' 须写明是调用方挑的子集:' + src[k]));
+    // 模板不预设任何参数值(与编排层 args 留空同一条纪律)
+    F.template('mid', null).steps.forEach(s => assertEq(s.args.filter(a => a.value !== undefined).length, 0, s.cmd + ' 不应预设参数值'));
+  } },
+  { name: 'flow-tpl · 缺前置返回明确缺口而不是空成功(缺口的码与文案原样取 Domain)', fn() {
+    const F = require('../js/flow-tpl.js');
+    const Domain = require('../js/domain.js');
+    const bare = F.template('mid', FLOW_BARE());
+    assertEq(bare.ready, false, '无剧本时不应报可跑');
+    assertEq(bare.gaps.map(g => g.stage + '/' + g.code).join(','), 'script/no-script', '缺剧本应如实进 gaps');
+    assert(bare.steps.length === 7, '缺前置不影响模板本身:步骤序列照出,实际 ' + bare.steps.length);
+    // 缺口文案逐字取 Domain.workflow 的 blockers,本层不另写一套
+    const wf = Domain.workflow(FLOW_BARE(), true);
+    assertEq(bare.gaps[0].label, wf.steps.find(s => s.key === 'script').blockers[0].label, '缺口文案应原样取 Domain');
+    // 段起点之前的主线步才算前置:分镜段要看剧本/主体/分集三步
+    const shots = F.template('shots', FLOW_SCRIPT());
+    assertEq(shots.gaps.map(g => g.code).join(','), 'no-subjects,no-eps', '分镜段的前置应含主体与分集,实际:' + JSON.stringify(shots.gaps));
+    assertEq(F.template('subjects', FLOW_SCRIPT()).gaps.length, 0, '有剧本时主体段本身无前置缺口');
+    assertEq(F.template('gen', FLOW_TOSHOOT()).ready, true, '主体/分集/分镜齐备时生成段可跑');
+    assertEq(F.template('mid', FLOW_TOSHOOT()).gaps.length, 0, '整段起点是主体步,前置只看剧本');
+  } },
+  { name: 'flow-tpl · 待办标注取 Domain 实况;clear 不冒充"这一步做过了"', fn() {
+    const F = require('../js/flow-tpl.js');
+    const st = p => F.template('mid', p).steps.reduce((o, s) => { o[s.cmd] = s.status; return o; }, {});
+    const bare = st(FLOW_BARE());
+    assertEq(bare['project.extractSubjects'], 'todo', '主体库空 → 提取主体待办');
+    assertEq(bare['subject.generateImage'], 'clear', '主体库还空时生图没有判定输入,记 clear 不记 done');
+    assertEq(F.template('mid', FLOW_BARE()).next.cmd, 'project.extractSubjects', 'next 应指向该跑的那一步');
+    assertEq(bare['episode.understanding'], 'optional');
+    assertEq(bare['episode.preflight'], 'optional');
+    // 主体缺图:同一主线步上两条命令按各自阻塞码分工
+    const noImg = st(Object.assign(FLOW_SCRIPT(), { subjects: [{ id: 'su1', name: '女主' }] }));
+    assertEq(noImg['project.extractSubjects'], 'clear', '已有主体 → 提取步无待办');
+    assertEq(noImg['subject.generateImage'], 'todo', '主体缺图 → 生图步待办');
+    // 分镜齐未出片:next 落到批量生成,且带上 Domain 的阻塞文案
+    const toShoot = F.template('mid', FLOW_TOSHOOT());
+    assertEq(toShoot.next.cmd, 'episode.generateVideos', 'next 应落到批量生成,实际:' + JSON.stringify(toShoot.next));
+    assertEq(toShoot.steps.filter(s => s.status === 'todo').map(s => s.cmd).join(','), 'episode.generateVideos');
+    // 可选两步永不占 next(理解可复用、就绪检查只报不拦)
+    assert(!F.template('mid', FLOW_SCRIPT()).steps.some(s => s.optional && s.status === 'todo'), '可选步不应被标成待办');
+    // 全齐备(整集出片并合成)→ 中段无待办
+    const doneP = FLOW_TOSHOOT();
+    const shot = doneP.episodes[0].shots[0];
+    shot.video = { status: 'done', url: '/u/v.mp4', assetVer: 0 };
+    shot.video.inputHash = require('../js/domain.js').shotInputHash(doneP, shot);
+    assertEq(F.template('mid', doneP).next, null, '中段全清时 next 应为 null(不硬凑一步出来)');
+  } },
+  { name: 'flow-tpl · 断点码是各端真会回的码,授权位断点不代授权', fn() {
+    const F = require('../js/flow-tpl.js');
+    const srcAll = ['cli.js', 'js/commands.js', 'js/domain.js'].map(f => fs.readFileSync(path.join(ROOT, f), 'utf8')).join('\n');
+    const bad = [];
+    const seen = {};
+    F.template('mid', null).steps.forEach(s => {
+      assert(s.stop.length, s.cmd + ' 应登记断点(跑砸了停在哪一码上)');
+      s.stop.forEach(x => {
+        if (!srcAll.includes("'" + x.code + "'")) bad.push(s.cmd + ' → ' + x.code);
+        assert(x.how, s.cmd + '/' + x.code + ' 应写明怎么处置');
+        seen[x.code] = true;
+      });
+      assertEq(s.stop.length, new Set(s.stop.map(x => x.code)).size, s.cmd + ' 断点码不应重复');
+    });
+    assertEq(bad.join(','), '', '断点码须是命令层/领域层真会回的码,不得自造');
+    ['unconfirmed', 'has-episodes'].forEach(c => assert(seen[c], '确认闸与覆盖授权两处断点必须在中段模板里:' + c));
+    const gen = F.template('gen', null).steps.find(s => s.cmd === 'episode.generateVideos');
+    assert(/明示/.test(gen.stop.find(x => x.code === 'unconfirmed').how), '确认闸断点须写明 confirmAll 要用户明示');
+    const split = F.template('eps', null).steps.find(s => s.cmd === 'project.splitEpisodes');
+    assert(/明示/.test(split.stop.find(x => x.code === 'has-episodes').how), '覆盖断点须写明 overwrite 要用户明示');
+  } },
+  { name: 'flow-tpl · 文本渲染是同一份模板换载体:工具名由调用方注入,本模块不认识工具表', fn() {
+    const F = require('../js/flow-tpl.js');
+    const tpl = F.template('mid', FLOW_BARE());
+    const text = F.brief(tpl, { toolOf: c => 'TOOL[' + c + ']' });
+    tpl.steps.forEach(s => {
+      assert(text.includes('TOOL[' + s.cmd + ']'), '正文应用注入的工具名:' + s.cmd);
+      assert(text.includes(s.note), '正文应带投影的步骤旁注(不另写一套措辞):' + s.cmd);
+      s.stop.forEach(x => assert(text.includes(x.code), '正文应列出断点码:' + x.code));
+    });
+    assert(text.includes('no-script'), '缺前置应在正文里如实点名');
+    // 不注入工具名时只给命令名,模块本身不含任何工具名字面
+    assert(F.brief(tpl, {}).includes('project.extractSubjects'), '缺省应回落命令名');
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'flow-tpl.js'), 'utf8');
+    assertEq((src.match(/hujing_/g) || []).length, 0, 'flow-tpl.js 不应出现任何 MCP 工具名(工具表是 MCP 侧的事)');
+  } },
+];
+
+const SUITES = { 'agent-ops': agentOpsTests, experts: expertsTests, produce: produceTests, commands: commandsTests, store: storeTests, 'sb-gen': sbGenTests, pipeline: pipelineTests, 'sb-views': sbViewsTests, 'sb-io': sbIoTests, understanding: understandingTests, billing: billingTests, domain: domainTests, bus: busTests, issues: issuesTests, plans: plansTests, continuity: continuityTests, release: releaseTests, contract: contractTests, skills: skillsTests, tasks: tasksTests, split: splitTests, memory: memoryTests, flow: flowTests };
 (async () => {
   const filter = process.argv[2];
   let passed = 0, failed = 0;

@@ -18,6 +18,7 @@ const readline = require('readline');
 const CLI = path.join(__dirname, 'cli.js');
 const CmdRegistry = require('./js/cmd-registry.js'); // 领域命令词表/描述单源(hujing_exec 等工具描述由此生成)
 const Skills = require('./js/skills.js'); // 主线 skill 索引(按七步索引 KB/Prompts/命令/专家的引用键;与 CLI、浏览器、server.js 同一份注册表)
+const FlowTpl = require('./js/flow-tpl.js'); // 主线中段流程模板单源(中段流程提示模板由它渲染,工具名经 toolOf 注入)
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_INFO = { name: 'hujing-manju', version: '1.0.0' };
 
@@ -37,7 +38,7 @@ const TOOLS = [
   { name: 'hujing_workflow', description: '统一工作流状态:主线各阶段完成度与下一步推荐(Domain 单源推导,与 UI/Agent 同口径)', inputSchema: obj({ pid: pidEp.pid, epid: Object.assign({}, S, { description: '分集 id(缺省为项目级)' }) }, ['pid']), build: i => ['workflow', i.pid].concat(i.epid ? [i.epid] : []) },
   { name: 'hujing_project_create', description: '新建项目(可选导入剧本文件)', inputSchema: obj({ name: Object.assign({}, S, { description: '剧名' }), style: Object.assign({}, S, { description: '风格,如 漫剧/真人短剧' }), scriptFile: Object.assign({}, S, { description: '剧本文本文件路径' }) }, ['name']), build: i => ['project-create', '--name', i.name].concat(i.style ? ['--style', i.style] : [], i.scriptFile ? ['--script-file', i.scriptFile] : []) },
   { name: 'hujing_project_script', description: '写入项目剧本原文(≤20 万字;拆集与主体提取的输入)', inputSchema: obj({ pid: pidEp.pid, scriptFile: Object.assign({}, S, { description: '剧本文本文件路径' }) }, ['pid', 'scriptFile']), build: i => ['project-script', i.pid, '--script-file', i.scriptFile] },
-  { name: 'hujing_split_episodes', description: '剧本拆集(服务端工作流):整部剧本按集/章标记切分(零 LLM)或 LLM 锚点分集(正文逐字切原文);已有分集需 overwrite=true 授权覆盖,local=true 强制段落均分(零计费)', inputSchema: obj({ pid: pidEp.pid, overwrite: Object.assign({}, B, { description: '授权覆盖现有分集(含其分镜数据)' }), local: Object.assign({}, B, { description: '强制本地按段落均分,不调 LLM' }) }, ['pid']), build: i => ['exec', 'project.splitEpisodes', '--args', JSON.stringify({ pid: i.pid, overwrite: !!i.overwrite, local: !!i.local })] },
+  { name: 'hujing_split_episodes', description: '剧本拆集(服务端工作流):整部剧本按集/章标记切分(零 LLM)或 LLM 锚点分集(正文逐字切原文);已有分集需 overwrite=true 授权覆盖,local=true 强制段落均分(零计费)', inputSchema: obj({ pid: pidEp.pid, overwrite: Object.assign({}, B, { description: '授权覆盖现有分集(含其分镜数据)' }), local: Object.assign({}, B, { description: '强制本地按段落均分,不调 LLM' }) }, ['pid']), cmd: 'project.splitEpisodes', build: i => ['exec', 'project.splitEpisodes', '--args', JSON.stringify({ pid: i.pid, overwrite: !!i.overwrite, local: !!i.local })] },
   { name: 'hujing_episode_add', description: '新建分集(可选写入剧本正文)', inputSchema: obj({ pid: pidEp.pid, title: Object.assign({}, S, { description: '分集标题,如 第1集' }), contentFile: Object.assign({}, S, { description: '剧本正文文件路径' }) }, ['pid', 'title']), build: i => ['episode-add', i.pid, '--title', i.title].concat(i.contentFile ? ['--content-file', i.contentFile] : []) },
   { name: 'hujing_episode_script', description: '写入/替换分集剧本正文(contentRev+1,下游理解/分镜自动判旧)', inputSchema: obj({ pid: pidEp.pid, epid: pidEp.epid, contentFile: Object.assign({}, S, { description: '剧本正文文件路径' }) }, ['pid', 'epid', 'contentFile']), build: i => ['episode-script', i.pid, i.epid, '--content-file', i.contentFile] },
   { name: 'hujing_subjects', description: '主体(角色/场景/道具)列表', inputSchema: obj({ pid: pidEp.pid }, ['pid']), build: i => ['subjects', i.pid] },
@@ -47,9 +48,9 @@ const TOOLS = [
   { name: 'hujing_shots_import', description: '批量导入分镜表(默认整表替换,--append 追加)', inputSchema: obj(Object.assign({}, pidEp, { file: Object.assign({}, S, { description: 'shots.json 文件路径' }), append: B }), ['pid', 'epid', 'file']), build: i => ['shots-import', i.pid, i.epid, '--file', i.file].concat(i.append ? ['--append'] : []) },
   { name: 'hujing_shot_set', description: '单镜字段补丁(剧情/提示词/旁白/台词等)', inputSchema: obj(Object.assign({}, pidEp, { sid: Object.assign({}, S, { description: '镜头 id 或序号' }), patch: { type: 'object', description: '字段补丁,如 {"prompt":"..."}' } }), ['pid', 'epid', 'sid', 'patch']), build: i => ['shot-set', i.pid, i.epid, i.sid, '--patch', JSON.stringify(i.patch)] },
   { name: 'hujing_shot_confirm', description: '镜头确认闸:确认/取消确认(批量生成只跑已确认镜)', inputSchema: obj(Object.assign({}, pidEp, { sid: Object.assign({}, S, { description: '镜头 id 或序号' }), off: Object.assign({}, B, { description: '取消确认' }) }), ['pid', 'epid', 'sid']), build: i => ['shot-confirm', i.pid, i.epid, i.sid].concat(i.off ? ['--off'] : []) },
-  { name: 'hujing_storyboard', description: '智能分镜(服务端工作流:LLM 拆镜并写回分镜表,计费)', inputSchema: obj(Object.assign({}, pidEp, { plans: Object.assign({}, N, { description: '候选方案数 1-3' }), shotCount: Object.assign({}, N, { description: '分镜数量(2-40)' }) }), ['pid', 'epid']), build: i => ['exec', 'episode.generateStoryboard', '--args', JSON.stringify({ pid: i.pid, epid: i.epid, sbPlans: i.plans, shotCount: i.shotCount })] },
-  { name: 'hujing_understanding', description: '本集理解(服务端工作流:LLM 剧情理解写回,计费)', inputSchema: obj(pidEp, ['pid', 'epid']), build: i => ['exec', 'episode.understanding', '--args', JSON.stringify({ pid: i.pid, epid: i.epid })] },
-  { name: 'hujing_smart_review', description: '整集智能审片(服务端工作流:逐镜评审+共性汇总,需已出片,计费)', inputSchema: obj(pidEp, ['pid', 'epid']), build: i => ['exec', 'episode.smartReview', '--args', JSON.stringify({ pid: i.pid, epid: i.epid })] },
+  { name: 'hujing_storyboard', description: '智能分镜(服务端工作流:LLM 拆镜并写回分镜表,计费)', inputSchema: obj(Object.assign({}, pidEp, { plans: Object.assign({}, N, { description: '候选方案数 1-3' }), shotCount: Object.assign({}, N, { description: '分镜数量(2-40)' }) }), ['pid', 'epid']), cmd: 'episode.generateStoryboard', build: i => ['exec', 'episode.generateStoryboard', '--args', JSON.stringify({ pid: i.pid, epid: i.epid, sbPlans: i.plans, shotCount: i.shotCount })] },
+  { name: 'hujing_understanding', description: '本集理解(服务端工作流:LLM 剧情理解写回,计费)', inputSchema: obj(pidEp, ['pid', 'epid']), cmd: 'episode.understanding', build: i => ['exec', 'episode.understanding', '--args', JSON.stringify({ pid: i.pid, epid: i.epid })] },
+  { name: 'hujing_smart_review', description: '整集智能审片(服务端工作流:逐镜评审+共性汇总,需已出片,计费)', inputSchema: obj(pidEp, ['pid', 'epid']), cmd: 'episode.smartReview', build: i => ['exec', 'episode.smartReview', '--args', JSON.stringify({ pid: i.pid, epid: i.epid })] },
   { name: 'hujing_gen_episode', description: '整集批量生成视频(串行/断点续跑/逐镜报告,真实计费)', inputSchema: obj(Object.assign({}, pidEp, { failedOnly: Object.assign({}, B, { description: '只重跑失败镜' }), includeUnconfirmed: Object.assign({}, B, { description: '含未确认镜' }), noImage: Object.assign({}, B, { description: '跳过底图生成' }) }), ['pid', 'epid']), build: i => ['gen-episode', i.pid, i.epid].concat(i.failedOnly ? ['--failed-only'] : [], i.includeUnconfirmed ? ['--include-unconfirmed'] : [], i.noImage ? ['--no-image'] : []) },
   { name: 'hujing_gen_shot_video', description: '单镜生成视频写回(首帧=底图+主体参考,真实计费)', inputSchema: obj(Object.assign({}, pidEp, { sid: Object.assign({}, S, { description: '镜头 id 或序号' }), nowait: Object.assign({}, B, { description: '只创建任务不等待(返回 taskId 供 hujing_wait)' }) }), ['pid', 'epid', 'sid']), build: i => ['gen-shot-video', i.pid, i.epid, i.sid].concat(i.nowait ? ['--nowait'] : []) },
   { name: 'hujing_wait', description: '轮询任务到终态(断点续查:已成功直接落片不重复扣费)', inputSchema: obj({ taskId: Object.assign({}, S, { description: '上游任务 id' }), timeout: Object.assign({}, N, { description: '超时分钟数' }) }, ['taskId']), build: i => ['wait', i.taskId].concat(i.timeout ? ['--timeout', String(i.timeout)] : []) },
@@ -60,6 +61,7 @@ const TOOLS = [
   { name: 'hujing_release', description: '打发布版本(留痕 releases;通过/条件通过才执行,force 强制)', inputSchema: obj({ pid: pidEp.pid, note: S, minScore: N, force: B }, ['pid']), build: i => ['release', i.pid].concat(i.note ? ['--note', i.note] : [], i.minScore ? ['--min-score', String(i.minScore)] : [], i.force ? ['--force'] : []) },
   { name: 'hujing_exec', description: '统一领域命令透传(与前端 Commands.execute 同名同结构;词表单源 cmd-registry.js):' + CmdRegistry.META.map(m => m.name + '(' + m.label + ')').join('、'), inputSchema: obj({ name: Object.assign({}, S, { description: '命令名:' + CmdRegistry.names().join(' / ') }), args: { type: 'object', description: '命令参数,如 {"pid":"..","epid":".."};各命令参数面见 cmd-registry.js' } }, ['name']), build: i => ['exec', i.name, '--args', JSON.stringify(i.args || {})] },
   { name: 'hujing_llm', description: 'LLM 透传(服务端 key;自由提示词,剧本/文案类辅助)', inputSchema: obj({ user: Object.assign({}, S, { description: '用户提示词' }), system: S, json: Object.assign({}, B, { description: '期望返回 JSON(自动解析)' }) }, ['user']), build: i => ['llm', '--user', i.user].concat(i.system ? ['--system', i.system] : [], i.json ? ['--json'] : []) },
+  { name: 'hujing_flow_template', description: '主线中段(主体/分集/分镜/生成)流程模板:按主线全链投影给出调用顺序、每个参数从哪取、每步的断点码与处置。给 pid 时按项目实况标注每步待办(todo/clear/optional)与 next,缺前置(无剧本/无主体/无分集等)一律进 gaps 并置 ready=false,不冒充可跑。只读:零 LLM、零计费,不发起任何生成动作', inputSchema: obj({ segment: Object.assign({}, S, { description: '流程段:' + FlowTpl.segments().join(' / ') + '(缺省 ' + FlowTpl.ALL + ' 即整个中段)' }), pid: Object.assign({}, S, { description: '项目 id(缺省只出静态模板,不读项目状态)' }) }), build: i => ['flow-template', i.segment || FlowTpl.ALL].concat(i.pid ? [i.pid] : []) },
   { name: 'hujing_playbook', description: '只读:主线编排 playbook 步骤表 + 就绪检查各面已登记校验项(直读注册表 js/skills.js 答复,不调 CLI、不碰服务端、零计费)。步骤只给命令名与步序,授权位/子集位一律留空由调用方自己定', inputSchema: obj({ id: Object.assign({}, S, { description: 'playbook id(缺省列出全部;core.playbookProjection=主线全链九步)' }) }), local: i => playbookView(i.id) },
   { name: 'hujing_agent', description: 'Agent 单轮对话(服务端 /api/wf/agent:KB/专家方法论/协作记忆/状态摘要注入由服务端拼装,计费 llm.agent;返回 reply + run 类领域命令 ops,apply=true 时逐条经 exec 同链路执行并各自计费)', inputSchema: obj({ text: Object.assign({}, S, { description: '自然语言指令或提问' }), pid: pidEp.pid, epid: Object.assign({}, S, { description: '分集 id(缺省为项目级视角)' }), scope: Object.assign({}, S, { description: '记忆召回板块:导演|剧本|主体|分集|分镜|生成|成片(缺省按上下文)' }), apply: Object.assign({}, B, { description: '执行返回的 ops(真实计费)' }) }, ['text', 'pid']), build: i => ['agent', i.text, '--pid', i.pid].concat(i.epid ? ['--epid', i.epid] : [], i.scope ? ['--scope', i.scope] : [], i.apply ? ['--apply'] : []) },
 ];
@@ -126,6 +128,13 @@ async function readResource(uri) {
   return { result: { contents: [{ uri: String(uri), mimeType: 'application/json', text: r.out || '{}' }] } };
 }
 
+/* 领域命令 → 本服务的工具名:专包装该命令的工具优先(工具表上的 cmd 字段就是单源),其余一律走透传 exec。
+ * 中段流程模板的正文由 FlowTpl 渲染,工具名这一位由此注入——模板不认识工具表,工具表也不复述步序。 */
+const toolOf = cmd => {
+  const t = TOOLS.find(x => x.cmd === cmd);
+  return t ? t.name : 'hujing_exec(name="' + cmd + '")';
+};
+
 /* ---- 流程模板(§2.7):把正确的工具调用序列一次交给助手,不用自己猜命令顺序 ---- */
 const PROMPTS = [
   {
@@ -148,6 +157,26 @@ const PROMPTS = [
 8. hujing_compose 合成成片;hujing_export 下载 mp4+srt。
 9. hujing_release_check 发布门检查(可 withBilling=true 对账)→ hujing_release 打版本。
 约束:任何一步返回 blocked/isError,先读错误码(unconfirmed/no-credits/no-script)对症处理,不要跳步重试;随时可调 hujing_workflow 或读资源 hujing://project/{pid}/workflow 看下一步推荐。` } }];
+    },
+  },
+  {
+    name: 'hujing_mid_pipeline', description: '主线中段流程:主体→分集→分镜→生成的调用顺序、参数取数出处与逐步断点(步序与断点由注册表投影渲染)',
+    arguments: [
+      { name: 'pid', description: '项目 id', required: true },
+      { name: 'segment', description: '流程段:mid(整个中段,缺省)/ subjects / eps / shots / gen', required: false },
+    ],
+    build(a) {
+      const seg = a.segment || FlowTpl.ALL;
+      if (FlowTpl.segments().indexOf(seg) < 0) throw new Error('未知流程段:' + seg + '(可用:' + FlowTpl.segments().join(' / ') + ')');
+      const tpl = FlowTpl.template(seg, null);
+      return [{ role: 'user', content: { type: 'text', text:
+`项目 ${a.pid} 推进${tpl.title}。先调 hujing_flow_template(pid="${a.pid}", segment="${seg}") 拿这一段带状态的步骤序列:
+gaps 非空说明上游前置没齐(无剧本/无主体/无分集之类),先回上游补齐再进中段,不要硬跑;
+status=clear 的步当下没有它要处理的事,跳过;从 next 那一步起跑。步序与断点如下——
+${FlowTpl.brief(tpl, { toolOf })}
+通则:每一步的参数一律按上面「参数从哪取」现查现取,不要凭记忆填;授权位(overwrite/confirmAll)与子集位(shotIds/subjectIds)一律等用户明示,本模板不代授权;
+任何一步 isError 先读错误码对照「断点」处置,不跳步重试;推进中随时 hujing_workflow(pid[,epid])或重调 hujing_flow_template 看下一步。
+本段之后接 hujing_smart_review 审片与 hujing_compose 合成(失败镜按 hujing_failed_shots 模板排查)。` } }];
     },
   },
   {

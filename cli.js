@@ -23,6 +23,7 @@ const Domain = require('./js/domain.js'); // 领域单一来源:指纹/就绪/�
 const CmdRegistry = require('./js/cmd-registry.js'); // 领域命令元数据单源:exec 用法/help 文案/needs 校验由此生成(与前端 Commands 同词表)
 const WfCore = require('./js/wf-core.js'); // 工作流提示词单源:produce 修订重抽的重写模板/记忆召回与浏览器同字面
 const Skills = require('./js/skills.js'); // 主线 skill 索引(按七步索引 KB/Prompts/命令/专家的引用键;与浏览器、server.js 同一份注册表)
+const FlowTpl = require('./js/flow-tpl.js'); // 主线中段流程模板单源(步序取 SK-05 投影、参数面取 cmd-registry、状态取 Domain)
 
 /* ================= 基础设施:配置 / 参数 / 输出 ================= */
 const CFG_DIR = process.env.HUJING_CONFIG_DIR || path.join(os.homedir(), '.hujing');
@@ -576,6 +577,18 @@ CMD.workflow = async (a, f) => {
   if (!p) throw new CliError('项目不存在:' + a[0], 4);
   if (a[1]) return Object.assign({ episode: a[1] }, Domain.episodeState(p, findEp(p, a[1]), true));
   return Domain.workflow(p, true);
+};
+/* 主线中段流程模板(只读、零 LLM 零计费):给出「调用顺序 + 每个参数从哪取 + 断点怎么处理」。
+ * 不给 pid 即静态模板(不读状态、不打服务端);给了 pid 才按 Domain 实况标注待办与缺前置。 */
+CMD['flow-template'] = async (a, f) => {
+  const seg = a[0] || FlowTpl.ALL;
+  need(FlowTpl.segments().includes(seg), '用法:hujing flow-template [' + FlowTpl.segments().join('|') + '] [pid] (主线中段流程模板)');
+  const pid = a[1] || f.pid;
+  if (!pid) return FlowTpl.template(seg, null);
+  const { state } = await stateGet(f);
+  const p = (state.projects || []).find(x => x.id === pid);
+  if (!p) throw new CliError('项目不存在:' + pid, 4);
+  return FlowTpl.template(seg, p, { online: true });
 };
 CMD['project-create'] = async (_, f) => {
   need(f.name, '用法:hujing project-create --name 剧名 [--style 漫剧] [--type drama] [--tone 无] [--faceStyle 亚洲] [--script-file f.txt]');
@@ -1491,6 +1504,8 @@ const HELP = `虎鲸漫剧 CLI —— 面向 AI 助手与人工的全链路命�
   projects                                         项目列表(进度摘要)
   project-show <pid>                               项目详情(主体/分集/镜状态统计)
   workflow <pid> [epid]                            统一工作流状态(流程条/下一步/Agent 同口径)
+  flow-template [mid|subjects|eps|shots|gen] [pid] 主线中段流程模板(调用顺序+参数从哪取+断点;
+                                                   给 pid 才标注待办与缺前置,只读零计费)
   project-create --name 剧名 [--style 漫剧] [--script-file f.txt]
   project-script <pid> (--script-file f.txt | --script 正文)   写入项目剧本原文(拆集/主体提取的输入)
   episode-add <pid> --title 第1集 [--content-file f.txt]
