@@ -30,6 +30,7 @@
 | [w5-cycle1-audit.md](./w5-cycle1-audit.md) | 周期 1 逐项目独立核验报告:成熟度分档、分叉风险实测、合入次序建议 | 想知道每项做到哪一步、分叉在哪 |
 | [w6-integration-log.md](./w6-integration-log.md) | 周期 1 成果收敛到集成分支的记录:冲突解法、合并后测试数字、剩余分叉 | 想知道主干现在是什么状态 |
 | [w6-extract-subjects-wf.md](./w6-extract-subjects-wf.md) | 提取主体接入 `/api/wf/extract-subjects`(前段命令吃到人设与协作记忆,提示词拼装/结果规整下沉服务端) | 改提取主体链路前 |
+| [w7-integration-log.md](./w7-integration-log.md) | 周期 2 第 7 波收敛记录:4 条分支的合入次序与冲突解法、记忆套件补测、剩余分叉 | 想知道第 7 波收敛成了什么样 |
 | [w8-split-episodes-inject.md](./w8-split-episodes-inject.md) | 剧本拆集端点补齐人设/记忆注入(`WF_BOARD` 加「剧本」板块、`buildSplitUser` 注入位、两端同装配口) | 改拆集提示词或新增 `/api/wf/*` LLM 步前 |
 | [w8-script-check.md](./w8-script-check.md) | SK-07/08/09 剧本段三条校验项,闭合 S-01 的剧本半 | 加校验项前;或想知道剧本正文怎么被判定 |
 | [w9-eps-structure-check.md](./w9-eps-structure-check.md) | SK-14/SK-15 分集段两条校验项,与 W8 成对闭合 S-01(六阶段覆盖 + 付费卡点位置) | 同上;或想知道分集表与集序怎么被判定 |
@@ -40,7 +41,7 @@
 | [w14-review-skills-check.md](./w14-review-skills-check.md) | 审片路径接入 `Skills.check` 只读消费(报告独立字段 `checks` + 弹窗/导出展示,只报不拦)、SK-03/SK-04 的 infra 面记账诚实位对齐 | 改审片报告结构、往审片路径加校验面,或动 `pending` 记账前 |
 | [w16-integration-log.md](./w16-integration-log.md) | W12 head 补合(w13 只合到父提交的漏合)与 W14 审片消费收敛到集成分支的记录:并集型冲突解法、被登记侧反查断言接住的转红点、合并后测试数字 | 想知道主干现在是什么状态 |
 
-## 一分钟摘要(周期 1 收敛后)
+## 一分钟摘要(周期 2 收敛后)
 
 - 资产不缺,缺索引:知识在 `js/knowledge.js`(17 条目)、提示词在 `js/prompts.js`(6 条)、人设在 `js/experts-data.js`(16 专家)、编排在 `js/cmd-registry.js`,层与层之间的按主线步骤索引由 `js/skills.js`(30 条内部能力)承担。
 - 主线七步在代码里齐了:`Domain.workflow` 已含"审片"步(G-03),`js/skills.js` 的 `STAGES` 七步全部 `wfStep: true`。
@@ -51,10 +52,12 @@
 - 记账诚实位:`SK-03`/`SK-04`/`SK-23` 的 `infra` 面仍 `pending`(改 `pending` 会动 `Skills.gaps()` 投影,单列一轮),但三条 `note` 已一律写明 G-01/G-02/G-03 的已落地实况,并由断言钉在三处出口的实况上。
 - 人设/记忆注入面覆盖五条工作流:理解、分镜、审片、提取主体、剧本拆集(`WfCore.WF_BOARD` 五键单源,服务端唯一装配口 `wfPersonaNote` 由契约断言锁死调用点数)。
 - 词表分叉已收口:景别/运镜/视角/角度四张词表的单一来源在 `js/wf-core.js`,`camera.js`/`review.js`/`sb-io.js`/`agent.js` 全派生(G-07,见 `w4-shot-size-glossary.md`)。
+- 前段命令全过 wf 通道:剧本拆集(G-04)与提取主体都有服务端端点,人设与协作记忆按板块注入,headless 与浏览器同口径。
+- `WfCore.memRecall/memBlock` 有了直接单测(memory 套件 6 条),不再是"实现存在但零断言"的模块。
 
 ## 阅读约定
 
 - **缺口编号**:`G-01…G-15` 出自资产图谱,**冻结在 15 项不再新增**;新登记的缺口一律走短名单的 `S-xx` 命名空间。判定标准文档里提议的 `G-16`(发布后→上游回路)按此规则改记为 `S-08`。
 - `docs/Agent贯通落地-G1-G5.md` 里的 `G1–G5` 是该文自带的历史编号,与本目录的 `G-0x` 不是同一套,对应关系见该文与 [w5-cycle1-audit.md](./w5-cycle1-audit.md) 第 2.18 节。
 - 文档描述功能本身,不写功能溯源。
-- 动工前先看 [w13-integration-log.md](./w13-integration-log.md) 的"剩余未合与残留"(更早的分叉登记在 [w9-integration-log.md](./w9-integration-log.md) 与 [w6-integration-log.md](./w6-integration-log.md) 第 5 节),避免重做已落地的部分。
+- 动工前先看**最新一份收敛记录**的"剩余未合与残留",避免重做已落地的部分:当前是 [w16-integration-log.md](./w16-integration-log.md)(更早的分叉登记在 [w13-integration-log.md](./w13-integration-log.md)、[w9-integration-log.md](./w9-integration-log.md)、[w7-integration-log.md](./w7-integration-log.md) 与 [w6-integration-log.md](./w6-integration-log.md) 第 5 节)。
