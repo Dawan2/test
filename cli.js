@@ -1280,6 +1280,37 @@ CMD.ff = async (a, f) => {
   return POST('/api/ffmpeg/' + sub, body, f, { timeoutMs: 300000 });
 };
 
+/* ---- 协作记忆(双端消费):Agent 对话层沉淀的用户偏好/已确认决定,存 state.agentMemory;
+ * wf 端点与对话层按 WfCore.memRecall 同算法召回注入。list 支持 --recall 预览实际注入条目 ---- */
+CMD.memory = async (a, f) => {
+  const sub = a[0] || 'list';
+  if (sub === 'list') {
+    const { state } = await stateGet(f);
+    const mem = Array.isArray(state.agentMemory) ? state.agentMemory : [];
+    if (f.recall !== undefined) return { total: mem.length, recalled: WfCore.memRecall(mem, String(f.recall === true ? '' : f.recall), f.scope || '') };
+    return { total: mem.length, list: f.scope ? mem.filter(m => m.scope === f.scope || !m.scope) : mem };
+  }
+  if (sub === 'add') {
+    need(f.text, '用法:hujing memory add --text 内容 [--scope 导演|剧本|主体|分集|分镜|生成|成片]');
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { rev, state } = await stateGet(f);
+      const mem = Array.isArray(state.agentMemory) ? state.agentMemory : [];
+      const entry = { text: String(f.text).slice(0, 120), time: new Date().toLocaleString('zh-CN'), scope: f.scope || '' }; // 与浏览器 memRemember 同口径(截 120 字,上限 50 条)
+      const meta = {};
+      for (const k in state) if (k !== 'projects') meta[k] = state[k]; // meta 桶整组替换(计费键服务端权威回填,不受影响)
+      meta.agentMemory = mem.concat([entry]).slice(-50);
+      try {
+        const d = await PUT('/api/state', { rev, changes: { meta } }, f);
+        return { rev: d.rev, total: meta.agentMemory.length, added: entry };
+      } catch (e) {
+        if (e.exit === 7 && attempt < 2) { log('rev 冲突,重取最新记忆重试(' + (attempt + 2) + '/3)…'); continue; }
+        throw e;
+      }
+    }
+  }
+  throw new CliError('用法:hujing memory <list|add> [--scope 板块] [--recall 输入文本] [--text 内容]', 2);
+};
+
 /* ---- 逃生舱:裸 state 读写(任意复杂操作) ---- */
 CMD['state-get'] = async (_, f) => {
   const { rev, state } = await stateGet(f);
@@ -1356,6 +1387,8 @@ ${CmdRegistry.META.map(m => '  exec ' + (m.name + (CmdRegistry.usageOf(m) ? ' ' 
   llm --user 提示 [--system 设] [--json]           LLM 透传(服务端 key;--json 返回 parsed)
   tts --text 文本 [--voice 音色]                   语音合成
   ff <frames|upscale|merge|cut|suberase|highlight> [--video v] [...]   FFmpeg 工具透传
+  memory list [--scope 板块] [--recall 输入]       协作记忆(对话层/工作流层共用;--recall 预览按召回算法实际注入的条目)
+  memory add --text 内容 [--scope 板块]            写入记忆(截 120 字,上限 50 条,与浏览器 Agent「记住…」同口径)
   state-get [--out f.json] | state-put --file f.json --force           裸状态读写(逃生舱)
 
 exit code:0 成功 | 1 通用 | 2 参数 | 3 未登录 | 4 不存在 | 5 服务端/上游 | 6 积分不足 | 7 冲突`;
