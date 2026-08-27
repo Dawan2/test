@@ -1,6 +1,6 @@
 # W6 · 提取主体接入 `/api/wf/*`(前段命令吃到人设与协作记忆)
 
-> 基线 `cursor/w6-integration-9f68 @ 9f4e8ec`(整合 3/7:已含 G-01 专家人设唯一装配口 `wfPersonaNote` / G-02 记忆下沉 / G-03 审片主线步)。
+> 基线 `cursor/w6-integration-9f68 @ e1074f7`(整合 7/7 收尾:已含 G-01 专家人设唯一装配口 `wfPersonaNote` / G-02 记忆下沉 / G-03 审片主线步 / G-04 拆集端点 / G-05 / skills 全栈)。
 > 只改 `project.extractSubjects` 一条调用链,不动主线步骤集合、不新增计费动作、不碰 `js/skills.js`。
 
 ## 1. 问题(W5 周期一审计第 185 行)
@@ -20,7 +20,7 @@
 | `cli.js` | `EXEC['project.extractSubjects']` 由 `POST /api/llm/chat` 改为 `POST /api/wf/extract-subjects`,提示词拼装/结果规整随之下沉服务端,CLI 只保留 headless 入库合并 |
 | `js/episode-util.js` | `llmExtractSubjects(..., p)` 按 `WF_BOARD['extract-subjects']` 板块取 `personaNoteFor(p, board)` 与 `memBlock`,与服务端同一装配口;system 改取 `WfCore.EXTRACT_SYSTEM` |
 | `js/commands.js` / `js/director.js` | 两个调用点把当前项目 `p` 传下去(浏览器侧注入所需的数据面) |
-| `tests/*` | unit +1、integration +4、cli.smoke +2(见第 4 节) |
+| `tests/*` | unit +1、integration +4、cli.smoke +2(见第 4 节;顺带给相邻的 wf 命令补一处 1.1s 间隔,新增调用会挤到端点 2 次/秒限流线上) |
 | `README.md` | API 表新增一行;`exec` 词表与专家体系段同步(`WF_BOARD` 四条、CLI 命令列表) |
 
 生效顺序沿用 G-01:`p.boards['主体'].expert`(板块雇佣,即"选角美术指导"席位)> `settings.hiredExpert`(全局雇佣)> 不注入。记忆按「主体」板块召回,与该板块 Agent 同算法。
@@ -52,9 +52,9 @@
 
 ```
 node --check js/wf-core.js js/episode-util.js js/commands.js js/director.js cli.js server.js   # 全部通过
-node tests/unit.js          # 221/221 PASS(基线 220,本轮 +1)
-node tests/integration.js   # 83/83 PASS(基线 79,本轮 +4)
-node tests/cli.smoke.js     # 53/55(基线 51/53;2 项失败与本轮无关,改动前后同样失败:「未登录 whoami」「llm --json mock 链路」)
+node tests/unit.js          # 252/252 PASS(基线 251,本轮 +1)
+node tests/integration.js   # 93/93 PASS(基线 89,本轮 +4)
+node tests/cli.smoke.js     # 61/63(基线 59/61;2 项失败与本轮无关,改动前后同样失败:「未登录 whoami」「llm --json mock 链路」)
 ```
 
 新增断言:
@@ -70,7 +70,7 @@ node tests/cli.smoke.js     # 53/55(基线 51/53;2 项失败与本轮无关,改�
 
 ## 5. 与并行分支的关系
 
-本轮基于 W6 集成分支当前头部,只新增/改动上表的文件,是一次可直接快进的增量提交。若集成分支后续再合入含 `js/wf-core.js` 提取段或 `cli.js` 提取命令的分支,冲突解法:
+本轮基于 W6 集成分支收尾后的头部(`e1074f7`),只新增/改动上表的文件,是一次可直接快进的增量提交。若集成分支后续再合入含 `js/wf-core.js` 提取段或 `cli.js` 提取命令的分支,冲突解法:
 
 - `buildExtractUser` 取四参签名(三参调用形式输出不变,老调用点无需改写)。
 - `cli.js` 提取命令取 wf 通道版本;任何"直打 `/api/llm/chat`"的写法都会被 contract 断言拦下。
@@ -78,6 +78,6 @@ node tests/cli.smoke.js     # 53/55(基线 51/53;2 项失败与本轮无关,改�
 
 ## 6. 未做与后续
 
-- 剧本拆集(G-04)仍无服务端工作流端点,主线前段第一步的机读入口与人设注入待该项处理。
+- **同病未改**:G-04 的 `/api/wf/split-episodes` 虽已是服务端工作流,但端点内没有人设/记忆注入(`wfPersonaNote` 零命中,计费 `llm.chat`)。本轮按"只改提取主体调用链"的边界不动它;补法与本轮一致——`WF_BOARD` 加 `'split-episodes': '剧本'`,`buildSplitUser` 加 `ctx` 注入位,端点取一次 `wfPersonaNote` + `memBlock`,contract 断言的调用点计数随之 +1。
 - 浏览器提取仍走 `/api/llm/chat` + 客户端拼装(保留离线回退本地启发式与勾选入库的向导语义),只是注入口与服务端同源;若后续要让浏览器也复用 `/api/wf/extract-subjects`,需先给端点补"候选回传 + 前端勾选"之外的离线降级约定。
 - 未从提取结果反向沉淀记忆(例如把用户在向导里改过的主体名写回 agentMemory),属于 G-02 消费面的后续增量。
