@@ -3495,6 +3495,17 @@ const contractTests = [
       assert(pb && pb.steps.length, s.id + ' 应有 playbook 步骤');
       pb.steps.forEach(st => assert(names.includes(st.cmd), s.id + ' 步骤命令未注册:' + st.cmd));
     });
+    // SK-16 主线前段编排:拆集与主体提取已进 steps,playbook 覆盖前段四步而非只有集内两步
+    const front = Skills.playbook('eps.frontPipeline');
+    assertEq(front.steps.map(s => s.cmd).join(','),
+      'project.extractSubjects,project.splitEpisodes,episode.understanding,episode.generateStoryboard',
+      '主线前段 playbook 应按主线步序含前段四步');
+    // 步序与 Domain.workflow 同源:主体步排在分集步之前(工作流改序时此断言先红)
+    assert(wfStepKeys.indexOf('subjects') < wfStepKeys.indexOf('eps'), '主线步序应为主体先于分集');
+    // 编排型的命令面由 steps 去重推出,条目里不写第二份
+    assertEq(Skills.byId('eps.frontPipeline').cmds.join(','), front.steps.map(s => s.cmd).join(','), '编排条目 cmds 应由 steps 推出');
+    // 步骤不预设参数:拆集的 overwrite 未授权即拒(编排层只给步序,不替调用方授权覆盖已有分集)
+    front.steps.forEach(st => assertEq(Object.keys(st.args).length, 0, '前段步骤不应预设参数:' + st.cmd));
     // 校验型扩展点:登记的校验项必须有实现(不挂空项),check 结果数与该步登记数一致
     [].concat(...Skills.list().map(s => s.checks)).forEach(id => assert(typeof Skills.CHECKS[id] === 'function', '校验项未注册实现:' + id));
     assertEq(Skills.check('review', {}).length, Skills.list('review').reduce((n, s) => n + s.checks.length, 0), 'check 结果数应等于该步已登记校验项数');
