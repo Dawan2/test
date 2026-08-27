@@ -348,10 +348,12 @@
       id: 'script.dialogueRule', sk: 'SK-09', name: '对白铁律注入与单句长度校验', stage: 'script',
       covers: ['script', 'shots'], wave: 'W2', kinds: ['inject', 'check'],
       kb: ['对话铁律', '人物体系'], prompts: ['sb.system'], checks: ['script.dialogueLineLength'],
-      cmds: ['episode.generateStoryboard', 'episode.preflight'],
+      cmds: ['episode.generateStoryboard', 'episode.preflight', 'episode.smartReview'],
       experts: ['ex_dialogue'], gaps: ['G-15', 'G-10', 'S-01'],
       note: '注入面 W2 落地;校验面判剧本正文引号台词与分镜 s.dialogue 两处载体的单句长度,'
-        + '阈值现取 KB「对话铁律」正文不写第二份数字;潜台词/说明文式台词等语义面属审片维度,待 G-10',
+        + '阈值现取 KB「对话铁律」正文不写第二份数字;经就绪检查、问题中心与审片报告消费——'
+        + '审片路径只读附本镜命中(独立字段,不并入 issues、不改三维/四维评分与达标线);'
+        + '潜台词/说明文式台词等语义面属审片维度,待 G-10',
     },
     {
       id: 'script.aiToneBan', sk: 'SK-10', name: '文案 AI 味硬禁与痕迹检出', stage: 'script',
@@ -370,9 +372,11 @@
     {
       id: 'subjects.refIntegrity', sk: 'SK-12', name: '分镜引用主体完备性校验', stage: 'subjects',
       covers: ['subjects', 'shots'], wave: 'W4', kinds: ['check'],
-      kb: ['主体参考'], checks: ['subjects.shotRefIntegrity'], cmds: ['episode.preflight'], gaps: ['S-03'],
+      kb: ['主体参考'], checks: ['subjects.shotRefIntegrity'],
+      cmds: ['episode.preflight', 'episode.smartReview'], gaps: ['S-03'],
       note: '主体按名查找(含多形态全称)与取图口径复用 Domain,不在本层再写一份;'
-        + '校验项经就绪检查(episode.preflight)双端消费,结论只报不拦;S-03 的一致性半由 SK-13 承接',
+        + '校验项经就绪检查(episode.preflight)双端消费,审片报告(episode.smartReview)只读附本镜命中'
+        + '(独立字段,不并入 issues、不改评分与达标线);结论只报不拦;S-03 的一致性半由 SK-13 承接',
     },
     {
       id: 'subjects.crossShot', sk: 'SK-13', name: '跨镜头主体一致性校验', stage: 'subjects',
