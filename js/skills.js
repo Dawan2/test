@@ -913,8 +913,10 @@
         + '补种与板块迁移已下沉 WfCore.memSeed/memMigrateBoard 双端单源:浏览器 memAll 与 headless'
         + '(/api/wf/memory-seed + CLI memory seed|migrate + MCP 同名工具)吃同一份种子表与迁移表,'
         + '空板/未知板名如实报错不静默空成功。'
-        + '仍欠一处覆盖余量:自动沉淀本轮结论只有审片/发布两个闭环'
-        + '(那一面归 SK-26 的回流面),理解/分镜/拆集/提取主体几步的结论仍不回流;'
+        + '自动沉淀本轮结论(那一面归 SK-26 的回流面)现覆盖主线六个闭环:审片、发布,'
+        + '加前段四步理解/分镜/拆集/提取主体——四步各按自己那一步的板块写回同一个 state.agentMemory。'
+        + '仍欠一处覆盖余量:生成与合成两步没有可判定的结构化结论可回流(素材产出的判定面归发布门 G3/G7),'
+        + '浏览器剧本解析向导走自己的入库路径,提取主体的回流只挂在命令层;'
         + '播种是显式动作(headless 侧不在读记忆时自动跑,免得读一次写一次盘)',
     },
     {
@@ -1173,18 +1175,26 @@
       covers: ['review', CROSS], wave: 'W4', kinds: ['orchestrate'],
       experts: ['ex_editor'], gaps: ['G-11', 'G-02'],
       steps: [
+        { cmd: 'project.extractSubjects', args: {}, note: '提取主体入库收尾即把本轮新增/已有位数、主体库总量与缺参考图位数写回主体板块记忆桶' },
+        { cmd: 'project.splitEpisodes', args: {}, note: '拆集收尾即把集数、切分模式与超长集数写回剧本板块记忆桶' },
+        { cmd: 'episode.understanding', args: {}, note: '本集理解收尾即把六维产出数与缺的维名写回导演板块记忆桶' },
+        { cmd: 'episode.generateStoryboard', args: {}, note: '智能分镜收尾即把镜数/预估总时长与缺提示词、未挂主体两处缺口写回分镜板块记忆桶' },
         { cmd: 'episode.smartReview', args: {}, note: '审片闭环收尾即把该集可判定结论(待返工镜数/共性问题类型/四维最弱维)写回成片板块记忆桶,下一轮审片提示词按板块召回时吃到' },
       ],
-      note: '回流面已落地最小真实回流:审片与发布两个闭环收尾把**可判定**结论(待返工镜数、共性问题类型、'
-        + '四维最弱维、发布门状态与未过门项)写回既有记忆桶 state.agentMemory,派生只此一份 '
+      note: '回流面覆盖主线六个闭环:审片、发布,加前段四步理解/分镜/拆集/提取主体。各步收尾把**可判定**结论'
+        + '(待返工镜数、共性问题类型、四维最弱维、发布门状态与未过门项;六维产出数与缺的维名;镜数与缺提示词/未挂主体镜数;'
+        + '集数与超长集数;新增主体位数与缺参考图位数)写回既有记忆桶 state.agentMemory,派生只此一份 '
         + 'WfCore.memFeedback/memWrite(记忆数组经参数注入,函数体不碰环境句柄),按回流键 fb 原地更新——'
         + '同一集/同一项目反复闭环只留最新一条,不刷满 50 条上限挤掉用户自己沉淀的偏好。'
-        + '四处写入点:浏览器 review.js 整集审片、服务端 /api/wf/smart-review(CLI/MCP 同链路)、'
-        + '发布留痕两端(浏览器 release.js stampRelease 与 CLI release,后者随同一次 PUT 的 meta 桶写回)。'
+        + '写入点浏览器与 headless 各一套且都走同一份 UMD 派生:审片(review.js / /api/wf/smart-review)、'
+        + '发布留痕(release.js stampRelease / CLI release)、理解(understanding.js / /api/wf/understanding 与智能分镜内部理解步)、'
+        + '分镜(sb-llm.js publishLLMShots / /api/wf/smart-storyboard)、拆集(proj-upload.js splitCore / /api/wf/split-episodes)、'
+        + '提取主体(端点只出候选不写 state,回流挂入库口径:js/commands.js 与 CLI exec,后者随 withProject 同一次 PUT 的 meta 桶写回)。'
         + '"回流专家"的自动那一半即经此闭合:条目带板块 scope,下一轮同板块提示词按 WfCore.memBlock 召回吃到。'
-        + '整集均分有意不回流——成片板块记忆会被下一轮逐镜审片召回,把上一轮分数喂回评分方等于设锚点。'
+        + '整集均分有意不回流——成片板块记忆会被下一轮逐镜审片召回,把上一轮分数喂回评分方等于设锚点;'
+        + '失败路径(理解回退模板、拆镜回退本地、LLM 报错、零产出)一律不写,没有结论就不冒充。'
         + '沿用既有记忆桶与自定义专家副本,不新建存储桶、不改预置专家数据、不改发布门 G1–G10 判据与计数口径、不新增计费。'
-        + 'steps 只登记审片这一步:发布留痕两端都在领域命令注册表之外,编排层不为它挂假命令名(命令化待 G-12)。'
+        + 'steps 登记的是有领域命令出口的五步:发布留痕两端仍在命令注册表之外,编排层不为它挂假命令名(命令化待 G-12)。'
         + '仍欠(G-11):回流条目蒸馏进专家 persona 仍要人在专家库点「从使用记录进化」,'
         + 'evolveExpert 只对自定义专家开放、读记忆时不按板块过滤,自动进化与预置专家仍无出口',
     },

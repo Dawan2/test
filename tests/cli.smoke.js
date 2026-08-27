@@ -190,6 +190,48 @@ async function main() {
     await sleep(1100);
   }
 
+  // ---- 主线四步闭环结论回流(W61):理解/分镜/拆集/提取主体各按板块留一条可判定结论 ----
+  {
+    r = cli('memory', 'list');
+    const fbs = ((r.out && r.out.list) || []).filter(m => m.fb);
+    const byPre = pre => fbs.filter(m => String(m.fb).startsWith(pre + ':'));
+    report('四步闭环结论都回流进了记忆桶(全程 headless,零浏览器)',
+      r.code === 0 && byPre('und').length >= 1 && byPre('sb').length >= 1 && byPre('split').length === 1 && byPre('extract').length === 1,
+      JSON.stringify(fbs.map(m => m.fb + '@' + m.scope)));
+    const bd = pre => (byPre(pre)[0] || {}).scope;
+    report('回流板块取 WF_BOARD 单源(导演/分镜/剧本/主体各归各位)',
+      bd('und') === '导演' && bd('sb') === '分镜' && bd('split') === '剧本' && bd('extract') === '主体',
+      [bd('und'), bd('sb'), bd('split'), bd('extract')].join(','));
+    const ex = byPre('extract')[0] || {};
+    report('提取主体回流文案可判定(新增/已有/库存/缺参考图都是数字)',
+      String(ex.text || '').startsWith('提取主体闭环回流·') && /本轮新增 \d+ 位/.test(ex.text || '')
+      && /主体库共 \d+ 位/.test(ex.text || '') && /\d+ 位缺参考图$/.test(ex.text || '') && !!ex.time,
+      String(ex.text));
+    const sp = byPre('split')[0] || {};
+    report('拆集回流只留最新一条(同项目三次拆集不双写,模式如实记 even)',
+      /切出 \d+ 集/.test(sp.text || '') && String(sp.text || '').includes('even'), String(sp.text));
+    r = cli('memory', 'list', '--scope', '主体', '--recall', '主体库');
+    report('回流条目可被同板块召回(下一轮提示词即刻吃到)',
+      r.code === 0 && (r.out.recalled || []).some(m => String(m.text).startsWith('提取主体闭环回流·')),
+      JSON.stringify((r.out && r.out.recalled || []).map(m => m.scope)));
+    // 幂等:同项目再提取一次仍只有一条(fb 键原地更新,不把 50 条上限刷满)
+    r = cli('memory', 'list');
+    const totalBefore = (r.out && r.out.total) || 0;
+    await sleep(1100);
+    const again = cli('exec', 'project.extractSubjects', '--pid', pid);
+    r = cli('memory', 'list');
+    report('同项目重复提取主体只更新不双写(记忆桶条数不变)',
+      again.code === 0 && r.code === 0 && r.out.total === totalBefore
+      && (r.out.list || []).filter(m => String(m.fb || '').startsWith('extract:')).length === 1,
+      'before=' + totalBefore + ' after=' + (r.out && r.out.total));
+    // 失败路径不写:无剧本项目 blocked(零调用零计费),记忆桶一条不加
+    const bad = cli('exec', 'project.extractSubjects', '--pid', pidB);
+    r = cli('memory', 'list');
+    report('提取主体失败路径不写假成功(blocked 项目不入记忆桶)',
+      bad.code === 2 && r.code === 0 && r.out.total === totalBefore && !(r.out.list || []).some(m => m.fb === 'extract:' + pidB),
+      'exit=' + bad.code + ' total=' + (r.out && r.out.total));
+  }
+
   // ---- 工具层 ----
   r = cli('llm', '--user', '你好', '--json');
   report('llm --json mock 链路', r.code === 0 && r.out && typeof r.out.content === 'string', (r.out && String(r.out.content).slice(0, 24)) || r.err);
