@@ -606,6 +606,26 @@
     return { status, counts, blockers, action, reviewAvg, reviewStale, reviewGate, composedReady, shotsStale };
   };
 
+  /* 受阻分集的处置出口(回执/单屏上那颗按钮按下去真跑得动的那一件事,双端单源):
+   * 一键成片 episode.produce 自己的就绪闸会把三态原样退回——缺正文与失败镜(就绪检查未通过)、
+   * 分镜判旧(同上)、未拆镜(no-shots);这三态挂它等于给一颗按下去只回一句拦截语、门禁结论一字不变的按钮。
+   * 故按 episodeState 已归好的推荐动作分档,判据不在本函数之外另写一份:
+   *   未拆镜(有正文零分镜,「仅进行分集」留下的就是这一态)→ 智能分镜,真能把这一集推到下一步;
+   *   补正文 / 重新拆镜 / 处理失败镜 → 出导航口,让用户到该集工作区自己定
+   *     (重拆整表覆盖已有分镜、失败镜要逐镜挑,都属人工决策,回执不代授权——与计划层出导航步同一条纪律);
+   *   其余(待生成/待确认/待审片/待合成)→ 一键成片原样。
+   * 只换处置动作,不动任何门的 pass 条件。 */
+  D.epFixOf = function (p, ep, st) {
+    if (!p || !ep) return null;
+    st = st || D.episodeState(p, ep, true);
+    const key = (st.action && st.action.key) || '';
+    if (key === 'shots') return { type: 'command', cmd: 'episode.generateStoryboard', epid: ep.id };
+    if (key === 'script' || key === 'reshoot' || key === 'fix-failed') {
+      return { type: 'nav', hash: '#/project/' + p.id + '/episode/' + ep.id };
+    }
+    return { type: 'command', cmd: 'episode.produce', epid: ep.id };
+  };
+
   /* 项目整本原文(下游命令读入的那一份文本,没有即空串):拆集按它切分,提取主体先读它再回退各集正文。
    * 与门槛派生的「剧本这一步走过没有」不是同一问:gateBlockers 认 extractDone 也算走过
    * (提取过主体的老项目流程条上剧本步画 ✓),但那类项目里整本原文并不在库——
