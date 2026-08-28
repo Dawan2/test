@@ -7336,7 +7336,7 @@ action 二选一:
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
     [['单元测试', 498, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 141, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
-      ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
+      ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
       assert(live >= floor, label + '用例数不得少于 ' + floor + '(实测 ' + live + ');确要删测须同轮说明理由,新增用例时把下限抬到当轮实况');
       const docs = [...readme.matchAll(docRe)].map(m => +m[1]);
