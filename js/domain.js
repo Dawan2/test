@@ -755,9 +755,22 @@
       step('shell', '剧壳', !!(p && p.shell && p.shell.dist && (p.shell.dist.introLong || p.shell.dist.posterV || p.shell.dist.logline)), false, null, null, true),
       step('clips', '切片', eps.some(e => (e.clips || []).length > 0), false, null, null, true),
     ];
-    /* 项目级推荐动作:主线首个未完成步骤(支线不参与阻塞) */
+    /* 项目级推荐动作:主线首个未完成步骤(支线不参与阻塞)。
+     * 剧本步是唯一的例外:它的"未完成"说的是整本原文不在库(输入面),不是进度没走到——
+     * 而读整本原文的只有提取主体与剧本拆集两件事(D.extractSourceText / D.projectScript)。
+     * 这两件都已办成的项目(手工建集、拉片建集两条真实入口都只写各集正文,从不写整本)上,
+     * 补进整本也推不动任何一步:分镜/出片/审片/成片与交付门(每集 done、审片达标、
+     * 过期·未确认·失败镜清零、主体图齐全)没有一处读它。此时"下一步"若照旧指着上传剧本,
+     * 指的就是与交付无关的地方,而且是从建完分集起一路指到成片——走完全片的项目上尤其显眼:
+     * 十门只剩账目待后台确认(cond-pass)、每集都 done,下一步却仍写着"上传剧本"。
+     * 故这两件都办成时剧本步不占"下一步",让给主线上真正未完成的那一步(全走完即交付动作)。
+     * 缺口不因此消失:流程条的剧本步照旧画未完成、问题中心照旧报 no-script,这里只是不拿它当下一步;
+     * 门槛派生(gateBlockers)、交付门与 projectScript 一个字不动。
+     * 判据取本函数已经算好的那份门槛项,不另判一遍;计划层的提取/拆集两步按的是同一条
+     * (js/plans.js TODO_OF:主体库不空 / 分集已建即不出这一步),两面不许对同一个项目说反话。 */
+    const scriptIdle = !gates.some(g => g.code === GATE.subjects) && !gates.some(g => g.code === GATE.eps);
     let recommendedAction = null;
-    const cur = steps.find(s => !s.side && !s.done);
+    const cur = steps.find(s => !s.side && !s.done && !(s.key === 'script' && scriptIdle));
     if (!cur) recommendedAction = { key: 'produce', label: '量产跑批 / 导出交付', hash: '#/project/' + p.id + '/produce' };
     else if (cur.action) recommendedAction = cur.action;
     else {
