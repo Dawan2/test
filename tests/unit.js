@@ -5292,82 +5292,122 @@ const releaseTests = [
     await sb.Release.downloadReleaseZip(p, { skipVideo: true });
     assert(!sb.__toasts.some(t => /分镜文件抓取失败/.test(t)), '没失手就不许报,实际提示:' + JSON.stringify(sb.__toasts));
   } },
-  /* ---- 底部 Bus 通配订阅那一段(W149 第 3 节) ----
-   * 那处空 catch 本身无害:它只兜住"注册订阅"这一下(回调自己的异常由 Bus.emit 隔离、走不到它),
-   * 且 release.dirty 全树零订阅者。真出事的是它兜着的那段——转发时把整条源事件当 payload 递出去,
-   * 源事件的 name 顶掉了 'release.dirty',通配订阅再按名字判来源,于是自喂自转到爆栈
-   * (基线实测:一条 shots.batchDone 转 1695 次,50 格事件留痕被同一条冲干净,Agent 的
-   * 「最近发生了什么」只剩这一条)。爆栈那个 RangeError 又被总线的隔离 catch 吃掉,一声不吭。 */
-  { name: 'Bus 通配订阅 · 一条主线事件只转一次 release.dirty(转发不许顶掉事件名,自喂自会冲掉事件留痕)', fn() {
+  /* ---- 底部那段 Bus 通配订阅已摘(W183) ----
+   * 它做的是"收到主线事件就再 emit 一条 release.dirty 触发角标重算"。而角标重算根本不认这条:
+   * js/episodes.js(项目页三角标)/ js/issues-ui.js(问题弹窗+角标)/ js/workbench.js(制作台三分区)
+   * 三处订的都是 '*' 且不按事件名过滤,源事件那一轮就已经重算过;转发件只是把同一轮防抖重置一遍。
+   * 净效果全落在 Bus 的 50 格事件留痕上——一条主线事件占两格,能回看的轮数对折(基线实测 50 轮只回看得到 25 轮)。
+   * 下面三条按"留痕占几格 / 重绘少没少一次 / 转发点还在不在"分开钉,坏哪一格报哪一格。 */
+  { name: 'Bus 事件留痕不被转发件对折:一条主线事件占 1 格,50 格就回看得到 50 轮', fn() {
     const sb = makeSandbox();
     installCommon(sb);
     loadFile(sb, 'bus.js');
     loadFile(sb, 'release.js');
-    const seen = [];
-    sb.Bus.on('release.dirty', ev => seen.push(ev.name + '<' + ev.src));
-    sb.Bus.on('release.dirty', () => { throw new Error('角标重算崩了'); });
-    ['shots.batchDone', 'compose.done', 'review.smartDone', 'episode.ripped', 'plan.step'].forEach(n =>
-      assertNoThrow(() => sb.Bus.emit(n, { brief: '主线动了' }), '订阅者抛错不得反弹回 emit 侧(总线自己隔离):' + n));
-    assertEq(seen.join(','), 'release.dirty<shots.batchDone,release.dirty<compose.done,release.dirty<review.smartDone,' +
-      'release.dirty<episode.ripped,release.dirty<plan.step',
-      '五条主线事件各转一次,事件名是 release.dirty 而源事件名走 src(顶掉 name 就会自喂自,条数当场炸开)');
-    sb.Bus.emit('agent.chat', {});
-    assertEq(seen.length, 5, '非主线事件不转(转了就是每条消息都重算一次角标)');
-    // 事件留痕没被冲掉:Agent 的「最近发生了什么」按 Bus.recent 取的就是这一份
-    assertEq([...new Set(sb.Bus.recent(50).map(h => h.name))].sort().join(','),
-      'agent.chat,compose.done,episode.ripped,plan.step,release.dirty,review.smartDone,shots.batchDone',
-      '50 格事件留痕里各事件都还在(自喂自时这里只剩转发那一条)');
-    // 订阅注册本身不抛:那处 catch 只在 window.Bus 在场而 Bus.on 不是函数(bus.js 没加载/被桩顶掉)时才走得到
-    assertEq(typeof sb.Bus.on('x', () => {}), 'function', 'Bus.on 是全函数,返回退订句柄');
-    const jsFiles = fs.readdirSync(path.join(ROOT, 'js')).filter(f => /\.js$/.test(f));
-    const emitters = jsFiles.filter(f => /Bus\.emit\('release\.dirty'/.test(fs.readFileSync(path.join(ROOT, 'js', f), 'utf8')));
-    assertEq(emitters.join(','), 'release.js', 'release.dirty 只此一个发出点');
-    const subs = jsFiles.filter(f => /Bus\.on\(\s*'release\.dirty'/.test(fs.readFileSync(path.join(ROOT, 'js', f), 'utf8')));
-    assertEq(subs.join(','), '', 'release.dirty 至今零**命名**订阅者(通配那几家收得到,见下一条按名点到)');
+    const MAIN = ['shots.batchDone', 'compose.done', 'review.smartDone', 'episode.ripped', 'plan.step'];
+    for (let i = 0; i < 50; i++) {
+      assertNoThrow(() => sb.Bus.emit(MAIN[i % MAIN.length], { p: { id: 'p1' }, brief: '第' + i + '轮' }),
+        '订阅者抛错不得反弹回 emit 侧(总线自己隔离):第' + i + '轮');
+    }
+    const hist = sb.Bus.recent(50);
+    assertEq(hist.filter(h => h.name === 'release.dirty').length, 0,
+      '主线事件不得再派生一条 release.dirty 进留痕(派生的那条没有独有订阅者,只挤格子)');
+    assertEq(new Set(hist.map(h => h.brief)).size, 50,
+      '50 格留痕应覆盖 50 轮主线事件(每轮多占一格时这里只剩 25 轮,最早那 25 轮被挤没)');
+    assertEq(hist[hist.length - 1].brief, '第0轮', '回看得到的最早一轮就是第 0 轮(对折时最早只到第 25 轮)');
+    // Agent 的「最近发生了什么」按 Bus.recent(12, pid) 取,就是这一份的 pid 切片
+    const q = sb.Bus.recent(12, 'p1');
+    assertEq(q.filter(h => h.name !== 'release.dirty').length, 12,
+      'agent-ops 那口取 12 条应是 12 条真事件(对折时只剩 6 条真事件 + 6 条转发件)');
   } },
-  /* ---- 底部那处空 catch 本身:它到底吞什么(W181) ----
+  { name: '摘掉转发不少一次重绘:问题角标与制作台三分区照旧由源事件驱动,连发仍防抖合并成一轮', fn: async () => {
+    /* 上一条钉"留痕不多占",这一条钉"重算不少跑":转发件与源事件对三个通配订阅是同一件事,
+     * 摘掉它重绘次数一次不少。真加载 issues-ui.js / workbench.js 两个通配订阅者跑一遍(episodes.js
+     * 的角标订阅同形,由下一条源级钉住它仍在),数的是防抖落地后各自真重算了几轮。 */
+    const sb = makeSandbox();
+    installCommon(sb);
+    loadFile(sb, 'bus.js');
+    loadFile(sb, 'domain.js');
+    loadFile(sb, 'issues.js');
+    loadFile(sb, 'issues-ui.js');
+    loadFile(sb, 'release.js');
+    let gateRounds = 0;
+    sb.Release = Object.assign({}, sb.Release, {
+      collect: () => { gateRounds++; return { overall: 'pass', score: 10, blockers: 0, gates: [] }; },
+      openModal() {},
+    });
+    sb.Plans = { of: () => null };
+    loadFile(sb, 'workbench.js');
+    const node = () => ({ innerHTML: '', isConnected: true, dataset: {}, style: {}, querySelector: node, querySelectorAll: () => [] });
+    let badgeRounds = 0;
+    const btn = { dataset: { pid: 'p1' }, isConnected: true, get innerHTML() { return this._h || ''; }, set innerHTML(v) { badgeRounds++; this._h = v; } };
+    sb.document.querySelector = sel => (sel === '[data-x=pissues][data-pid]' ? btn : null);
+    const p = { id: 'p1', name: '剧', script: '正文', subjects: [], episodes: [] };
+    sb.Store.getProject = id => (id === 'p1' ? p : null);
+    sb.U.openModal = opt => opt.onMount(node(), () => {});
+    sb.Workbench.openModal(p, node());
+    badgeRounds = 0; gateRounds = 0;
+    sb.Bus.emit('shots.batchDone', { p, brief: '一条主线事件' });
+    await sleep(700); // 三处防抖上限 400ms,留足余量
+    assertEq(badgeRounds, 1, '一条主线事件应重画一次问题角标(转发件在时也是这一次——防抖把两次并成一轮)');
+    assertEq(gateRounds, 1, '一条主线事件应重算一次发布门');
+    badgeRounds = 0; gateRounds = 0;
+    ['shots.batchDone', 'compose.done', 'review.smartDone', 'episode.ripped', 'plan.step']
+      .forEach(n => sb.Bus.emit(n, { p, brief: 'x' }));
+    await sleep(700);
+    assertEq(badgeRounds, 1, '连发五条应防抖合并成一轮角标重画');
+    assertEq(gateRounds, 1, '连发五条应防抖合并成一轮发布门重算(逐条原样重跑会卡主线程)');
+  } },
+  { name: '角标重算的驱动源是通配订阅本身(源级):release.js 不再从通配订阅里二次 emit,三处通配订阅仍在', fn() {
+    const jsFiles = fs.readdirSync(path.join(ROOT, 'js')).filter(f => /\.js$/.test(f));
+    const src = f => fs.readFileSync(path.join(ROOT, 'js', f), 'utf8');
+    const emitters = jsFiles.filter(f => /Bus\.emit\('release\.dirty'/.test(src(f)));
+    assertEq(emitters.join(','), '', 'release.dirty 全树零发出点(要重新发它,先给它找到一个源事件顶不了的订阅者)');
+    const subs = jsFiles.filter(f => /Bus\.on\(\s*'release\.dirty'/.test(src(f)));
+    assertEq(subs.join(','), '', 'release.dirty 全树零订阅者');
+    // 转发这件事本身封死:通配订阅的回调体里不许再 Bus.emit(转发件对不按名过滤的订阅者是同一件事,只多占留痕)
+    const rel = blankNonCode(src('release.js'), true);
+    assert(!/Bus\.on\(\s*'\*'/.test(rel), 'js/release.js 不得再挂通配订阅转发(注释整段排除,故上面那段讲历史的注释原样留着)');
+    // 反面:源事件驱动重算的前提是这三处通配订阅还在,谁摘了谁得自己接上重算
+    [['episodes.js', '项目页问题/计划/交付三角标'], ['issues-ui.js', '问题中心弹窗与角标'], ['workbench.js', '制作台发布门/问题/计划三分区']]
+      .forEach(([f, what]) => assert(/Bus\.on\(\s*'\*'/.test(blankNonCode(src(f), true)),
+        'js/' + f + ' 的通配订阅是' + what + '的驱动源,摘掉它主线事件就不重算了'));
+  } },
+  /* ---- 底部那处空 catch 的覆盖面(W181,W189 按转发被摘的新实况重算) ----
    * W149 判过它"无害"并留了三条理由,但没落判据;此后 episodes/issues-ui/workbench 各自开了通配订阅,
-   * 三条理由里"下游是空的"那条已经只对一半(命名订阅仍是 0,通配那几家收得到)。这里把它的覆盖面按
-   * 源级 + 行为两面钉死,省得下次再靠读一遍代码下结论:
+   * 三条理由里"下游是空的"那条已经只对一半(命名订阅仍是 0,通配那几家收得到)。W181 把它的覆盖面按
+   * 源级 + 行为两面钉死,结论是「填掉它是拿十项门去换一个成品页走不到的形态」:
    *   - 它只兜"注册订阅"这一下 —— try 块顶层就一句,回调是稍后由 emit 调起的,走不到它;
    *   - 回调自己的异常归 js/bus.js emit 的订阅者隔离 catch(那是总线的既有契约,不是这处);
    *   - 兜住之后省下的是整支模块导出 —— 摘掉它,同一形态下 window.Release 当场没有,十项门一门不剩。
-   * 故它不是"吞产品错误的空 catch",填掉它反而是拿十项门去换一个成品页走不到的形态。 */
-  { name: 'Bus 通配订阅 · 那处 catch 只兜注册这一下(源级:try 块顶层一句;行为:兜住的是整支模块导出)', fn() {
+   * W183 走的不是"填掉"这条路,是把它兜的那句注册连同转发一起摘了:兜的对象没了,catch 跟着走,
+   * 而 W181 那条结论落得更硬 —— 半截 Bus 现在压根伤不到这支模块,不必再靠一个 catch 兜。
+   * 下面五条按 W181 立的五个面原样保留,各自照它们自己写下的"同轮重算"口径换到新实况上:
+   * 覆盖面(本条)、门禁不变(下一条)、可达形态(第三条)、headless 无同一张网(第四条,一字未动)、
+   * 留痕代价(第五条)。 */
+  { name: 'Bus 通配订阅 · 那处 catch 连同它兜的那句注册一起摘了(源级:零空 catch、装载期零 Bus.on;行为:半截 Bus 也导得出整支)', fn() {
     const rel = fs.readFileSync(path.join(ROOT, 'js/release.js'), 'utf8');
     const empties = rel.match(/catch\s*\([^)]*\)\s*\{\s*\}/g) || [];
-    assertEq(empties.length, 1, 'js/release.js 恰有底部订阅注册那一处空 catch:别处再空一处是另开了个吞口,' +
-      '这一处被摘掉则整支模块导出跟着没(见本条末尾),两边都红在这里,实际 ' + empties.length);
-    const end = rel.indexOf('} catch (_) {}');
-    const start = rel.lastIndexOf('try {', end);
-    const body = end > 0 && start > 0 ? rel.slice(start + 'try {'.length, end) : '';
-    assert(body, '取不到那处 try 块(改写形状就同轮改本条,别把它留成恒真)');
-    // try 块顶层语句数:注释剥掉后按括号深度数分号,>1 就是往这个吞口里又塞了别的东西
-    const bare = body.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map(s => s.replace(/\/\/.*$/, '')).join('\n');
-    let depth = 0, top = 0;
-    for (const c of bare) {
-      if (c === '{' || c === '(') depth++;
-      else if (c === '}' || c === ')') depth--;
-      else if (c === ';' && depth === 0) top++;
-    }
-    assertEq(top, 1, 'catch 的覆盖面只该是那一句注册,实际顶层 ' + top + ' 句:' + bare.trim().slice(0, 120));
-    assert(/^\s*if \(window\.Bus\) Bus\.on\('\*'/.test(bare), '那一句必须是订阅注册本身,实际:' + bare.trim().slice(0, 80));
-    assertEq((bare.match(/Bus\.on\(/g) || []).length, 1, 'try 块里只该有一次注册');
-    // 行为面:Bus 在场时那处 catch 走不到 —— 注册恰一次且不抛
+    assertEq(empties.length, 0, 'js/release.js 不该再有空 catch:W181 量过它兜的只有底部那一句订阅注册,' +
+      '注册被摘掉之后它没有兜的对象了;再空一处就是另开了个吞口,实际 ' + empties.length);
+    // 装载期一次订阅都不注册 —— 于是"注册失手"这个形态从根上不存在,不必再靠 catch 兜
+    const code = blankNonCode(rel, true);
+    assertEq((code.match(/Bus\.on\(/g) || []).length, 0,
+      'release.js 装载期不得再注册任何订阅(要加回来就得同轮把兜它的那处 catch 一并加回来,并重新论证下游)');
+    assert(/window\.Bus/.test(code), 'Bus 仍是这支模块的依赖(打版本落定发 release.stamped),不是整条断了');
+    // 行为面按 W181 原样:Bus 在场时全函数;Bus 只有半截时整支照常导出、十项门一门不少
     const real = loadRelease('real');
-    assertEq(typeof real.Bus.on('x', () => {}), 'function', 'Bus.on 是全函数(故装了 bus.js 就走不到那处 catch)');
-    // 唯一走得到的形态:Bus 在场而 on 缺席。兜住之后整支照常导出,十项门一门不少
+    assertEq(typeof real.Bus.on('x', () => {}), 'function', 'Bus.on 是全函数,返回退订句柄');
     const degraded = loadRelease('no-on');
-    assertEq(typeof degraded.Release, 'object', '注册失手不该带走整支模块:摘掉那处 catch 这里当场是 undefined');
+    assertEq(typeof degraded.Release, 'object', '半截 Bus 不该带走整支模块:把裸注册加回去而不兜住,这里当场是 undefined');
     ['collect', 'badgeHTML', 'stampRelease', 'buildReleaseZip', 'downloadReleaseZip', 'openModal', 'execFix']
       .forEach(k => assertEq(typeof degraded.Release[k], 'function', '出口 ' + k + ' 须仍在'));
     const p = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [releaseReadyEp()] };
     assertEq(degraded.Release.collect(p, { online: false }).gates.length, 10, '降级后十项门照常出,一门不少');
   } },
-  { name: 'Bus 通配订阅 · 那处 catch 兜不兜住,G1–G10 结论逐字不变(它改不了任何一门,也不吞回调异常)', fn() {
-    /* 「失败被吃掉、用户看到成功」在这条链上不成立:那处 catch 只在注册期走,而门禁每次现取。
-     * 同一夹具在"总线正常"与"catch 真被触发"两种形态下把十门连同 overall/fails/warns/blockers/score
-     * 全量比一遍——只要哪天有人把降级路径接进门禁结论,这里当场红。 */
+  { name: 'Bus 通配订阅 · 总线降不降级,G1–G10 结论逐字不变(它改不了任何一门,也不吞回调异常)', fn() {
+    /* 「失败被吃掉、用户看到成功」在这条链上不成立:门禁每次现取,与总线是不是半截无关。
+     * 同一夹具在"总线正常"与"总线只有半截(W181 那个 no-on 形态)"两种形态下把十门连同
+     * overall/fails/warns/blockers/score 全量比一遍——只要哪天有人把降级路径接进门禁结论,这里当场红。 */
     const p = () => ({ id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: '' }],
       episodes: [releaseReadyEp({ lastReview: { avg: 5 } })] });
     const sig = sb => {
@@ -5376,23 +5416,24 @@ const releaseTests = [
         r.gates.map(g => g.code + ':' + g.status + ':' + g.info).join('|')].join('/');
     };
     const a = sig(loadRelease('real')), b = sig(loadRelease('no-on'));
-    assertEq(b, a, 'catch 触发与否,十门与四个汇总数须逐字相同');
+    assertEq(b, a, '总线降级与否,十门与四个汇总数须逐字相同');
     assert(/g4-stale:pass/.test(a) && /g9-subjects:fail/.test(a), '夹具须真摊到 pass 与 fail 两侧(全 pass 的夹具比了等于没比):' + a);
-    // 回调面的异常:归总线隔离,不反弹给管线,更不经过那处 catch(它此刻早已执行完)
+    /* 回调面的异常:归总线隔离,不反弹给管线。W181 拿 release.dirty 的订阅者数这一格,转发摘掉后
+     * 改数真事件的通配订阅者——量的是同一件事(隔离在 js/bus.js 的 emit 里,不在 release.js 那侧)。 */
     const sb = loadRelease('real');
-    sb.Bus.on('release.dirty', () => { throw new Error('角标重算崩了'); });
+    sb.Bus.on('*', () => { throw new Error('角标重算崩了'); });
     let after = 0;
-    sb.Bus.on('release.dirty', () => { after++; });
+    sb.Bus.on('*', () => { after++; });
     assertNoThrow(() => sb.Bus.emit('shots.batchDone', { brief: '批量出片完成' }), '订阅者抛错不得反弹回 emit 侧');
     assertEq(after, 1, '前一个订阅者抛错不阻断后一个(隔离在 js/bus.js 的 emit 里,不是 release.js 那处)');
     const busSrc = fs.readFileSync(path.join(ROOT, 'js/bus.js'), 'utf8');
     assert(/set\.forEach\(fn => \{ try \{ fn\(ev\); \} catch/.test(busSrc), '订阅者隔离是总线自己的契约,挪走了就同轮改本条');
   } },
-  { name: 'Bus 通配订阅 · 走得到那处 catch 的形态在成品页不存在(Bus 只此一处整体赋值,且比 release 先装)', fn() {
-    /* 那处 catch 唯一的入口是「window.Bus 在场而 Bus.on 不是函数」。bus.js 全文最后一句一次性把
+  { name: 'Bus 通配订阅 · 半截 Bus 那个形态在成品页不存在(Bus 只此一处整体赋值,且比 release 先装)', fn() {
+    /* W181 量的那个形态是「window.Bus 在场而 Bus.on 不是函数」。bus.js 全文最后一句一次性把
      * 四个方法整体挂上去,全树再无第二处给 Bus 赋值,index.html 里它又排在 release 之前——
-     * 于是这个形态只存在于测试桩里。真要出现,同样收通配的另外两家连 catch 都没有、当场 TypeError,
-     * 页面早塌在前面,填不填这处 catch 都救不回来。 */
+     * 于是这个形态只存在于测试桩里。真要出现,收通配的那几家连 catch 都没有、当场 TypeError,
+     * 页面早塌在前面。W183 摘掉 release.js 那句注册后它连塌都不塌了,但这条守的是形态本身仍不可达。 */
     const jsFiles = fs.readdirSync(path.join(ROOT, 'js')).filter(f => /\.js$/.test(f));
     const assigners = jsFiles.filter(f => /(?:window\.)?Bus\s*=[^=]/.test(fs.readFileSync(path.join(ROOT, 'js', f), 'utf8')));
     assertEq(assigners.join(','), 'bus.js', 'window.Bus 只该由 bus.js 一处赋值(多一处就可能出现半截 Bus)');
@@ -5401,10 +5442,10 @@ const releaseTests = [
     const order = [...fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8').matchAll(/<script src="js\/([a-z0-9-]+)\.js"/g)].map(m => m[1]);
     assert(order.indexOf('bus') >= 0 && order.indexOf('bus') < order.indexOf('release'),
       'index.html 里 bus.js 须排在 release.js 之前,实际位次 ' + order.indexOf('bus') + ' / ' + order.indexOf('release'));
-    // 同样收通配的另外两家:没有 catch,缺 on 时整支模块当场没了 —— 那处 catch 救的只是它自己
+    // 仍在收通配的这三家:没有 catch,缺 on 时整支模块当场没了 —— release.js 现在不在这张名单上
     const wild = jsFiles.filter(f => /Bus\.on\(\s*'\*'/.test(fs.readFileSync(path.join(ROOT, 'js', f), 'utf8')));
-    assertEq(wild.sort().join(','), 'episodes.js,issues-ui.js,release.js,workbench.js',
-      '通配订阅这几家收得到 release.dirty;名单变了就同轮重掂量那处 catch 的下游');
+    assertEq(wild.sort().join(','), 'episodes.js,issues-ui.js,workbench.js',
+      '通配订阅现在是这三家(release.js 已摘);名单变了就同轮重掂量半截 Bus 会波及谁');
     ['issues-ui.js', 'workbench.js'].forEach(f => {
       const sb = makeSandbox();
       installCommon(sb);
@@ -5414,7 +5455,7 @@ const releaseTests = [
       let err = null;
       try { loadFile(sb, f); } catch (e) { err = e.message; }
       assert(err && /Bus\.on is not a function/.test(err),
-        f + ' 在同一形态下本就当场抛(它没有那处 catch)——说明这个形态一旦为真,页面塌的不止 release 那一支,实际:' + err);
+        f + ' 在同一形态下当场抛(它没有任何 catch)——说明这个形态一旦为真,页面塌的不止一支,实际:' + err);
     });
   } },
   { name: 'Bus 通配订阅 · headless 侧没有同一张网(release-core.js 零空 catch、零 Bus,降级路径各自点名)', fn() {
@@ -5436,20 +5477,24 @@ const releaseTests = [
     });
     assert(boom.overall !== 'pass' && boom.overall !== 'cond-pass', '判不出来不放行打版本,实际 ' + boom.overall);
   } },
-  { name: 'Bus 通配订阅 · 转发件的全部代价:一条主线事件占 2 格留痕,50 格里真事件只剩一半', fn() {
-    /* W149 把自喂自从 1695 次收到 1 次,但 1 次也不是白转的:转发件与源事件一样进 50 格留痕,
-     * 于是 Agent 的「最近发生了什么」实际窗口对折。这个数登记在此——转发若被摘掉或有人加命名订阅者,
-     * 同轮在这里重算,别让它悄悄漂。 */
+  { name: 'Bus 通配订阅 · 转发件的代价重算:摘掉后一条主线事件占 1 格,release.js 只剩 release.stamped 一个发出点', fn() {
+    /* W181 把转发件的代价登记成「一条主线事件占 2 格、50 格里真事件只剩一半」,并写明
+     * 「转发若被摘掉或有人加命名订阅者,同轮在这里重算,别让它悄悄漂」。W183 把转发摘了,这里就是那一轮重算:
+     * 一条主线事件占 1 格,连发 40 条就是 40 格真事件。留在本条的还有一格上一条判据没有的东西——
+     * release.js 剩下的那个发出点是 release.stamped,它是打版本落定的**真事件**,占一格是留痕该干的活;
+     * 转发件与真事件这条界线目前没有别处钉,再往这个文件里加发出点须先说清订阅者是谁。 */
     const sb = loadRelease('real');
     sb.Bus.emit('shots.batchDone', { brief: '批量出片完成' });
-    assertEq(sb.Bus.recent(50).map(h => h.name).join(','), 'release.dirty,shots.batchDone',
-      '一条主线事件占 2 格(源事件 + 转发件)');
+    assertEq(sb.Bus.recent(50).map(h => h.name).join(','), 'shots.batchDone',
+      '一条主线事件占 1 格(转发回来时这里是 release.dirty,shots.batchDone 两格)');
     const sb2 = loadRelease('real');
     for (let i = 0; i < 40; i++) sb2.Bus.emit('shots.batchDone', { brief: 'b' + i });
     const hist = sb2.Bus.recent(50);
-    assertEq(hist.length, 50, '留痕上限 50 格');
-    assertEq(hist.filter(h => h.name === 'shots.batchDone').length, 25, '连发 40 条主线事件,50 格里真事件只剩 25 条');
-    assertEq(hist.filter(h => h.name === 'release.dirty').length, 25, '另外 25 格是零命名订阅者的转发件');
+    assertEq(hist.length, 40, '连发 40 条主线事件就占 40 格,没有第二份占位(转发件在时这里当场满 50)');
+    assertEq(hist.filter(h => h.name === 'shots.batchDone').length, 40, '40 格全是真事件(转发件在时真事件只剩 25 条)');
+    const code = blankNonCode(fs.readFileSync(path.join(ROOT, 'js/release.js'), 'utf8'), true);
+    assertEq([...code.matchAll(/Bus\.emit\('([^']+)'/g)].map(m => m[1]).join(','), 'release.stamped',
+      'js/release.js 只该在打版本落定时发那一条真事件');
   } },
   /* 打包交付一次只该给用户一个文件。基线在真下载之前先 ZipUtil.download 了一份只装 PLACEHOLDER 空条目的 zip
    * ("先占位触发下载"),于是每次打包实得两个 zip、其中一个是空的——同名同后缀,浏览器还会给第二个加 (1)。 */
@@ -9445,7 +9490,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 569, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 571, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 143, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -9780,7 +9825,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 198;
+    const FLOOR = 199;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
