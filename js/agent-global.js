@@ -71,7 +71,9 @@
       const ex = AC.boardExpert(p, b.key);
       return `- ${b.key}(${b.agent}):${b.focus} · 雇佣专家:${ex ? ex.name : '未雇佣'}`;
     }).join('\n');
-    const sys = `你是意图路由器。以下是短剧创作流水线的各板块及其职责:\n${list}\n`
+    // 人设句取注册表(在调用点现取,浏览器隐式读 Store 覆盖表;模块加载时求值会把覆盖表冻在加载那一刻)
+    const sys = Prompts.get('agent.routeSystem')
+      + `以下是短剧创作流水线的各板块及其职责:\n${list}\n`
       + `判断用户本条消息最想交给哪个板块处理(创作/修改/执行类意图归属对应板块;进度查询/闲聊/跨板块综合问题返回 null)。`
       + `只返回 JSON {"board":"板块key 或 null","reason":"≤20字"},board 只能是以上板块 key 之一或 null。`;
     const recent = (chat || []).slice(-3, -1) // 本条消息已入列,取最近 2 条上下文
