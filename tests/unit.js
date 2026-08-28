@@ -5530,27 +5530,64 @@ const plansTests = [
     assertEq((src.match(/expert\.evolve/g) || []).length, 0, 'js/plans.js 不得写死命令名(人手与否是注册表的元数据)');
     assert(/CmdRegistry\.byName\[[^\]]*\]/.test(src) && /\.manual/.test(src), '人手判据应现取共享元数据的 manual 位');
   } },
-  /* 拦在执行口而不在生成侧:计划步的来路不止 generate 一条(直接写 p.agentPlan、旧计划落库回读都算),
-   * 而真能改坏数据的正是带齐 args 的那些步——只筛生成侧等于只挡住其中最无害的一条。
-   * 这里钉住生成侧那一半没被顺手改掉:命令名单照旧现取 Commands.list(),evolve 仍在名单里、仍拆得出这一步
-   * (四端人手入口一个不减),只是同一份计划交给 runAll 时命令层零下发。 */
-  { name: 'generate:人手命令仍在命令名单里(不从 cmds 里删),拆得出这一步而执行口一律拦下', fn: async () => {
+  /* 生成侧那一道闸:注册表标 manual 的人手命令不写进 steps。执行口那道是总闸(计划步的来路不止 generate
+   * 一条:直接写 p.agentPlan、旧计划落库回读都送得进带齐 args 的步),但只有总闸时计划里照旧会先排出一步
+   * 蒸馏——用户看到的是「排了却跑不成」:点下去只换来一句待人工,LLM 那条路还连 args 都不带(无参误排)。
+   * 挡下不等于静默吞:哪条被挡如实报给用户并指回它自己的入口;命令与四端人手入口一个不减(evolve 仍在册)。
+   * 也不留成"手动勾选"步:那种步 runAll 一路过去就翻成 done 且尾注被清空,等于替用户宣称蒸馏做过了。
+   * 判据是共享元数据的 manual 位、不是命令名字面,故两向各钉一次。 */
+  { name: 'generate:人手命令不进 steps(白名单不点名、模型点名也不收),挡下哪条如实告知不静默吞', fn: async () => {
     const sb = loadPlans();
     sb.Commands.list = () => sb.CmdRegistry.names().map(n => ({ name: n }));
     assert(sb.Commands.list().some(c => c.name === 'expert.evolve'), '前提:evolve 仍在命令名单里(四端人手入口要留)');
+    assertEq(!!sb.CmdRegistry.byName['expert.evolve'].manual, true, '前提:它在共享元数据里标着人手动作');
     sb.Tasks.run = async (opt, fn) => fn();
-    sb.Understanding.chatJSONRobust = async () => ({ title: '收尾沉淀', steps: [
+    let sys = '';
+    // 白名单半 = 「可用领域命令:」到括注前的那一段(括注里的中文对照是固定字面,不是现取的命令表)
+    const white = () => (sys.match(/可用领域命令:([^(]*)/) || ['', ''])[1];
+    const answer = steps => { sb.Understanding.chatJSONRobust = async req => { sys = req.system; return { title: '收尾沉淀', steps }; }; };
+    const mkP = () => ({ id: 'p1', name: '测试剧', subjects: [], episodes: [{ id: 'ep1', title: '第一集', content: '正文', shots: [] }] });
+    answer([
       { label: '智能分镜', cmd: 'episode.generateStoryboard', ep: '第一集' },
       { label: '沉淀导演经验', cmd: 'expert.evolve' },
-    ] });
-    const p = { id: 'p1', name: '测试剧', subjects: [], episodes: [{ id: 'ep1', title: '第一集', content: '正文', shots: [] }] };
+    ]);
+    const p = mkP();
     const plan = await sb.Plans.generate(p, '做完第一集顺便把经验沉淀进人设');
-    assertEq(plan.steps.map(s => s.cmd || 'goto').join(','), 'episode.generateStoryboard,expert.evolve',
-      '生成侧的钳制口径一字未动:注册命令照旧留在计划里');
+    // ① 提示词的可用命令白名单不点名人手命令:不宣称计划能跑一件它不会替用户按下的事
+    assert(!/expert\.evolve/.test(white()), '可用领域命令白名单不该点名人手命令;实际:' + white());
+    assert(/episode\.compose/.test(white()), '别的注册命令照旧在白名单里(拦的是人手动作,不是把白名单清空)');
+    // ② 模型仍点名它时钳制不收下:计划里 0 步蒸馏,也不拿导航步/勾选步顶替
+    assertEq(plan.steps.filter(s => s.cmd === 'expert.evolve').length, 0, '人手命令不许出现在 steps 的 cmd 上');
+    assertEq(plan.steps.map(s => s.cmd || (s.goto ? 'goto' : 'check')).join(','), 'episode.generateStoryboard',
+      '这一步整个不排进计划(留成导航步等于指错地方,留成勾选步会被 runAll 翻成 done);实际:' + JSON.stringify(plan.steps));
+    // ③ 不静默吞:挡下哪条当场报给用户,并指回它自己的手动入口
+    const t = sb.__toasts.find(x => x.includes('专家自进化'));
+    assert(t && t.includes('人手动作') && t.includes('手动入口'),
+      '被挡下的人手动作应点名回报并指回手动入口;实际:' + sb.__toasts.join(' | '));
+    // ④ 执行口那道总闸没被本槽顶掉:同一份计划交给 runAll,命令层照旧只收到能自动跑的那条
     sb.Plans.replace(p, plan);
     await sb.Plans.runAll(p, null);
-    assertEq(sb.__cmdCalls.map(c => c.name).join(','), 'episode.generateStoryboard', 'LLM 规划出来的人手步同样不代跑');
-    assertEq(p.agentPlan.steps[1].status, 'blocked', '它落 blocked 待人工,而不是被自动执行掉');
+    assertEq(sb.__cmdCalls.map(c => c.name).join(','), 'episode.generateStoryboard', '生成侧不排它之外,执行口照旧零下发');
+    // ⑤ 判据就是 manual 那一位:摘掉它,同一条命令立刻按普通命令步排进计划(计划层没有按名字硬编码的第二份)
+    delete sb.CmdRegistry.byName['expert.evolve'].manual;
+    const p1 = mkP();
+    const plan1 = await sb.Plans.generate(p1, '同一个目标');
+    assertEq(plan1.steps.map(s => s.cmd || 'goto').join(','), 'episode.generateStoryboard,expert.evolve',
+      'manual 位是唯一判据:摘掉它这一步就该照旧排进来(拦在这里的不是命令名)');
+    assert(/expert\.evolve/.test(white()), '白名单同样只认那一位:摘掉后它该回到可用命令串里');
+    sb.CmdRegistry.byName['expert.evolve'].manual = true;
+    // ⑥ 反向:换一条命令标上 manual,它同样不进 steps——挡的是「人手动作」这件事
+    sb.CmdRegistry.byName['episode.compose'].manual = true;
+    sb.__toasts.length = 0;
+    answer([
+      { label: '智能分镜', cmd: 'episode.generateStoryboard', ep: '第一集' },
+      { label: '合成成片', cmd: 'episode.compose', ep: '第一集' },
+    ]);
+    const plan2 = await sb.Plans.generate(mkP(), '出片');
+    assertEq(plan2.steps.map(s => s.cmd || 'goto').join(','), 'episode.generateStoryboard', '标了 manual 的命令一律不排进计划');
+    assert(!/episode\.compose/.test(white()), '白名单也随之不点名它');
+    assert(sb.__toasts.some(x => x.includes('合成成片')), '回报应点名当前这条命令的中文名;实际:' + sb.__toasts.join(' | '));
+    delete sb.CmdRegistry.byName['episode.compose'].manual;
   } },
 ];
 
