@@ -224,7 +224,11 @@
       return out;
     },
 
-    /* ---- 模型列表 ---- */
+    /* ---- 模型列表 ----
+     * 取值口径:未过期缓存直接命中(TTL 内不打网),过期或 force 一律现拉;
+     * 拉取失败(未登录/鉴权过期/上游错/超时)如实抛错——不拿陈旧缓存冒充一次成功的拉取,
+     * 否则「测试连接」「刷新模型列表」会在后端已坏时照报绿。下拉表的离线兜底不靠本方法:
+     * getTextModels 自己按 _modelIds → 缓存 → RECOMMENDED 逐级取,拉取抛错时它照常有表可渲。 */
     _loadCachedIds() {
       try {
         const c = JSON.parse(localStorage.getItem(MODELS_CACHE_KEY) || 'null');
@@ -234,8 +238,7 @@
     },
     async listModels(force) {
       if (!force && this._modelIds) return this._modelIds;
-      const cachedRaw = this._loadCachedIds();
-      if (!force && cachedRaw) {
+      if (!force && this._loadCachedIds()) {
         try {
           const c = JSON.parse(localStorage.getItem(MODELS_CACHE_KEY));
           if (Date.now() - c.time < CACHE_TTL) { this._modelIds = c.ids; return c.ids; }
@@ -244,7 +247,7 @@
       const cfg = this.getConfig();
       let ids;
       if (cfg.mode === 'direct') {
-        if (!cfg.directBaseUrl || !cfg.directApiKey) { if (cachedRaw) return cachedRaw; throw new Error('直连模式未配置'); }
+        if (!cfg.directBaseUrl || !cfg.directApiKey) throw new Error('直连模式未配置');
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), 30000);
         let res;
@@ -255,16 +258,16 @@
           });
         } catch (e) {
           clearTimeout(timer);
-          if (e.name === 'AbortError') { if (cachedRaw) return cachedRaw; throw new Error('请求超时,请稍后重试'); }
+          if (e.name === 'AbortError') throw new Error('请求超时,请稍后重试');
           throw e;
         }
         clearTimeout(timer);
-        if (!res.ok) { if (cachedRaw) return cachedRaw; throw new Error('获取模型列表失败(' + res.status + ')'); }
+        if (!res.ok) throw new Error('获取模型列表失败(' + res.status + ')');
         const data = await res.json().catch(() => { throw new Error('模型列表返回内容异常(非 JSON)'); });
         ids = (data.data || []).map(m => m.id).filter(Boolean);
       } else {
         const token = window.Store && Store.getToken();
-        if (!token) { if (cachedRaw) return cachedRaw; throw new Error('未登录后端,无法获取模型列表'); }
+        if (!token) throw new Error('未登录后端,无法获取模型列表');
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), 30000);
         let res;
@@ -272,17 +275,16 @@
           res = await fetch('/api/llm/models', { headers: { 'Authorization': 'Bearer ' + token }, signal: ctrl.signal });
         } catch (e) {
           clearTimeout(timer);
-          if (e.name === 'AbortError') { if (cachedRaw) return cachedRaw; throw new Error('请求超时,请稍后重试'); }
+          if (e.name === 'AbortError') throw new Error('请求超时,请稍后重试');
           throw e;
         }
         clearTimeout(timer);
         if (!res.ok) {
-          if (cachedRaw) return cachedRaw;
           if (res.status === 401) { if (window.U && U.authExpired) U.authExpired(); throw new Error('登录已过期,请重新登录'); }
           throw new Error('获取模型列表失败(' + res.status + '),请确认 node server.js 已启动');
         }
         const j = await res.json().catch(() => null);
-        if (!j || j.code !== 0) { if (cachedRaw) return cachedRaw; throw new Error((j && j.message) || '获取模型列表失败'); }
+        if (!j || j.code !== 0) throw new Error((j && j.message) || '获取模型列表失败');
         ids = (j.data.data || []).map(m => m.id).filter(Boolean);
       }
       ids.sort();
@@ -339,7 +341,7 @@
       const c = API.getConfig();
       host.innerHTML = `
       <div>
-        <div class="hint" style="margin-bottom:12px">默认通过<b>本地后端代理</b>调用大模型(Key 保存在服务端 config.json,不出现在前端);也可切换为自定义直连,使用你自己的模型算力。<b>未配置或连接失败时,所有 AI 功能自动回退到本地模拟/启发式实现。</b></div>
+        <div class="hint" style="margin-bottom:12px">默认通过<b>本地后端代理</b>调用大模型(Key 保存在服务端 config.json,不出现在前端);也可切换为自定义直连,使用你自己的模型算力。<b>离线(未登录/未配置)时 AI 功能回退到本地模拟/启发式实现;在线调用一旦失败如实报错并自动退费,不拿本地结果冒充成功。</b></div>
         <div class="card">
           <label class="field"><span>调用模式</span>
             <div class="model-row">
@@ -377,7 +379,7 @@
             · 真实 LLM 已接入:主体提取、剧本分集、AI分镜师、智能分镜、提示词工具、画布 LLM 节点、漫剧 AI 对白。<br>
             · 代理模式:Key 存于项目根 <b>config.json</b>(不存在则用内置默认值,可自行创建覆盖 baseUrl/apiKey)。<br>
             · AI 生图 / 视频生成:已接入火山引擎真实模型(doubao-seedream-5-0-pro / doubao-seedance-2-0-mini),经服务端 /api/volc 代理调用(Key 存 config.json 的 volcApiKey),失败如实报错并自动退费;仅离线(未登录/后端不可达)时回退占位模拟。<br>
-            · 经服务端代理的 LLM 调用按次计费(1 积分/次,虎鲸对话等咨询类同样计费,失败自动退费);直连模式消耗你自己的 API Key 额度。所有 LLM 调用串行执行,避免触发限流;失败自动回退本地实现。
+            · 经服务端代理的 LLM 调用按次计费(1 积分/次,虎鲸对话等咨询类同样计费,失败自动退费);直连模式消耗你自己的 API Key 额度。所有 LLM 调用串行执行,避免触发限流;在线调用失败如实报错并退费,少数步骤(如一键审片)改用本地结果时会当场告知已回退并退费。
           </div>
         </div>
       </div>`;
