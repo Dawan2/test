@@ -10947,7 +10947,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 218;
+    const FLOOR = 219;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
@@ -13540,15 +13540,17 @@ const memoryTests = [
   { name: '生成三步不写记忆桶(源级双端 + 分支面):六个函数体零 memWrite,自动回流仍只有主线六个闭环', fn() {
     /* 浏览器那一端的行为由上一条真跑钉住;CLI 这一端单测层没有可真跑的引擎(withProject 的 memFeed
      * 位在夹具里就被桩掉了,写没写在那边观测不到),故在此源级点名。两端一起判:一端补上了另一端没补也红。 */
+    /* CLI 三段的收尾取各自的 `\n} };`(不取下一条 `\nEXEC[`):compose 那条与下一条 EXEC 之间还夹着
+     * produce 的两个修订辅助函数,按 EXEC 切会把它们一并圈进来,判的就不是这一步自己了 */
     const SEGS = [
-      ['js/commands.js', path.join(ROOT, 'js', 'commands.js'), "reg('episode.generateVideos'", "\n  reg('", 20],
-      ['js/commands.js', path.join(ROOT, 'js', 'commands.js'), "reg('subject.generateImage'", "\n  reg('", 12],
-      ['js/commands.js', path.join(ROOT, 'js', 'commands.js'), "reg('episode.compose'", "\n  reg('", 8],
-      ['cli.js', path.join(ROOT, 'cli.js'), "EXEC['episode.generateVideos']", '\nEXEC[', 20],
-      ['cli.js', path.join(ROOT, 'cli.js'), "EXEC['subject.generateImage']", '\nEXEC[', 12],
-      ['cli.js', path.join(ROOT, 'cli.js'), "EXEC['episode.compose']", '\nEXEC[', 6],
-      // EXEC['episode.compose'] 只是壳,写回口径在 composeCore 那一份里,一并判
-      ['cli.js', path.join(ROOT, 'cli.js'), 'async function composeCore(', '\nCMD.compose', 15],
+      ['js/commands.js', path.join(ROOT, 'js', 'commands.js'), "reg('episode.generateVideos'", "\n  reg('", 30],
+      ['js/commands.js', path.join(ROOT, 'js', 'commands.js'), "reg('subject.generateImage'", "\n  reg('", 18],
+      ['js/commands.js', path.join(ROOT, 'js', 'commands.js'), "reg('episode.compose'", "\n  reg('", 10],
+      ['cli.js', path.join(ROOT, 'cli.js'), "EXEC['episode.generateVideos']", '\n} };', 40],
+      ['cli.js', path.join(ROOT, 'cli.js'), "EXEC['subject.generateImage']", '\n} };', 25],
+      ['cli.js', path.join(ROOT, 'cli.js'), "EXEC['episode.compose']", '\n} };', 6],
+      // EXEC['episode.compose'] 只是前置闸的壳,九个写回字段在 composeCore 那一份里,一并判
+      ['cli.js', path.join(ROOT, 'cli.js'), 'async function composeCore(', '\nCMD.compose', 24],
     ];
     SEGS.forEach(([rel, abs, head, tail, minLines]) => {
       const src = fs.readFileSync(abs, 'utf8');
