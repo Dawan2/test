@@ -1529,6 +1529,20 @@
           const argNames = (meta.args || []).map(a => a.name);
           Object.keys(st.args || {}).forEach(k => { if (argNames.indexOf(k) < 0) push(s.id, '步骤 ' + (i + 1) + ' 参数不在命令 args:' + k); });
         });
+        /* 人手命令(cmd-registry 的 manual)不许进任何条目的 steps:steps 是 playbook 投影的来源,
+         * 也是计划层与流程模板的取数口,进去就等于把"跑到这一步就该做"写成编排口径。
+         * 逐条目扫而不只扫编排型条目:非编排条目的 steps 今天不投影,但 kinds/pending 一改就投影得出来;
+         * 递归扫嵌套 steps,免得靠多包一层把这一手藏进投影里。 */
+        if (d.CmdRegistry) {
+          (function walk(steps, at) {
+            (steps || []).forEach((st, i) => {
+              const where = at.concat(i + 1).join('.');
+              const meta = d.CmdRegistry.byName[st && st.cmd];
+              if (meta && meta.manual) push(s.id, '步骤 ' + where + ' 是人手命令,不许进 steps:' + st.cmd);
+              if (Array.isArray(st && st.steps)) walk(st.steps, at.concat(i + 1));
+            });
+          })(s.steps, []);
+        }
         /* 已有出口的机制面必须真的拿得出东西;尚无出口的面一律不挂假出口 */
         if (live(s, 'inject') && !s.kb.length && !s.kbBlocks.length) push(s.id, '注入型须引用 KB 条目或压缩块');
         if (live(s, 'check') && !s.checks.length) push(s.id, '校验型须引用已注册校验项');
