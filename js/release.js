@@ -108,11 +108,15 @@
       }
     } catch (e) { gates.push(gate('g3-review', '审片均分', 'warn', '校验异常:' + e.message)); }
 
-    /* G4 过期镜 / G5 未确认 / G6 失败镜 (统一从 Domain.counts 聚合;fix 落到首个受累集并带 shotIds 子集) */
+    /* G4 过期镜 / G5 未确认 / G6 失败镜 (统一从 Domain.counts 聚合;fix 落到首个受累集并带 shotIds 子集)
+     * 三门共用这一次遍历,遍历没跑成时不许拿初值 0 照常印「0 镜 → pass」:那等于在回执上告诉用户
+     * "过期/未确认/失败镜都查过了,一镜不缺",而实际一镜未查(半途抛出更坏——拿半截计数当全量报)。
+     * 判不出来按本模块既有降级纪律如实记 warn,与 G1 同形(模块未加载 / 校验异常各自点名),不抬成 fail。 */
     const agg = { stale: 0, unconfirmed: 0, failed: 0, noSubjectImage: 0 };
     let firstStale = null, firstFailed = null, firstUnconfirmed = null;
-    try {
-      if (typeof Domain !== 'undefined' && Domain.episodeState) {
+    let aggErr = (typeof Domain === 'undefined' || !Domain || !Domain.episodeState) ? 'Domain 模块未加载,无法校验' : null;
+    if (!aggErr) {
+      try {
         eps.forEach(ep => {
           const st = Domain.episodeState(p, ep, online);
           ['stale', 'unconfirmed', 'failed'].forEach(k => { agg[k] += (st.counts && +st.counts[k]) || 0; });
@@ -122,14 +126,20 @@
             firstFailed = { epid: ep.id, shotIds: (ep.shots || []).filter(s => s.video && s.video.status === 'failed').map(s => s.id) };
           if (!firstUnconfirmed && st.counts && +st.counts.unconfirmed) firstUnconfirmed = { epid: ep.id };
         });
-      }
-    } catch (_) {}
-    gates.push(gate('g4-stale', '素材过期镜 = 0', agg.stale ? 'fail' : 'pass', agg.stale + ' 镜素材与当前剧本不一致',
-      agg.stale && firstStale ? { severity: 'mid', fix: { type: 'command', cmd: 'episode.generateVideos', epid: firstStale.epid, shotIds: firstStale.shotIds } } : null));
-    gates.push(gate('g5-unconfirmed', '未确认镜 = 0', agg.unconfirmed ? 'fail' : 'pass', agg.unconfirmed + ' 镜用户未确认最终',
-      agg.unconfirmed && firstUnconfirmed ? { fix: { type: 'nav', hash: '#/project/' + p.id + '/episode/' + firstUnconfirmed.epid } } : null));
-    gates.push(gate('g6-failed', '失败镜 = 0', agg.failed ? 'fail' : 'pass', agg.failed + ' 镜生成失败未处理',
-      agg.failed && firstFailed ? { severity: 'high', fix: { type: 'command', cmd: 'episode.generateVideos', epid: firstFailed.epid, shotIds: firstFailed.shotIds } } : null));
+      } catch (e) { aggErr = '校验异常:' + e.message; }
+    }
+    if (aggErr) {
+      gates.push(gate('g4-stale', '素材过期镜 = 0', 'warn', aggErr));
+      gates.push(gate('g5-unconfirmed', '未确认镜 = 0', 'warn', aggErr));
+      gates.push(gate('g6-failed', '失败镜 = 0', 'warn', aggErr));
+    } else {
+      gates.push(gate('g4-stale', '素材过期镜 = 0', agg.stale ? 'fail' : 'pass', agg.stale + ' 镜素材与当前剧本不一致',
+        agg.stale && firstStale ? { severity: 'mid', fix: { type: 'command', cmd: 'episode.generateVideos', epid: firstStale.epid, shotIds: firstStale.shotIds } } : null));
+      gates.push(gate('g5-unconfirmed', '未确认镜 = 0', agg.unconfirmed ? 'fail' : 'pass', agg.unconfirmed + ' 镜用户未确认最终',
+        agg.unconfirmed && firstUnconfirmed ? { fix: { type: 'nav', hash: '#/project/' + p.id + '/episode/' + firstUnconfirmed.epid } } : null));
+      gates.push(gate('g6-failed', '失败镜 = 0', agg.failed ? 'fail' : 'pass', agg.failed + ' 镜生成失败未处理',
+        agg.failed && firstFailed ? { severity: 'high', fix: { type: 'command', cmd: 'episode.generateVideos', epid: firstFailed.epid, shotIds: firstFailed.shotIds } } : null));
+    }
 
     /* G7 合规命中 (剧本+所有主体+镜头台词/旁白/提示词) */
     try {
