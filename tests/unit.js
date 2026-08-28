@@ -2925,6 +2925,74 @@ const commandsTests = [
     assert(new RegExp(ep.shots.length + ' 镜已出片').test(gen.result.note), '数得对上本集镜数,实际:' + gen.result.note);
     assert(sb.__called.includes('composeVideo'), '合成照做');
   } },
+  { name: 'produce:整趟一步都没跑起来时顶层把子步那句实话提上来(digest 只认顶层 note,子步那句本来没有出口)', fn: async () => {
+    /* 真引擎(produce.js 的 autoSmartReview)+ 真命令层:全定稿且成片已是最新的一集,
+     * 从命令面板点「一键成片」三步各自空跑——引擎一次都没起来(零后台面板零计费),
+     * 而顶层 ok 带着旧成片 url,与"真替你重做了一遍"在用户眼里一模一样。 */
+    const sb = loadProduce();
+    const ep = makeEp({ content: '测试剧本正文', composed: true, composedUrl: '/uploads/gen/old.mp4', composedVia: 'shots', shots: [
+      makeShot(0, { confirm: true, final: true, video: { status: 'done', url: 'u0' } }),
+      makeShot(1, { confirm: true, final: true, video: { status: 'done', url: 'u1' } }),
+    ] });
+    ep.composedSourceRev = ep.contentRev || 0;
+    ep.composedGraphRev = ep.graphRev || 0;
+    ep.composedInputHash = sb.Domain.composedInputHash(ep, false);
+    ep.composedDialogueSig = sb.Domain.composedDialogueSig(ep, false);
+    sb.__proj = { id: 'p1', episodes: [ep] };
+    assert(sb.Domain.epComposedReady(ep, false), '夹具前提:成片得真是最新(合成那一步原地返回旧成片)');
+    const r = await sb.Commands.execute('episode.produce', { pid: 'p1', epid: 'ep1', ui: true });
+    assertEq(r.ok, true, '整集做完了再点一次不该报拦截:' + JSON.stringify(r.error || {}));
+    assertEq(sb.__called.length, 0, '夹具前提:这一趟引擎一次都没起来,实际:' + JSON.stringify(sb.__called));
+    assertEq(sb.__docks.length, 0, '连后台面板都不开——没有引擎提示可依赖');
+    const gen = r.result.steps.find(x => x.step === 'generateVideos');
+    const rv = r.result.steps.find(x => x.step === 'smartReview');
+    assert(gen.result.note && rv.result.note, '夹具前提:生成与审片两步各自留下了"为什么一镜也没跑/没审"');
+    assertEq(r.result.note, gen.result.note, '顶层提的就是子步已有的那一句,不另拼第二句');
+    sb.Commands.digest(r);
+    assertEq(sb.__toasts.length, 1, '不提上来这一趟对用户零句话(digest 只认顶层 note)');
+    assertEq(sb.__toasts[0], r.result.note, '播的就是回执上那一句');
+  } },
+  { name: 'produce:只要有一步真跑到活,顶层就不提子步那句(引擎自己会播,命令层不重复)', fn: async () => {
+    /* 反面两档:提上来的条件是"整趟一步没跑起来",不是"某一步空跑"——
+     * 后者的话每次正常成片都要多弹一条"本集没有待生成的镜头"。 */
+    const sb = loadCommands();
+    cmdCtx(sb, { shots: [
+      makeShot(0, { confirm: true, video: { status: 'none' } }),
+      makeShot(1, { confirm: true, video: { status: 'none' } }),
+    ] });
+    const r = await sb.Commands.execute('episode.produce', { pid: 'p1', epid: 'ep1', ui: true });
+    assertEq(r.ok, true);
+    assert(sb.__called.includes('batchGenVideos'), '夹具前提:这一趟真跑到了镜');
+    assertEq(r.result.note, undefined, '真跑到活就没有"为什么没跑"可说');
+    sb.Commands.digest(r);
+    assertEq(sb.__toasts.length, 0, '跑到活仍归引擎自己播报,命令层不重复');
+    // 半空跑:生成没得跑,但成片过期真合成了一趟——那一步的引擎会说话,顶层不搭第二句
+    const sb2 = loadCommands();
+    cmdCtx(sb2, { shots: [
+      makeShot(0, { confirm: true, video: { status: 'done', url: 'u0' } }),
+      makeShot(1, { confirm: true, video: { status: 'done', url: 'u1' } }),
+    ] });
+    const r2 = await sb2.Commands.execute('episode.produce', { pid: 'p1', epid: 'ep1', ui: true });
+    const gen2 = r2.result.steps.find(x => x.step === 'generateVideos');
+    assert(gen2.result.note, '夹具前提:生成这一步确实空跑并留下了实话');
+    assert(sb2.__called.includes('composeVideo'), '夹具前提:合成这一步真跑了');
+    assertEq(r2.result.note, undefined, '合成真跑了就有引擎提示可依赖,顶层不提子步那句');
+    /* 前两步都空跑、只有合成真跑的那一档(全定稿集的成片过期):合成那一步的引擎自己会说话,
+     * 顶层照样不提——摘掉"成片原地返回"这一格判据的话,这一档会在引擎提示之上再刷一句。 */
+    const sb3 = loadProduce();
+    const ep3 = makeEp({ content: '测试剧本正文', composed: true, composedUrl: '/uploads/gen/old.mp4', composedVia: 'shots', composedInputHash: 'v3:oldstale', shots: [
+      makeShot(0, { confirm: true, final: true, video: { status: 'done', url: 'u0' } }),
+      makeShot(1, { confirm: true, final: true, video: { status: 'done', url: 'u1' } }),
+    ] });
+    sb3.__proj = { id: 'p1', episodes: [ep3] };
+    assert(!sb3.Domain.epComposedReady(ep3, false), '夹具前提:成片得真是过期的(合成那一步真跑)');
+    const r3 = await sb3.Commands.execute('episode.produce', { pid: 'p1', epid: 'ep1', ui: true });
+    const st3 = r3.result.steps;
+    assert(st3.find(x => x.step === 'generateVideos').result.note && st3.find(x => x.step === 'smartReview').result.note,
+      '夹具前提:生成与审片两步都空跑了');
+    assert(sb3.__called.includes('composeVideo'), '夹具前提:合成这一步真跑了');
+    assertEq(r3.result.note, undefined, '整趟不是"一步没跑起来":合成真跑了,顶层不提子步那句');
+  } },
   /* 同一件事在 headless 那一端:CLI 的 exec 是 MCP 与一键成片编排第 4 步共用的出口,
    * 它自己那份前置判定与浏览器命令层各写一份,谁也不替谁作证。 */
   { name: 'CLI exec compose:成片已是最新时不发 ffmpeg 往返(--force / --ratio 点名重来照跑;hujing compose 原语不吃这道闸)', fn: async () => {
@@ -6570,6 +6638,40 @@ const releaseTests = [
     await sb2.Release.execFix(p2, g2, null, () => {});
     assertEq(sb2.__genSubjects.join(','), 'sj1', '跑得到的那位照跑');
     assertEq(sb2.__toasts.length, 0, '真跑到主体就不该多这一条(写成恒播的话这里红)');
+  } },
+  { name: 'G1 一键处置:整趟一步都没跑起来时按钮按下去有回音(编排回执只在顶层播,子步那句本来没有出口)', fn: async () => {
+    /* G1 派的处置是编排命令 `episode.produce`:低分定稿集(审片均分未过线故 status=needs_human)
+     * 三步各自空跑——生成没得跑、可审镜为 0、成片已是最新——引擎一次都没起来,而顶层 ok 带着旧成片 url。
+     * 两句实话都躺在 result.steps 里,digest 只认顶层那一位,基线上这一按连"什么都没发生"都读不到。
+     * 本条走门禁 → execFix → 命令层 → digest 整条链,数的是引擎实收与用户实读。 */
+    const sb = loadReleaseFix();
+    loadFile(sb, 'produce.js'); // 真引擎:可审镜由 autoSmartReview 自己筛(桩不替产品数这一份)
+    const shot = i => ({ id: 'sh' + i, order: i, name: '', plot: 'p', prompt: 'q' + i, camera: '固定镜头', duration: 5,
+      characters: [], scene: '', props: [], confirm: true, final: true, video: { status: 'done', url: 'http://x/v' + i + '.mp4' } });
+    const ep = releaseStaleEp(['fresh', 'fresh']);
+    Object.assign(ep, { shots: [shot(0), shot(1)], contentRev: 1, graphRev: 0,
+      composed: true, composedUrl: '/uploads/gen/old.mp4', composedVia: 'shots', composedSourceRev: 1, composedGraphRev: 0 });
+    ep.composedInputHash = sb.Domain.composedInputHash(ep, false);
+    ep.composedDialogueSig = sb.Domain.composedDialogueSig(ep, false);
+    ep.lastReview = { time: 't', avg: 5, snapshotHash: require('../js/wf-core.js').reviewSnapshotHashOf(ep),
+      sourceRev: 1, graphRev: 0, perShot: [{ shotId: 'sh0', order: 0, score: 5 }] };
+    const p = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [ep] };
+    sb.__proj = p;
+    assertEq(sb.Domain.episodeState(p, ep, false).status, 'needs_human', '夹具前提:这一集因审片不达标没过 G1');
+    assert(sb.Domain.epComposedReady(ep, false), '夹具前提:成片已是最新(合成那一步原地返回)');
+    const g1 = sb.Release.collect(p, { online: false }).gates[0];
+    assertEq(g1.status, 'fail', '夹具前提:G1 得真是未过门');
+    assertEq(g1.fix.cmd, 'episode.produce', '夹具前提:G1 派的处置是一键成片编排');
+    let got = null;
+    await sb.Release.execFix(p, g1, null, r => { got = r; });
+    assertEq(sb.__called.length, 0, '引擎实收 0(这一按本来就跑不动,零计费),实际:' + JSON.stringify(sb.__called));
+    assertEq(sb.__docks.length, 0, '连后台面板都不开——没有引擎提示可依赖');
+    assertEq(got && got.ok, true, '仍是 ok:改判 blocked 会波及计划步与跑批步骤账,不在回执这一面动门槛');
+    assertEq(sb.__toasts.length, 1, '用户须读到恰一条回音(基线这里是 0 条:点完什么都没有)');
+    assertEq(sb.__toasts[0], got.result.note, '播的就是顶层回执上那一句');
+    assert(/一镜也没跑/.test(sb.__toasts[0]), '回音须说清一镜也没跑,实际:' + sb.__toasts[0]);
+    assertEq(sb.Release.collect(p, { online: false }).gates[0].status, 'fail',
+      '门禁重收按实况走(低分定稿集这一按本就跑不动):本条只补回音,一个门槛没动');
   } },
   { name: 'G2 问题清零:真实 Issues 数组契约——脏项目 fail 挂问题中心导航,干净项目 pass', fn() {
     const sb = loadRelease();
@@ -11691,7 +11793,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 649, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 652, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 147, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 109, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -12026,7 +12128,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 243;
+    const FLOOR = 244;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接

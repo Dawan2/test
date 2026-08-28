@@ -396,7 +396,14 @@
     onStep('合成成片');
     const c = push('compose', await execute('episode.compose', sub));
     if (!c.ok) return Object.assign({ ok: false, status: c.status, error: c.error, result: { steps } }, { cost: cost(), next: nextOf(p, ep) });
-    return Object.assign(ok({ steps, url: c.result.url }), { cost: cost(), next: nextOf(p, ep) });
+    /* 整趟一步都没跑起来时(生成/审片各自带「一镜也没跑/没审」的实话、合成原地返回旧成片),
+     * 把子步那一句提到顶层:digest 只认顶层 result.note,子步那两句没有出口——顶层 ok + url 与
+     * 「真重做了一遍」在用户眼里一模一样,而这一趟引擎一次都没起来(零后台面板零提示零计费)。
+     * 提的就是子步已有的那一句,不另拼第二句;只要有一步真跑到了活,仍归引擎自己播报,顶层不加句。 */
+    const out = ok({ steps, url: c.result.url });
+    const idle = c.result.fresh && steps.every(x => x.step === 'compose' || (x.result && x.result.note));
+    if (idle) out.result.note = steps.find(x => x.result && x.result.note).result.note;
+    return Object.assign(out, { cost: cost(), next: nextOf(p, ep) });
   });
 
   /* ---- 计费计量:Store.credits 前后差值(本地口径,含子调用全部扣费与退费回补) ---- */
