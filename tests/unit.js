@@ -4118,6 +4118,78 @@ function assertDocNum(rel, re, expect, label) {
   assertEq(got.join(','), got.map(() => expect).join(','),
     label + ':' + rel + ' 与实测不符(实测 ' + expect + ',文档 ' + got.join('/') + ')');
 }
+/* 把注释/字符串/模板串/正则整段抹成等长空白(换行与字符偏移原样保留),
+ * 抹完只剩代码骨架,括号配对才点得准;供下面的 report 外层块链还原用。 */
+function blankNonCode(src) {
+  const out = src.split('');
+  const wipe = (a, b) => { for (let i = a; i < b && i < out.length; i++) if (out[i] !== '\n') out[i] = ' '; };
+  let i = 0, prevCh = '', prevWord = '';
+  /* 除号还是正则开头:看前一个有意义字符/关键词 */
+  const reStart = () => !prevCh || /[({[,;:=!&|?+\-*%~^<>]/.test(prevCh)
+    || /(?:^|[^\w$])(?:return|typeof|case|in|of|new|delete|do|else|void|instanceof|yield|await)$/.test(prevWord);
+  while (i < src.length) {
+    const c = src[i];
+    if (c === '/' && src[i + 1] === '/') { const j = src.indexOf('\n', i); wipe(i, j < 0 ? src.length : j); i = j < 0 ? src.length : j; continue; }
+    if (c === '/' && src[i + 1] === '*') { const j = src.indexOf('*/', i + 2); const e = j < 0 ? src.length : j + 2; wipe(i, e); i = e; continue; }
+    if (c === '\'' || c === '"') {
+      let j = i + 1;
+      while (j < src.length && src[j] !== c) j += src[j] === '\\' ? 2 : 1;
+      wipe(i, j + 1); i = j + 1; prevCh = 'x'; prevWord = 'x'; continue;
+    }
+    if (c === '`') { // 模板串:${} 里可能再嵌反引号,按插值深度找收尾
+      let j = i + 1, depth = 0;
+      while (j < src.length) {
+        if (src[j] === '\\') { j += 2; continue; }
+        if (src[j] === '$' && src[j + 1] === '{') { depth++; j += 2; continue; }
+        if (depth && src[j] === '}') { depth--; j++; continue; }
+        if (!depth && src[j] === '`') break;
+        j++;
+      }
+      wipe(i, j + 1); i = j + 1; prevCh = 'x'; prevWord = 'x'; continue;
+    }
+    if (c === '/' && reStart()) {
+      let j = i + 1, inClass = false, closed = false;
+      while (j < src.length && src[j] !== '\n') {
+        if (src[j] === '\\') { j += 2; continue; }
+        if (src[j] === '[') inClass = true;
+        else if (src[j] === ']') inClass = false;
+        else if (src[j] === '/' && !inClass) { closed = true; break; }
+        j++;
+      }
+      if (closed) {
+        while (/[dgimsuvy]/.test(src[j + 1] || '')) j++;
+        wipe(i, j + 1); i = j + 1; prevCh = 'x'; prevWord = 'x'; continue;
+      }
+    }
+    if (/\S/.test(c)) { prevCh = c; prevWord = /[\w$]/.test(c) ? prevWord + c : ''; }
+    i++;
+  }
+  return out.join('');
+}
+/* 还原套件里每条 report(...) 调用的外层块链:逐字符配对括号,取栈上每个未闭合
+ * 开括号所在行的行首至该括号那段原文(「块头」)。抹码后括号必须净配平,配不平
+ * 说明扫描失准,直接抛错而不是拿半截栈静默放行。 */
+function reportBlockHeads(rel) {
+  const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+  const code = blankNonCode(src);
+  const stack = [], found = [];
+  let line = 1;
+  for (let i = 0; i < code.length; i++) {
+    const c = code[i];
+    if (c === '\n') { line++; continue; }
+    if (code.startsWith('report(', i) && !/[\w$.]/.test(code[i - 1] || '') && !/function\s+$/.test(code.slice(Math.max(0, i - 12), i))) {
+      found.push({ line, heads: stack.map(pos => src.slice(src.lastIndexOf('\n', pos) + 1, pos + 1)) });
+    }
+    if (c === '{' || c === '(' || c === '[') stack.push(i);
+    else if (c === '}' || c === ')' || c === ']') {
+      assert(stack.length, rel + ':第 ' + line + ' 行括号配对失衡(抹码扫描失准,本断言不可信)');
+      stack.pop();
+    }
+  }
+  assertEq(stack.length, 0, rel + ':文件末尾仍有未闭合括号(抹码扫描失准,本断言不可信)');
+  assert(found.length > 0, rel + ':点不到 report(...) 调用');
+  return found;
+}
 const contractTests = [
   { name: 'Issues.collect 返回数组(发布门 G2 的消费契约)', fn() {
     const sb = loadContract();
@@ -6749,6 +6821,24 @@ action 二选一:
       assertDocNum('README.md', docRe, lines, label + '用例数');
     });
   } },
+  { name: '集成/冒烟 report(...) 不许落在循环/迭代回调里(多行包法绕得过「独立成行」那条)', fn() {
+    /* 上一条钉的是"每条 report 独立成行",可它只拦得住单行写法:把一条 report 换行包进
+     *   ['a', 'b'].forEach(v => {
+     *     report('名字', ...);
+     *   });
+     * 行首点数、调用数、用例名字面一个都不变,实跑却翻成两条——静态数当场小于实跑数,
+     * 而 README 对的是套件自报的实跑数,两边一起失真还是全绿。故这里换个判据:
+     * 按括号配对还原每条 report 的外层块链,链上任一层是循环或迭代回调就算红。
+     * 合规写法只应嵌在 async function main() { 与就地开的裸 { } 分节块里。 */
+    const LOOP = /(?:\.\s*(?:forEach|map|filter|some|every|find|findIndex|flatMap|reduce|reduceRight|sort)\s*\(|(?:^|[^\w$])(?:for|while)\s*\(|(?:^|[^\w$])do\s*\{)/;
+    [['tests/integration.js', '集成测试'], ['tests/cli.smoke.js', 'CLI 冒烟']].forEach(([rel, label]) => {
+      const bad = [];
+      reportBlockHeads(rel).forEach(({ line, heads }) => {
+        heads.filter(h => LOOP.test(h)).forEach(h => bad.push(rel + ':' + line + ' 外层「' + h.trim() + '」'));
+      });
+      assertEq(bad.join(' / '), '', label + ':report(...) 不得写在循环/迭代回调体内(一行会跑出多条,静态点数就代表不了实跑条数)');
+    });
+  } },
   { name: '集成/冒烟用例名各自唯一:名集大小恰等于 report(...) 登记行数(与单元那条同形)', fn() {
     /* 上一条钉的是"条数",这一条钉的是"不同名字数":两个数分开钉才拦得住重名。
      * 这两个套件跑不进单测,取证一直靠"把两侧用例名成集双向比对证明没删测",而一对重名会让集合口径
@@ -6845,7 +6935,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 134;
+    const FLOOR = 135;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
