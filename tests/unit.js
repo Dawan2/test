@@ -3701,6 +3701,30 @@ const commandsTests = [
     assertEq(cb.p.subjects.filter(s => s.image).length, 3, '浏览器那一端三位各得一张:' + imgs(cb.p.subjects));
     assertEq(cb.p.subjects.map(s => !!s.image).join(','), subs.map(s => !!s.image).join(','),
       '两端得落到同一个结果上(哪几位到手图逐位相同),浏览器:' + imgs(cb.p.subjects) + ' / CLI:' + imgs(subs));
+    /* ⑤ 并发改表(这一趟跑到一半别处把主体删了):序数越界得退回原行为,不许抛 TypeError 把整趟带走;
+     * 同 id 一位都不剩时照旧走 findSubject 那个「主体不存在」出口,如实进 failed 而不是静默丢产物。 */
+    const drop = async (keep) => {
+      const sbX = loadCli();
+      const fxX = cliDisk(sbX);
+      fxX.disk.projects[0].subjects = dupSubs();
+      sbX.__imgs = [];
+      sbX.genImage = async () => { sbX.__imgs.push(1); return { url: '/uploads/img/d' + sbX.__imgs.length + '.png' }; };
+      const origWp = sbX.withProject;
+      let round = 0;
+      sbX.withProject = async (pid, flags, fn) => {
+        if (++round === 3) fxX.disk.projects[0].subjects = fxX.disk.projects[0].subjects.filter(keep); // 末轮开跑前别处删了主体
+        return origWp(pid, flags, fn);
+      };
+      return { r: await sbX.EXEC['subject.generateImage'].run({ pid: 'p1', subjectIds: ['dup'] }, {}), subs: fxX.disk.projects[0].subjects };
+    };
+    const gone1 = await drop(s => s.name !== 'D-第三位'); // 只删末位:序数 3 越界
+    assertEq(gone1.r.result.failed.length, 0,
+      '序数越界得退回首位(原行为),不许让 undefined.prompt 把这一趟炸成失败:' + JSON.stringify(gone1.r.result.failed));
+    assertEq(gone1.subs.filter(s => s.image).length, 2, '剩下的两位照旧各有一张图:' + imgs(gone1.subs));
+    const gone2 = await drop(s => s.id !== 'dup'); // 同 id 一位不剩
+    assertEq(gone2.r.result.failed.length, 1, '同 id 一位不剩时这一轮如实失败(退费口在 Tasks/服务端),不许静默丢产物');
+    assert(/主体不存在/.test(gone2.r.result.failed[0].error),
+      '走的仍是 findSubject 那个出口,不另造第二个错误说法:' + JSON.stringify(gone2.r.result.failed[0]));
   } },
   { name: 'CLI exec produce:点名的轮次钳过即落库,下一轮不带入参跑的就是这个次数(单独调 smartReview 那一端仍不写库)', fn: async () => {
     /* 此前这一端只读不写:`exec episode.produce --args '{"maxRetry":4}'` 当轮真跑 4 轮,
