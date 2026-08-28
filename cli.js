@@ -1030,9 +1030,14 @@ EXEC['episode.generateVideos'] = { needs: ['p', 'ep'], meter: true, run: async (
   if (args.confirmAll) {
     await withProject(args.pid, f, proj => { findEp(proj, args.epid).shots.forEach(s => { if (!s.final) s.confirm = true; }); });
   }
-  const { ep } = await execCtx(args, f); // confirmAll 写回后重取最新快照
+  const { p, ep } = await execCtx(args, f); // confirmAll 写回后重取最新快照
   let pend = (ep.shots || []).filter(s => !s.final && !Domain.shotVideoReady(s, true));
-  if (Array.isArray(args.shotIds) && args.shotIds.length) { const ids = new Set(args.shotIds); pend = pend.filter(s => ids.has(s.id)); }
+  if (Array.isArray(args.shotIds) && args.shotIds.length) {
+    // 与 js/commands.js 同口径:过期镜是 done 镜,被「未就绪」筛掉,显式子集是它唯一的出口;终稿锁不放
+    const ids = new Set(args.shotIds);
+    pend = (ep.shots || []).filter(s => !s.final && ids.has(s.id)
+      && (!Domain.shotVideoReady(s, true) || Domain.shotVideoStale(p, s, true)));
+  }
   const skipped = args.confirmAll ? [] : pend.filter(s => !s.confirm).map(s => ({ shotId: s.id, order: s.order + 1, reason: '未确认' }));
   const todo = pend.filter(s => args.confirmAll || s.confirm);
   if (!todo.length) {
