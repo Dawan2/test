@@ -4683,6 +4683,39 @@ const contractTests = [
     Skills.list().filter(s => s.id !== idx.id).forEach(s =>
       assert(s.kb.length < kbKeys.length, s.id + ' 不应整库登记 KB 条目(全库只在索引宿主登记一次)'));
   } },
+  { name: 'skill 索引缺口键集:gaps() 20 键逐个点名并与两份缺口图谱双向对账(摘键/改名先红在本条)', fn() {
+    const Skills = require('../js/skills.js');
+    /* 键集此前只有几处「键数 20」的顺带断言,散在源级人设/记账对齐的用例里:数得出少一个,却看不出
+     * 改名(摘掉 G-03 另登记一个 G-99 照样 20 键全绿),也没有一条把键集本身点出来——实测摘掉 S-06
+     * 换成 S-99 时 unit+integration 全绿。本条把键集补成硬断言:逐字点名 + 与图谱双向对账。 */
+    const keys = Object.keys(Skills.gaps()).sort();
+    assertEq(keys.join(','), 'G-01,G-02,G-03,G-04,G-05,G-07,G-08,G-09,G-10,G-11,G-12,G-13,G-14,G-15,S-01,S-03,S-04,S-05,S-06,S-07',
+      'gaps() 键集应逐字对齐:摘键、改名、新登记编号都须先在本条交账(键数对得上不等于键集没变)');
+    // 键集只收图谱已登记的编号:G-xx 取主线缺口图谱、S-xx 取短名单新登记表,编号来源两份文档各一份
+    const rows = (rel, re) => [...fs.readFileSync(path.join(ROOT, rel), 'utf8').matchAll(re)].map(m => m[1]);
+    const mapped = rows('docs/skills-wave/w1-pipeline-skill-map.md', /^\| (G-\d\d) \|/gm)
+      .concat(rows('docs/skills-wave/w1-selected-skills.md', /^\| (S-\d\d) \|/gm));
+    assert(mapped.length > keys.length, '两份缺口图谱应读得到编号行(读空则本条对账失效)');
+    assertEq(keys.filter(k => !mapped.includes(k)).join(','), '', 'gaps() 键集不得出现图谱未登记的编号(错字或私自新编号)');
+    /* 反向:图谱登记过而键集里没有的,必须是这里明写的闭合/待登记项。摘键的唯一路径是缺口整条闭合
+     * (关联能力一条不剩,如 G-06 的注入半与校验半都落地、S-02 的条目进 KB 后判据合一);
+     * 「某一面落地了」不是摘键的理由——目录口径是落地一面不摘标记。 */
+    const off = {
+      'G-06': '注入半与校验半两面都落地,关联能力清账',
+      'S-02': '自撰条目进 KB.SECTIONS 后注入与校验共用一份判据,清账',
+      'S-08': '发布后回写上游仍待登记,短名单里还没有关联能力',
+    };
+    assertEq(mapped.filter(g => !keys.includes(g) && !off[g]).join(','), '',
+      'gaps() 键集少了图谱已登记的编号:摘键须在本条写明闭合理由(落地一面不摘键)');
+    assertEq(Object.keys(off).filter(g => keys.includes(g)).join(','), '', '已声明闭合/待登记的编号不应又出现在键集里(闭合理由过期即红)');
+    /* 落地不摘键的三处实况:这三条各自都有一面已落地(G-03 审片升主线一等步骤、G-11 结论按板块回流、
+     * G-13 内联提示词逐处收编),关联能力已无 pending,而键与关联索引照旧在案。 */
+    ['G-03', 'G-11', 'G-13'].forEach(g => {
+      assert(keys.includes(g), 'gaps() 键集须仍含 ' + g + '(该缺口只落地了一面,未闭合)');
+      assert(Skills.gaps()[g].length && Skills.gaps()[g].every(id => !Skills.byId(id).pending.length),
+        g + ' 的关联能力已无 pending 而键仍在案——清 pending / 落地一面都不是摘键的理由');
+    });
+  } },
   { name: 'skill 索引不挂假出口:未实现的校验/编排面既不登记也不产出结果', fn() {
     const Skills = require('../js/skills.js');
     const list = Skills.list();
@@ -7135,7 +7168,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 492, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 493, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 130, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -7271,7 +7304,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 149;
+    const FLOOR = 150;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
