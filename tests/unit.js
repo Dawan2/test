@@ -1587,6 +1587,28 @@ const produceTests = [
     const r = await sb.SB.autoSmartReview(p, ep, null, ep.shots, true);
     assertEq(r.pass, 0); assertEq(r.retry, 1); assertEq(r.manual, 1, '超限应转人工');
   } },
+  { name: 'autoSmartReview:收敛次数取 Domain 单源——越界配置钳到上限 5 轮', fn: async () => {
+    const sb = loadProduce();
+    const p = { id: 'p1' };
+    const ep = makeEp({ shots: [makeShot(0)], sbConfig: { maxRetry: 99 } }); // 手改/旧数据写进来的越界值
+    sb.__reviewSeq = { sh0: [5, 5, 5, 5, 5, 5, 5] };
+    const r = await sb.SB.autoSmartReview(p, ep, null, ep.shots, true);
+    assertEq(r.retry, sb.Domain.REVISE_RETRY_MAX, '重抽次数应止于登记上限,不按配置里的越界值烧钱');
+    assertEq(r.manual, 1, '超限转人工');
+  } },
+  { name: 'autoSmartReview:小数轮次截整后超限仍如实转人工(此前会既不达标也不登记待人工)', fn: async () => {
+    /* 收敛次数没有单源时,两端把配置值原样带进循环条件:maxRetry=1.9 时循环在 attempt=2 处结束,
+     * 而"转人工"分支只在 attempt === maxRetry 那一轮走得到,于是该镜既没达标也没进待人工计数——
+     * 质量闸门按 manual > 0 判,拿到 0 就放行了。轮次截整后这一路不复存在。 */
+    const sb = loadProduce();
+    const p = { id: 'p1' };
+    const ep = makeEp({ shots: [makeShot(0)], sbConfig: { maxRetry: 1.9 } });
+    sb.__reviewSeq = { sh0: [5, 5, 5] };
+    const r = await sb.SB.autoSmartReview(p, ep, null, ep.shots, true);
+    assertEq(r.pass, 0);
+    assertEq(r.retry, 1, '1.9 轮按 1 轮算');
+    assertEq(r.manual, 1, '超限必须落到待人工计数上(质量闸门据此阻断合成)');
+  } },
   { name: 'autoSmartReview:quiet 不建 dock;非 quiet 建 dock', fn: async () => {
     const sb = loadProduce();
     const p = { id: 'p1' };
@@ -1948,6 +1970,18 @@ const commandsTests = [
     r = await sb.Commands.execute('episode.produce', { pid: 'p1', epid: 'ep1', riskyCompose: true });
     assertEq(r.ok, true, 'riskyCompose 显式放行应完成合成');
     assert(sb.__called.includes('composeVideo'), '放行后应调合成');
+  } },
+  { name: 'produce:收敛次数写回分集配置时按 Domain 单源钳(入参优先于 sbConfig,越界不落库)', fn: async () => {
+    const sb = loadCommands();
+    const { ep } = cmdCtx(sb);
+    ep.sbConfig = { maxRetry: 3 };
+    await sb.Commands.execute('episode.produce', { pid: 'p1', epid: 'ep1', maxRetry: 9 });
+    assertEq(ep.sbConfig.maxRetry, sb.Domain.REVISE_RETRY_MAX, '越界入参应钳到登记上限再落库');
+    await sb.Commands.execute('episode.produce', { pid: 'p1', epid: 'ep1' });
+    assertEq(ep.sbConfig.maxRetry, 5, '入参缺位时沿用分集配置里那份(此刻已是钳过的 5)');
+    ep.sbConfig.maxRetry = 0;
+    await sb.Commands.execute('episode.produce', { pid: 'p1', epid: 'ep1' });
+    assertEq(ep.sbConfig.maxRetry, sb.Domain.REVISE_RETRY_DEFAULT, '两处都读不出轮次才回缺省');
   } },
   { name: 'produce:审片关闭 → 步骤如实 skipped 且不静默消失,合成照常', fn: async () => {
     const sb = loadCommands();
@@ -3023,6 +3057,26 @@ const domainTests = [
     ep.lastReview.snapshotHash = sb.Domain.reviewSnapshotHashOf(ep);
     ep.contentRev = 1;
     assertEq(sb.Domain.reviseTargets(ep).length, 0, '剧本修订后同样判旧回空(与 reviewStaleByScript 同一份判定)');
+  } },
+  { name: 'reviseRetryLimit:收敛次数单源——缺省 2、越界向内钳、小数截整、候选值按优先级择先', fn: () => {
+    const sb = loadDomain();
+    const D = sb.Domain;
+    assertEq(D.REVISE_RETRY_MIN, 1); assertEq(D.REVISE_RETRY_MAX, 5); assertEq(D.REVISE_RETRY_DEFAULT, 2);
+    assertEq(D.reviseRetryOptions().join(','), '1,2,3,4,5', '参数面板的次数选项由区间派生');
+    // 读不出来一律回缺省(与两端此前各自 `|| 2` 那一步同口径:缺省/空/0/非数字)
+    [undefined, null, '', 0, 'abc', {}].forEach(v =>
+      assertEq(D.reviseRetryLimit(v), 2, JSON.stringify(v) + ' 读不出轮次应回缺省 2'));
+    assertEq(D.reviseRetryLimit(), 2, '一个候选都不给时回缺省');
+    // 越界向内钳(与两端此前各自的 Math.max(1, Math.min(5, …)) 逐值同值)
+    assertEq(D.reviseRetryLimit(9), 5); assertEq(D.reviseRetryLimit(-2), 1);
+    assertEq(D.reviseRetryLimit(0.5), 1, '小于一轮但非零:按下限一轮算');
+    assertEq(D.reviseRetryLimit('3'), 3, '字符串数字照读(CLI --args 与 dataset 都可能给字符串)');
+    // 小数截整是本槽新定的口径:轮次是整数,2.7 轮没有意义(截整前两端各自把它原样带进循环条件)
+    assertEq(D.reviseRetryLimit(2.7), 2, '小数轮次向下截整');
+    // 候选值按优先级择先:命令入参先于分集配置,前者读不出来才看后者
+    assertEq(D.reviseRetryLimit(4, 1), 4, '第一个能读成非零数的候选胜出');
+    assertEq(D.reviseRetryLimit(undefined, 4), 4, '入参缺位时落到分集配置那一档');
+    assertEq(D.reviseRetryLimit(0, null), 2, '候选全读不出来才回缺省');
   } },
   { name: 'understandingStale 挂 graphRev(二十三轮):无字段保持原语义/失配判旧/对齐恢复', fn: () => {
     const sb = loadDomain();
@@ -4939,56 +4993,72 @@ const contractTests = [
       'cli.js produce 不许把回执里的 lowShots 直接当作下一步 shotIds 的名单(它与分镜表漂移时会重抽错镜)');
     assert(/shotIds: fix\.revised/.test(cli) && /reviseTargets\(args, f\)/.test(cli), 'produce 的重抽/复审子集应源自派生出来的重抽面');
   } },
-  { name: 'SK-25 仍欠段护栏(G-03 余面):段在不在与段里点名的两处余量对照源码,抹段或写成已清都红', fn() {
-    /* 注册表八条「仍欠」段里,此前只有 SK-25 这条无人护:整段抹掉、或改写成「收敛口径已合成一份」,
-     * 全套一条不红——G-03 只落了重抽面那一面(W131),余下两面被静默记成已清也没有判据接得住。
-     * 与 SK-26 那条同形立两向:段与段里的锚点钉住"少写"(抹段/谎称已清),
-     * 反向逐处对照源码钉住"多欠"(哪天余面真收编了,不同步改记账当场红)。 */
+  { name: 'SK-25 记账两向对账(G-03):收敛面已落地要记进已落地那半、形态面仍欠不许抹,两半互串都红', fn() {
+    /* W136 给这条立的护栏钉的是"两个余面都还欠着";本槽收敛面落地(Domain.reviseRetryLimit 双端单源),
+     * 护栏按新实况翻面重写而不是删掉——两向仍在,只是各自钉的实况换了一面:
+     * 前半钉段与锚点(收敛面须挪进已落地那半、形态面须留在仍欠段、两半不许互串、不许宣布 G-03 清账),
+     * 后半反向对照源码(收敛口径此刻确实只在 domain.js 一处且各消费点都读它;形态面此刻确实还不同构)。
+     * 哪天形态面也收编了,红的是这里,要改的是仍欠段那句话,不是把断言删掉。 */
     const Skills = require('../js/skills.js');
+    const Domain = require('../js/domain.js');
     const sk25 = Skills.byId('review.reviseLoop');
     assert(sk25, 'SK-25 review.reviseLoop 应在注册表里');
     assert(sk25.gaps.includes('G-03'), 'SK-25 应仍挂 G-03 标记(落地一面不摘键)');
     assert((Skills.gaps()['G-03'] || []).includes('review.reviseLoop'), 'G-03 的关联索引应仍点着 SK-25');
-    assert(sk25.note.includes('仍欠(G-03)'), 'SK-25 的 note 须仍有「仍欠(G-03)」段:G-03 只落了重抽面那一面');
-    const owed = sk25.note.split('仍欠(G-03)').slice(1).join('仍欠(G-03)');
-    // 余面一:复审收敛次数至今没有登记口径
-    assert(owed.includes('收敛次数') && owed.includes('maxRetry'),
-      'SK-25 的仍欠段须点名收敛次数(maxRetry)这一面仍无登记口径');
-    // 余面二:两端闭环形态不同构(浏览器逐镜循环 vs CLI 整集轮次)
+    assert(sk25.note.includes('仍欠(G-03)'), 'SK-25 的 note 须仍有「仍欠(G-03)」段:G-03 的形态面还没落地');
+    const iOwed = sk25.note.indexOf('仍欠(G-03)');
+    const landed = sk25.note.slice(0, iOwed);
+    const owed = sk25.note.slice(iOwed);
+    // 已落地那半:两面各要"名词 + 源码标识符"成对(单锚点太容易被一句改写绕开)
+    [['重抽面', 'Domain.reviseTargets'], ['收敛次数', 'Domain.reviseRetryLimit']].forEach(([n, id]) =>
+      assert(landed.includes(n) && landed.includes(id),
+        'G-03 已落地那半须点名 ' + n + '(并给出源码标识符 ' + id + ')'));
+    // 仍欠段:只剩形态面;已交账的三处一处都不许挤回来(与谎称已清同属记账失真,方向相反)
     assert(owed.includes('autoSmartReview') && owed.includes('逐镜'),
       'SK-25 的仍欠段须点名浏览器逐镜重试与 CLI 整集分轮不同构这一面');
-    // 已交账那半不许挤进仍欠段(与谎称已清同属记账失真,只是方向相反)
-    ['Domain.reviseTargets', 'WfCore.reviseSubset'].forEach(k =>
-      assert(!owed.includes(k), '重抽面已落地,不许挤进仍欠段:' + k));
+    ['Domain.reviseTargets', 'WfCore.reviseSubset', 'reviseRetryLimit'].forEach(k =>
+      assert(!owed.includes(k), '已落地的面不许挤进仍欠段:' + k));
     assert(!/G-03[^。;]{0,24}(清账|已闭合|两面到此|全部落地)/.test(sk25.note),
-      'G-03 只落了重抽面一面,note 不许写成已清账');
-    /* 反向一:收敛次数此刻确实是两端各按自己的缺省值就地钳,双端单源层里没有它的登记口径。
-     * 同一份 domain.js 里达标线有 REVIEW_MIN 单源、收敛次数一个字都没有,正是这一面还欠着的实据。 */
+      'G-03 的形态面仍欠,note 不许写成已清账');
     const cli25 = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
     const prod = fs.readFileSync(path.join(ROOT, 'js', 'produce.js'), 'utf8');
+    const cmds = fs.readFileSync(path.join(ROOT, 'js', 'commands.js'), 'utf8');
+    const sbSrc = fs.readFileSync(path.join(ROOT, 'js', 'storyboard.js'), 'utf8');
     const dom = fs.readFileSync(path.join(ROOT, 'js', 'domain.js'), 'utf8');
-    assert(/Math\.max\(1, Math\.min\(5, \+args\.maxRetry \|\| 2\)\)/.test(cli25),
-      'CLI produce 此刻仍就地钳自己那份 maxRetry 缺省(收敛口径下沉双端单源后须同步改 SK-25 的仍欠段)');
-    assert(/Math\.max\(1, Math\.min\(5, ep\.sbConfig\.maxRetry \|\| 2\)\)/.test(prod),
-      '浏览器闭环此刻仍就地钳自己那份 maxRetry 缺省(同上)');
-    assert(dom.includes('D.REVIEW_MIN = 7;'), '达标线仍在 Domain 单源(对照项:收敛次数没有这样一份登记)');
-    /* 两向都取:按名字(大小写一概不论,`reviseMaxRetry` 这样的驼峰改写照旧算)与按形状
-     * (1-5 那道钳位),免得改个名就绕过去——两端此刻钳的正是同一个 1..5 区间。 */
-    ['domain.js', 'wf-core.js'].forEach(f => {
-      const s = fs.readFileSync(path.join(ROOT, 'js', f), 'utf8');
-      assertEq((s.match(/maxretry/gi) || []).length, 0,
-        'js/' + f + ' 此刻还没有收敛次数的登记口径(收进双端单源后须同步改 SK-25 的仍欠段)');
-      assertEq((s.match(/Math\.min\(5,/g) || []).length, 0,
-        'js/' + f + ' 此刻也没有那道 1-5 钳位(换个名字把收敛次数收进来同样红)');
+    /* 反向一:收敛次数此刻确实收在 domain.js 一处——那道 1..5 钳位只此一份,
+     * 两端闭环(CLI produce / 浏览器 autoSmartReview)、命令层与参数配置面板一律现取。
+     * 记账说"三处不再各钳一份"就得真的一处都不剩:再就地钳一道或兜一个 || 缺省都红在这里。 */
+    assertEq(typeof Domain.reviseRetryLimit, 'function', 'Domain 应导出收敛次数单源 reviseRetryLimit');
+    assertEq((dom.match(/Math\.min\(D\.REVISE_RETRY_MAX,/g) || []).length, 1,
+      '1-5 那道钳位在 js/domain.js 里应只此一处');
+    assert(dom.includes('D.REVIEW_MIN = 7;'),
+      '达标线仍在 Domain 单源(与收敛次数并排:修订闭环的两个阈值口径同处登记)');
+    [['cli.js', cli25], ['js/produce.js', prod], ['js/commands.js', cmds], ['js/storyboard.js', sbSrc]].forEach(([rel, s]) => {
+      assert(/Domain\.(reviseRetryLimit|REVISE_RETRY_|reviseRetryOptions)/.test(s),
+        rel + ' 的收敛次数应现取 Domain 那一份(改回就地钳即红)');
+      assertEq((s.match(/Math\.min\(5,/g) || []).length, 0, rel + ' 不得再就地钳一份 1-5');
+      assertEq((s.match(/maxRetry\s*\|\|\s*\d/g) || []).length, 0, rel + ' 不得再就地兜一份 maxRetry 缺省值');
     });
-    /* 反向二:两端闭环形态此刻确实不同构——浏览器把重试循环嵌在逐镜循环里、整集重抽面派生一处不引,
-     * CLI 是整集轮次循环且每轮现取实况派生子集。哪天浏览器改走整集子集重抽,这三句先红。 */
+    // 跑批模板只放低三档(UI 取子集不是另立口径):档位须落在登记区间内且给得出缺省档
+    const chips = ((prod.match(/\[([\d, ]+)\]\.map\(n => .{0,120}data-mr/) || [])[1] || '')
+      .split(',').map(x => +x.trim()).filter(n => n);
+    assert(chips.length, '跑批模板的重抽次数档位应仍在');
+    chips.forEach(n => assert(Domain.reviseRetryOptions().includes(n),
+      '跑批模板档位 ' + n + ' 超出登记区间(UI 可取子集,不可越界)'));
+    assert(chips.includes(Domain.REVISE_RETRY_DEFAULT), '跑批模板须给得出缺省档位');
+    // 给人读的那一份口径(命令注册表 desc)也要跟着 Domain 的区间/缺省走
+    const mrArg = (require('../js/cmd-registry.js').byName['episode.produce'].args || []).find(a => a.name === 'maxRetry');
+    assert(mrArg && mrArg.desc.includes(Domain.REVISE_RETRY_MIN + '-' + Domain.REVISE_RETRY_MAX)
+      && mrArg.desc.includes('默认 ' + Domain.REVISE_RETRY_DEFAULT),
+      'episode.produce 的 maxRetry 参数描述应与 Domain 的区间/缺省逐字对得上');
+    /* 反向二(未落地那一面,与 W136 同):两端闭环形态此刻确实不同构——浏览器把重试嵌在逐镜循环里、
+     * 整集重抽面派生一处不引,CLI 是整集轮次循环且每轮现取实况派生子集。哪天浏览器改走整集子集重抽,这三句先红。 */
     const iShotLoop = prod.indexOf('for (const s of targets)');
     const iRetryLoop = prod.indexOf('for (let attempt = 0; attempt <= maxRetry');
     assert(iShotLoop >= 0 && iRetryLoop > iShotLoop,
       '浏览器闭环此刻仍是逐镜循环里套重试(改成整集子集重抽后须同步改 SK-25 的仍欠段)');
-    assert(!/revise(?:Targets|Subset)/.test(prod),
-      '浏览器闭环此刻仍不走整集重抽面派生(接上即两端同构,须同步改仍欠段)');
+    assert(!/Domain\.reviseTargets|reviseShotIds|WfCore\.reviseSubset/.test(prod),
+      '浏览器闭环此刻仍不走整集重抽面派生(接上即两端同构,须同步改仍欠段;收敛次数那份单源不算)');
     const iCliLoop = cli25.indexOf('for (let attempt = 1; attempt <= maxRetry && low.length; attempt++)');
     assert(iCliLoop >= 0, 'CLI produce 此刻仍是整集分轮的轮次循环');
     assert(cli25.slice(iCliLoop, iCliLoop + 1400).includes('low = await reviseTargets(args, f)'),
@@ -7734,7 +7804,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 516, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 520, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 141, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -7870,7 +7940,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 164;
+    const FLOOR = 165;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接

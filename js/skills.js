@@ -1297,9 +1297,14 @@
         + 'order 取分镜表实位),WfCore.reviseSubset 在其上按 reportId 回取报告补逐镜修正意见;'
         + 'CLI produce 闭环每轮现取实况派生重抽面再传 shotIds,不再摘回执里那份会与分镜表漂移的 lowShots,'
         + '服务端 /api/wf/smart-review 的 lowShots、助手工作台摘要与审片完成卡、问题中心 low-review 同读这一份。'
-        + '仍欠(G-03):复审不达标时的收敛次数(maxRetry 的取值依据与"收敛到第几轮算够")仍没有登记口径,'
-        + '两端各按自己的缺省值跑;浏览器闭环 autoSmartReview 是逐镜重试而非整集子集重抽,'
-        + '与 CLI 的分轮口径尚未合成一份',
+        + '收敛次数这一面也已落地:「复审不达标还能重来几轮」收进 Domain.reviseRetryLimit 双端单源'
+        + '(整数轮次、取值域 REVISE_RETRY_MIN..MAX = 1..5、缺省 2,候选值按优先级择先——命令入参先于分集 sbConfig,'
+        + '读不出来才回缺省;上限的理由是每轮都真扣费,下限 1 是至少给一次改正机会,'
+        + '要零轮请关 smartReview 开关而不是把次数写 0),CLI produce、浏览器 autoSmartReview 与命令层 '
+        + 'episode.produce 同读这一份,三处不再各钳一份 1-5 缺省,参数配置面板的次数选项也由它派生。'
+        + '仍欠(G-03):两端闭环形态仍不同构——浏览器 autoSmartReview 把重试嵌在逐镜循环里(一镜连着重抽到达标为止),'
+        + 'CLI produce 是整集低分子集重抽一轮再复审(集外循环),同一份次数口径在两端数的不是同一件事;'
+        + '要合成一份得先定浏览器侧进度面板语义与逐镜计费节奏能否改成分轮,属产品口径,尚未定',
     },
     {
       id: 'review.memoryFeedback', sk: 'SK-26', name: '审片结论按板块回流专家', stage: 'review',
