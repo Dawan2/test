@@ -3803,6 +3803,52 @@ const releaseTests = [
     assertEq(g9.fix.cmd, 'subject.generateImage');
     assertEq((g9.fix.subjectIds || []).join(','), 'sj1', 'G9 只带缺图主体子集');
   } },
+  { name: '浏览器 collect · G4/G5/G6 聚合缺 Domain:三门如实 warn,不许照常印「0 镜 → 通过」', fn() {
+    /* 三门的镜次计数出自同一次遍历,那次遍历此前被一个空 catch 兜着:Domain 没加载时 agg 停在初值 0,
+     * 三门照常印「0 镜 → 通过」并在弹窗里挂绿勾——回执上等于告诉用户"过期/未确认/失败镜都查过了,
+     * 一镜不缺",而实际一镜未查。这里钉的是「判不出来就说判不出来」,按本模块既有降级纪律记 warn
+     * (与同文件 G1 缺模块同级),不抬成 fail、判据与计数一个字不动(第一段守着)。 */
+    const sb = loadRelease();
+    const ep = releaseReadyEp({ composed: true, composedInputHash: sb.Domain.composedInputHash(releaseReadyEp(), false), composedSourceRev: 0, composedGraphRev: 0 });
+    const p = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [ep] };
+    const COUNT = ['g4-stale', 'g5-unconfirmed', 'g6-failed'];
+    const ok = sb.Release.collect(p, { online: false });
+    COUNT.forEach(c => assertEq(ok.gates.find(x => x.code === c).status, 'pass', 'Domain 在时三门判据与计数未改:' + c));
+    sb.Domain = undefined;   // 等价于 index.html 少一个 script 标签(浏览器这一面的缺模块,不是 headless 的漏注入参数)
+    const r = sb.Release.collect(p, { online: false });
+    assertEq(r.gates.length, ok.gates.length, '判不出来只改这三门的结论,不少一门');
+    COUNT.forEach(c => {
+      const g = r.gates.find(x => x.code === c);
+      assertEq(g.status, 'warn', c + ' 判不出来不得报 pass');
+      assert(/Domain/.test(g.info) && /未加载/.test(g.info), c + ' 须点名缺的是什么,实际:' + g.info);
+      assert(!/镜/.test(g.info), c + ' 没判过就不许报镜数,实际:' + g.info);
+    });
+    assert(r.warns >= 3, '三门须各计一条 warn(只改 status 不计数,评分与摘要还是假的),实际 ' + r.warns);
+    assert(r.overall !== 'pass' && r.overall !== 'cond-pass', '判不出来的门禁结论不放行打版本,实际 overall=' + r.overall);
+    assert(r.blockers >= 3, '未过门项须计进 tab 角标阻塞数,实际 ' + r.blockers);
+    assertEq(sb.Release.stampRelease(p, '', { gateResult: r }).code, 'gate-blocked', '这样的结论进不了发布留痕');
+  } },
+  { name: '浏览器 collect · G4/G5/G6 聚合半途抛错:三门同记 warn 带错因,不拿半截计数当全量报', fn() {
+    /* 遍历到第二集才抛时 agg 里已攒着第一集的数:空 catch 吞掉异常后 G4 拿这半截数报「2 镜 fail」、
+     * G5/G6 报「0 镜 通过」——三个数没有一个是全量算出来的,弹窗上却与真结论长得一模一样。 */
+    const sb = loadRelease();
+    const real = sb.Domain.episodeState;
+    const p = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }],
+      episodes: [releaseReadyEp({ id: 'ep1', title: '第1集' }), releaseReadyEp({ id: 'ep2', title: '第2集' })] };
+    sb.Domain.episodeState = (proj, e, online) => {
+      if (e.id === 'ep2') throw new Error('counts 崩了');
+      return Object.assign({}, real(proj, e, online), { counts: { stale: 2, unconfirmed: 1, failed: 3 } });
+    };
+    const r = sb.Release.collect(p, { online: false });
+    ['g4-stale', 'g5-unconfirmed', 'g6-failed'].forEach(c => {
+      const g = r.gates.find(x => x.code === c);
+      assertEq(g.status, 'warn', c + ' 遍历抛错时按判不出来记 warn(不是拿半截计数下结论)');
+      assert(/counts 崩了/.test(g.info), c + ' 须带原始错因,实际:' + g.info);
+      assert(!/镜/.test(g.info), c + ' 不许报镜数(那个数没算完),实际:' + g.info);
+      assertEq(g.fix, null, '判不出来时不挂一键处置(要处置的那批镜头本身就没算出来)');
+    });
+    assert(r.overall !== 'pass' && r.overall !== 'cond-pass', '判不出来不放行,实际 overall=' + r.overall);
+  } },
   { name: 'G2 问题清零:真实 Issues 数组契约——脏项目 fail 挂问题中心导航,干净项目 pass', fn() {
     const sb = loadRelease();
     // 脏:失败镜(高危)→ G2 fail;原实现把 Issues.collect 返回的数组当 {list} 读,恒 pass 永久放行
@@ -7223,7 +7269,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 495, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 497, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 130, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
