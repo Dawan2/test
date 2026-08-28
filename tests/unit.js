@@ -4664,6 +4664,87 @@ const releaseTests = [
     await sb.Release.buildReleaseZip(p, { skipVideo: true }).catch(e => { threw = e; });
     assert(threw && /ZipUtil 崩了/.test(threw.message), '打包本身崩了照旧抛出(新增的缺件计数不吞真失败),实际:' + threw);
   } },
+  /* ---- 占位空壳这个字面不许回来(源级) ----
+   * 交付包那条链上先后有过两个占位:打包前先 ZipUtil.download 一份只装 `PLACEHOLDER` 空条目的 zip、
+   * 落地失败时兜底 ZipUtil.download 一份只写着「请重新打包」的空壳 zip。两处都已删干净,
+   * 但"删干净"至今没有判据钉着——上面两条行为面用例钉的是「用户到手几个文件」与「报错带不带原因」,
+   * 占位换个写法落在现有用例走不到的分支上(或连同那两条用例一起被改)就没有第三道。
+   * 本条钉字面本身:js/release.js 的可执行行里零 ZipUtil.download、零占位空壳字面;
+   * 并把 ZipUtil.download 的调用方名单钉死——交付这条链上再开第二个落地口即红。
+   * 「可执行行」按行首形态判(整行注释才豁免),故字符串里的 `//` 骗不过它;上面那几段讲占位历史的
+   * 注释原样留着不受本条约束。判据只扫 js/,tests/ 里 zip 夹具的假文件名一概不管。 */
+  { name: 'downloadReleaseZip 源级:可执行行零 ZipUtil.download 零 PLACEHOLDER 空壳字面,落地口只此一个(占位加回去当场红)', fn() {
+    const isComment = t => /^\s*(\/\/|\/?\*)/.test(t) || !t.trim();
+    const codeLinesOf = f => fs.readFileSync(path.join(ROOT, 'js', f), 'utf8')
+      .split('\n').map((t, i) => [i + 1, t]).filter(([, t]) => !isComment(t));
+    const rel = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
+    const relCode = codeLinesOf('release.js');
+    assert(relCode.length > 300, 'js/release.js 的可执行行取不到(整份被判成注释本条就成恒真),实测 ' + relCode.length + ' 行');
+    [[/ZipUtil\s*(?:\.\s*download\b|\[\s*['"`]download)/, 'ZipUtil.download —— 交付包只落 buildReleaseZip 打好的那份 bytes,再调它就是另打一个包'],
+      [/PLACEHOLDER/, 'PLACEHOLDER —— 打包前那份只装空条目的占位 zip(区分大小写:小写的 placeholder 是输入框占位文案,与本条无关)'],
+      [/请重新打包|空下载兜底/, '「请重新打包」空壳 —— 落地失败时冒充交付包的兜底 zip']].forEach(([re, why]) => {
+      const hit = relCode.filter(([, t]) => re.test(t)).map(([n, t]) => n + ': ' + t.trim());
+      assertEq(hit.join(' | '), '', 'js/release.js 可执行行不许出现 ' + why);
+    });
+    // 反面钉住:真形态还在,本条才不是"把那段挪走就全绿"
+    const at = rel.indexOf('async function downloadReleaseZip(');
+    assert(at > 0, 'downloadReleaseZip 取不到(改名或挪窝就同轮改本条,别把它留成恒真)');
+    const body = rel.slice(at, rel.indexOf('\n  }\n', at) + 4);
+    assertEq((body.match(/a\.click\(\)/g) || []).length, 1, '落地动作全函数只此一次(多一次就是多给用户一个文件)');
+    assert(/new Blob\(\[r\.bytes\]/.test(body), '落地的必须是 buildReleaseZip 那份 bytes,不是就地另打的包');
+    assert(/catch \(e\) \{[\s\S]*throw new Error\(/.test(body), '落地失败这一路仍以 throw 收尾:改回兜底落空壳即红');
+    // ZipUtil.download 的调用方名单:素材/剪映导出那一家,交付包那条链一个都没有
+    const callers = fs.readdirSync(path.join(ROOT, 'js')).filter(f => /\.js$/.test(f) && f !== 'ziputil.js')
+      .filter(f => codeLinesOf(f).some(([, t]) => /ZipUtil\s*\.\s*download\b/.test(t)));
+    assertEq(callers.join(','), 'exporter.js',
+      'ZipUtil.download 只该由素材/剪映导出调;交付包那条链新开一个落地口即红,真要新开就同轮改这份名单');
+  } },
+  /* 上一条钉源码字面,这一条钉运行期:`const Z = ZipUtil; Z.download(...)` 这类别名写法源级扫不出来,
+   * 这里把桩打在函数对象上——交付这条链的任一入口只要叫到它就记一笔。同时把"到手的是不是真包"钉住:
+   * 占位空壳的形态就是条目数 0/1、内容为空,故逐份落地文件按 zip 解出条目对着打包清单点。 */
+  { name: 'downloadReleaseZip 运行期:成功/失败/按钮三个入口一次都没叫到 ZipUtil.download,落地的每份都是真包不是空壳', fn: async () => {
+    const spyDownload = sb => { // 记下调用,同时仍走真实现:万一有人加回去,后面的"到手几个文件"也照样看得见
+      const calls = [], real = sb.ZipUtil.download;
+      sb.ZipUtil.download = (n, files) => { calls.push(n + '[' + (files || []).map(f => f.name).join('+') + ']'); return real(n, files); };
+      return calls;
+    };
+    const proj = () => ({ id: 'p1', name: '剧', __ver: 3, subjects: [{ id: 'sj1', name: '主', image: 'u' }],
+      episodes: [releaseReadyEp({ composedSrt: '1\n00:00:00,000 --> 00:00:05,000\n台词\n' })] });
+    const realPack = (sb, blob) => { // 空壳判据:占位包只有 0/1 个条目且没内容
+      const names = zipEntries(blob.parts[0]);
+      assert(names.length > 1, '到手的这份只有 ' + names.length + ' 个条目,是空壳不是交付包:' + names.join(','));
+      assert(!names.some(n => /PLACEHOLDER/i.test(n)), '到手的这份里有占位条目:' + names.join(','));
+      return names;
+    };
+    // 入口一:成功路径直调
+    const okSb = loadReleaseZip();
+    const okCalls = spyDownload(okSb);
+    const r = await okSb.Release.downloadReleaseZip(okSb.__p = proj());
+    assertEq(okCalls.join(','), '', '成功路径不许叫到 ZipUtil.download(叫到就是给用户多打了一个包)');
+    assertEq(okSb.__clicks.length, 1, '成功路径到手 1 个文件');
+    assertEq(realPack(okSb, okSb.__clicks[0].blob).length, r.files, '到手那份的条目数须等于打包清单的文件数');
+    // 入口二:落地失败路径(第 1 次 createObjectURL 就抛)
+    const failSb = loadReleaseZip(1);
+    const failCalls = spyDownload(failSb);
+    let err = null;
+    await failSb.Release.downloadReleaseZip(proj()).catch(e => { err = e; });
+    assert(err, '落地失败仍如实抛(本条不接管 W154 那两条,只是同轮确认兜底没被悄悄加回来)');
+    assertEq(failCalls.join(','), '', '失败路径不许改调 ZipUtil.download 兜底落一份空壳');
+    assertEq(failSb.__clicks.length, 0, '失败路径用户到手 0 个文件');
+    // 入口三:交付检查弹窗「📦 打包交付 ZIP」按钮(用户唯一入口,成功路径)
+    const btnSb = loadReleaseZip();
+    const btnCalls = spyDownload(btnSb);
+    const nodes = {};
+    const node = sel => (nodes[sel] = nodes[sel] || { onclick: null, disabled: false, textContent: '', value: '7',
+      innerHTML: '', querySelectorAll: () => [] });
+    btnSb.U.openModal = o => o.onMount({ querySelector: node, querySelectorAll: () => [] }, () => {});
+    btnSb.Release.openModal(proj(), {});
+    await nodes['[data-x=pack]'].onclick();
+    assertEq(btnCalls.join(','), '', '按钮那条路同样不许叫到 ZipUtil.download');
+    assertEq(btnSb.__clicks.length, 1, '按钮走完到手 1 个文件');
+    realPack(btnSb, btnSb.__clicks[0].blob);
+    assert(btnSb.__toasts.some(t => t.includes('交付包已下载')), '成功提示照旧:' + JSON.stringify(btnSb.__toasts));
+  } },
 ];
 
 /* ================= 套件 17:跨模块契约(二十二轮) =================
@@ -8213,7 +8294,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 530, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 532, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 141, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -8400,7 +8481,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 176;
+    const FLOOR = 177;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
