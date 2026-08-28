@@ -3220,7 +3220,8 @@ const issuesTests = [
   { name: 'collect:干净项目返回空(全齐备零噪音)', fn() {
     const sb = loadIssues();
     const ep = cleanEp({ composed: true, composedInputHash: sb.Domain.composedInputHash(cleanEp(), false), composedSourceRev: 0, composedGraphRev: 0 });
-    const p = { id: 'p1', subjects: [{ id: 'sj1', name: '主角', kind: 'character', image: 'u' }], episodes: [ep] };
+    // 干净=连前置门槛也干净:有剧本原文、有主体且不缺图、有分集(缺哪一样都是 Domain.gateBlockers 的一条断点)
+    const p = { id: 'p1', script: '整本剧本原文', subjects: [{ id: 'sj1', name: '主角', kind: 'character', image: 'u' }], episodes: [ep] };
     assertEq(sb.Issues.collect(p).length, 0, '齐备分集不应产生问题');
   } },
   { name: 'collect:失败镜 → 高危 + cmd 子集重生成(shotIds 联动)', fn() {
@@ -3257,7 +3258,7 @@ const issuesTests = [
     const kinds = list.map(x => x.kind);
     assert(kinds.includes('no-script'), '缺剧本应入清单');
     assert(kinds.includes('no-shots') && list.find(x => x.kind === 'no-shots').cmd === 'episode.generateStoryboard', '未分镜应可一键智能分镜');
-    assert(kinds.includes('subject-no-image'), '主体缺图应入清单');
+    assert(kinds.includes('subjects-no-image'), '主体缺图应入清单(码名与 Domain.gateBlockers 同一份)');
     assert(kinds.includes('low-review'), '低分审片应入清单');
     assert(kinds.includes('unconfirmed'), '待确认应入清单');
     assert(kinds.includes('composed-stale') && list.find(x => x.kind === 'composed-stale').cmd === 'episode.compose', '成片过期应可一键重新合成');
@@ -3357,7 +3358,7 @@ const issuesTests = [
     const sb = loadIssues();
     const ep = cleanEp({ composed: false });
     delete ep.lastReview; // 已出片、已确认,主线只差审片这一步
-    const p = { id: 'p1', subjects: [], episodes: [ep] };
+    const p = { id: 'p1', script: '整本剧本原文', subjects: [{ id: 'sj1', name: '主角', image: 'u' }], episodes: [ep] }; // 前置三步齐备,免得断点条目混进"恰一条"的比对
     const list = sb.Issues.collect(p);
     assertEq(list.map(x => x.kind).join(','), 'no-review', '已生成未审的集应恰有一条未审问题');
     assertEq(list[0].sev, 'mid', '未审是主线断点(中危;发布门 G2 只数高/中危故计入 warn,不新增 fail 门)');
@@ -3370,13 +3371,66 @@ const issuesTests = [
     // 还没拆镜的集:主线断点在分镜,不越过早退分支抢报未审
     assert(!sb.Issues.collect({ id: 'p3', subjects: [], episodes: [{ id: 'ep1', title: '一', content: '剧本正文', shots: [] }] })
       .some(x => x.kind === 'no-review'), '未拆镜的集不报未审');
-    assertEq(sb.Issues.collect({ id: 'p0', subjects: [], episodes: [] }).length, 0, '空项目零条');
+    // 空项目不再是零条:逐集循环一步都不进,收出的是剧本/主体/分集三步的前置断点(详见下一条用例)
+    assert(!sb.Issues.collect({ id: 'p0', subjects: [], episodes: [] }).some(x => x.kind === 'no-review'), '空项目不报未审');
+  } },
+  { name: 'collect:空项目/只有剧本/只有主体 → 前置断点(码与文案取 Domain.gateBlockers,不是零条)', fn() {
+    const sb = loadIssues();
+    /* collect 的主体是逐集循环,以前这三态一条问题都收不出来(实测 0 条),主线断点只有流程条看得见 */
+    const kindsOf = p => sb.Issues.collect(p).filter(x => !x.epid).map(x => x.kind).join(',');
+    const empty = { id: 'p0', subjects: [], episodes: [] };
+    assertEq(kindsOf(empty), 'no-script,no-subjects,no-eps', '空项目应收出三条前置断点');
+    assertEq(kindsOf({ id: 'p1', script: '整本', subjects: [], episodes: [] }), 'no-subjects,no-eps', '只有剧本:主体与分集两条');
+    assertEq(kindsOf({ id: 'p2', script: '整本', subjects: [{ id: 'sj1', name: '主角', image: 'u' }], episodes: [] }), 'no-eps', '剧本+主体齐备:只剩分集那条');
+    assertEq(kindsOf({ id: 'p3', extractDone: true, subjects: [{ id: 'sj1', name: '主角', image: '' }], episodes: [] }).split(',').sort().join(','),
+      'no-eps,subjects-no-image', '提取过主体即不报缺剧本;缺图那条与未提取互斥');
+    // 文案与落点:标题逐字取 Domain,处置一律导航(前置三步没有一个是能替用户按的计费动作)
+    const list = sb.Issues.collect(empty);
+    assertEq(list.map(x => x.label).join(','), sb.Domain.gateBlockers(empty).map(g => g.label).join(','), '标题应原样取 Domain.gateBlockers');
+    list.forEach(it => {
+      assert(it.goto && !it.cmd, it.kind + ' 应走导航自查,不挂命令处置(不触发任何生成)');
+      assertEq(it.epid, undefined, it.kind + ' 是项目级断点,不该挂集号');
+      assert(it.detail && it.detail.length > 8, it.kind + ' 应给一行说明,实际:' + it.detail);
+    });
+    assertEq(sb.Issues.collect(empty).find(x => x.kind === 'no-subjects').goto, '#/project/p0/roles', '主体两条落到主体页');
+    assertEq(sb.Issues.count(empty), 3, 'count 与 collect 同源');
+    // 危险级:缺图沿用中危,三条门槛态一律低危(发布门 G2 只数高/中危,不让 G2 转而去读 p.script)
+    assertEq(list.filter(x => x.sev === 'low').length, 3, '三条门槛态一律低危');
+    assertEq(sb.Issues.collect({ id: 'p4', script: '整本', subjects: [{ id: 'sj1', name: '主角', image: '' }], episodes: [cleanEp()] })
+      .find(x => x.kind === 'subjects-no-image').sev, 'mid', '主体缺图仍是中危(与发布门 G9 判同一件事)');
+  } },
+  { name: 'collect:前置断点与流程条同一份——三步的码与文案逐夹具双向相等(码名分裂即红)', fn() {
+    const sb = loadIssues();
+    const gateKinds = sb.Issues.gates().map(g => g.kind);
+    const PRE = ['script', 'subjects', 'eps'];
+    const fixtures = [
+      { id: 'f0', subjects: [], episodes: [] },
+      { id: 'f1', script: '整本', subjects: [], episodes: [] },
+      { id: 'f2', script: '整本', subjects: [{ id: 's1', name: '甲', image: '' }, { id: 's2', name: '乙', image: '' }], episodes: [] },
+      { id: 'f3', extractDone: true, subjects: [{ id: 's1', name: '甲', image: 'u' }], episodes: [cleanEp()] },
+      { id: 'f4', script: '整本', subjects: [{ id: 's1', name: '甲', image: 'u' }], episodes: [cleanEp()] },
+    ];
+    fixtures.forEach(p => {
+      const wf = sb.Domain.workflow(p, false).steps.filter(s => PRE.indexOf(s.key) >= 0)
+        .reduce((a, s) => a.concat(s.blockers.map(b => b.code + '=' + b.label)), []);
+      const iss = sb.Issues.collect(p).filter(x => !x.epid && gateKinds.indexOf(x.kind) >= 0).map(x => x.kind + '=' + x.label);
+      assertEq(iss.join(','), wf.join(','), p.id + ':问题中心的前置断点应与流程条三步的阻塞项逐条同码同文案');
+    });
+    // 包含关系两侧都钉:Domain 这三步给得出的码,投影表一个不许漏(漏一个就是那一态又收不出问题)
+    const seen = new Set();
+    fixtures.forEach(p => sb.Domain.gateBlockers(p).forEach(g => seen.add(g.code)));
+    assertEq([...seen].sort().join(','), 'no-eps,no-script,no-subjects,subjects-no-image', '夹具应摊出前置三步的全部阻塞码');
+    seen.forEach(c => assert(gateKinds.indexOf(c) >= 0, 'Domain 的前置阻塞码 ' + c + ' 未登记进 Issues.gates()(表外的码 collect 一律不投,等于那一态静默收不出问题)'));
+    gateKinds.forEach(k => assert(seen.has(k), 'Issues.gates() 里的 ' + k + ' 在 Domain 前置三步里没有对应阻塞码(码名分裂)'));
+    // 取表给副本:调用方污染返回值不影响下次取表(与 reminders() 同一纪律)
+    sb.Issues.gates().push({ kind: '污染' });
+    assertEq(sb.Issues.gates().length, gateKinds.length, 'gates() 每次应现生成新数组');
   } },
   { name: 'collect:审片记录判旧 → review-stale 中危(与发布门 G3「视为未审」同口径,不与未审/低分重复报)', fn() {
     const sb = loadIssues();
     const ep = cleanEp({ composed: false });
     ep.lastReview = { avg: 9, perShot: [{ shotId: 'sh0', order: 0, score: 9 }], sourceRev: 0, graphRev: 0, snapshotHash: 'bogus-stale' };
-    const p = { id: 'p1', subjects: [], episodes: [ep] };
+    const p = { id: 'p1', script: '整本剧本原文', subjects: [{ id: 'sj1', name: '主角', image: 'u' }], episodes: [ep] }; // 前置三步齐备(否则断点条目会混进"恰一条"的比对)
     const list = sb.Issues.collect(p);
     assertEq(list.map(x => x.kind).join(','), 'review-stale', '判旧的记录应恰报一条(三态互斥:不再叠未审那条)');
     assertEq(list[0].sev, 'mid');
@@ -3431,12 +3485,13 @@ const issuesTests = [
     /* 夹具确实摊得开:状态类与方法论提醒两类都在,不是"两端同为空"的假对照 */
     const kinds = NodeIssues.collect(crossEndP(), { online: false }).map(x => x.kind);
     const table = NodeIssues.reminders().map(r => r.kind);
-    ['no-script', 'no-shots', 'failed-shots', 'stale-shots', 'unconfirmed', 'low-review', 'composed-stale', 'subject-no-image']
+    ['no-script', 'no-shots', 'failed-shots', 'stale-shots', 'unconfirmed', 'low-review', 'composed-stale', 'subjects-no-image']
       .forEach(k => assert(kinds.includes(k), '对照夹具应摊出状态类问题:' + k));
     table.forEach(k => assert(kinds.includes(k), '对照夹具应摊出投影表登记的每一条方法论提醒:' + k));
-    /* 投影表就是本模块产出的低危提醒全集:表外不得凭空多出一条低危 kind */
+    /* 两张投影表(方法论提醒 + 前置门槛)就是本模块产出的低危条目全集:表外不得凭空多出一条低危 kind */
+    const gateKinds = NodeIssues.gates().map(g => g.kind);
     const lowKinds = NodeIssues.collect(crossEndP(), { online: false }).filter(x => x.sev === 'low' && x.kind !== 'unconfirmed').map(x => x.kind);
-    lowKinds.forEach(k => assert(table.includes(k), '低危提醒必须在投影表里登记:' + k));
+    lowKinds.forEach(k => assert(table.includes(k) || gateKinds.includes(k), '低危条目必须在提醒表或前置门槛表里登记:' + k));
     /* 取表给副本:调用方污染返回值不影响下次取表 */
     NodeIssues.reminders().push({ kind: '污染' });
     assertEq(NodeIssues.reminders().length, table.length, 'reminders() 每次应现生成新数组');
@@ -3444,7 +3499,7 @@ const issuesTests = [
   { name: '浏览器薄封装:全局名与成员一个不少,online 由 Media 注入(投影核不碰 window/Store)', fn() {
     const sb = loadIssues();
     loadFile(sb, 'issues-ui.js');
-    ['collect', 'count', 'fixIssue', 'openModal', 'badgeHTML', 'reminders'].forEach(k =>
+    ['collect', 'count', 'fixIssue', 'openModal', 'badgeHTML', 'reminders', 'gates'].forEach(k =>
       assertEq(typeof sb.Issues[k], 'function', 'window.Issues 应仍有成员:' + k));
     // online 由薄封装从 Media 现取并显式传进投影核(核自己读不到任何环境句柄)
     const seen = [];
@@ -3819,6 +3874,22 @@ const releaseTests = [
     const r2 = sb.Release.collect({ id: 'p2', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [epOK] }, { online: false });
     const g2ok = r2.gates.find(g => g.code === 'g2-issues');
     assertEq(g2ok.status, 'pass', '干净项目 G2 应 pass');
+  } },
+  { name: 'G2 不因前置门槛断点改判:无 p.script / 无主体的交付项目照旧 pass(前置断点一律低危)', fn() {
+    /* 问题中心把剧本/主体/分集三步的前置断点也收进清单后,G2 数的仍只是高/中危那一批。
+     * 这三条一律低危正是为此:发布门不该经问题中心转而去读 p.script(整本原文有无不是交付判据,
+     * 主线就绪由 G1 逐集判 ep.content、G3 判有分集且审片达标、G9 判主体缺图),
+     * 把它们抬成中危会让"没上传整本剧本"的成片项目在 G2 上凭空多出一条 warn。 */
+    const sb = loadRelease();
+    const epOK = releaseReadyEp({ composed: true, composedInputHash: sb.Domain.composedInputHash(releaseReadyEp(), false), composedSourceRev: 0, composedGraphRev: 0 });
+    const p = { id: 'p1', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [epOK] }; // 无 p.script:问题中心会报一条低危 no-script
+    const list = sb.Issues.collect(p);
+    assertEq(list.map(x => x.kind + ':' + x.sev).join(','), 'no-script:low', '无整本剧本应恰报一条低危前置断点');
+    assertEq(sb.Release.collect(p, { online: false }).gates.find(g => g.code === 'g2-issues').status, 'pass', 'G2 不数低危,状态不变');
+    // 主体库空同理:G9 判的是"缺图主体数",空库缺图数为 0,G2 也不因 no-subjects 那条低危改判
+    const p2 = { id: 'p2', script: '整本', subjects: [], episodes: [epOK] };
+    assertEq(sb.Issues.collect(p2).filter(x => x.sev !== 'low').length, 0, '主体库空只产出低危');
+    assertEq(sb.Release.collect(p2, { online: false }).gates.find(g => g.code === 'g2-issues').status, 'pass', 'G2 状态不变');
   } },
   { name: 'minReviewScore 配置:调高到 9 会把 8 分判 fail;setMinReviewScore 写回 Store.settings', fn() {
     const sb = loadRelease();
@@ -4507,6 +4578,26 @@ const contractTests = [
     assert(!/=\s*(?:\(?rv\.result[^\n]*\.lowShots|rv\.result\.lowShots)/.test(cli),
       'cli.js produce 不许把回执里的 lowShots 直接当作下一步 shotIds 的名单(它与分镜表漂移时会重抽错镜)');
     assert(/shotIds: fix\.revised/.test(cli) && /reviseTargets\(args, f\)/.test(cli), 'produce 的重抽/复审子集应源自派生出来的重抽面');
+  } },
+  { name: '前置门槛码单源:剧本/主体/分集三步的阻塞码只在 Domain.gateBlockers 一处,流程条与问题中心都不另写', fn() {
+    /* 码名分裂过一次:问题中心报 subject-no-image,流程条与流程模板报 subjects-no-image,
+     * 两侧看着是同一件事、按码筛就对不上。收口之后判据只在 gateBlockers 一处,消费侧一律按码投影。 */
+    const dom = fs.readFileSync(path.join(ROOT, 'js', 'domain.js'), 'utf8');
+    const iss = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
+    const Domain = require('../js/domain.js');
+    const Issues = require('../js/issues.js');
+    assertEq(typeof Domain.gateBlockers, 'function', 'Domain 应导出前置门槛断点派生');
+    ['no-subjects', 'no-eps', 'subjects-no-image'].forEach(code =>
+      assertEq((dom.match(new RegExp("'" + code + "'", 'g')) || []).length, 1,
+        'js/domain.js 里 ' + code + ' 的字面应只此一处(workflow 那三步现取 gateBlockers,不再各写一份)'));
+    assertEq((dom.match(/'no-script'/g) || []).length, 3, 'js/domain.js 里 no-script 恰三处:分集级登记(episodeState 判 ep.content)、按该码取分集状态、项目级登记(gateBlockers 判整本原文)——两级同码不同判定输入,各只一处登记');
+    assert(iss.includes('Domain.gateBlockers(p)'), '问题中心的前置断点应现取 Domain.gateBlockers');
+    assertEq((iss.match(/'subject-no-image'/g) || []).length, 0, '问题中心不得再用分裂出来的旧码 subject-no-image');
+    // 流程模板与问题中心是同一份码的两个消费面:模板按码筛待办,两侧对不上会静默筛空
+    const F = require('../js/flow-tpl.js');
+    const gateKinds = Issues.gates().map(g => g.kind);
+    F.projection().forEach(x => x.codes.forEach(c =>
+      assert(gateKinds.indexOf(c) >= 0 || c === 'no-shots', 'flow-tpl 按码筛的前置码 ' + c + ' 应同在 Issues.gates() 里(码名再分裂即红)')));
   } },
   { name: '命令元数据单源:mcp.js 工具描述由注册表生成(hujing_exec 词表不再手抄)', fn() {
     const CR = require('../js/cmd-registry.js');
@@ -7135,7 +7226,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 492, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 496, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 130, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {

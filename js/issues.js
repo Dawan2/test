@@ -1,7 +1,8 @@
 /* ============ issues.js 问题中心投影(双端:浏览器 window.Issues / Node require) ============
  * 项目级待处理问题单一聚合:失败镜/过期镜/未分镜/缺剧本/未审片/审片记录过期/低分审片/待确认/成片过期/
- * 主体缺图/跨镜主体不一致/提示词稳定词/字幕读不顺,
- * 逐项由 Domain.episodeState(blockers/counts/审片三态)推导——与流程条/下一步/跑批/CLI 同一口径,不自造第二套状态;
+ * 主体缺图/跨镜主体不一致/提示词稳定词/字幕读不顺,外加剧本/主体/分集三步的前置门槛断点,
+ * 逐项由 Domain.episodeState(blockers/counts/审片三态)与 Domain.gateBlockers(项目级前置三步)推导——
+ * 与流程条/下一步/跑批/CLI 同一口径,不自造第二套状态,码名也与 Domain 的阻塞码同一份;
  * 方法论低危提醒逐项由 Skills.check 的既有结论投影,判据一条不在本层。
  * 环境差异(在线与否)经 ctx.online 显式传入,项目树经参数传入,本模块不读 window/Media/Store;
  * 纯数据推导,无 DOM/网络/存储副作用,可安全运行于 vm 沙箱、Node(cli.js/mcp.js)与浏览器。
@@ -108,6 +109,24 @@
       name: '字幕读不顺', line: captionLine, cap: 4, tail: '——成片字幕与 SRT 同一时间轴,合成前改台词/裁剪最省事' },
   ];
 
+  /* ================= 前置门槛投影表(项目级断点 → 危险级/落点/一行说明) =================
+   * 键就是 Domain.gateBlockers 的阻塞码,collect 只按表投影:命中与命中文案全部取那一份
+   * (流程条 workflow 的剧本/主体/分集三步读的也是它),本层不另判一遍、也不另起一套码名。
+   * 为什么要有这一档:collect 的主体是逐集循环,空项目/只有剧本/只有主体时循环体一步都不进——
+   * 主线断在剧本/主体/分集这三步时,问题中心此前一条问题都收不出来,断点只有流程条看得见。
+   * 危险级:主体缺图沿用中危(与发布门 G9 判的是同一件事,原就在清单里);
+   * 其余三条门槛态一律低危——发布门 G2 只数高/中危,主线前置已由 G1(每集 done)/G3(有分集且审片达标)
+   * 各自把关,问题中心不在 G2 上再叠一层(尤其不让 G2 转而去读 p.script 这类交付前不该判的项)。 */
+  const GATES = {
+    'no-script': { sev: 'low', at: '', detail: () => '项目还没有剧本原文:提取主体与拆集读的都是它,先写入整本' },
+    'no-subjects': { sev: 'low', at: '/roles', detail: () => '主体库还空:先提取主体再生成权威参考图,分镜与生成都按主体锁形象' },
+    'subjects-no-image': { sev: 'mid', at: '/roles', detail: p => {
+      const ns = (p.subjects || []).filter(s => !s.image);
+      return '缺参考图的主体参与生成会触发防废片警示:' + ns.slice(0, 6).map(s => s.name).join('、') + (ns.length > 6 ? ` 等 ${ns.length} 个` : '');
+    } },
+    'no-eps': { sev: 'low', at: '', detail: () => '还没有分集:先按整本剧本拆集,分镜/生成/审片/成片都挂在分集上' },
+  };
+
   /* 取该行的命中:整面结论按面缓存(同一面上挂多条投影只跑一次),再按校验项 id 分给各行。
    * 这是本模块唯一一处 Skills 取值点——面字面量只在表里,取不到注册表(未加载)时如实回空。 */
   function hitsOf(S, r, obj, ck, cache) {
@@ -142,13 +161,12 @@
         }));
       });
     };
-    /* 项目级:主体缺权威参考图(生成防废片警示的前置阻塞) */
-    const noImg = (p.subjects || []).filter(s => !s.image);
-    if (noImg.length) out.push({
-      kind: 'subject-no-image', sev: 'mid', count: noImg.length,
-      label: `${noImg.length} 个主体缺权威参考图`,
-      detail: '缺参考图的主体参与生成会触发防废片警示:' + noImg.slice(0, 6).map(s => s.name).join('、') + (noImg.length > 6 ? ` 等 ${noImg.length} 个` : ''),
-      goto: '#/project/' + p.id + '/roles',
+    /* 项目级前置门槛(剧本/主体/分集三步):码与标题原样取 Domain.gateBlockers,本层只定危险级、落点与说明。
+     * 表外的码一律不投(Domain 那边新增一档而本表没跟上,由 tests/unit.js 的包含关系断言点名报出) */
+    (Domain && Domain.gateBlockers ? Domain.gateBlockers(p) : []).forEach(g => {
+      const t = GATES[g.code];
+      if (!t) return;
+      out.push({ kind: g.code, sev: t.sev, count: g.count || 1, label: g.label, detail: t.detail(p, g), goto: '#/project/' + p.id + t.at });
     });
     /* 项目级提醒:判定输入是整张分集表,故按项目挂一条而不是逐集重复报 */
     emit('project', 'pre', { p }, {}, null);
@@ -210,6 +228,10 @@
   function reminders() {
     return REMINDERS.map(r => ({ kind: r.kind, sev: r.sev, stage: r.stage, skill: r.skill, level: r.level, phase: r.phase, name: r.name }));
   }
+  /* 前置门槛投影表的只读投影(同上现生成副本):kind 就是 Domain.gateBlockers 的阻塞码,两侧码集由契约用例钉住 */
+  function gates() {
+    return Object.keys(GATES).map(code => ({ kind: code, sev: GATES[code].sev, level: 'project' }));
+  }
 
-  return { collect, count, reminders };
+  return { collect, count, reminders, gates };
 });
