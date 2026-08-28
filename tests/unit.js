@@ -3570,6 +3570,57 @@ const domainTests = [
     assertEq(D.reviseRetryLimit(undefined, 4), 4, '入参缺位时落到分集配置那一档');
     assertEq(D.reviseRetryLimit(0, null), 2, '候选全读不出来才回缺省');
   } },
+  { name: 'reviseRetryLimit 两端候选链同序:同一集同一份 sbConfig,浏览器与 CLI 的 produce 解析出同一个上限', fn: () => {
+    /* 单源函数只保证"钳位与缺省这一段只有一份",保证不了两端喂给它的候选一样多:
+     * CLI 那处此前只传 args.maxRetry,分集参数配置面板上调过的次数在 headless 这一侧读不到——
+     * 同一集同一组低分镜,一端按 5 轮跑、另一端 2 轮就到顶(反过来配 1 时 headless 多烧一倍真钱)。
+     * 判据有意不在测里重写一遍候选链(那就是第三份口径,改真链时它不会跟着走),
+     * 而是把两端 produce 里那一行的**实参原样取出来**,在同一份夹具上各求一次值再逐格对账。 */
+    const D = require('../js/domain.js');
+    const argsOf = (rel, anchor, nextReg) => {
+      const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      const i = src.indexOf(anchor);
+      assert(i >= 0, rel + ' 里找不到 produce 那一处轮次解析的锚点(取数口失效,先红在这里)');
+      const end = ((k) => k < 0 ? src.length : i + anchor.length + k)(src.slice(i + anchor.length).search(nextReg));
+      const seg = src.slice(i, end); // 只在 produce 这一段里取,别的命令那处同名调用不算
+      const j = seg.indexOf('Domain.reviseRetryLimit(');
+      assert(j >= 0, rel + ' 的 produce 段内应现取 Domain.reviseRetryLimit(取数口失效,先红在这里)');
+      const from = i + j + 'Domain.reviseRetryLimit('.length;
+      let depth = 1, k = from;
+      while (k < src.length && depth) { if (src[k] === '(') depth++; else if (src[k] === ')') depth--; k++; }
+      return src.slice(from, k - 1);
+    };
+    const chains = {
+      '浏览器命令层': argsOf('js/commands.js', "reg('episode.produce'", /\n {2}(reg|async function) /),
+      'CLI headless': argsOf('cli.js', "EXEC['episode.produce']", /\nEXEC\['/),
+    };
+    Object.keys(chains).forEach(k => assert(/args\.maxRetry/.test(chains[k]),
+      k + ' 的候选链应以命令入参打头(实测:' + chains[k] + ')'));
+    // 逐格对账:入参给/不给 × 分集配置给/不给/越界/小数/0,两端得数必须逐格相等
+    const cases = [
+      [{}, {}], [{}, { maxRetry: 1 }], [{}, { maxRetry: 5 }], [{}, { maxRetry: 3 }],
+      [{ maxRetry: 4 }, { maxRetry: 1 }], [{ maxRetry: 0 }, { maxRetry: 5 }],
+      [{}, { maxRetry: 9 }], [{}, { maxRetry: 2.7 }], [{}, { maxRetry: '3' }], [{}, {}],
+      // 读不出来的入参不是"没给":|| 把它当假值让位,择先那一段是按能不能读成非零数判的
+      [{ maxRetry: 'abc' }, { maxRetry: 3 }], [{ maxRetry: {} }, { maxRetry: 4 }],
+    ];
+    cases.forEach(([args, sbConfig]) => {
+      const got = {};
+      Object.keys(chains).forEach(k => {
+        const ep = { id: 'e1', sbConfig };
+        got[k] = vm.runInNewContext('Domain.reviseRetryLimit(' + chains[k] + ')', { Domain: D, args, ep });
+      });
+      assertEq(got['CLI headless'], got['浏览器命令层'],
+        'args=' + JSON.stringify(args) + ' + sbConfig=' + JSON.stringify(sbConfig)
+        + ':两端 produce 解析出的轮次上限应是同一个数(一端读得到分集配置、另一端读不到即红)');
+    });
+    // 反向钉住这几格确实各不相同——上面那条相等若因两端一起退化成恒回缺省,也算不上同源
+    const val = s => vm.runInNewContext('Domain.reviseRetryLimit(' + chains['CLI headless'] + ')',
+      { Domain: D, args: s[0], ep: { id: 'e1', sbConfig: s[1] } });
+    assertEq(val([{}, {}]), 2, '两端都读不出来时才回缺省 2');
+    assertEq(val([{}, { maxRetry: 5 }]), 5, '分集配置那一档要真读得到(headless 侧漏读即红)');
+    assertEq(val([{ maxRetry: 4 }, { maxRetry: 1 }]), 4, '命令入参仍先于分集配置');
+  } },
   { name: 'understandingStale 挂 graphRev(二十三轮):无字段保持原语义/失配判旧/对齐恢复', fn: () => {
     const sb = loadDomain();
     const ep = { content: 'v1', contentRev: 1, graphRev: 3, understanding: { 剧情脉络: 'x', sourceRev: 1 } };
@@ -7051,6 +7102,41 @@ const contractTests = [
     assert(iCliLoop >= 0, 'CLI produce 此刻仍是整集分轮的轮次循环');
     assert(cli25.slice(iCliLoop, iCliLoop + 1400).includes('low = await reviseTargets(args, f)'),
       'CLI 那一轮循环体内应现取整集重抽面(两端形态由此不同构)');
+  } },
+  { name: '修订轮次的候选链只登记一处:Domain 写明「命令入参 → 分集 sbConfig」,两端 produce 都得把两档喂进去', fn() {
+    /* 行为面那条(domain 套件)比的是两端得数相等,而相等这件事**两侧一起退化照样成立**——
+     * 两处都只传 args.maxRetry 时它全绿,分集参数配置面板上调过的次数就此两端都读不到。
+     * 这里钉的是另一面:候选链登记在 Domain 那段注释里,两个消费点须逐档对得上登记。
+     * 不查"实参逐字相同":两端的分集句柄拿法本就不同(命令层的 ep 已由 ensureSBCfg 兜过底、
+     * CLI 那侧是服务端快照要自己防空),逐字相同反而会逼出一份假的统一。 */
+    const dom = fs.readFileSync(path.join(ROOT, 'js', 'domain.js'), 'utf8');
+    const iLimit = dom.indexOf('D.reviseRetryLimit = function');
+    assert(iLimit > 0, 'Domain 里应有 reviseRetryLimit(取数口失效,先红在这里)');
+    const reg = dom.slice(Math.max(0, iLimit - 600), iLimit); // 它头顶那段注释就是候选链的登记面
+    assert(/命令入参[^]{0,12}分集 sbConfig/.test(reg),
+      '候选链的登记面(Domain 里 reviseRetryLimit 头顶那段注释)应写明「命令入参 → 分集 sbConfig」的次序');
+    const segOf = (rel, anchor, nextReg) => {
+      const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      const i = src.indexOf(anchor);
+      assert(i >= 0, rel + ' 里找不到 produce 的锚点(取数口失效,先红在这里)');
+      const k = src.slice(i + anchor.length).search(nextReg);
+      return src.slice(i, k < 0 ? src.length : i + anchor.length + k);
+    };
+    [['js/commands.js', "reg('episode.produce'", /\n {2}(reg|async function) /],
+      ['cli.js', "EXEC['episode.produce']", /\nEXEC\['/]].forEach(([rel, anchor, nextReg]) => {
+      const seg = segOf(rel, anchor, nextReg);
+      const m = seg.match(/Domain\.reviseRetryLimit\(([^;]*?)\)[;\n]/);
+      assert(m, rel + ' 的 produce 段内应现取 Domain.reviseRetryLimit');
+      const chain = m[1];
+      assert(/args\.maxRetry/.test(chain), rel + ':候选链第一档应是命令入参(实测 ' + chain + ')');
+      assert(/sbConfig[^]{0,24}maxRetry/.test(chain),
+        rel + ':候选链第二档应是分集 sbConfig 那一档——漏掉它不是"少读一个可选值",'
+        + '而是同一集在两端解析出两个上限(实测 ' + chain + ')');
+      assert(chain.indexOf('args.maxRetry') < chain.indexOf('sbConfig'),
+        rel + ':两档次序应与 Domain 登记的一致——命令入参在前(实测 ' + chain + ')');
+      assert(!/\|\|/.test(chain), rel + ':候选链不许在实参里先用 || 并成一档'
+        + '(|| 会把读不出来的值与 0 并成同一件事,而择先那一段的口径归 Domain 那一份)');
+    });
   } },
   { name: '前置门槛码单源:剧本/主体/分集三步的阻塞码只在 Domain.gateBlockers 一处,流程条与问题中心都不另写', fn() {
     /* 码名分裂过一次:问题中心报 subject-no-image,流程条与流程模板报 subjects-no-image,
