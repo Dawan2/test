@@ -20,7 +20,7 @@
  * - 阈值配置:getSettings().releaseMinReviewScore,默认 7;DEFAULTS 增加该键(不侵入 gsettings.js 太多,仅 fallback)
  *
  * 依赖:window.Issues / window.Domain / window.Compliance / window.HumanReview / window.ZipUtil / window.Store
- *   / window.U / window.Bus / window.Exporter(exportSrt/buildMaterialFiles 等)/ window.WfCore(发布闭环结论回流记忆)
+ *   / window.U / window.Exporter(exportSrt/buildMaterialFiles 等)/ window.WfCore(发布闭环结论回流记忆)
  *   / window.ReleaseCore(发布留痕的准入判定与写回:与服务端 /api/wf/release、CLI 同一份双端单源)
  * 所有依赖缺失时安全降级(对应门 warn + '模块未加载') */
 (function () {
@@ -544,16 +544,11 @@ ${summary.stale.length ? summary.stale.map(s => ' - ' + s).join('\n') : ' (无)'
     };
   }
 
-  /* ---------- Bus 事件订阅:主线任务变动时刷新交付门角标 ---------- */
-  try {
-    if (window.Bus) Bus.on('*', (ev) => {
-      if (!ev || !ev.name) return;
-      const nm = String(ev.name);
-      if (nm.startsWith('shots.') || nm.startsWith('compose.') || nm.startsWith('review.') || nm.startsWith('episode.') || nm === 'plan.step') {
-        Bus.emit('release.dirty', { src: nm, p: ev.p, ep: ev.ep, brief: ev.brief }); // 触发 tab 角标重算(源事件名走 src,不占 name)
-      }
-    });
-  } catch (_) {}
+  /* ---------- 交付门角标的重算不在本文件挂钩 ----------
+   * 角标由 js/episodes.js 的通配订阅重画(它按 Release.badgeHTML 现取),制作台三分区由 js/workbench.js
+   * 的通配订阅重画;两处都不按事件名过滤,源事件那一轮就已经重算过。本文件曾再转一条 release.dirty
+   * 去"触发重算",而三个通配订阅只是把同一轮防抖重置一遍——重绘一次不多,却让 Bus 的 50 格事件留痕
+   * 一条主线事件占两格(Agent 的「最近发生了什么」按 Bus.recent 取,能回看的轮数当场对折)。 */
 
   /* ---------- 导出 ---------- */
   window.Release = {
