@@ -3867,6 +3867,36 @@ const pipelineTests = [
     assertEq(sb.__charges.length, 0, '一镜没跑就一分钱不扣');
     assertEq(sb.Domain.episodeState(p, ep, false).counts.stale, 1, '门槛照旧 fail 那一档:counts.stale 一个数没动');
   } },
+  { name: 'nextForEp:整集全是过期终稿时按钮照旧挂着,文案与实收的 0 镜对得上(点完还给一句为什么没跑)', fn: async () => {
+    /* 上一条的夹具里还留着一镜鲜镜,而「全集每一镜都是过期终稿」才是发布门 G4 照 fail、按钮照显的那一档,
+     * 读到"按钮还在"最省事的改法是把它藏掉——藏掉之后"门禁为什么还 fail、出路是先解锁终稿"那句话就没处读了。
+     * 这一档逐项钉住:状态仍归 regen-stale(按钮不被别的档抢走),文案如实说一镜也重跑不到,
+     * 下发照旧是分堆的 all(收窄成 rerun 在这一档就是空数组,而空数组在子集位上等于整集重跑),
+     * 命令层按 !s.final 挡下后回 ok(total:0) 并带上"为什么是 0 镜"那一句,digest 把它播给用户。 */
+    const sb = loadPipelineFix();
+    const { p, ep } = pipeStaleProject(['locked', 'locked', 'locked']);
+    sb.__proj = p;
+    const st = sb.Domain.episodeState(p, ep, false);
+    assertEq([st.counts.total, st.counts.done, st.counts.stale, st.counts.final].join(','), '3,3,3,3',
+      '夹具:全集三镜都已出片、都已定稿、也都过期(门槛这一侧一个数不动)');
+    assertEq(st.status, 'stale');
+    assertEq(st.action.key, 'regen-stale', '全是过期终稿时仍归重生成过期镜那一档(推荐动作不该落空或被别的档抢走)');
+    const nx = sb.Pipeline.nextForEp(p, ep);
+    assertEq(nx.key, 'regen-stale');
+    assertEq(typeof nx.run, 'function', '处置照旧挂着(藏按钮/自动解锁终稿都是替用户撤销他按下的锁)');
+    assert(/一镜也重跑不到/.test(nx.txt) && /解锁终稿/.test(nx.txt), '文案须如实说跑不到并给出人工出路,实际:' + nx.txt);
+    assert(!/可重跑/.test(nx.txt) && !/\(3\)/.test(nx.txt), '不许把 3 镜过期印成"这一按能跑 3 镜",实际:' + nx.txt);
+    const r = await nx.run(null);
+    assertEq(sb.__sentArgs.map(a => a.shotIds.join(',')).join(' | '), 'sh0,sh1,sh2',
+      '下发子集仍是全部过期镜:这一档收窄成可重跑那堆就是空数组,而空数组在子集位上等于整集重跑');
+    assertEq(sb.__genShots.join(','), '', '引擎实收 0 镜:文案说跑不到就是真跑不到');
+    assertEq(sb.__charges.length, 0, '一镜没跑就一分钱不扣');
+    assert(r.ok && r.result.total === 0, '一镜也没跑仍是 ok(total:0),不冒充拦截');
+    assertEq(sb.__toasts.length, 1, '点完得有一句回音:没有它,"一镜也没跑"与"跑完了"在用户眼里一模一样');
+    assertEq(sb.__toasts[0], r.result.note, '播的就是命令层回执上那一句,不另拼第二句');
+    assertEq(sb.Domain.episodeState(p, ep, false).counts.stale, 3, '门槛照旧 fail 那一档:counts.stale 一个数没动');
+    assertEq(ep.shots.filter(s => s.video.inputHash === '与当前输入对不上').length, 3, '三镜定稿产物一个字节没被覆盖');
+  } },
   { name: 'nextForEp:没有定稿过期镜时按钮文案一字未变(总数就是可重跑数,不凭空多一句尾巴)', fn: async () => {
     const sb = loadPipelineFix();
     const { p, ep } = pipeStaleProject(['fresh', 'stale', 'stale']);
@@ -7795,6 +7825,23 @@ const contractTests = [
     assert(!/解锁终稿|已定稿|可重跑/.test(s), '断点条不得自拼分报文案(与 G4 会长成两种说法)');
     assert(/shotIds: sp\.all/.test(s), '下发子集须仍是全部过期镜(分堆的 all),收窄成 rerun 即与 G4 的 fix.shotIds 分家');
   } },
+  { name: '断点条不藏按钮:工作区「下一步」无条件渲染 Pipeline 给的文案,带 run 的动作照旧派到 nx.run', fn() {
+    /* 上一条钉的是那一格算出什么,这里钉的是页面照不照着印、按下去派不派得出去。
+     * 「全集都是过期终稿」那一档按下去一镜也跑不到(pipeline 那条现跑钉着),读作 bug 时最省事的改法就是
+     * 把按钮藏起来——而"门禁为什么还 fail、出路是先解锁终稿"这句话眼下只挂在这颗按钮的文案上,
+     * 藏掉按钮等于把唯一说明也一并藏掉,行为面此刻一条都不会红。故渲染那一行加条件、
+     * 或 click 分支把 nx.run 那一路摘掉,都在这里当场红。 */
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'storyboard.js'), 'utf8');
+    const line = src.split('\n').find(l => l.includes('data-x="nextstep"'));
+    assert(line, 'js/storyboard.js 找不到「下一步」按钮那一行(挪窝或改写就同轮改这里,别把本条留成恒真)');
+    assert(/^\s*<button[^>]*data-x="nextstep"[^>]*>\$\{nx\.txt\}<\/button>\s*$/.test(line),
+      '「下一步」按钮须无条件渲染并逐字印 Pipeline 给的文案(整行套上 ${…?…:\'\'} 即是藏按钮),实际:' + line.trim());
+    const a = src.indexOf('nsb.onclick'), b = src.indexOf('psb.onclick', a + 1);
+    assert(a >= 0 && b > a, 'js/storyboard.js 找不到「下一步」的 click 分支(同上)');
+    const seg = blankNonCode(src.slice(a, b), true); // 注释抹掉、字面量留着:判的是真跑的那几行
+    assert(/nx\.run\(main\)/.test(seg), 'click 须把带 run 的下一步(如 regen-stale 重生成过期镜)真派下去,不许只剩几个跳转分支');
+    assert(!/regen-stale/.test(seg), 'click 不得在这里另判一份档位:哪一档配哪个动作只在 Pipeline.nextForEp 一处');
+  } },
   { name: 'Issues 命令类条目的 cmd 同样在注册表内(与 fixIssue 执行路径一致)', fn() {
     const sb = loadContract();
     const names = sb.Commands.list().map(c => c.name);
@@ -11369,7 +11416,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 639, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 641, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 147, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 109, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
