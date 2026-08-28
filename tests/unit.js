@@ -4480,7 +4480,9 @@ const releaseTests = [
   /* ---- 交付包打包:抓分镜失手不许静默(W149) ----
    * buildReleaseZip 里抓分镜文件那段原本兜着一个 `catch (_) {}`:Exporter 抛错时这一集的整个
    * storyboard/ 目录一个文件都不进包(兜底 CSV 在 else 分支上,抓取失败这一路走不到),
-   * 而回执与下载提示照报「交付包已下载:N 个文件」——用户拆包才发现缺分镜。 */
+   * 而回执与下载提示照报「交付包已下载:N 个文件」——用户拆包才发现缺分镜。
+   * 坏的不是"包落不落得下来"而是"包里少了几集分镜表":r.files 按 files.length 现数,
+   * 少了几集那个数照样是对的,得拿它对着分集数才看得出来——所以要另加一类计数,不是抛错中断整包。 */
   { name: '交付包 · 抓分镜失手如实回报 + 回退内置分镜表(不静默少一集分镜还按成功交付)', fn: async () => {
     const sb = loadRelease();
     const packed = []; // ZipUtil 桩:截下每次真正入包的清单
@@ -4507,7 +4509,39 @@ const releaseTests = [
     sb.Exporter._buildMaterialShim = async () => undefined;
     const r2 = await sb.Release.buildReleaseZip(p, { skipVideo: true });
     assertEq(r2.storyboardFailed.length, 2, 'shim 不回数组时同样按失手记,实际 ' + JSON.stringify(r2.storyboardFailed));
+    assert(/分镜文件清单不是数组/.test(r2.storyboardFailed[0]),
+      '回执得说清是"清单不是数组",不是把 `.map of undefined` 这类内部报错原样甩出来:' + r2.storyboardFailed[0]);
     assertEq(packed.filter(f => /^storyboard\//.test(f.name)).length, 2, '同样回退内置分镜表');
+    // 压根没有 shim 是既有的降级一路(不是"失手"):照旧兜底 CSV,且不进失手计数
+    sb.Exporter = {};
+    const r3 = await sb.Release.buildReleaseZip(p, { skipVideo: true });
+    assertEq(r3.storyboardFailed.length, 0, '没有 shim 可调是既有降级路径,不是抓取失手,不许记进失手计数');
+    assertEq(packed.filter(f => /^storyboard\//.test(f.name)).map(f => f.name).join(','),
+      'storyboard/1_第一集_分镜表.csv,storyboard/2_第二集_分镜表.csv', '该路径下仍是原来那份兜底 CSV(兜底从 else 分支挪出来后行为不许变)');
+  } },
+  { name: '交付包 · 每集都得有分镜进包(r.files 那个数少了也是对的,只有对着分集数才看得出来)', fn: async () => {
+    /* 这条钉的是"文件数看不出缺表":r.files = files.length 是现数的,少两集分镜时它照样如实报数,
+     * 缺表与齐全的包在回执上长得一模一样。所以判据只能落在"每集 storyboard/ 下至少一份"
+     * 与 storyboardFailed 这一类计数上,而不是文件总数。 */
+    const sb = loadRelease();
+    const packed = [];
+    sb.ZipUtil = { create: files => { packed.length = 0; files.forEach(f => packed.push(f)); return { length: files.length }; }, download() {} };
+    const titles = ['第一集', '第二集', '第三集'];
+    const p = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }],
+      episodes: titles.map((t, i) => releaseReadyEp({ id: 'ep' + (i + 1), title: t })) };
+    // 只有第二集抓崩:另外两集照常走 Exporter 清单,失手那集回退兜底表,一条都不许漏记
+    sb.Exporter._buildMaterialShim = async (proj, ep) => {
+      if (ep.title === '第二集') throw new Error('分镜读崩了');
+      return [{ name: '分镜表.csv', data: 'x' }];
+    };
+    const r = await sb.Release.buildReleaseZip(p, { skipVideo: true });
+    assertEq(r.storyboardFailed.length, 1, '只崩一集就只记一条,实际 ' + JSON.stringify(r.storyboardFailed));
+    assert(/第二集/.test(r.storyboardFailed[0]), '记的得是崩掉那集:' + r.storyboardFailed[0]);
+    // 对着分集数点:每集在包里都得找得到自己的分镜(原空 catch 下第二集一份都没有)
+    const withBoard = p.episodes.filter((ep, i) =>
+      packed.some(f => new RegExp('^storyboard/' + (i + 1) + '_' + ep.title + '[/_]').test(f.name))).length;
+    assertEq(withBoard, p.episodes.length, `分镜进包的集数应等于分集数 ${p.episodes.length},实际 ${withBoard}:` + packed.map(f => f.name).join(','));
+    assertEq(r.files, packed.length, 'r.files 就是 files.length 现数(它没错,只是看不出缺表——判据不许落在它身上)');
   } },
   { name: '交付包 · 抓分镜失手在下载回执上看得见(只印文件数的话,缺分镜的包与齐全的包长得一样)', fn: async () => {
     const sb = loadReleaseZip(); // 落地那步现在会如实抛错,故这条得用带下载桩的装配让包真落下来,才轮得到看提示
@@ -4611,6 +4645,24 @@ const releaseTests = [
     assertEq(sb.__clicks.length, 0, '报了失败就不该有文件落地(否则用户手里那份是空壳)');
     assertEq(btn.disabled, false, '失败后按钮恢复可点(能重试)');
     assertEq(btn.textContent, '📦 打包交付 ZIP');
+  } },
+  { name: '交付包 · 打包本身崩了照旧抛出(缺件计数不吞真失败;下载落地失败那一路已改为如实抛错,不再兜底空壳)', fn: async () => {
+    /* 「包内缺件」记 summary、「打包本身崩了」照旧抛出,两类失败各走各的,新增的缺件计数不许把真失败吞掉。
+     * 同段另一件事已翻面:落盘那步失败原本兜底改调 ZipUtil.download 落一个空壳包再照报「已下载」,
+     * 现在是如实抛错(源级钉住兜底那一行不许回来,行为面由上面两条各自钉着)。 */
+    const rel = fs.readFileSync(path.join(ROOT, 'js/release.js'), 'utf8');
+    const seg = rel.slice(rel.indexOf('async function downloadReleaseZip'), rel.indexOf('function execFix'));
+    assert(!/ZipUtil\.download\(/.test(seg),
+      '下载落地失败不许再兜底改调 ZipUtil.download(它走的是同一套 Blob/createObjectURL,落不下来照样落不下来,给的是个能打开的空壳):' + seg.match(/ZipUtil\.download\([^)]*\)/g));
+    assert(/throw new Error\('交付包已打好,但浏览器下载没能落地:/.test(seg), '落地失败得如实抛出带原因的错误');
+    // G4–G6 那三门的计数口径同样不在本轮射程内
+    assert(/aggFail: 0/.test(rel) || /counts/.test(rel), 'G4–G6 计数仍取 Domain.episodeState.counts');
+    const sb = loadRelease();
+    sb.ZipUtil = { create: () => { throw new Error('ZipUtil 崩了'); }, download() {} };
+    const p = { id: 'p1', name: '剧', subjects: [], episodes: [releaseReadyEp()] };
+    let threw = null;
+    await sb.Release.buildReleaseZip(p, { skipVideo: true }).catch(e => { threw = e; });
+    assert(threw && /ZipUtil 崩了/.test(threw.message), '打包本身崩了照旧抛出(新增的缺件计数不吞真失败),实际:' + threw);
   } },
 ];
 
@@ -8055,7 +8107,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 525, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 527, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 141, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -8191,7 +8243,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 171;
+    const FLOOR = 172;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
