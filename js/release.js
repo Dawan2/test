@@ -14,7 +14,8 @@
  * 其他能力:
  * - Releases 留痕:p.releases = [{digest, ver, who, when, note, checksum, rollbackVer, gateResult}]
  * - 回滚:Rollback.release(p, digest) 把 state/history 快照恢复到对应 release 的 __ver
- * - 打包:buildReleaseZip(p) → mp4 + SRT + 分镜CSV/HTML + 项目元 JSON(通过 ZipUtil.create;无 mp4 可用时跳过并回报)
+ * - 打包:buildReleaseZip(p) → mp4 + SRT + 分镜CSV/HTML + 项目元 JSON(通过 ZipUtil.create;无 mp4 可用时跳过并回报,
+ *   分镜文件抓取失手回退内置分镜表并同样回报——包里缺什么一律进回执 + 下载提示 + 包内 README.txt,不静默按成功交付)
  * - 合规复核:G7 命中合规红线 → 把命中词/句子登记 HR 待复核(assetReviews 入队),HR 关闭后 G7 变为 pass
  * - 阈值配置:getSettings().releaseMinReviewScore,默认 7;DEFAULTS 增加该键(不侵入 gsettings.js 太多,仅 fallback)
  *
@@ -276,7 +277,7 @@
     if (!window.ZipUtil || !ZipUtil.create) throw new Error('ZipUtil 未加载,无法打包');
     const files = [];
     const eps = (p.episodes || []).slice();
-    const summary = { ok: 0, skipped: [], stale: [] };
+    const summary = { ok: 0, skipped: [], stale: [], storyboardFailed: [] };
 
     for (let i = 0; i < eps.length; i++) {
       const ep = eps[i];
@@ -298,20 +299,23 @@
       if (ep.composedSrt) {
         files.push({ name: 'subtitles/' + epName + '.srt', data: ep.composedSrt });
       }
-      // 3) 分镜 CSV/HTML (复用 Exporter.buildMaterialFiles — 如果加载)
+      /* 3) 分镜 CSV/HTML (复用 Exporter.buildMaterialFiles — 如果加载)
+       * 抓取失手不许静默:吞掉的话交付包少这一集的整个 storyboard/ 目录,而回执照报成功——
+       * 用户拆包才发现缺文件。这里与上面成片那一路同纪律:如实登记进 summary 并回退内置分镜表,
+       * 让交付包至少不缺这一集的分镜(files 先整批算完再入列,半截清单不会与兜底那份混着进包)。 */
+      let storyboardOK = false;
       if (window.Exporter && typeof Exporter._buildMaterialShim === 'function') {
-        // 兼容:Exporter.buildMaterialFiles 没暴露在 window 上? 看实际:exportMaterials 调用了 buildMaterialFiles
-        const mf = window.Exporter._buildMaterialShim || (() => []);
         try {
-          const list = await mf(p, ep);
-          list.forEach(f => files.push({ name: 'storyboard/' + epName + '/' + f.name, data: f.data }));
-        } catch (_) {}
-      } else {
-        // 兜底:至少一份 CSV + shots list
-        const rows = [['镜号', '名称', '剧情', '运镜', '旁白', '台词', '时长', '状态']];
-        (ep.shots || []).forEach((s, j) => rows.push([j + 1, s.name || '', s.plot || '', s.camera || '', s.narration || '', s.dialogue || '', (s.duration || 5), s.video && s.video.status || '']));
-        files.push({ name: 'storyboard/' + epName + '_分镜表.csv', data: rows.map(r => r.map(x => `"${String(x).replace(/"/g, '""')}"`).join(',')).join('\n') });
+          const list = await Exporter._buildMaterialShim(p, ep);
+          if (!Array.isArray(list)) throw new Error('分镜文件清单不是数组');
+          list.map(f => ({ name: 'storyboard/' + epName + '/' + f.name, data: f.data })).forEach(f => files.push(f));
+          storyboardOK = true;
+        } catch (e) {
+          summary.storyboardFailed.push((ep.title || ep.id) + ':分镜文件抓取失败 ' + e.message + '(已回退内置分镜表)');
+        }
       }
+      // 兜底:至少一份 CSV + shots list(Exporter 未加载,或上面抓取失手回退)
+      if (!storyboardOK) files.push(fallbackStoryboard(ep, epName));
     }
     // 4) 项目元 JSON
     const meta = {
@@ -341,12 +345,22 @@
 跳过的视频:
 ${summary.skipped.length ? summary.skipped.map(s => ' - ' + s).join('\n') : ' (全部成功,共 ' + summary.ok + ' 集)'}
 
+分镜文件抓取失败(这些集包内只有内置兜底分镜表,提示词等附件缺失):
+${summary.storyboardFailed.length ? summary.storyboardFailed.map(s => ' - ' + s).join('\n') : ' (无)'}
+
 过期提醒(建议重新合成后再交付):
 ${summary.stale.length ? summary.stale.map(s => ' - ' + s).join('\n') : ' (无)'}
 ` });
 
     const bytes = ZipUtil.create(files);
-    return { bytes, files: files.length, videosOK: summary.ok, videosSkipped: summary.skipped, stale: summary.stale, size: bytes.length };
+    return { bytes, files: files.length, videosOK: summary.ok, videosSkipped: summary.skipped,
+      storyboardFailed: summary.storyboardFailed, stale: summary.stale, size: bytes.length };
+  }
+  /* 内置兜底分镜表:Exporter 未加载或抓取失手时,交付包里这一集至少还有一份分镜 CSV */
+  function fallbackStoryboard(ep, epName) {
+    const rows = [['镜号', '名称', '剧情', '运镜', '旁白', '台词', '时长', '状态']];
+    (ep.shots || []).forEach((s, j) => rows.push([j + 1, s.name || '', s.plot || '', s.camera || '', s.narration || '', s.dialogue || '', (s.duration || 5), s.video && s.video.status || '']));
+    return { name: 'storyboard/' + epName + '_分镜表.csv', data: rows.map(r => r.map(x => `"${String(x).replace(/"/g, '""')}"`).join(',')).join('\n') };
   }
   function safeName(s) { return String(s || '').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 60) || 'untitled'; }
   async function downloadReleaseZip(p, opts) {
@@ -363,6 +377,9 @@ ${summary.stale.length ? summary.stale.map(s => ' - ' + s).join('\n') : ' (无)'
       setTimeout(() => URL.revokeObjectURL(a.href), 3000);
     } catch (_) { ZipUtil.download(name, [{ name: 'project_meta.json', data: '空下载兜底:请重新打包' }]); }
     if (window.U) U.toast(`交付包已下载:${r.files} 个文件,${r.videosOK}/${(p.episodes || []).length} 集成片${r.videosSkipped.length ? '(' + r.videosSkipped.length + ' 跳过)' : ''}`, 'success', 4000);
+    // 抓分镜失手在下载回执上如实报出:只印文件数的话,缺分镜的包与齐全的包在用户眼里一模一样
+    if (r.storyboardFailed && r.storyboardFailed.length && window.U)
+      U.toast(`${r.storyboardFailed.length} 集分镜文件抓取失败,包内已回退内置分镜表(提示词等附件缺失),详见包内 README.txt`, 'error', 6000);
     if (r.stale && r.stale.length && window.U) U.toast(`注意:${r.stale.length} 集成片/SRT 已过期(输入或剧本已变化),建议先重新合成再交付`, 'info', 5000); // 判旧警告不拦截打包,如实提示
     return r;
   }
