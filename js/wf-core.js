@@ -772,13 +772,14 @@ ${hasImage ? '附图是该分镜当前生成画面,请结合实际画面与 Prom
   /* 修订循环重抽面 + 逐镜修正意见(审片修订闭环 SK-25 的编排入参,双端单一来源):
    * 镜集一律取 Domain.reviseTargets(达标线/判旧/交集/定稿口径不在本层写第二份),
    * fixes 按 reportId 回取该镜那份报告原文再抽取——报告被挤出最近 5 条时为空串,修订步据此沿用原提示词。
+   * nth(第几行同 id)原样带出:回写侧据它按行定位本轮那一行,不在编排层另数一遍序数。
    * 服务端 /api/wf/smart-review 的 lowShots 与 CLI produce 闭环的 shotIds 同读本函数。 */
   W.reviseSubset = function (ep) {
     const shots = (ep && ep.shots) || [];
     return Domain.reviseTargets(ep).map(t => {
-      const s = shots.find(x => x.id === t.shotId);
+      const s = shots[t.order - 1]; // order 就是这一条落到的实位:同 id 多行时 find 会把后几行的意见取成首行那份
       const rep = t.reportId && s ? ((s.reviews || []).find(r => r.id === t.reportId)) : null;
-      return { shotId: t.shotId, order: t.order, score: t.score, fixes: W.reviewFixes(rep) };
+      return { shotId: t.shotId, order: t.order, score: t.score, nth: t.nth, fixes: W.reviewFixes(rep) };
     });
   };
   /* 一键优化重写提示词(自 review.js optimizeShot 下沉,双端单一来源:浏览器审片闭环与 CLI produce 修订重抽共用) */

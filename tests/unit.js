@@ -3482,6 +3482,66 @@ const commandsTests = [
     assertEq(second.rounds, first.rounds, '两次逐格相同——预算按调用给,不跨调用累计');
     assert(!Object.keys(ep).some(k => /attempt|round/i.test(k)), '落库的分集对象上不该冒出第二份轮次账(要落库先定语义,并同轮改回执)');
   } },
+  { name: 'CLI produce 修订回写:同 id 多行时改的是本轮那一行(几笔优化钱不许全写首行)', fn: async () => {
+    /* 与 episode.generateVideos 那条同 id 多行成对,收的是修订这一步:
+     * 整集审片是按行出报告的,perShot 上同 id 有几条就是几行各自的分与 reportId;
+     * 回写若一律 findShot 首行,一轮里几笔 llm.optimize 全改首行那一句提示词、只重置首行的视频态——
+     * 后几行的低分片子既没按自己那份意见改词也没被重抽,下一轮照旧低分,轮次烧完止于 needs_human,
+     * 而每一轮的钱都真扣了(回执还照报 revised:[dup,dup])。落库面读 clone 语义的 disk 夹具。 */
+    const sb = loadCli();
+    const WfCore = require('../js/wf-core.js');
+    const pending = { confirm: true, image: 'i.png' };
+    const fx = cliDisk(sb, { sbConfig: { maxRetry: 1 }, shots: [
+      makeShot(0, Object.assign({ id: 'dup', plot: '首行', prompt: '原词-首行' }, pending)),
+      makeShot(1, Object.assign({ id: 'solo', plot: '不重复的那一镜', prompt: '原词-solo' }, pending)),
+      makeShot(2, Object.assign({ id: 'dup', plot: '第二行', prompt: '原词-第二行' }, pending)),
+    ] });
+    let repN = 0;
+    const genPerRound = []; // 每一段真下发到引擎的行(revise 之后那一段就是重抽面)
+    sb.genShotVideo = async (proj, epLive, s) => {
+      sb.__genShots.push(s.id); genPerRound.push(s.plot);
+      s.video = { status: 'done', url: '/uploads/gen/v' + sb.__genShots.length + '.mp4' };
+      return s;
+    };
+    sb.api = async (method, url, body) => {
+      if (/smart-review/.test(url)) { // 服务端写回口径:逐行出报告,perShot 同 id 几行就几条
+        const ep = fx.epOf();
+        const ids = (body && body.shotIds) || null;
+        const tg = ep.shots.filter(s => (!ids || ids.includes(s.id)) && s.video && s.video.status === 'done' && !s.final);
+        const per = tg.map(s => {
+          const rep = { id: 'rep' + (++repN), score: 5, issues: [{ suggestion: '修' + s.plot }] }; // 意见逐行不同
+          s.reviews = [rep].concat(s.reviews || []).slice(0, 5);
+          return { shotId: s.id, order: s.order, score: 5, reportId: rep.id };
+        });
+        const old = (ep.lastReview && ep.lastReview.perShot) || [];
+        ep.lastReview = { time: 't', avg: 5, perShot: old.filter(x => !per.some(y => y.shotId === x.shotId)).concat(per),
+          snapshotHash: WfCore.reviewSnapshotHashOf(ep), sourceRev: ep.contentRev || 0, graphRev: ep.graphRev || 0, common: { summary: '', issues: [] }, cut: null };
+        return { rev: 1, avg: 5, reviewed: tg.length, failed: [], lowShots: [], common: null, cut: null };
+      }
+      if (/llm\/chat/.test(url)) { // 重写模板里带着这一行自己那句修正意见,改完的词据此认得出是谁的
+        const fixes = (JSON.stringify(body).match(/修[^\\"]*行|修不重复的那一镜/) || ['无'])[0];
+        return { code: 0, parsed: { prompt: '改过(' + fixes + ')', changes: '按审片意见修订' } };
+      }
+      throw new Error('本条不该打到 ' + method + ' ' + url);
+    };
+    const r = await sb.EXEC['episode.produce'].run({ pid: 'p1', epid: 'ep1' }, {});
+    assertEq(r.status, 'needs_human', '桩里恒不达标,应止于质量闸门:' + JSON.stringify(r.error || {}));
+    const rows = fx.epOf().shots;
+    const words = () => rows.map(s => s.plot + ':' + s.prompt).join(' | ');
+    assertEq(rows[0].prompt, '改过(修首行)', '首行按自己那份意见改词:' + words());
+    assertEq(rows[2].prompt, '改过(修第二行)',
+      '第二行得按它自己那份意见改词——回写取首行时这一行一个字没动(优化钱照扣、下一轮照旧低分):' + words());
+    assertEq(rows[1].prompt, '改过(修不重复的那一镜)', '不重复的那一行照旧:' + words());
+    assertEq((rows[0].promptHistory || []).length, 1,
+      '首行只该被改一次(几条低分全落首行时它会被连改几遍):' + JSON.stringify(rows[0].promptHistory));
+    const revise = (r.result.steps || []).find(x => x.step === 'revise1');
+    assertEq((revise.result.revised || []).join(','), 'dup,solo,dup', '重抽面按行出,回执逐行如实报');
+    const regen = (r.result.steps || []).find(x => x.step === 'regen1');
+    assertEq(regen.result.ok, 3, '修订过的三行都得真重抽(视频态只重置了首行时这里只有两行):' + JSON.stringify(regen.result));
+    assertEq(genPerRound.slice().sort().join(','), '不重复的那一镜,第二行,首行',
+      '三行本来都已出片(批量生成那一步一行没跑),引擎实收的就是重抽这三行、一行不许少:' + genPerRound.join(','));
+    assertEq(new Set(rows.map(s => s.video.url)).size, 3, '三行手里各是各的片(同一段写几遍等于只买到一段)');
+  } },
   { name: 'subject.generateImage:一位也没跑时回执自带实话(仍是 ok,digest 照播;点名到的主体照旧重生成)', fn: async () => {
     /* 与批量生成视频同一形状的空跑:全部主体都有图 / 点名的主体已不在库里,两档都是 ok/total:0,
      * 逐主体引擎一次都没起来故没有引擎提示可依赖——不在回执上把它与"跑完了"分开,用户点完读不到任何回音。 */
@@ -5013,6 +5073,36 @@ const domainTests = [
     ep.lastReview.snapshotHash = sb.Domain.reviewSnapshotHashOf(ep);
     ep.contentRev = 1;
     assertEq(sb.Domain.reviseTargets(ep).length, 0, '剧本修订后同样判旧回空(与 reviewStaleByScript 同一份判定)');
+  } },
+  { name: 'reviseTargets:同 id 多行时逐条落到自己那一行(第几条逐镜分 = 第几行同 id,序数同 nthShot)', fn: () => {
+    const sb = loadDomain();
+    /* 整集审片按行出报告:同 id 三行,perShot 上就是三条各带各自的分与 reportId。
+     * 全用 findIndex 首行时这三条一律指首行——展示上三镜都报"镜 1",
+     * 回写侧(CLI produce 修订)则是三笔优化钱全改首行,后两行永远修不好。 */
+    const ep = { content: '剧本', contentRev: 0, graphRev: 0,
+      shots: [{ id: 'dup', order: 0 }, { id: 'solo', order: 1 }, { id: 'dup', order: 2 }, { id: 'dup', order: 3 }],
+      lastReview: { avg: 5, perShot: [
+        { shotId: 'dup', order: 0, score: 4, reportId: 'rv0' },
+        { shotId: 'solo', order: 1, score: 9, reportId: 'rvS' },
+        { shotId: 'dup', order: 2, score: 5, reportId: 'rv2' },
+        { shotId: 'dup', order: 3, score: 6, reportId: 'rv3' },
+      ] } };
+    const t = sb.Domain.reviseTargets(ep);
+    assertEq(t.map(x => x.order).join(','), '1,3,4', '三条低分各报自己那一行的实位(全指首行时是 1,1,1)');
+    assertEq(t.map(x => x.nth).join(','), '0,1,2', 'nth 是第几行同 id:回写侧据它定位本轮那一行');
+    assertEq(t.map(x => x.reportId).join(','), 'rv0,rv2,rv3', '各条带回的仍是自己那份报告');
+    assertEq(sb.Domain.reviseShotIds(ep).join(','), 'dup,dup,dup', '子集参数照旧按行出(去重成一条时后两行永远重抽不到)');
+    // 序数在整份 perShot 上数,不在低分子集上数:首行达标被筛掉时,余下两条仍指第二、三行
+    const ep2 = JSON.parse(JSON.stringify(ep));
+    ep2.lastReview.perShot[0].score = 9;
+    assertEq(sb.Domain.reviseTargets(ep2).map(x => x.order).join(','), '3,4',
+      '只数低分那几条会整体错位成 1,3(首行被改、末行没人管)');
+    // 报告写下之后行被删掉:序数越界退回首行(与 nthShot 的越界口径逐字相同,不许算出 -1 行)
+    const ep3 = JSON.parse(JSON.stringify(ep));
+    ep3.shots = ep3.shots.filter(s => s.order !== 3);
+    const t3 = sb.Domain.reviseTargets(ep3);
+    assertEq(t3.map(x => x.order).join(','), '1,1,3', '越界那一条退回首行(order 1),不许算出 -1 行把它整条丢掉');
+    assertEq(t3.map(x => x.nth).join(','), '0,2,1', 'nth 原样带出:回写侧对 nth=2 同样越界退回首行,两侧落到同一行');
   } },
   { name: 'reviseRetryLimit:收敛次数单源——缺省 2、越界向内钳、小数截整、候选值按优先级择先', fn: () => {
     const sb = loadDomain();
@@ -9050,6 +9140,18 @@ const contractTests = [
     assertEq(sub.map(x => x.order).join(','), '1,3', 'order 与 Domain 同口径:分镜表实位');
     assertEq(sub[0].fixes, '', '报告取不到时 fixes 为空串(修订步据此沿用原提示词,不是 undefined 冒充)');
     assertEq(sub[1].fixes, '补主光; add rim light', 'fixes 应按 reportId 取回那份报告再抽建议');
+    /* 同 id 多行:整集审片按行出报告,每一条的意见就在它自己那一行的 reviews 里——
+     * 取 find 首行时后几条一律读到首行那份(或压根取不到而成空串,修订步据此沿用原提示词一个字不改) */
+    const dup = { content: '剧本', contentRev: 0, graphRev: 0,
+      shots: [{ id: 'dup', order: 0, reviews: [{ id: 'rA', issues: [{ suggestion: '补主光' }] }] },
+        { id: 'dup', order: 1, reviews: [{ id: 'rB', issues: [{ suggestion: '换机位' }] }] }],
+      lastReview: { avg: 5, perShot: [
+        { shotId: 'dup', order: 0, score: 5, reportId: 'rA' },
+        { shotId: 'dup', order: 1, score: 5, reportId: 'rB' },
+      ] } };
+    assertEq(WfCore.reviseSubset(dup).map(x => x.order + ':' + x.fixes).join(' / '), '1:补主光 / 2:换机位',
+      '同 id 多行时每一条的 fixes 取自己那一行的报告(取首行即红)');
+    assertEq(WfCore.reviseSubset(dup).map(x => x.nth).join(','), '0,1', 'nth 原样带给回写侧,编排层不另数一遍序数');
   } },
   { name: '修订闭环重抽面单源:server/CLI/助手摘要/问题中心都不自筛低分镜,CLI 不摘回执 lowShots 当 shotIds', fn() {
     /* G-03 这一面钉的是"该重抽哪几镜由编排层派生":判据(达标线 / 报告判旧 / 与分镜表取交集 / 定稿不重抽)
@@ -12613,7 +12715,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 667, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 669, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 148, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -13021,7 +13123,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 267;
+    const FLOOR = 268;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
