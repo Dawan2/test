@@ -3281,15 +3281,18 @@ const issuesTests = [
 ];
 
 /* ================= 套件 14:plans.js(持久计划,第三阶段) ================= */
-function loadPlans() {
+/* ov:写进 Store 覆盖表(LLM 规划步的人设句经注册表键 plan.system 取值,加载序与 index.html 同) */
+function loadPlans(ov) {
   const sb = makeSandbox();
   installCommon(sb);
+  if (ov) sb.Store.state.settings.promptOverrides = ov;
   sb.Commands = {
     list: () => [{ name: 'episode.generateStoryboard' }, { name: 'episode.generateVideos' }, { name: 'episode.compose' }, { name: 'episode.produce' }],
     execute: async (name, args) => { sb.__cmdCalls.push({ name, args }); return sb.__cmdResult || { ok: true, status: 'done', result: {} }; },
   };
   sb.__cmdCalls = [];
   loadFile(sb, 'domain.js');
+  loadFile(sb, 'prompts.js');    // LLM 规划步的人设句取值口(与 index.html 同顺序:domain → prompts → knowledge)
   loadFile(sb, 'knowledge.js');  // skill 索引的加载期依赖(与 index.html 同顺序:domain → knowledge → skills)
   loadFile(sb, 'skills.js');     // 计划步骤的命令与步序取自主线全链 playbook(SK-05)
   loadFile(sb, 'cmd-registry.js'); // 投影步的集级/项目级作用域判定(needs)
@@ -5256,6 +5259,98 @@ action 二选一:
     // 这条链路没有服务端对端:收编解决的是可覆盖,不是可 headless(别处冒出第二个消费点即红)
     assert(!fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8').includes('把该集剧本拆成结构化事件序列'),
       'server.js 不应出现事件图谱拆解步(该步只在浏览器分集页链路上)');
+  } },
+  { name: '制作计划生成人设:独立键 plan.system,不与 Agent 四条对话人设合成,命令白名单与 JSON 契约未开放', fn() {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const DEF = '你是「虎鲸导演助手」的制作计划器:把用户目标拆为按序可执行的制作步骤。';
+    assertEq(Prompts.get('plan.system'), DEF, '缺省人设句应与收编前内联那一句逐字节相同');
+    assertEq(Prompts.get('plan.system', { 'plan.system': '计划器。' }), '计划器。', '覆盖 plan.system 时取值跟随');
+    const it = Prompts.list().find(x => x.key === 'plan.system');
+    assert(it && !it.vars.length && it.name.startsWith('制作计划生成') && it.name.includes('系统人设'),
+      '注册表应登记 plan.system 条目(无变量,可在全局默认值页在线改写)');
+    assertEq(Prompts.list().filter(x => x.def === DEF).length, 1, '该人设句应恰好命中注册表一条');
+    /* 独立一条键:同属「虎鲸导演助手」名下的四条对话人设一句都不与它同字面(同字面才谈得上复用/合并),
+     * 且四条的取值都不受本键覆盖影响(串台即红) */
+    const CHAT = ['agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem'];
+    const ov = { 'plan.system': '计划器。' };
+    CHAT.forEach(k => {
+      assert(Prompts.get(k) !== DEF, '制作计划人设不得与对话键 ' + k + ' 同字面');
+      assertEq(Prompts.get(k, ov), Prompts.get(k), '覆盖 plan.system 时 ' + k + ' 应逐字节不动');
+    });
+    // 排在对话四条之后:它是同一个助手的另一条产物线,不属于任何一种对话模式(顺序就是全局默认值页的排列)
+    const keys = Prompts.list().map(x => x.key);
+    CHAT.forEach(k => assert(keys.indexOf(k) < keys.indexOf('plan.system'), 'plan.system 应排在对话键 ' + k + ' 之后'));
+    // 只收人设句:命令白名单与返回 JSON 的 title/steps 契约不做成可覆盖变量
+    const defs = Prompts.list().map(x => x.def).join('\n');
+    ['"title"', '"steps"', '"label"', '可用领域命令', '2-8 步'].forEach(f =>
+      assert(!defs.includes(f), '契约半不进注册表(改坏即整轮拆不出步骤):' + f));
+    assert(Skills.byId('core.personaCtx').prompts.includes('plan.system'), 'SK-03 应登记 plan.system');
+  } },
+  { name: '制作计划生成人设(源级+行为):js/plans.js 零内联,LLM 规划步缺省 system 逐字节不变、契约半只随命令表变', fn: async () => {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const DEF = '你是「虎鲸导演助手」的制作计划器:把用户目标拆为按序可执行的制作步骤。';
+    /* 沙箱里 Commands.list() 的四条(loadPlans 的 stub),白名单半现取命令表 */
+    const CMDS = 'episode.generateStoryboard,episode.generateVideos,episode.compose,episode.produce';
+    const REST = '可用领域命令:' + CMDS + '(episode.generateStoryboard=智能分镜/episode.generateVideos=批量生成视频/'
+      + 'episode.smartReview=整集审片/episode.compose=合成成片/episode.produce=一键成片/episode.understanding=本集理解;'
+      + '其余步骤 cmd 留空,由用户手动完成)。只返回 JSON {"title":"计划名(≤12字)","steps":[{"label":"步骤名(≤20字)",'
+      + '"cmd":"命令名或空串","ep":"分集标题(仅集级命令需要,须与分集列表完全一致)"}]}(2-8 步,按执行顺序)。';
+    const runPlan = async ovKey => {
+      const sb = loadPlans(ovKey ? { 'plan.system': ovKey } : null);
+      const sent = [], opts = [];
+      sb.Tasks.run = async (opt, fn) => { opts.push(opt); return fn(); };
+      sb.Understanding.chatJSONRobust = async req => {
+        sent.push(req);
+        return { title: '第一集出片', steps: [{ label: '智能分镜', cmd: 'episode.generateStoryboard', ep: '第一集' }, { label: '人工补配乐', cmd: '' }] };
+      };
+      const p = { id: 'p1', name: '测试剧', style: '漫剧', subjects: [], episodes: [{ id: 'ep1', title: '第一集', content: '剧本正文', shots: [] }] };
+      const plan = await sb.Plans.generate(p, '把第一集推到出片');
+      return { sb, sent, opts, plan };
+    };
+    const a = await runPlan();
+    assertEq(a.sent.length, 1, 'LLM 规划步应恰好发一次请求');
+    assertEq(a.sent[0].system, DEF + REST, '缺省 system 应与收编前的内联字面逐字节相同(命令白名单与 JSON 契约半在内)');
+    assertEq(a.sent[0].user, '项目「测试剧」(漫剧)。分集列表:第一集[ready]。用户目标:把第一集推到出片',
+      'user 半应逐字节不变(项目/分集摘要与用户目标在内)');
+    assertEq(a.sent[0].temperature + '/' + a.sent[0].max_tokens, '0.3/1500', '取样参数一字未动');
+    // 计费口径一字未动:1 积分登记在制作计划生成动作上,上游按 llm.agent 计费
+    assertEq(a.opts[0].cost + '/' + a.opts[0].actionName, '1/制作计划生成', '计费登记应仍是 1 积分的制作计划生成');
+    assertEq(a.sent[0].billingAction, 'llm.agent', '上游计费动作应仍是 llm.agent');
+    // 步骤钳制仍在:注册命令步带 epid,未注册/空 cmd 落导航步
+    assertEq(a.plan.title, '第一集出片');
+    assertEq(a.plan.steps.map(s => (s.cmd || 'goto') + ':' + (s.epid || '-')).join(','),
+      'episode.generateStoryboard:ep1,goto:-', '实际:' + JSON.stringify(a.plan.steps));
+    // 覆盖只换人设句:契约半与 user 半逐字节不动
+    const b = await runPlan('你是我的排期助手(覆盖生效)。');
+    assertEq(b.sent[0].system, '你是我的排期助手(覆盖生效)。' + REST, '覆盖 plan.system 时该步取值跟随');
+    assertEq(b.sent[0].system.slice(b.sent[0].system.indexOf('可用领域命令')), REST, '覆盖不得动到命令白名单与 JSON 契约半');
+    assertEq(b.sent[0].user, a.sent[0].user, '覆盖只换人设句:user 半逐字节不变');
+    // 源级:取值口就在该步(与它的 user 半锚点配对),文件里零内联
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'plans.js'), 'utf8');
+    assert(/system: Prompts\.get\('plan\.system'\) \+ `可用领域命令:[\s\S]{0,900}用户目标:\$\{goal\}/.test(src),
+      'LLM 规划步应就地经 Prompts.get 取人设(浏览器隐式读 Store 覆盖表),且与该步 user 半锚点配对');
+    assertEq((src.match(/你是「虎鲸导演助手」的制作计划器/g) || []).length, 0, 'js/plans.js 不应再内联该人设句(覆盖不会跟过去)');
+    assertEq((src.match(/system: '你是|system: `你是/g) || []).length, 0, 'js/plans.js 应零内联人设(本文件只此一处 LLM 步)');
+    // 全仓持有者名单:这句字面恰好只剩注册表一份(别处抄第二份即红,哪怕原文件仍走注册表)
+    const holders = ['server.js', 'cli.js', 'mcp.js', 'index.html']
+      .concat(fs.readdirSync(path.join(ROOT, 'js')).filter(n => n.endsWith('.js')).map(n => 'js/' + n))
+      .filter(rel => fs.readFileSync(path.join(ROOT, rel), 'utf8').includes(DEF)).sort();
+    assertEq(holders.join(','), 'js/prompts.js', '人设句字面应只剩注册表一份');
+    // 不许长出第二端:该步只在浏览器项目页,收编解决的是可覆盖不是可 headless
+    ['server.js', 'cli.js', 'mcp.js'].forEach(rel =>
+      assert(!fs.readFileSync(path.join(ROOT, rel), 'utf8').includes('把用户目标拆为按序可执行的制作步骤'),
+        rel + ' 不应出现制作计划生成步(该步只在浏览器项目页链路上)'));
+    /* 记账:键挂在人设通道宿主 SK-03 名下(已落地那半),仍欠段写明契约半不开放;
+     * 计划层的编排宿主 SK-05 那条 note 须写明另一条 LLM 规划路径不切主线投影、人设句在本键名下 */
+    const sk3 = Skills.byId('core.personaCtx');
+    const owed = (sk3.note || '').split('仍欠').slice(1).join('仍欠');
+    assert(sk3.note.includes('plan.system'), 'SK-03 的 note 须点名已收编的键 plan.system');
+    assert(owed.includes('可用领域命令白名单'), 'SK-03 的仍欠段须写明制作计划那条的契约半不开放覆盖');
+    const sk5 = Skills.byId('core.playbookProjection');
+    assert(sk5.note.includes('plan.system') && sk5.note.includes('generate'),
+      'SK-05 的 note 须写明计划层 LLM 规划路径的人设句已收编(实况同步)');
   } },
   { name: '审片升为主线一等步骤(G-03):板块 Agent 有审片席;plans/工作区/CLI 都映射 episode.smartReview', fn() {
     const D = require(path.join(ROOT, 'js/domain.js'));

@@ -117,7 +117,9 @@
   }
 
   /* ================= LLM 规划:用户目标 → 步骤清单(1 积分,失败退费) =================
-   * 步骤钳制:cmd 必须在 Commands.list() 注册表内;集级命令必须能按分集标题定位到 epid,否则丢弃该步。 */
+   * 步骤钳制:cmd 必须在 Commands.list() 注册表内;集级命令必须能按分集标题定位到 epid,否则丢弃该步。
+   * 人设句取自注册表键 plan.system(用户在「全局默认值」页改得到);可用领域命令白名单与返回 JSON 契约
+   * 仍就地拼、不开放覆盖——改坏即整轮拆不出有效步骤。 */
   async function generate(p, goal) {
     goal = String(goal || '').trim().slice(0, 200);
     if (!goal) { U.toast('请先描述计划目标', 'info'); return null; }
@@ -130,7 +132,7 @@
       }).join(';');
       const out = await Understanding.chatJSONRobust({
         model,
-        system: `你是「虎鲸导演助手」的制作计划器:把用户目标拆为按序可执行的制作步骤。可用领域命令:${cmds || '(无)'}(episode.generateStoryboard=智能分镜/episode.generateVideos=批量生成视频/episode.smartReview=整集审片/episode.compose=合成成片/episode.produce=一键成片/episode.understanding=本集理解;其余步骤 cmd 留空,由用户手动完成)。只返回 JSON {"title":"计划名(≤12字)","steps":[{"label":"步骤名(≤20字)","cmd":"命令名或空串","ep":"分集标题(仅集级命令需要,须与分集列表完全一致)"}]}(2-8 步,按执行顺序)。`,
+        system: Prompts.get('plan.system') + `可用领域命令:${cmds || '(无)'}(episode.generateStoryboard=智能分镜/episode.generateVideos=批量生成视频/episode.smartReview=整集审片/episode.compose=合成成片/episode.produce=一键成片/episode.understanding=本集理解;其余步骤 cmd 留空,由用户手动完成)。只返回 JSON {"title":"计划名(≤12字)","steps":[{"label":"步骤名(≤20字)","cmd":"命令名或空串","ep":"分集标题(仅集级命令需要,须与分集列表完全一致)"}]}(2-8 步,按执行顺序)。`,
         user: `项目「${p.name}」(${p.style || ''})。分集列表:${epsInfo || '暂无分集'}。用户目标:${goal}`,
         temperature: 0.3, max_tokens: 1500,
         billingAction: 'llm.agent', operationId: 'pl_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),

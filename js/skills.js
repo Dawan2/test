@@ -885,7 +885,7 @@
       prompts: ['split.system', 'extract.system', 'digest.planSystem', 'graph.system', 'sb.boardSceneSystem', 'sb.boardDraftSystem', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem',
         'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem',
         'narration.system', 'reading.system', 'concept.system', 'light.system',
-        'voice.recommendSystem', 'voice.recommendBatchSystem'],
+        'voice.recommendSystem', 'voice.recommendBatchSystem', 'plan.system'],
       cmds: ['episode.understanding', 'episode.generateStoryboard', 'episode.smartReview'], gaps: ['G-01'],
       note: 'G-01 已落地:服务端 /api/wf/* 各端点经唯一装配口 wfPersonaNote 注入生效人设(板块雇佣 > 全局雇佣),'
         + '浏览器同装配口;infra 面的 pending 已按实况清空(gaps() 只投影 gaps 字段、不看 pending,清账动不到投影),'
@@ -916,10 +916,15 @@
         + '与多轮那三份同为只有浏览器一个消费点的键(用户在「全局默认值」页改得到)。'
         + '分集页事件图谱拆解步的人设句同形收编为独立键 graph.system(取值口在 js/episodes.js 就地经 Prompts.get,'
         + '浏览器隐式读全局默认值页的覆盖表);它与多轮那三条同口径:只有浏览器一个消费点,收编解决的是可覆盖不是可 headless。'
+        + '制作计划 LLM 规划步(js/plans.js generate)的人设句同形收编为独立键 plan.system——角色是"制作计划器",'
+        + '出的是按序可执行的步骤表而不是对话回复,故不与对话四条(单轮/分集面板/全局抽屉/预排)合成一个键;'
+        + '取值口就在该步经 Prompts.get,同为只有浏览器一个消费点的键。'
         + '仍欠:四处的 ops 协议/字段面/命令白名单/返回 JSON 约定仍由各自装配口拼、不开放覆盖'
         + '(那半是 ops 解析契约,用户改坏即整轮无 ops);'
         + '音色推荐两条同理只收人设句——音色库取值范围与返回 JSON 约定仍写在各自调用点、不开放覆盖'
         + '(用户改坏即推荐值落不回音色库,只能退随机);'
+        + '制作计划那条同理只收人设句——可用领域命令白名单与返回 JSON 的 title/steps 契约仍就地拼、不开放覆盖'
+        + '(用户改坏即整轮拆不出有效步骤,该步 1 积分失败退费);'
         + '多轮那三份与音色推荐两份都没有 Node 第二消费点,两端只落在取值口'
         + '(同一注册表键 + Prompts.get 读覆盖),不是两个消费点',
     },
@@ -964,6 +969,9 @@
         + '故本条不再手写全量 cmds,全部领域命令仍被索引覆盖由契约断言反查。'
         + '制作计划的步骤已改由本投影生成(js/plans.js fromWorkflow:命令名与步序现取本条 steps,'
         + '每步只在计划层登记"当下待不待办"的状态取材器,需要授权或人工挑选的状态出导航步不代授权);'
+        + '计划层另一条生成路径(js/plans.js generate:1 积分按用户目标 LLM 拆步)有意不切本投影——'
+        + '它拆的是用户自己那个目标而不是主线全链,故只受命令注册表钳制(cmd 必须已注册),'
+        + '人设句收在注册表键 plan.system 名下(登记在 SK-03);'
         + 'MCP 中段流程模板也由本投影切片(js/flow-tpl.js 按主体/分集/分镜/生成四段取本条 steps 的有序切片,'
         + '每步补"参数从哪取"与"断点在哪一码",经 cli flow-template 与 MCP 工具/提示模板出口,只读零计费不代授权)。'
         + 'G-12 的第三个落点也已接上:发布留痕收进命令注册表成 project.release(浏览器按钮/CLI/服务端端点/MCP 同名同结构),'
