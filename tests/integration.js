@@ -652,6 +652,36 @@ async function main() {
 
     const balAfterRel = (await req('GET', '/api/wallet', null, token)).data.balance;
     report('发布留痕零计费(不是计费动作,也不进 wfLLM)', balAfterRel === balBeforeRel, '前 ' + balBeforeRel + ' 后 ' + balAfterRel);
+
+    /* ============ 测试 26(W101):满桶时回流该挤的是自动条,不是用户自己沉淀的「记住…」 ============
+     * 记忆桶只有 50 条,回流每集占三条(理解/分镜/审片各一键),`fb` 原地更新只挡同集反复跑;
+     * 桶满之后若按先进先出截尾,排在最前面的用户条先出局。此处把桶灌到刚好 50 条(2 条用户 +
+     * 48 条自动),再跑一次真实回流(发布留痕换个项目,故是新 fb 键必须追加),查实况。 */
+    const W = require('../js/wf-core.js');
+    const capPid = 'it_p_cap1';
+    const capUser = ['用户要求记住:女主统一叫林晚晴', '用户要求记住:夜戏一律偏冷色'];
+    const capMem = capUser.map(t => ({ text: t, time: '2026-08-27 10:00:00', scope: '分镜' }))
+      .concat(Array.from({ length: W.MEM_MAX - capUser.length }, (_, i) => (
+        { text: '分镜闭环回流·占位 ' + i, time: '2026-08-27 11:00:00', scope: '分镜', fb: 'sb:cap' + i })));
+    const sCap = await req('GET', '/api/state', null, token);
+    const pCap = donePid(); pCap.id = capPid; pCap.name = '发布项目·满桶';
+    const putCap = await req('PUT', '/api/state', { rev: +(sCap.data && sCap.data.rev || 0),
+      changes: { meta: { agentMemory: capMem }, projects: { [capPid]: pCap } } }, token);
+    const memFull = (await req('GET', '/api/state', null, token)).data.state.agentMemory || [];
+    report('满桶夹具就位(恰好 MEM_MAX 条:2 条用户沉淀 + 其余自动回流)',
+      putCap.status === 200 && memFull.length === W.MEM_MAX && memFull.filter(m => m.fb).length === W.MEM_MAX - 2,
+      'HTTP ' + putCap.status + ' 条数 ' + memFull.length);
+    const rlCap = await req('POST', '/api/wf/release', { pid: capPid, note: '满桶回流' }, token);
+    const memCap = (await req('GET', '/api/state', null, token)).data.state.agentMemory || [];
+    report('满桶下新回流仍守住 MEM_MAX(桶不被顶破)',
+      rlCap.status === 200 && memCap.length === W.MEM_MAX, 'HTTP ' + rlCap.status + ' 条数 ' + memCap.length);
+    report('用户自己沉淀的条目一条不少(满桶淘汰不动「记住…」)',
+      capUser.every(t => memCap.some(m => m.text === t)),
+      JSON.stringify(memCap.filter(m => /^用户要求记住:/.test(m.text || '')).map(m => m.text)));
+    report('被挤出的是最旧的自动回流条(sb:cap0 出局,新结论在桶里)',
+      !memCap.some(m => m.fb === 'sb:cap0') && memCap.some(m => m.fb === 'sb:cap1')
+      && memCap.some(m => m.fb === 'release:' + capPid),
+      JSON.stringify(memCap.map(m => m.fb || '-')).slice(0, 200));
   }
 
   console.log(`\n===== ${PASS}/${PASS + FAIL} PASS, ${FAIL} FAIL =====`);

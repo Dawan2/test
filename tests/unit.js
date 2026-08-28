@@ -8745,6 +8745,44 @@ const memoryTests = [
     assertEq(JSON.stringify(W.memWrite('x', [null, { text: '' }, {}])), '[]', '空条目不写入');
     assertEq(W.memRecall(W.memWrite([], [e1]), '', '成片').length, 1, '回流条目应能被同板块召回(回流→召回闭合)');
   } },
+  { name: 'memWrite 满桶淘汰优先级:先挤最旧的自动回流条(带 fb),用户自沉淀的「记住…」留住', fn() {
+    const W = require('../js/wf-core.js');
+    const user = n => ({ text: '用户要求记住:' + n, scope: '分镜' });
+    const auto = k => ({ text: '回流 ' + k, scope: '分镜', fb: k });
+    /* 满桶且桶里既有用户条又有自动条:新回流进来时该出局的是最旧的自动条,不是排在最前面的用户条
+     * (原地更新只挡同集反复跑;集数在长,按先进先出截尾的话用户偏好会被挤光) */
+    const full = [user('A'), user('B')].concat(Array.from({ length: W.MEM_MAX - 2 }, (_, i) => auto('sb:ep' + i)));
+    const w1 = W.memWrite(full, [auto('sb:new')]);
+    assertEq(w1.length, W.MEM_MAX, '仍守住 MEM_MAX 上限');
+    assertEq(w1.filter(m => /^用户要求记住:/.test(m.text)).map(m => m.text).join(','),
+      '用户要求记住:A,用户要求记住:B', '用户自沉淀的两条应一条不少');
+    assert(!w1.some(m => m.fb === 'sb:ep0'), '最旧的自动回流条应被挤出');
+    assert(w1.some(m => m.fb === 'sb:ep1') && w1[w1.length - 1].fb === 'sb:new', '次旧自动条与新结论都在');
+    assertEq(w1.slice(0, 2).map(m => m.text).join(','), '用户要求记住:A,用户要求记住:B', '用户条位置不动(淘汰只从自动条里挑)');
+    // 回流每集三条(理解/分镜/审片各一键):跑满 20 集也不该动用户那几条
+    let mem = [user('A'), user('B'), user('C')];
+    for (let ep = 1; ep <= 20; ep++) {
+      mem = W.memWrite(mem, ['und:ep' + ep, 'sb:ep' + ep, 'review:ep' + ep].map(auto));
+    }
+    assertEq(mem.length, W.MEM_MAX, '20 集回流后桶仍是 MEM_MAX');
+    assertEq(mem.filter(m => /^用户要求记住:/.test(m.text)).length, 3, '20 集(60 条回流)后用户三条仍在');
+    assert(mem.some(m => m.fb === 'review:ep20') && !mem.some(m => m.fb === 'und:ep1'), '留最新几集的回流,挤掉最早几集的');
+    // 多出一条时新写入的自己不参与淘汰(否则新结论会把自己挤掉)
+    const allAuto = Array.from({ length: W.MEM_MAX }, (_, i) => auto('sb:x' + i));
+    const w2 = W.memWrite(allAuto, [user('D')]);
+    assertEq(w2.length, W.MEM_MAX, '全自动条的桶也守上限');
+    assertEq(w2[w2.length - 1].text, '用户要求记住:D', '新写入的条目不该被自己挤掉');
+    assert(!w2.some(m => m.fb === 'sb:x0'), '无用户条可留时挤最旧自动条(与原先行为一致)');
+    // 无自动条可挤(桶里全是用户条)时退回先进先出:与原行为一字不差
+    const allUser = Array.from({ length: W.MEM_MAX }, (_, i) => ({ text: 'U' + i, scope: '' }));
+    const w3 = W.memWrite(allUser, [{ text: 'TAIL', scope: '' }]);
+    assertEq(w3.length + '/' + w3[0].text + '/' + w3[w3.length - 1].text, W.MEM_MAX + '/U1/TAIL', '无自动条时仍先进先出挤最旧');
+    // 满桶下的原地更新不触发淘汰(条数没变)
+    const w4 = W.memWrite(w1, [Object.assign(auto('sb:new'), { text: '回流 sb:new 第二轮' })]);
+    assertEq(w4.length, W.MEM_MAX, '原地更新不顶破上限也不多挤一条');
+    assertEq(w4.filter(m => /^用户要求记住:/.test(m.text)).length, 2, '原地更新不动用户条');
+    assertEq(w4[w4.length - 1].text, '回流 sb:new 第二轮', '原地更新换成最新结论');
+  } },
   { name: '回流写入面四处接线(源级):派生只此一份,四处写入点都存回既有 agentMemory 桶', fn() {
     const W = require('../js/wf-core.js');
     const files = { 'js/review.js': null, 'server.js': null, 'js/release.js': null, 'cli.js': null };
