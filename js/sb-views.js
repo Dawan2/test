@@ -288,13 +288,18 @@
       const r = Store.findSubject(p, name);
       return r ? (r.form ? { name, image: r.form.image, kind: r.s.kind, refAudio: r.s.refAudio } : r.s) : null;
     };
+    /* 「这一镜带不带得上主体参考图」与真实发包同读 Domain.subjectRefImage —— 形态图 > 大头照 > 权威图,
+     * 占位 dataURL 不算图。此处曾自己按主体图字段拼一份判据,而 subjOf 对形态引用只回形态自带图,
+     * 于是「形态没单独出图、主体图齐全」的引用被报成缺图(实际照样回退带主体图发出去),
+     * 反过来只有占位图的主体又被报成有图 */
+    const noRefImg = name => !Domain.subjectRefImage(Store.findSubject(p, name));
     /* 分镜 tab 预计算:连抽数/主体缺失与缺图/素材审核警示/参考图/识别补充(版本与审片数据由 versCardHTML 自算)
      * 十六轮 主体缺失标记:引用名在主体库中找不到(被删除,formerNames 也兜不住)与"主体在但缺图"分开标记——
      * 前者生成时完全不带主体参考(静默丢一致性),后者只是废片风险高 */
     const drawN = [1, 2, 3].includes(ep.uiDrawN) ? ep.uiDrawN : 1;
     const missSubj = [], missImg = [];
-    (sel.characters || []).forEach(c => { const sj = subjOf(c); if (!sj) missSubj.push(c); else if (!(sj.image || sj.imgRef)) missImg.push(c); });
-    if (sel.scene) { const sj = subjOf(sel.scene); if (!sj) missSubj.push(sel.scene); else if (!(sj.image || sj.imgRef)) missImg.push(sel.scene); }
+    (sel.characters || []).forEach(c => { if (!subjOf(c)) missSubj.push(c); else if (noRefImg(c)) missImg.push(c); });
+    if (sel.scene) { if (!subjOf(sel.scene)) missSubj.push(sel.scene); else if (noRefImg(sel.scene)) missImg.push(sel.scene); }
     (sel.props || []).forEach(pr => { if (!subjOf(pr)) missSubj.push(pr); });
     const revStatus = {}; (Store.state.assetReviews || []).forEach(r => { if (r.url && !(r.url in revStatus)) revStatus[r.url] = r.status; });
     const shotUrls = window.HumanReview ? HumanReview.shotImageUrls(p, sel) : [];
@@ -331,11 +336,11 @@
       <label class="field" style="margin-bottom:8px"><span>视频出镜(出场主体)</span>
         <div class="row wrap" style="gap:5px;align-items:center">
           <span class="small muted" style="flex:none;width:56px">参考角色</span>
-          ${(sel.characters || []).map(c => { const sj = subjOf(c); if (!sj) return `<span class="tag red" title="✕ 主体不存在(可能已删除),生成时将不带其参考——到「主体」重建或从分镜移除">✕ ${U.esc(c)}</span>`; const noImg = !(sj.image || sj.imgRef); return `<span class="tag ${noImg ? 'red' : 'cyan'}" title="${noImg ? '⚠ 缺主体图,废片风险高(到「主体」补图)' : '已绑定主体图'}">${noImg ? '⚠ ' : '🖼 '}${U.esc(c)}</span>`; }).join('') || '<span class="small muted">无</span>'}
+          ${(sel.characters || []).map(c => { const sj = subjOf(c); if (!sj) return `<span class="tag red" title="✕ 主体不存在(可能已删除),生成时将不带其参考——到「主体」重建或从分镜移除">✕ ${U.esc(c)}</span>`; const noImg = noRefImg(c); return `<span class="tag ${noImg ? 'red' : 'cyan'}" title="${noImg ? '⚠ 缺主体图,废片风险高(到「主体」补图)' : '已绑定主体图'}">${noImg ? '⚠ ' : '🖼 '}${U.esc(c)}</span>`; }).join('') || '<span class="small muted">无</span>'}
         </div>
         <div class="row wrap" style="gap:5px;align-items:center;margin-top:5px">
           <span class="small muted" style="flex:none;width:56px">参考场景</span>
-          ${sel.scene ? (() => { const sj = subjOf(sel.scene); if (!sj) return `<span class="tag red" title="✕ 场景主体不存在(可能已删除),生成时将不带其参考——到「主体」重建或从分镜移除">✕ ${U.esc(sel.scene)}</span>`; const noImg = !(sj.image || sj.imgRef); return `<span class="tag ${noImg ? 'red' : 'green'}" title="${noImg ? '⚠ 缺场景图(到「主体」补图)' : '已绑定场景图'}">${noImg ? '⚠ ' : '🏞 '}${U.esc(sel.scene)}</span>`; })() : '<span class="small muted">无</span>'}
+          ${sel.scene ? (() => { const sj = subjOf(sel.scene); if (!sj) return `<span class="tag red" title="✕ 场景主体不存在(可能已删除),生成时将不带其参考——到「主体」重建或从分镜移除">✕ ${U.esc(sel.scene)}</span>`; const noImg = noRefImg(sel.scene); return `<span class="tag ${noImg ? 'red' : 'green'}" title="${noImg ? '⚠ 缺场景图(到「主体」补图)' : '已绑定场景图'}">${noImg ? '⚠ ' : '🏞 '}${U.esc(sel.scene)}</span>`; })() : '<span class="small muted">无</span>'}
         </div>
         <div class="row wrap" style="gap:5px;align-items:center;margin-top:5px">
           <span class="small muted" style="flex:none;width:56px">参考道具</span>
