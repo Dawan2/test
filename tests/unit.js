@@ -4186,6 +4186,53 @@ const releaseTests = [
     assert(!/Tasks\.run/.test(core) && !/Tasks\.run/.test(rel.slice(rel.indexOf('function stampRelease'), rel.indexOf('function releaseList'))),
       '发布留痕不是计费动作:两端都不进 Tasks.run');
   } },
+  /* ---- 交付包打包:抓分镜失手不许静默(W149) ----
+   * buildReleaseZip 里抓分镜文件那段原本兜着一个 `catch (_) {}`:Exporter 抛错时这一集的整个
+   * storyboard/ 目录一个文件都不进包(兜底 CSV 在 else 分支上,抓取失败这一路走不到),
+   * 而回执与下载提示照报「交付包已下载:N 个文件」——用户拆包才发现缺分镜。 */
+  { name: '交付包 · 抓分镜失手如实回报 + 回退内置分镜表(不静默少一集分镜还按成功交付)', fn: async () => {
+    const sb = loadRelease();
+    const packed = []; // ZipUtil 桩:截下每次真正入包的清单
+    sb.ZipUtil = { create: files => { packed.length = 0; files.forEach(f => packed.push(f)); return { length: files.length }; }, download() {} };
+    const p = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }],
+      episodes: [releaseReadyEp({ id: 'ep1', title: '第一集' }), releaseReadyEp({ id: 'ep2', title: '第二集' })] };
+    // 正面一段:抓取正常时判据一字未改——分镜文件仍按 storyboard/<集>/ 逐个入包,回执不报失败
+    const ok = await sb.Release.buildReleaseZip(p, { skipVideo: true });
+    assertEq((ok.storyboardFailed || []).length, 0, '抓取正常时不得凭空报失败');
+    assert(packed.some(f => f.name === 'storyboard/1_第一集/分镜表.csv'), '抓取正常时仍走 Exporter 那份清单:' + packed.map(f => f.name).join(','));
+    // 抓取抛错:两集各记一条,且各自仍有一份兜底分镜表进包(原空 catch 下这两集的 storyboard/ 是空的)
+    sb.Exporter._buildMaterialShim = async () => { throw new Error('分镜读崩了'); };
+    const r = await sb.Release.buildReleaseZip(p, { skipVideo: true });
+    assertEq(r.storyboardFailed.length, 2, '两集抓分镜都失手应各记一条,实际 ' + JSON.stringify(r.storyboardFailed));
+    assert(/第一集/.test(r.storyboardFailed[0]) && /分镜读崩了/.test(r.storyboardFailed[0]),
+      '回执须点名是哪一集、错在哪,实际:' + r.storyboardFailed[0]);
+    assertEq(packed.filter(f => /^storyboard\//.test(f.name)).map(f => f.name).join(','),
+      'storyboard/1_第一集_分镜表.csv,storyboard/2_第二集_分镜表.csv', '失手时两集各回退一份内置分镜表,不许整个 storyboard/ 消失');
+    // 包内 README.txt 同样如实登记(拆包的人手边只有这一份)
+    const readme = packed.find(f => f.name === 'README.txt');
+    assert(readme && /分镜文件抓取失败/.test(readme.data) && /第一集/.test(readme.data) && /第二集/.test(readme.data),
+      '包内 README.txt 须登记抓分镜失手的集,实际:' + (readme && readme.data));
+    // 返回值不是数组时同样按失手记(shim 回 undefined 时 storyboard/ 一样是空的)
+    sb.Exporter._buildMaterialShim = async () => undefined;
+    const r2 = await sb.Release.buildReleaseZip(p, { skipVideo: true });
+    assertEq(r2.storyboardFailed.length, 2, 'shim 不回数组时同样按失手记,实际 ' + JSON.stringify(r2.storyboardFailed));
+    assertEq(packed.filter(f => /^storyboard\//.test(f.name)).length, 2, '同样回退内置分镜表');
+  } },
+  { name: '交付包 · 抓分镜失手在下载回执上看得见(只印文件数的话,缺分镜的包与齐全的包长得一样)', fn: async () => {
+    const sb = loadRelease();
+    sb.ZipUtil = { create: files => ({ length: files.length }), download() {} };
+    const p = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [releaseReadyEp({ title: '第一集' })] };
+    const okShim = sb.Exporter._buildMaterialShim;
+    sb.Exporter._buildMaterialShim = async () => { throw new Error('分镜读崩了'); };
+    await sb.Release.downloadReleaseZip(p, { skipVideo: true });
+    assert(sb.__toasts.some(t => /交付包已下载/.test(t)), '下载成功那条提示照旧在');
+    assert(sb.__toasts.some(t => /分镜文件抓取失败/.test(t)), '抓分镜失手须另有一条提示,实际提示:' + JSON.stringify(sb.__toasts));
+    // 抓取正常时不得多出这条噪音
+    sb.__toasts.length = 0;
+    sb.Exporter._buildMaterialShim = okShim;
+    await sb.Release.downloadReleaseZip(p, { skipVideo: true });
+    assert(!sb.__toasts.some(t => /分镜文件抓取失败/.test(t)), '没失手就不许报,实际提示:' + JSON.stringify(sb.__toasts));
+  } },
 ];
 
 /* ================= 套件 17:跨模块契约(二十二轮) =================
@@ -7424,7 +7471,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 504, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 506, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 130, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
