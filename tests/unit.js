@@ -12114,7 +12114,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 658, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 659, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 148, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -12446,6 +12446,38 @@ action 二选一:
     assertDocNum('docs/skills-wave/README.md', /experts-data\.js`[((](\d+) 专家/g, n.experts, '专家数');
     assertDocNum('docs/skills-wave/README.md', /skills\.js`[((](\d+) 条内部能力/g, n.skills, '短名单条数');
   } },
+  { name: 'README 数字对账:MCP 工具数按运行期 tools/list 现取、CLI 命令数按 Object.keys(CMD) 现取', fn() {
+    /* 助手接入面那两个数一直靠人工重算:README 写 38、接入指南写 37,而实况早已不是那个数,
+     * 照文档预期工具面的助手只会当自己记错。这里两侧都钉在实况上,并把两处常见的错口径一并封死——
+     * MCP 侧不数源码行(数出来的是"注册表里写了几条",不是"客户端拉得到几条"),取运行期 tools/list,
+     * `TOOLS` 表字面只用来对照:两者不逐名相等说明注册路径上吞了工具,那时个数对账本身就先失去意义;
+     * CLI 侧的坑是写法——`CMD['x']` 与 `CMD.x` 各占一半,单数一种只能得出半数,故判据是两种之和
+     * 须等于 `Object.keys(CMD)`。README 命令总览那一行有意不写个数,只逐条点名,加了命令没进总览即红。 */
+    const { spawnSync } = require('child_process');
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'mcp.js')],
+      { input: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) + '\n', encoding: 'utf8', timeout: 30000 });
+    const live = ((JSON.parse(String(r.stdout || '').trim().split('\n')[0] || '{}').result || {}).tools || []).map(t => t.name);
+    assert(live.length > 10, 'tools/list 取不到工具表(实际 ' + live.length + ' 条;stderr:' + String(r.stderr || '').slice(-200) + ')');
+    const mcpSrc = fs.readFileSync(path.join(ROOT, 'mcp.js'), 'utf8');
+    const table = mcpSrc.slice(mcpSrc.indexOf('const TOOLS = ['), mcpSrc.indexOf('\n];'));
+    const declared = [...table.matchAll(/\{ name: '(hujing_[a-z_]+)'/g)].map(m => m[1]);
+    assertEq(live.slice().sort().join(','), declared.slice().sort().join(','),
+      'tools/list 与 TOOLS 表字面应逐名相等(不等说明注册路径上吞了工具)');
+    assertDocNum('README.md', /(\d+) 个 `hujing_\*` 工具/g, live.length, 'MCP 工具数');
+    assertDocNum('docs/AI助手接入指南.md', /- (\d+) 个工具[(\uFF08]`hujing_\*`/g, live.length, 'MCP 工具数');
+    const cliSrc = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    const cmds = Object.keys(vm.runInContext('CMD', loadCli()));
+    const bracket = (cliSrc.match(/^CMD\['[^']+'\]\s*=/gm) || []).length;
+    const dotted = (cliSrc.match(/^CMD\.[A-Za-z0-9_-]+\s*=/gm) || []).length;
+    assert(bracket && dotted, '两种写法都得数得到(有一种归零说明取数口失效,和数对上了也是假绿):' + bracket + '/' + dotted);
+    assertEq(bracket + dotted, cmds.length,
+      'CLI 命令数须是 `CMD[..]` 与 `CMD.x` 两种写法之和(只数一种得出的是半数):' + bracket + ' + ' + dotted + ' vs ' + cmds.length);
+    const overview = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8').split('\n').find(l => l.startsWith('**命令总览**')) || '';
+    assert(overview, 'README 找不到「命令总览」那一行(个数不写死时,逐条点名就是唯一那道对账)');
+    const listed = new Set();
+    [...overview.matchAll(/`([^`]+)`/g)].forEach(m => m[1].split(/[/\s,、]+/).forEach(t => { if (/^[a-z][a-z0-9-]*$/.test(t)) listed.add(t); }));
+    assertEq(cmds.filter(c => !listed.has(c)).join(','), '', 'README 命令总览漏登记 CLI 命令(加了命令就同轮补进那一行)');
+  } },
   { name: 'docs/skills-wave 索引与目录实况双向对齐(记账件不漏登记、索引行不指向空文件)', fn() {
     const dir = path.join(ROOT, 'docs', 'skills-wave');
     const files = fs.readdirSync(dir).filter(f => f.endsWith('.md') && f !== 'README.md').sort();
@@ -12490,7 +12522,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 254;
+    const FLOOR = 255;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接

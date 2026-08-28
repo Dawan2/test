@@ -10,7 +10,7 @@
 { "mcpServers": { "hujing": { "command": "node", "args": ["C:/Users/EDY/modelvideo-hujing/mcp.js"] } } }
 ```
 
-- 37 个工具(`hujing_*`),stdio 传输,零依赖;工具调用 = 包装 cli.js,计费/幂等/退费语义与 CLI 完全一致。
+- 39 个工具(`hujing_*`),stdio 传输,零依赖;工具调用 = 包装 cli.js,计费/幂等/退费语义与 CLI 完全一致。个数以运行期 `tools/list` 现取为准(本文这个数由契约测试钉在实况上)。
 - 工具结果:stdout 纯 JSON 原样透传;非零 exit 时 `isError:true` 并附 exit code 语义。
 - 例外一个只读工具:`hujing_playbook` 直读注册表 `js/skills.js` 答复(主线编排 playbook 步骤表 + 就绪检查各面已登记校验项),不起 CLI 子进程、不打服务端、零计费,未登录也答得出;步骤只给命令名与步序,授权位(`overwrite`/`confirmAll`/`riskyCompose`)与子集位留空由你按情况自己定。
 - 中段流程模板 `hujing_flow_template`(包装 `cli.js flow-template`,只读零计费):`segment` 取 `mid|subjects|eps|shots|gen`,给 `pid` 时按项目实况标注每步 `todo/clear/optional`、给出 `next` 与缺前置 `gaps`(缺剧本/缺主体图等,此时 `ready:false`);每步带 `cli` 调用串、逐个参数的取数出处(`args[].from`)与断点码(`stop[].codes`),照着走即可,不必自己拼调用顺序。
