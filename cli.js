@@ -188,6 +188,13 @@ const nthSubject = (proj, sid, nth) => {
   const rows = (proj.subjects || []).filter(x => x.id === sid);
   return rows.length ? (rows[nth] || rows[0]) : findSubject(proj, sid);
 };
+/* 镜头侧同形的一份:同 id 在分镜表里占着多行时 findShot 取的是首行,
+ * 三行同 id 的一趟会把三份产物全写在首行身上(扣三笔视频钱只有一行出片,而回执报 ok:3 failed:[])。
+ * nth 是这一行在快照全表里排第几行同 id;同 id 一行都没有时退回 findShot(镜头不存在的 exit 4 仍由它抛)。 */
+const nthShot = (ep, sid, nth) => {
+  const rows = (ep.shots || []).filter(x => x.id === sid);
+  return rows.length ? (rows[nth] || rows[0]) : findShot(ep, sid);
+};
 
 /* ================= 工具:上传 / 下载 / 轮询 / SRT ================= */
 async function uploadFile(file, flags) {
@@ -1128,13 +1135,18 @@ EXEC['episode.generateVideos'] = { needs: ['p', 'ep'], meter: true, run: async (
   const dupNote = Domain.dupRowsNote(args.shotIds, todo);
   log('批量生成:' + todo.length + ' 镜待处理(串行,服务端限流)…');
   if (dupNote) log(dupNote);
+  /* 各行在快照全表里排第几行同 id:每轮回最新树上重取时按同序定位本轮那一行(见 nthShot);
+   * 序数得在全表上数,只数待跑清单会在"首行已出片被跳过"时整体错位 */
+  const nthOf = new Map();
+  const seenIds = Object.create(null);
+  (ep.shots || []).forEach(s => { const n = seenIds[s.id] || 0; seenIds[s.id] = n + 1; nthOf.set(s, n); });
   const failed = [];
   let okCnt = 0;
   for (const s of todo) {
     try {
       const r = await withProject(args.pid, f, async projLive => {
         const epLive = findEp(projLive, args.epid);
-        const sLive = findShot(epLive, s.id);
+        const sLive = nthShot(epLive, s.id, nthOf.get(s) || 0);
         if (!sLive.image && !args.noImage) { // 缺底图先补(廉价文生图,失败即停该镜不碰视频)
           const img = await genImage(sLive.prompt || sLive.plot || ('镜头' + sLive.order), f, {});
           sLive.image = img.url;
