@@ -4042,6 +4042,53 @@ const issuesTests = [
     assertEq(it.sev, 'mid');
     assert(it.detail.includes('镜头 1'), '过期镜号应入明细');
   } },
+  { name: 'collect:过期镜混着定稿镜时明细补一句分报(count 仍是总数、照旧不挂 cmd,发布门 G2 一格不松)', fn() {
+    /* 「建议重生成」对定稿过期镜不成立:批量重生成两条路径都锁 !s.final,那几镜按下去跑不到。
+     * 本条钉的是三件事各自不动——尾巴那句现取 Domain(与发布门 G4 同一句)、count 仍是过期镜总数、
+     * 处置照旧只导航。把 count 改成可重跑数、或改成按可重跑数发射条目,都在这条上红。 */
+    const sb = loadIssues();
+    const mk = (id, order, ex) => Object.assign({}, cleanEp().shots[0], { id, order }, ex || {});
+    const done = h => ({ status: 'done', url: 'http://x/v.mp4', inputHash: h });
+    const mixEp = cleanEp({ composed: false, shots: [
+      mk('sh0', 0),                                              // 鲜镜:不进任何一堆
+      mk('sh1', 1, { video: done('v3:旧指纹') }),                 // 可重跑的过期镜
+      mk('sh2', 2, { final: true, video: done('v3:旧指纹') }),    // 定稿过期镜:批量重生成够不着
+      mk('sh3', 3, { video: done('v3:旧指纹') }),
+    ], lastReview: { avg: 8, perShot: [0, 1, 2, 3].map(i => ({ shotId: 'sh' + i, order: i, score: 8 })) } });
+    const p = { id: 'p1', script: '整本剧本', subjects: [{ id: 'sj1', name: '主角', kind: 'character', image: 'u' }], episodes: [mixEp] };
+    const list = sb.Issues.collect(p);
+    const it = list.find(x => x.kind === 'stale-shots');
+    assert(it, '混堆时仍应报过期镜');
+    const sp = sb.Domain.staleShotSplit(p, mixEp, false);
+    assertEq(sp.rerun.length + ',' + sp.locked.length, '2,1', '夹具应真落在两堆分家那一档(否则下面的判定成空转)');
+    // count:仍是过期镜总数,与门槛那一侧 counts.stale 同一个数(剔掉定稿过期镜就是放宽门槛)
+    assertEq(it.count, sb.Domain.episodeState(p, mixEp, false).counts.stale, 'count 仍须是过期镜总数(含定稿过期镜)');
+    assertEq(it.count, 3);
+    assert(it.label.includes('3 镜'), '标题的镜数同取总数,实际:' + it.label);
+    // 尾巴那句只此一份:两端 G4 与本层同读 Domain,不各拼一种说法
+    const note = sb.Domain.staleSplitNote(sp.rerun.length, sp.locked.length);
+    assert(note, 'Domain 在这一档应给出分报那句话');
+    assert(it.detail.endsWith(note), '明细尾巴应逐字是 Domain.staleSplitNote 那一句,实际:' + it.detail);
+    assert(it.detail.startsWith('镜头 2、3、4 生成后输入有变化,建议重生成'), '原明细一字不变,分报只接在后面,实际:' + it.detail);
+    // 处置面:照旧只导航,不挂命令——问题中心不给一个按下去只跑得到一部分镜的出口
+    assert(it.goto && !it.cmd, '过期镜条目照旧是导航类,不挂 cmd');
+    // 发布门 G2 数的是本清单的高/中危条目:补这句话前后条目一条不增不减、危险级一格不动
+    assertEq(it.sev, 'mid');
+    assertEq(list.filter(x => x.sev === 'high' || x.sev === 'mid').map(x => x.kind).sort().join(','), 'stale-shots', 'G2 口径上本集只该有这一条中危');
+    // 全定稿过期:一镜也重跑不到,条目仍在(按可重跑数发射就会让这条凭空消失 → G2 被放宽)
+    const lockEp = cleanEp({ composed: false, shots: [mk('s0', 0, { final: true, video: done('v3:旧指纹') })],
+      lastReview: { avg: 8, perShot: [{ shotId: 's0', order: 0, score: 8 }] } });
+    const lockP = { id: 'p2', script: '整本剧本', subjects: p.subjects, episodes: [lockEp] };
+    const li = sb.Issues.collect(lockP).find(x => x.kind === 'stale-shots');
+    assert(li, '全定稿过期时这条仍须报出来(它是 G2 的中危来源之一)');
+    assertEq(li.count, 1);
+    assert(/全部已定稿/.test(li.detail) && !/可重跑/.test(li.detail), '一镜也跑不到时不许报「可重跑 0 镜」,实际:' + li.detail);
+    // 不分家时原文案一字不变:没有定稿过期镜就不该多出尾巴
+    const plainEp = cleanEp({ composed: false, shots: [mk('s0', 0, { video: done('v3:旧指纹') })],
+      lastReview: { avg: 8, perShot: [{ shotId: 's0', order: 0, score: 8 }] } });
+    const pi = sb.Issues.collect({ id: 'p3', script: '整本剧本', subjects: p.subjects, episodes: [plainEp] }).find(x => x.kind === 'stale-shots');
+    assertEq(pi.detail, '镜头 1 生成后输入有变化,建议重生成', '两堆不分家时明细一字不变');
+  } },
   { name: '双端单源:Node 无 window 与浏览器路径对同一夹具逐字节同结论(kind 集合全等)', fn() {
     const NodeIssues = require('../js/issues.js'); // Node 侧:无 window/document/Store,依赖经 require 取
     assertEq(typeof globalThis.window, 'undefined', '本进程不得有 window(证明 Node 侧真的跑在无浏览器环境里)');
@@ -6174,14 +6221,17 @@ const contractTests = [
     assertEq(r.gates.find(g => g.code === 'g6-failed').fix.shotIds.join(','), 'sh2', 'G6 只带失败镜子集');
     assertEq(r.gates.find(g => g.code === 'g9-subjects').fix.subjectIds.join(','), 'sj1', 'G9 只带缺图主体子集');
   } },
-  { name: '过期镜分报的取数口:两端 G4 都现取 Domain 的分堆与那句话,谁也不自写第二份终稿判据', fn() {
+  { name: '过期镜分报的取数口:两端 G4 与问题中心都现取 Domain 的分堆与那句话,谁也不自写第二份终稿判据', fn() {
     /* 「哪几镜处置跑得到、哪几镜要人工先解锁终稿」这件事,判据(!s.final)与说法各只此一份。
-     * 一端改了另一端没改,或某一端顺手在自己那段里手写 `!s.final` / 手拼一句尾巴,都在这里红。 */
+     * 一端改了另一端没改,或某一端顺手在自己那段里手写 `!s.final` / 手拼一句尾巴,都在这里红。
+     * 三个消费段各判各的:两端发布门 G4 的总数取 counts.stale,问题中心过期镜条目的 count 取 c.stale——
+     * 取数口不同而纪律同一条(总数含定稿过期镜,分堆只管那句话怎么说)。 */
     const D = require('../js/domain.js');
     ['staleShotSplit', 'staleSplitNote'].forEach(k => assertEq(typeof D[k], 'function', 'Domain 须导出分报单源:' + k));
     const rel = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
     const rc = fs.readFileSync(path.join(ROOT, 'js', 'release-core.js'), 'utf8');
-    /* 各按自己那段 G4 实现切片再判:整文件搜的话,别处出现过同一写法就能把这条糊过去。
+    const iss = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
+    /* 各按自己那段实现切片再判:整文件搜的话,别处出现过同一写法就能把这条糊过去。
      * 注释抹掉、字面量留着——判的是代码里真跑的那几行,不是某段说明里提过这个词。 */
     const seg = (src, from, to, label) => {
       const a = src.indexOf(from), b = src.indexOf(to, a + 1);
@@ -6189,16 +6239,22 @@ const contractTests = [
       return blankNonCode(src.slice(a, b), true);
     };
     [
-      ['js/release.js', seg(rel, 'const agg = { stale: 0', "gate('g5-unconfirmed', '未确认镜 = 0', agg.unconfirmed", 'js/release.js')],
-      ['js/release-core.js', seg(rc, 'const agg = { stale: 0', '// G9 主体缺图', 'js/release-core.js')],
-    ].forEach(([f, s]) => {
-      assert(/Domain\.staleShotSplit\(/.test(s), f + ' 的 G4 段须现取 Domain.staleShotSplit 分堆');
-      assert(/Domain\.staleSplitNote\(/.test(s), f + ' 的 G4 段须现取 Domain.staleSplitNote 拼回执那句');
-      assert(!/\.final/.test(s), f + ' 的 G4 段不得自写第二份终稿判据(分堆只在 Domain 一处):'
+      ['js/release.js', seg(rel, 'const agg = { stale: 0', "gate('g5-unconfirmed', '未确认镜 = 0', agg.unconfirmed", 'js/release.js'), /counts\[k\]|counts\.stale/],
+      ['js/release-core.js', seg(rc, 'const agg = { stale: 0', '// G9 主体缺图', 'js/release-core.js'), /counts\[k\]|counts\.stale/],
+      ['js/issues.js', seg(iss, 'if (c.stale) {', 'if (c.unconfirmed', 'js/issues.js'), /count: c\.stale/],
+    ].forEach(([f, s, countRe]) => {
+      assert(/Domain\.staleShotSplit\(/.test(s), f + ' 的过期镜段须现取 Domain.staleShotSplit 分堆');
+      assert(/Domain\.staleSplitNote\(/.test(s), f + ' 的过期镜段须现取 Domain.staleSplitNote 拼那句话');
+      assert(!/\.final/.test(s), f + ' 的过期镜段不得自写第二份终稿判据(分堆只在 Domain 一处):'
         + (s.match(/[^\n]*\.final[^\n]*/g) || []).join(' | '));
-      assert(!/解锁终稿|已定稿/.test(s), f + ' 的 G4 段不得自拼分报文案(两端会长成两种说法)');
-      assert(/counts\[k\]|counts\.stale/.test(s), f + ' 的 G4 总数照旧取 counts.stale(分报不改门槛)');
+      assert(!/解锁终稿|已定稿/.test(s), f + ' 的过期镜段不得自拼分报文案(各端会长成几种说法)');
+      assert(countRe.test(s), f + ' 的过期镜总数照旧取过期镜计数(分报不改门槛),期望命中:' + countRe);
     });
+    /* 问题中心那一段另有两条各自的纪律:判旧只认 Domain 的分堆(不再另跑一遍 shotVideoStale 当第三份),
+     * 且照旧不挂 cmd——挂上去就是给了一个按下去只跑得到 rerun 那半的出口,而 count 报的是总数。 */
+    const isg = seg(iss, 'if (c.stale) {', 'if (c.unconfirmed', 'js/issues.js');
+    assert(!/shotVideoStale/.test(isg), '问题中心过期镜段不得再自跑一遍判旧(分堆已经是同一份判据的产物)');
+    assert(!/cmd:/.test(isg), '问题中心过期镜条目不得挂 cmd(处置跑不到定稿那半,而条目报的是总数)');
     // 门槛这一侧:counts.stale 仍数定稿的过期镜——把 final 剔出去是改门槛,不是分报
     const dom = fs.readFileSync(path.join(ROOT, 'js', 'domain.js'), 'utf8');
     const cnt = seg(dom, 'D.episodeState = function', 'const blockers = []', 'js/domain.js');
@@ -9445,7 +9501,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 569, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 570, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 143, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -9780,7 +9836,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 198;
+    const FLOOR = 199;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接

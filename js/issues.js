@@ -208,9 +208,17 @@
           cmd: 'episode.generateVideos', shotIds: fs.map(s => s.id),
         }));
       }
+      /* 过期镜里混着定稿的那几镜时,「建议重生成」这句话对它们不成立:两端批量重生成一律锁 !s.final
+       * (js/commands.js 的 episode.generateVideos 全量与子集两条路径都锁),定稿过期镜按下去也跑不到。
+       * 分堆与那句说明现取 Domain(与发布门 G4 同一份),本层既不自写终稿判据、也不另拼一种说法。
+       * count 照旧是过期镜总数:把定稿过期镜从这条里剔出去等于放宽发布门 G2(它数的是本清单的高/中危
+       * 条目,而这条在不在只看 c.stale),本条只在明细尾巴上加一句,发射条件与计数一个都不动;
+       * 也照旧不挂 cmd——处置仍是导航回分集页,由人按那句话决定先解锁哪几镜。 */
       if (c.stale) {
-        const ss = (ep.shots || []).filter(s => Domain.shotVideoStale(p, s, on));
-        out.push(Object.assign({}, base, { kind: 'stale-shots', sev: EPB['stale-shots'], count: c.stale, label: `「${ep.title}」${c.stale} 镜素材已更新(过期)`, detail: `镜头 ${ss.map(s => s.order + 1).slice(0, 8).join('、')}${ss.length > 8 ? '…' : ''} 生成后输入有变化,建议重生成`, goto: `#/project/${p.id}/episode/${ep.id}` }));
+        const sp = Domain.staleShotSplit(p, ep, on);
+        const staleIds = new Set(sp.all);
+        const ss = (ep.shots || []).filter(s => staleIds.has(s.id));
+        out.push(Object.assign({}, base, { kind: 'stale-shots', sev: EPB['stale-shots'], count: c.stale, label: `「${ep.title}」${c.stale} 镜素材已更新(过期)`, detail: `镜头 ${ss.map(s => s.order + 1).slice(0, 8).join('、')}${ss.length > 8 ? '…' : ''} 生成后输入有变化,建议重生成` + Domain.staleSplitNote(sp.rerun.length, sp.locked.length), goto: `#/project/${p.id}/episode/${ep.id}` }));
       }
       if (c.unconfirmed && !c.generating) out.push(Object.assign({}, base, { kind: 'unconfirmed', sev: EPB['unconfirmed'], count: c.unconfirmed, label: `「${ep.title}」${c.unconfirmed} 镜待确认`, detail: '未确认镜头不参与批量生成,先过确认闸', goto: `#/project/${p.id}/episode/${ep.id}` }));
       /* 审片步骤未完成:kind 就是 Domain 分集级审片门槛 episodeState().reviewGate 归好的那个码,
