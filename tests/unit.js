@@ -3214,6 +3214,7 @@ const commandsTests = [
     assertEq(done.applied, true, '真写了就得说真写了');
     assertEq(done.renamedIds, 2, '改发新 id 的镜数如实回报(静默改寻址键等于把用户的脚本悄悄弄失配)');
     const after = epOf();
+    assertEq(after.shots.length, 4, '去重是改 id、不是替用户砍行:一行都不许少(重复行各有各的内容,删掉就是丢数据)');
     assertEq(after.shots[0].id, 'dup', '首行留原 id(引用全靠它继续解析到同一行)');
     assertEq(after.shots[1].id, 'solo', '不重复的行一个字都不许动');
     assert(after.shots[2].id !== 'dup' && after.shots[3].id !== 'dup' && /^sh_/.test(after.shots[2].id),
