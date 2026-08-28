@@ -7909,9 +7909,10 @@ const contractTests = [
   { name: '成片合成没有"ok+静默"那一档:两端零素材拦截点在位,不许改读镜头/主体那两份 note,点名子集这一位不在成片侧', fn() {
     /* 镜头(emptyBatchNote)与主体(emptySubjectImageNote)各补过一句"为什么是 0 条",成片这一路**没有**开第三份。
      * 理由是三档都不落在"ok + 静默"上,live 现跑过:无可合成镜(全无素材 / 时间线全剔除)两端都拦得住并说得出话;
-     * 已合成且指纹未变再点一次是**真跑**(引擎实收全部段落、真扣一次合成费),不是空跑;
-     * 点名子集这一位成片侧压根没有。这一条把那三条结论各钉一个源级落点——
-     * 拦截点被摘掉、顺手套用隔壁那两份 note、或给合成加了点名子集而没重判空跑分档,都红在这里。 */
+     * 点名子集这一位成片侧压根没有。这一条把那两条结论各钉一个源级落点——
+     * 拦截点被摘掉、顺手套用隔壁那两份 note、或给合成加了点名子集而没重判空跑分档,都红在这里。
+     * 「已合成且合成输入未变」那一档后来开了(命令层与 CLI 按 Domain.epComposedReady 原地返回旧成片),
+     * 但它回的是结构位 `fresh:true` 而不是第三份就地拼句,故本条的结论不变、只把参数面那格按实况换成含授权位那份。 */
     const seg = (rel, head, tail) => {
       const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
       const i = src.indexOf(head);
@@ -7934,12 +7935,13 @@ const contractTests = [
     assert(code.length > 8, 'js/commands.js 的 episode.compose 段可执行行取不到(整段被判成注释本条即恒真),实测 ' + code.length + ' 行');
     assert(/fail\('intercepted'/.test(reg), '命令层拿不到合成任务句柄那一档须如实 failed(零素材/积分不足都由它兜住,不许回 ok)');
     const wrong = code.filter(t => /Domain\.empty(BatchNote|SubjectImageNote)\(/.test(t));
-    assertEq(wrong.join(' | '), '', '成片合成不许改读镜头/主体那两份 note(分档不同:成片没有点名子集,也没有"产物已是最新就跳过"这一堆)');
-    /* 点名子集在镜头侧与主体侧各有一位,成片侧今天没有:加上它就得同轮重判"过滤后为空算不算空跑" */
+    assertEq(wrong.join(' | '), '', '成片合成不许改读镜头/主体那两份 note(分档不同:成片没有点名子集,"已是最新就跳过"那一档回的也是结构位不是拼句)');
+    /* 点名子集在镜头侧与主体侧各有一位,成片侧今天没有:加上它就得同轮重判"过滤后为空算不算空跑"。
+     * `force` 是授权位不是子集位——它只决定"这一次要不要照旧重跑",不改变哪些段落进合成,故不触发重判。 */
     const argsOf = n => ((require('../js/cmd-registry.js').byName[n] || {}).args || []).map(a => a.name).join(',');
     assertEq(argsOf('episode.generateVideos').includes('shotIds'), true, '镜头侧的点名子集位是本条的对照面,没了就同轮改这里');
     assertEq(argsOf('subject.generateImage').includes('subjectIds'), true, '主体侧的点名子集位是本条的对照面,没了就同轮改这里');
-    assertEq(argsOf('episode.compose'), 'pid,epid,ui', 'episode.compose 的参数面变了:加了点名子集就得同轮重判空跑分档(那才是第三份派生该不该开的入口)');
+    assertEq(argsOf('episode.compose'), 'pid,epid,force,ui', 'episode.compose 的参数面变了:加了点名子集就得同轮重判空跑分档(那才是第三份派生该不该开的入口;授权位 force 不算子集位)');
   } },
   { name: '分集级审片门槛单源:达标线/判旧/"这一集当下能不能审"只在 episodeState.reviewGate 一处,流程条与问题中心都不另判', fn() {
     /* 行为面由 domain/issues 两条用例双向钉住;这一条钉源级:判据抄回第二份时行为可以完全一致,
@@ -11188,7 +11190,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 627, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 633, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 147, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 109, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -11523,7 +11525,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 225;
+    const FLOOR = 227;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
@@ -14071,6 +14073,95 @@ const memoryTests = [
     r = await csb2.Commands.execute('project.extractSubjects', { pid: 'p1' });
     assertEq(r.ok, false); assertEq(r.error.code, 'extract');
     assertEq(csb2.Store.state.agentMemory.length, 0, 'LLM 失败不写假成功');
+  } },
+  /* ---- 生成三步(批量生成视频 / 主体生图 / 合成成片)的成功收尾**不写记忆桶**。
+   * 这不是欠账,是核实后的结论:这三步没有自己的、会按板块召回记忆的提示词(WF_BOARD 五个键里
+   * 既没有生成也没有合成),回流下去没有读者;而唯一召回它们的旁路(Agent 对话)的同一份提示词里
+   * 已经带着 stateBlock/agentStateText 现算的同一批数字,回流条目只会是紧挨着的那份更旧的副本
+   * (用户重抽修好失败镜后实时行会变,快照不会变,两行并排出现只能让模型二选一)。
+   * 下面两条把「这些函数体不得出现 memWrite」钉成判据,免得下一个读者把零回流当缺陷补上;
+   * 什么条件下才该翻面见 W98 第 7 节:得先长出会按板块召回记忆的提示词步。 ---- */
+  { name: '生成三步不写记忆桶(浏览器真跑):批量生成/主体生图/合成成功收尾后 agentMemory 一字未动', fn: async () => {
+    const sb = loadCommands();
+    sb.EpisodeUtil.genSubjectImage = async (p, s) => { s.image = '/uploads/img/' + s.id + '.png'; };
+    /* 桶先播两条(用户自沉淀 + 审片回流):空桶下「没写」与「写了但被判空」分不开 */
+    sb.Store.state.agentMemory = [
+      { text: '记住:女主台词一句不超过 12 字', time: '2026-08-27 09:00:00', scope: '' },
+      { text: '审片闭环回流·第一集:待返工 0/3 镜;后续拆镜与提示词优先规避这几处', time: '2026-08-27 09:30:00', scope: '成片', fb: 'review:ep1' },
+    ];
+    const before = JSON.stringify(sb.Store.state.agentMemory);
+    const { p, ep } = cmdCtx(sb, { shots: [makeShot(0, { video: { status: 'none' } }), makeShot(1, { video: { status: 'none' } })] });
+    p.subjects = [{ id: 'sj1', name: '女主', kind: 'character' }]; // 缺参考图 → 生图真跑得到引擎
+    // ① 批量生成视频:成功档(confirmAll 授权全量,两镜全出片)
+    const g = await sb.Commands.execute('episode.generateVideos', { pid: 'p1', epid: 'ep1', confirmAll: true });
+    assertEq(g.ok, true, '得先真跑到成功档:' + JSON.stringify(g.error || {}));
+    assertEq(g.result.ok, 2, '两镜都得真出片(没跑到成功收尾,下面那句"没变"就是恒真)');
+    assertEq(JSON.stringify(sb.Store.state.agentMemory), before, '批量生成成功不得写记忆桶');
+    // ② 主体生图:成功档
+    const im = await sb.Commands.execute('subject.generateImage', { pid: 'p1' });
+    assertEq(im.ok, true, '得先真跑到成功档:' + JSON.stringify(im.error || {}));
+    assertEq(im.result.ok, 1, '得真补上一位主体的图');
+    assertEq(JSON.stringify(sb.Store.state.agentMemory), before, '主体生图成功不得写记忆桶');
+    // ③ 合成成片:成功档
+    const c = await sb.Commands.execute('episode.compose', { pid: 'p1', epid: 'ep1' });
+    assertEq(c.ok, true, '得先真跑到成功档:' + JSON.stringify(c.error || {}));
+    assertEq(ep.composed, true, '成片得真落盘');
+    assertEq(JSON.stringify(sb.Store.state.agentMemory), before, '合成成功不得写记忆桶');
+    /* 反面自证:同一沙箱同一只桶上,合法那条路径(审片回流)照写得进去——
+     * 否则上面三句"没变"可能只是这个沙箱根本写不动记忆 */
+    sb.Store.state.agentMemory = sb.WfCore.memWrite(sb.Store.state.agentMemory,
+      sb.WfCore.memFeedback({ ep: { id: 'ep2', title: '第二集', lastReview: { avg: 6, perShot: [{ score: 5 }, { score: 8 }], common: null, cut: null } } },
+        { now: () => '2026-08-27 10:00:00' }));
+    assertEq(sb.Store.state.agentMemory.length, 3, '审片那条合法路径应写得进去(写不进去说明前面三句"没变"是假的)');
+    assertEq(sb.Store.state.agentMemory[2].fb, 'review:ep2');
+  } },
+  { name: '生成三步不写记忆桶(源级双端 + 分支面):六个函数体零 memWrite,自动回流仍只有主线六个闭环', fn() {
+    /* 浏览器那一端的行为由上一条真跑钉住;CLI 这一端单测层没有可真跑的引擎(withProject 的 memFeed
+     * 位在夹具里就被桩掉了,写没写在那边观测不到),故在此源级点名。两端一起判:一端补上了另一端没补也红。 */
+    /* CLI 三段的收尾取各自的 `\n} };`(不取下一条 `\nEXEC[`):compose 那条与下一条 EXEC 之间还夹着
+     * produce 的两个修订辅助函数,按 EXEC 切会把它们一并圈进来,判的就不是这一步自己了 */
+    const SEGS = [
+      ['js/commands.js', path.join(ROOT, 'js', 'commands.js'), "reg('episode.generateVideos'", "\n  reg('", 30],
+      ['js/commands.js', path.join(ROOT, 'js', 'commands.js'), "reg('subject.generateImage'", "\n  reg('", 18],
+      ['js/commands.js', path.join(ROOT, 'js', 'commands.js'), "reg('episode.compose'", "\n  reg('", 10],
+      ['cli.js', path.join(ROOT, 'cli.js'), "EXEC['episode.generateVideos']", '\n} };', 40],
+      ['cli.js', path.join(ROOT, 'cli.js'), "EXEC['subject.generateImage']", '\n} };', 25],
+      ['cli.js', path.join(ROOT, 'cli.js'), "EXEC['episode.compose']", '\n} };', 6],
+      // EXEC['episode.compose'] 只是前置闸的壳,九个写回字段在 composeCore 那一份里,一并判
+      ['cli.js', path.join(ROOT, 'cli.js'), 'async function composeCore(', '\nCMD.compose', 24],
+    ];
+    SEGS.forEach(([rel, abs, head, tail, minLines]) => {
+      const src = fs.readFileSync(abs, 'utf8');
+      const i = src.indexOf(head);
+      assert(i >= 0, rel + ' 找不到 ' + head + ' 的实现(挪窝或改名就同轮改这里,别把本条留成恒真)');
+      const rest = src.slice(i + head.length);
+      const body = rest.slice(0, rest.indexOf(tail) >= 0 ? rest.indexOf(tail) : rest.length);
+      // 整段被判成注释时本条会成恒真,故先自证可执行行数
+      const code = body.split('\n').filter(t => !(/^\s*(\/\/|\/?\*)/.test(t) || !t.trim()));
+      assert(code.length >= minLines, rel + ' 的 ' + head + ' 段可执行行取不到(整段被判成注释本条即恒真),实测 ' + code.length + ' 行');
+      const hit = code.filter(t => /memWrite|memFeedback|agentMemory|闭环回流·/.test(t));
+      assertEq(hit.map(t => t.trim()).join(' | '), '',
+        rel + ' 的 ' + head + ' 段不得写记忆桶:这一步没有会按板块召回记忆的提示词,回流下去没有读者,'
+        + '数字要看现取 Domain.episodeState(Agent 提示词里那行实时状态已经在给),要处置走问题中心 failed-shots 与发布门 G4/G5/G6');
+    });
+    /* 分支面:memFeedback 派生得出的自动回流就这六个闭环(审片是其中之一,不是唯一),
+     * 生成与合成两步一支也没有——把六支全给齐仍不出 gen/compose,才说明"零回流"是派生层的事实而非调用方漏接 */
+    const W = require('../js/wf-core.js');
+    const all = W.memFeedback({
+      ep: { id: 'ep1', title: '第一集', lastReview: { avg: 8, perShot: [{ score: 6 }], common: null, cut: null } },
+      p: { id: 'p1', name: '项目' }, gate: { overall: 'pass', fails: 0, warns: 0, gates: [] }, rel: { ver: 1 },
+      und: { ep: { id: 'ep1', understanding: W.UND_DIMS.reduce((a, d) => (a[d] = d, a), {}) } },
+      sb: { ep: { id: 'ep1', shots: [{ prompt: 'x', characters: ['女主'] }] } },
+      split: { p: { id: 'p1', episodes: [{ content: '正文' }] }, mode: 'even' },
+      extract: { p: { id: 'p1', subjects: [{ id: 'sj1' }] }, added: 1, skipped: 0 },
+    }, { now: '2026-08-27 10:00:00' });
+    assertEq(all.map(e => String(e.fb).split(':')[0]).sort().join(','), 'extract,release,review,sb,split,und',
+      '自动回流的合法分支就主线这六个闭环;要加生成/合成一支,先看 W98 第 7 节的翻面判据');
+    /* 结构上的那条理由本身也回实现核对:板块键表里没有生成也没有合成,
+     * 所以"回流下去下一轮同一步召回得到"这条保证在这两步上不成立 */
+    const boards = Object.keys(W.WF_BOARD).concat(Object.values(W.WF_BOARD)).join(',');
+    ['生成', '合成', 'generate', 'compose'].forEach(k => assert(!boards.includes(k),
+      'WF_BOARD 出现 ' + k + ' 键:这两步长出自己的召回面了,回流该不该补得重判一次(见 W98 第 7 节),别让本条静默恒真'));
   } },
   /* ---- 浏览器剧本解析向导的主体入库路径(W108):向导曾自己提取、自己造条目、整表覆盖 p.subjects,
    * 于是既绕过命令层的合并口径(同名同类不覆盖/别名寻址),也绕过回流那一处写入点。
