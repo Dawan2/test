@@ -5227,7 +5227,13 @@ const domainTests = [
     assertEq(sb.Domain.dupRowsNote(['dup'], [row('dup', 0)]), '', '同 id 只有一行时一句不说(表干净就没这回事)');
     // 点名判据与选人闸同形:非数组一律当"没点名",整集那一路不说这句
     [null, undefined, 'dup', { 0: 'dup', length: 1 }, 1, []].forEach(bad => {
-      assertEq(sb.Domain.dupRowsNote(bad, three), '', '非数组/空数组 shotIds 走整集那一路,不许说点名那句:' + JSON.stringify(bad));
+      let out;
+      /* 类数组那一路把判据放宽成真值判断时 new Set(picked) 当场抛,一次 ok 执行会被判成异常;
+       * 不接住的话本条红在一句 TypeError 上而不是判词上,读报错看不出改坏的是什么 */
+      try { out = sb.Domain.dupRowsNote(bad, three); } catch (e) {
+        throw new Error('非数组 shotIds 不许抛(点名判据放宽成真值判断即在这里抛):' + JSON.stringify(bad) + ' → ' + e.message);
+      }
+      assertEq(out, '', '非数组/空数组 shotIds 走整集那一路,不许说点名那句:' + JSON.stringify(bad));
     });
     // 点名清单按镜去重:同一 id 点两次仍是一镜(与 emptyBatchNote 同口径)
     assertEq(sb.Domain.dupRowsNote(['dup', 'dup'], three), n, '点名清单去重:同一 id 点两次仍是一镜');
@@ -12484,7 +12490,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 253;
+    const FLOOR = 254;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
