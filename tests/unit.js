@@ -2,6 +2,7 @@
 /* ============ tests/unit.js 卫星文件单元测试(零依赖 Node:vm 沙箱 + 浏览器全局 stub) ============
  * 覆盖大文件拆分产出的领域文件 + 服务端计费核心:
  *   js/agent-ops.js —— ops 应用器/执行闭环验证/预排钳制/上下文压缩/工作台定位/动作执行器
+ *   js/api.js       —— LLM 客户端的回退口径(模型列表拉取失败不拿陈旧缓存冒充成功/chat 上游失败如实报错/超时重放/JSON 解析兜底)
  *   js/experts.js   —— 预置专家库/雇佣·解雇/自进化计费五件套/工坊草稿规范化
  *   js/experts-data.js —— 专家注册表双端单源(projTypeOf 推导与浏览器 projType 同口径,二十二轮)
  *   js/produce.js   —— 智能审片闭环(达标/重试/积分不足/超限)与一键成片编排顺序
@@ -16,7 +17,7 @@
  *      fs 读取真实源码 runInContext 加载,对 window.Xxx 暴露的成员做断言——被测代码即生产代码;
  *      billing.js 为纯模块直接 require(服务端与测试共享同一份推导逻辑)。
  * 用法:node tests/unit.js            全部套件
- *      node tests/unit.js agent-ops  单套件(agent-ops|billing|bus|commands|continuity|contract|domain|experts|flow|issues|memory|pipeline|plans|produce|release|sb-gen|sb-io|sb-views|skills|split|store|tasks|understanding)
+ *      node tests/unit.js agent-ops  单套件(agent-ops|api|billing|bus|commands|continuity|contract|domain|experts|flow|issues|memory|pipeline|plans|produce|release|sb-gen|sb-io|sb-views|skills|split|store|tasks|understanding)
  * 约束:无网络、无服务、无浏览器;DOM 重交互(bindPrearr/bindChoices 卡片绑定等)不在本层覆盖,由 e2e 承担。 */
 'use strict';
 const fs = require('fs');
@@ -9445,7 +9446,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 569, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 579, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 143, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
