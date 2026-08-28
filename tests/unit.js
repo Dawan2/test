@@ -8284,6 +8284,31 @@ const skillsTests = [
     assert(rsrc.includes("if (fails > 0) overall = 'fail'"), '发布门 overall 计数口径逐字未动');
     assert(!/lastReview\.checks|report\.checks/.test(rsrc), '发布门不读审片报告的校验命中字段');
   } },
+  /* SK-04 仍欠段里那句"素材产出的判定面归发布门 X"是给读者指路的门号,指错就是把人送到不判素材的门上。
+   * 判素材产出的是 G4 过期镜 / G5 未确认镜 / G6 失败镜(加问题中心 failed-shots 的实时判),
+   * G3 判审片均分、G7 判合规敏感词且不在 headless 七门里 —— 门号一律回各自的实现核对,不在记账里自证。 */
+  { name: '记账对齐:SK-04 仍欠段的素材判定面点名真实门号(G4/G5/G6 + failed-shots,不记到 G3/G7 头上)', fn() {
+    const sk4 = Skills.byId('core.memoryDual');
+    const owed = (sk4.note || '').split('仍欠').slice(1).join('仍欠');
+    assert(owed.includes('生成与合成') && owed.includes('解析向导'), '原有两处锚点不动(本条只订正门号)');
+    const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
+    [['G4', 'g4-stale'], ['G5', 'g5-unconfirmed'], ['G6', 'g6-failed']].forEach(([g, code]) => {
+      assert(rsrc.includes("gate('" + code + "'"), '发布门应仍有该门(门没了就得同步改记账):' + code);
+      assert(owed.includes(g), 'SK-04 的仍欠段须点名判素材产出的门:' + g);
+    });
+    const isrc2 = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
+    assert(isrc2.includes("kind: 'failed-shots'"), '问题中心应仍有 failed-shots 条目');
+    assert(owed.includes('failed-shots'), 'SK-04 的仍欠段须点名问题中心那条实时判定');
+    // 误记的门号不得复活:G3/G7 各判什么须如实写,且不得再把素材产出归到这两门
+    assert(/G3 判审片均分/.test(owed) && /G7 判合规/.test(owed), 'note 须写明 G3/G7 各自判什么');
+    assert(!/判定面归发布门 G3\/G7/.test(sk4.note || ''), '素材产出的判定面不得再记到 G3/G7 头上');
+    assert(rsrc.includes("gate('g3-review', '审片均分") && /G7 合规命中/.test(rsrc), 'G3/G7 的判据出处仍在 release.js');
+    // headless 七门本就没有 G7(依赖浏览器 Compliance),note 里这句同样回实现核对
+    const RC = require('../js/release-core.js');
+    const codes = RC.gates({ id: 'p_note', subjects: [], episodes: [] }, { Domain: DomainMod, online: true }).gates.map(x => x.code);
+    assert(!codes.some(c => /^g7/.test(c)), 'headless 核心门不含 G7,note 的这句须与实况一致');
+    assert(owed.includes('headless 七门'), 'SK-04 的仍欠段须写明 G7 不在 headless 七门内');
+  } },
   { name: '记账对齐:SK-10/SK-11 的「人设句入注册表待 G-13」旧账按实况改写(人设已在表,仍欠段只写真正还在的)', fn() {
     const W = require('../js/wf-core.js');
     const P = require('../js/prompts.js');
