@@ -5306,8 +5306,15 @@ const domainTests = [
       }
       assertEq(out, '', '非数组/空数组 shotIds 走整集那一路,不许说点名那句:' + JSON.stringify(bad));
     });
-    // 点名清单按镜去重:同一 id 点两次仍是一镜(与 emptyBatchNote 同口径)
-    assertEq(sb.Domain.dupRowsNote(['dup', 'dup'], three), n, '点名清单去重:同一 id 点两次仍是一镜');
+    /* 「多花几行」按点名清单的**原始条数**算,不按去重后的 id 数:两者只在机器派生的点名清单上分道,
+     * 而那正是发布门 G6 一键处置递来的形状(每个失败镜各排一条,同 id 两行即 ['dup','dup'])——
+     * 点了两条也真跑两行、一行都没多花,按去重后的 1 去减会凭空报出「多花 1 行的钱」这句假话。
+     * 行为面由 release 套件真跑 G6 那条钉着,这里钉纯函数。 */
+    assertEq(sb.Domain.dupRowsNote(['dup', 'dup'], [row('dup', 0), row('dup', 2)]), '',
+      'G6 那种「每行各排一条」的点名清单:点两条跑两行,一行没多花就一句不说');
+    assertEq(sb.Domain.dupRowsNote(['dup', 'dup', 'dup'], three), '', '同上,三条对三行照旧一句不说');
+    const two = sb.Domain.dupRowsNote(['dup', 'dup'], three);
+    assert(/点名的 2 镜/.test(two) && /多花了 1 行的钱/.test(two), '点两条真跑三行时多花的是 1 行(不是 2 行):' + two);
     // 多个 id 各自多行:逐个点名,多花的行数是各自之和
     const mixed = [row('a', 0), row('a', 1), row('b', 2), row('b', 3), row('b', 4), row('c', 5)];
     const m = sb.Domain.dupRowsNote(['a', 'b', 'c'], mixed);
@@ -6978,6 +6985,40 @@ const releaseTests = [
     await sb2.Release.execFix(p2, g2, null, () => {});
     assertEq(sb2.__genShots.join(','), 'sh1', '跑得到的那镜照跑');
     assertEq(sb2.__toasts.length, 0, '真跑到镜就不该多这一条(写成恒播的话这里红)');
+  } },
+  { name: 'G6 一键处置遇上同 id 多行的分镜表:两行都真跑到,且不许报出"多花了钱"这句假话', fn: async () => {
+    /* G6 的 fix.shotIds 是**机器派生**的:每个失败镜各排一条,故同 id 两行时它递来的是 ['dup','dup']。
+     * 「点名的 id 占多行」那句 note 收的是"用户点了 1 个 id 却按多行计费";G6 这一路点了两条、真跑两行,
+     * 一行都没多花,这句话一个字都不该出现——把"多花几行"按去重后的 id 数去减就会在这里凭空报出
+     * 「多花 1 行的钱」,而用户读到的是发布门自己的按钮在诬告自己。故本条正反两面各判一次:
+     * 两行都得真跑到(选人闸按行筛的正面),以及这一按一句假话都不许播。 */
+    const failRow = order => Object.assign({}, releaseReadyEp().shots[0], { id: 'dup', order, video: { status: 'failed', error: '上游超时' } });
+    const dupEp = () => releaseReadyEp({ shots: [failRow(0), failRow(1)], lastReview: { avg: 8, perShot: [] } });
+    const sb = loadReleaseFix();
+    const ep = dupEp();
+    const p = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [ep] };
+    sb.__proj = p;
+    assertEq(sb.Domain.episodeState(p, ep, true).counts.failed, 2, '夹具前提:同 id 那两行都是失败镜');
+    const g = sb.Release.collect(p, { online: true }).gates.find(x => x.code === 'g6-failed');
+    assertEq(g.status, 'fail', '夹具前提:G6 因失败镜 fail');
+    assertEq((g.fix.shotIds || []).join(','), 'dup,dup', '夹具前提:G6 派生的点名清单每行各排一条(同 id 两行即两条)');
+    let got = null;
+    await sb.Release.execFix(p, g, null, r => { got = r; });
+    assertEq(sb.__genShots.join(','), 'dup,dup', '两行都得真跑到(按 id 去重只跑一行时第二行永远修不好,G6 也就永远过不了门)');
+    assertEq(got.result.total, 2, '回执按真跑的行数报');
+    assertEq(got.result.note, undefined, '点两条跑两行,一行都没多花——这句话一个字都不该出现,实际:' + JSON.stringify(got.result.note));
+    assertEq(sb.__toasts.length, 0, '这一按不许播出任何"多花了钱"的假话,实际 toast:' + JSON.stringify(sb.__toasts));
+    assertEq(sb.Release.collect(p, { online: true }).gates.find(x => x.code === 'g6-failed').status, 'pass',
+      '两行都重跑成功之后 G6 真的过门(只跑一行的话这里仍是 fail)');
+    /* 对照面:同一张表上用户手打点名 1 个 id 时那句话照旧要播——本槽收的是那道减法,不是把话摘了 */
+    const sb2 = loadReleaseFix();
+    const ep2 = dupEp();
+    const p2 = { id: 'p2', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [ep2] };
+    sb2.__proj = p2;
+    const r2 = await sb2.Commands.execute('episode.generateVideos', { pid: 'p2', epid: ep2.id, shotIds: ['dup'], ui: true });
+    assertEq(sb2.__genShots.join(','), 'dup,dup', '选人闸一个字没动:手打一个 id 照旧两行都跑');
+    assert(/多花了 1 行的钱/.test((r2.result && r2.result.note) || ''),
+      '点 1 个 id 真跑两行时那句话照旧要播,实际:' + JSON.stringify(r2.result && r2.result.note));
   } },
   { name: 'G9 一键处置:点名的主体已不在库里时按钮按下去有回音(门上说得清 ≠ 按下去读得到)', fn: async () => {
     /* G9 的 fix 带的是收门那一刻缺图主体的 id 子集。交付面板开着、用户去角色页把那位主体删掉(或另一端并发改动)
@@ -12331,7 +12372,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 664, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 665, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 148, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
