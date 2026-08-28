@@ -2461,6 +2461,35 @@ const commandsTests = [
     assertEq(JSON.stringify(WfCore.sanitizeCmdArgs(R.byName['episode.smartReview'], { maxRetry: 5 })), '{}',
       'Agent 侧按注册表整形:没登记的参数一律抹掉(登记面与实况对不上时,这里就是那道静默的口子)');
   } },
+  { name: 'subject.generateImage:一位也没跑时回执自带实话(仍是 ok,digest 照播;点名到的主体照旧重生成)', fn: async () => {
+    /* 与批量生成视频同一形状的空跑:全部主体都有图 / 点名的主体已不在库里,两档都是 ok/total:0,
+     * 逐主体引擎一次都没起来故没有引擎提示可依赖——不在回执上把它与"跑完了"分开,用户点完读不到任何回音。 */
+    const sb = loadCommands();
+    sb.EpisodeUtil.genSubjectImage = async (p, s) => { sb.__called.push('genSubjectImage:' + s.id); s.image = '/uploads/img/' + s.id + '.png'; };
+    const { p } = cmdCtx(sb);
+    p.subjects = [{ id: 'sj1', name: '女主', kind: 'character', image: 'a.png' }, { id: 'sj2', name: '男主', kind: 'character', image: 'b.png' }];
+    // ① 整集这一路:全部主体都有图
+    const r = await sb.Commands.execute('subject.generateImage', { pid: 'p1', ui: true });
+    assertEq(r.ok, true, '这一档仍是 ok:改判 blocked 会让计划步与 G9 处置记上假拦截');
+    assertEq(r.status, 'done');
+    assertEq(r.result.total, 0);
+    assertEq(sb.__called.filter(x => /^genSubjectImage/.test(x)).length, 0, '引擎一次都不该起来(零计费)');
+    assert(/2 位已有参考图/.test(r.result.note || ''), '回执得点名跑不到的主体数与原因,实际:' + JSON.stringify(r.result.note));
+    sb.Commands.digest(r);
+    assertEq(sb.__toasts.length, 1, '成功档默认静默,唯独这句要播——不播用户读不到任何回音');
+    assertEq(sb.__toasts[0], r.result.note, '播的就是回执上那一句,不另拼第二句');
+    // ② 点名这一路:点名的主体已不在库里(门收完之后主体被删/换过 id),说的是另一件事
+    const r2 = await sb.Commands.execute('subject.generateImage', { pid: 'p1', ui: true, subjectIds: ['gone1'] });
+    assertEq(r2.ok, true);
+    assert(/1 位不在主体库/.test(r2.result.note || ''), '点名档得说清是"库里没这位"而不是"都有图了",实际:' + r2.result.note);
+    // ③ 反面:真跑到主体时不许带这句(点名到有图的主体走的是「含已有图重生」,不是空跑)
+    const r3 = await sb.Commands.execute('subject.generateImage', { pid: 'p1', ui: true, subjectIds: ['sj1'] });
+    assertEq(r3.result.total, 1, '点名到库里的主体是重生成,不是空跑');
+    assertEq(r3.result.note, undefined, '跑到主体就没有"为什么没跑"可说');
+    const before = sb.__toasts.length;
+    sb.Commands.digest(r3);
+    assertEq(sb.__toasts.length, before, '跑完了仍归引擎自己播报,命令层不重复');
+  } },
   { name: 'generateStoryboard:headless hooks.quiet=true,ui 模式 quiet=false(决策弹窗归 UI)', fn: async () => {
     const sb = loadCommands();
     cmdCtx(sb, { shots: [] });
@@ -3985,6 +4014,46 @@ const domainTests = [
     assert(/还没有分镜/.test(sb.Domain.emptyBatchNote(p, { shots: [] }, null, false)), '空集如实说没分镜');
     assert(/还没有分镜/.test(sb.Domain.emptyBatchNote(p, null, ['sh0'], false)), '缺集不抛');
   } },
+  { name: 'emptySubjectImageNote:一位也没跑时逐堆说清为什么(分档与镜头那一侧分得开;各堆之和 = 点名数)', fn: () => {
+    const sb = loadDomain();
+    /* 主体这一侧的分档不是镜头那一侧的翻版:没有终稿锁、没有判旧,而点名到的主体一律按「含已有图重生」真跑。
+     * 故夹具里点名的四位有图主体本该跑得到、一位也不许进「不在主体库」那一堆——
+     * 顺手套用 emptyBatchNote 的分堆(把有图的算成"产物已是最新")在这里红。 */
+    const subs = [
+      { id: 'sj0', name: '女主', kind: 'character', image: 'a.png' },
+      { id: 'sj1', name: '男主', kind: 'character', image: 'b.png' },
+      { id: 'sj2', name: '客栈', kind: 'scene', image: 'c.png' },
+      { id: 'sj3', name: '玉佩', kind: 'prop', image: 'd.png' },
+      { id: 'sj4', name: '配角', kind: 'character' },                    // 缺图:整集那一路真跑得到
+    ];
+    const p = makeP([], subs);
+    const picked = ['ghost1', 'ghost2', 'ghost3'];
+    const note = sb.Domain.emptySubjectImageNote(p, picked);
+    const nums = (note.match(/(\d+) 位/g) || []).map(x => +x.match(/\d+/)[0]);
+    assertEq(nums[0], picked.length, '开头报的是点名数:' + note);
+    assertEq(nums.slice(1).reduce((a, b) => a + b, 0), picked.length,
+      '各堆之和须等于点名数(有主体没归堆就是回执把它抹掉了):' + note);
+    assert(/3 位不在主体库/.test(note), '点名了主体库里没有的 3 个 id,实际:' + note);
+    assert(!/没能说清原因/.test(note), '这三位都归得了堆,安全阀不该响:' + note);
+    assertEq(sb.Domain.emptySubjectImageNote(p, ['ghost1', 'ghost1', 'ghost1']),
+      sb.Domain.emptySubjectImageNote(p, ['ghost1']), '同一 id 点名多次仍是一位');
+    // 点名到库里真有的主体:那是「含已有图重生」的活,一位也不许被算成"不在主体库"
+    const mixed = sb.Domain.emptySubjectImageNote(p, ['sj0', 'sj1', 'sj2', 'sj3', 'ghost1']);
+    assert(/1 位不在主体库/.test(mixed) && /4 位没能说清原因/.test(mixed),
+      '有图的四位跑得到,套用镜头那一侧的「产物已是最新」在这里红,实际:' + mixed);
+    // 整集这一路(不点名):跑不到 = 全都有参考图,数得对上主体数
+    const n2 = sb.Domain.emptySubjectImageNote(makeP([], subs.slice(0, 4)));
+    assert(/^没有待补图的主体/.test(n2), '整集这一路换一句开头(与点名那一路分得开):' + n2);
+    assert(/4 位已有参考图/.test(n2) && !/没能说清原因/.test(n2), '整集这一路数得对上主体数,实际:' + n2);
+    assertEq((n2.match(/(\d+) 位/g) || []).map(x => +x.match(/\d+/)[0]).reduce((a, b) => a + b, 0), 4,
+      '整集这一路各堆之和须等于主体数:' + n2);
+    assert(/1 位没能说清原因/.test(sb.Domain.emptySubjectImageNote(makeP([], subs))),
+      '缺图主体还在库里却说没得跑:安全阀须让它露头,不许报成"全都有参考图"');
+    assert(/还没有主体/.test(sb.Domain.emptySubjectImageNote(makeP([], []), ['sj0'])), '空主体库如实说没主体');
+    assert(/还没有主体/.test(sb.Domain.emptySubjectImageNote(null, null)), '缺项目不抛');
+    // 两侧措辞不许串成一句(镜头论"镜"、主体论"位")
+    assert(!/镜/.test(sb.Domain.emptySubjectImageNote(p, picked)), '主体这一侧不该冒出"镜"字:' + note);
+  } },
 ];
 
 /* ================= 套件 12:bus.js(管线事件总线,第三阶段) ================= */
@@ -5410,6 +5479,38 @@ const releaseTests = [
     await sb2.Release.execFix(p2, g2, null, () => {});
     assertEq(sb2.__genShots.join(','), 'sh1', '跑得到的那镜照跑');
     assertEq(sb2.__toasts.length, 0, '真跑到镜就不该多这一条(写成恒播的话这里红)');
+  } },
+  { name: 'G9 一键处置:点名的主体已不在库里时按钮按下去有回音(门上说得清 ≠ 按下去读得到)', fn: async () => {
+    /* G9 的 fix 带的是收门那一刻缺图主体的 id 子集。交付面板开着、用户去角色页把那位主体删掉(或另一端并发改动)
+     * 之后再点处置:命令层早退 ok/total:0、逐主体引擎一次都没起来故没有引擎提示、digest 对成功档默认静默——
+     * 基线上这一按连"什么都没发生"都读不到。本条走门禁 → execFix → 命令层 → digest 整条链,数引擎实收与用户实读。 */
+    const sb = loadReleaseFix();
+    sb.__genSubjects = [];
+    sb.EpisodeUtil.genSubjectImage = async (p, s) => { sb.__genSubjects.push(s.id); s.image = '/uploads/img/' + s.id + '.png'; };
+    const p = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '女主', kind: 'character' }], episodes: [releaseReadyEp()] };
+    sb.__proj = p;
+    const g = sb.Release.collect(p, { online: true }).gates.find(x => x.code === 'g9-subjects');
+    assertEq(g.status, 'fail', '夹具前提:G9 因缺图主体 fail');
+    assertEq((g.fix.subjectIds || []).join(','), 'sj1', '夹具前提:处置带的是缺图主体子集');
+    p.subjects = []; // 收门之后那位主体在角色页被删掉:处置点名的 id 已不在库里
+    let got = null;
+    await sb.Release.execFix(p, g, null, r => { got = r; });
+    assertEq(sb.__genSubjects.length, 0, '引擎实收 0 位(这一按本来就跑不动,零计费)');
+    assertEq(got && got.ok, true, '仍是 ok:改判 blocked 会波及计划步归档与 G9 处置回调,不在回执这一面动门槛');
+    assertEq(sb.__toasts.length, 1, '用户须读到恰一条回音(基线这里是 0 条:点完什么都没有)');
+    assert(/一位也没跑/.test(sb.__toasts[0]), '回音须说清一位也没跑,实际:' + sb.__toasts[0]);
+    assertEq(sb.Release.collect(p, { online: true }).gates.find(x => x.code === 'g9-subjects').status, 'pass',
+      '门禁重收按实况走(主体没了就没有缺图主体):本条只补回音,一个门槛没动');
+    // 对照面:点名的主体还在库里时照跑,不弹这句(引擎自己会播报,命令层不重复)
+    const sb2 = loadReleaseFix();
+    sb2.__genSubjects = [];
+    sb2.EpisodeUtil.genSubjectImage = async (p2, s) => { sb2.__genSubjects.push(s.id); s.image = '/uploads/img/' + s.id + '.png'; };
+    const p2 = { id: 'p2', name: '剧', subjects: [{ id: 'sj1', name: '女主', kind: 'character' }], episodes: [releaseReadyEp()] };
+    sb2.__proj = p2;
+    const g2 = sb2.Release.collect(p2, { online: true }).gates.find(x => x.code === 'g9-subjects');
+    await sb2.Release.execFix(p2, g2, null, () => {});
+    assertEq(sb2.__genSubjects.join(','), 'sj1', '跑得到的那位照跑');
+    assertEq(sb2.__toasts.length, 0, '真跑到主体就不该多这一条(写成恒播的话这里红)');
   } },
   { name: 'G2 问题清零:真实 Issues 数组契约——脏项目 fail 挂问题中心导航,干净项目 pass', fn() {
     const sb = loadRelease();
@@ -7182,6 +7283,29 @@ const contractTests = [
     const dg = cmd.slice(cmd.indexOf('function digest('), cmd.indexOf('window.Commands = '));
     assert(/r\.result && r\.result\.note/.test(dg), 'digest 须读回执上的 note(不读的话浏览器这一端仍是静默)');
     assert(/U\.toast\(note/.test(dg), 'digest 播的须是回执原句,不另拼一句');
+  } },
+  { name: '一位也没跑那句实话双端单源:两端主体补图空跑早退都现取 Domain.emptySubjectImageNote,不与镜头那份混用', fn() {
+    /* 与镜头那一侧同形:句子只许有一份,否则浏览器 toast 与 hujing exec 的 JSON 上读到两种说法。
+     * 另钉"不许拿 emptyBatchNote 顶":两侧分档不同(主体没有终稿锁与判旧,点名到的一律重生成),
+     * 混用会让回执论起"镜"来。浏览器那一端的行为由 commands/release 两套件真跑钉住,CLI 那端在此源级点名。 */
+    const D = require('../js/domain.js');
+    assertEq(typeof D.emptySubjectImageNote, 'function', 'Domain 须导出主体空跑回执单源 emptySubjectImageNote');
+    [['js/commands.js', path.join(ROOT, 'js', 'commands.js'), "reg('subject.generateImage'", "\n  reg('"],
+      ['cli.js', path.join(ROOT, 'cli.js'), "EXEC['subject.generateImage']", '\nEXEC[']].forEach(([rel, abs, head, tail]) => {
+      const src = fs.readFileSync(abs, 'utf8');
+      const i = src.indexOf(head);
+      assert(i >= 0, rel + ' 找不到 subject.generateImage 的实现(挪窝或改名就同轮改这里,别把本条留成恒真)');
+      const rest = src.slice(i + head.length);
+      const body = rest.slice(0, rest.indexOf(tail) >= 0 ? rest.indexOf(tail) : rest.length);
+      assert(/Domain\.emptySubjectImageNote\(/.test(body), rel + ' 的空跑早退须现取 Domain.emptySubjectImageNote(不许就地拼第三句)');
+      /* 那句话的字面不许在两端的可执行行里露面(注释里讲这件事不算);整段被判成注释时本条会成恒真,故先自证行数 */
+      const code = body.split('\n').filter(t => !(/^\s*(\/\/|\/?\*)/.test(t) || !t.trim()));
+      assert(code.length > 12, rel + ' 的 generateImage 段可执行行取不到(整段被判成注释本条即恒真),实测 ' + code.length + ' 行');
+      const dup = code.filter(t => /一位也没跑|已有参考图|不在主体库/.test(t));
+      assertEq(dup.join(' | '), '', rel + ' 的可执行行里不许出现那句话的字面(出现即说明又抄了一份)');
+      const wrong = code.filter(t => /Domain\.emptyBatchNote\(/.test(t));
+      assertEq(wrong.join(' | '), '', rel + ' 的主体补图不许改读镜头那一份派生(分档不同,混用会让回执论起"镜"来)');
+    });
   } },
   { name: '分集级审片门槛单源:达标线/判旧/"这一集当下能不能审"只在 episodeState.reviewGate 一处,流程条与问题中心都不另判', fn() {
     /* 行为面由 domain/issues 两条用例双向钉住;这一条钉源级:判据抄回第二份时行为可以完全一致,
@@ -10262,7 +10386,7 @@ action 二选一:
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
     [['单元测试', 602, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 143, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
-      ['CLI 冒烟', 108, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
+      ['CLI 冒烟', 109, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
       assert(live >= floor, label + '用例数不得少于 ' + floor + '(实测 ' + live + ');确要删测须同轮说明理由,新增用例时把下限抬到当轮实况');
       const docs = [...readme.matchAll(docRe)].map(m => +m[1]);

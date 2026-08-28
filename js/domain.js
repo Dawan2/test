@@ -297,6 +297,30 @@
     say(shots.length - locked - done, '没能说清原因');
     return '本集没有待生成的镜头,一镜也没跑:' + parts.join('、');
   };
+  /* 主体批量补图一位也没跑时,回执上「为什么是 0 位」那句话(单源:命令层与 CLI 同读这一份)。
+   * 与镜头那一侧同形而分档不同,故另起一份不套用 emptyBatchNote:主体既没有终稿锁也没有判旧,
+   * 且点名到的主体一律按「含已有图重生」真跑(有图不跳过)——
+   *   点名这一路跑不到只剩一种理由:那个 id 不在主体库;
+   *   整集这一路跑不到 = 全都有参考图(两端待补图主体筛法 !s.image 的反面)。
+   * 各堆之和恒等于点名数(整集那一路恒等于主体数),最后一堆「N 位没能说清原因」是安全阀,
+   * 真实调用点上恒为 0,措辞有意不说成"不缺图"——那在"缺图却没跑"时是假话。 */
+  D.emptySubjectImageNote = function (p, picked) {
+    const subs = (p && p.subjects) || [];
+    if (!subs.length) return '项目还没有主体,一位也没跑';
+    const parts = [];
+    const say = (n, t) => { if (n) parts.push(n + ' 位' + t); };
+    if (picked && picked.length) {
+      const ids = [...new Set(picked)]; // 点名清单按主体去重:重复的 id 指的是同一位,不该被数成两位
+      const gone = ids.length - subs.filter(s => ids.includes(s.id)).length;
+      say(gone, '不在主体库');
+      say(ids.length - gone, '没能说清原因'); // 各堆之和恒等于点名数:说不清的主体也得露头,不许被抹平
+      return '点名的 ' + ids.length + ' 位主体一位也没跑:' + parts.join('、');
+    }
+    const withImg = subs.filter(s => s.image).length;
+    say(withImg, '已有参考图');
+    say(subs.length - withImg, '没能说清原因');
+    return '没有待补图的主体,一位也没跑:' + parts.join('、');
+  };
   /* ================= 镜头配音(TTS 渲染清单) =================
    * 配音的唯一解释:哪套音色配置生效、已渲染音轨用的是什么参数、能否混入成片。
    * 浏览器(storyboard/sb-gen/sb-batch)渲染后写回 s.audioMeta,合成侧(sb-io.js / cli.js)据此取音轨并落清单凭据;
