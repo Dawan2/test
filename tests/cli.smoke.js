@@ -267,6 +267,40 @@ async function main() {
   r = cli('memory', 'bogus');
   report('memory 未知子命令 → exit 2(用法含 seed|migrate)', r.code === 2 && /seed\|migrate/.test(String((r.out && r.out.error) || r.err)), 'exit=' + r.code);
 
+  /* ---- memory add 的满桶淘汰(W103):桶被自动回流条占满时,用户新加一条不该挤掉别的用户条 ----
+   * add 的写入面已改经 WfCore.memWrite(与六处回流写入点同一份),淘汰优先级对用户写入面一并生效。
+   * 夹具直打 PUT /api/state 灌到刚好 MEM_MAX 条(2 条用户沉淀 + 其余自动回流),再走真实 CLI 命令。
+   * 放在记忆段末尾:整组 agentMemory 被夹具替换,后续用例不再读记忆桶。 */
+  {
+    const W = require(ROOT + '/js/wf-core.js');
+    const tk = JSON.parse(fs.readFileSync(CFG_DIR + '/config.json', 'utf8')).token;
+    const api = async (method, p, body) => {
+      const res = await fetch(BASE + p, { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tk }, body: body ? JSON.stringify(body) : undefined });
+      return res.json();
+    };
+    const capUser = ['用户要求记住:女主统一叫林晚晴', '用户要求记住:夜戏一律偏冷色'];
+    const capMem = capUser.map(t => ({ text: t, time: '2026-08-27 10:00:00', scope: '分镜' }))
+      .concat(Array.from({ length: W.MEM_MAX - capUser.length }, (_, i) => (
+        { text: '分镜闭环回流·占位 ' + i, time: '2026-08-27 11:00:00', scope: '分镜', fb: 'sb:cap' + i })));
+    const cur = await api('GET', '/api/state');
+    await api('PUT', '/api/state', { rev: +((cur.data && cur.data.rev) || 0), changes: { meta: { agentMemory: capMem } } });
+    r = cli('memory', 'list');
+    report('满桶夹具就位(恰好 MEM_MAX 条:2 条用户沉淀 + 其余自动回流)',
+      r.code === 0 && r.out.total === W.MEM_MAX && (r.out.list || []).filter(m => m.fb).length === W.MEM_MAX - 2,
+      'total=' + (r.out && r.out.total));
+    const added = cli('memory', 'add', '--text', '用户要求记住:雨夜戏一律手持', '--scope', '分镜');
+    r = cli('memory', 'list');
+    const memCap = (r.out && r.out.list) || [];
+    report('memory add 满桶时仍守住 MEM_MAX(桶不被顶破)',
+      added.code === 0 && r.code === 0 && memCap.length === W.MEM_MAX, 'exit=' + added.code + ' 条数 ' + memCap.length);
+    report('已有的用户条一条不少,新加那条在桶尾(裸 slice 会砍掉最早那条用户条)',
+      capUser.every(t => memCap.some(m => m.text === t)) && memCap[memCap.length - 1].text === '用户要求记住:雨夜戏一律手持',
+      JSON.stringify(memCap.filter(m => /^用户要求记住:/.test(m.text || '')).map(m => m.text)));
+    report('出局的是最旧那条自动回流条(sb:cap0 出局,sb:cap1 仍在)',
+      !memCap.some(m => m.fb === 'sb:cap0') && memCap.some(m => m.fb === 'sb:cap1'),
+      JSON.stringify(memCap.map(m => m.fb || '-')).slice(0, 160));
+  }
+
   // ---- workflow 统一工作流状态(domain.js 单源口径) ----
   r = cli('workflow', pid);
   report('workflow 项目级(steps+recommendedAction)', r.code === 0 && Array.isArray(r.out.steps) && !!r.out.recommendedAction, (r.out && r.out.recommendedAction && r.out.recommendedAction.key) || '');

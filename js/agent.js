@@ -101,7 +101,8 @@
   }
 
   /* ---- 持久化记忆:记住用户过往的修改意图/偏好,跨会话召回注入 ----
-   * 轻量实现:state.agentMemory(上限 50 条,先进先出);召回=最近 4 条 + 与当前输入关键词重合度最高的 4 条 */
+   * 轻量实现:state.agentMemory(上限 WfCore.MEM_MAX 条,满桶淘汰口径归 WfCore.memWrite);
+   * 召回=最近 4 条 + 与当前输入关键词重合度最高的 4 条 */
   /* 板块改名迁移 + 标准沉淀/知识库种子补种:派生走 WfCore 双端单源(headless 侧
    * /api/wf/memory-seed 与 CLI memory seed 吃同一份种子表),记忆桶/知识库/时间戳/板块词表经参数注入;
    * 落点仍是既有 Store.state.agentMemory,种子表与迁移表不在本文件留第二份 */
@@ -113,12 +114,13 @@
     if (r.changed) Store.save();
     return Store.state.agentMemory;
   }
+  /* 写入走 WfCore.memWrite(与回流面同一份):无 fb 的条目按追加处理,满桶淘汰优先级顺带生效——
+   * 桶被自动回流条占满时,用户新加一条不会挤掉别的用户条(裸 slice 砍头砍的正是最早那批用户条) */
   function memRemember(text, scope) {
     text = String(text || '').trim();
     if (!text) return;
-    const mem = memAll();
-    mem.push({ text: text.slice(0, 120), time: Store.now(), scope: scope || '' });
-    Store.state.agentMemory = mem.slice(-50);
+    const entry = { text: text.slice(0, 120), time: Store.now(), scope: scope || '' };
+    Store.state.agentMemory = WfCore.memWrite(memAll(), [entry]);
     Store.save();
   }
   /* 召回算法下沉 wf-core.js(双端同源):对话层与 /api/wf/* 工作流端点同算法消费记忆 */
