@@ -477,6 +477,46 @@ function makeEp(over) {
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+/* ---- W213 判据用的源级括号扫描:跳过字符串/模板字面量,按 ()[]{} 配平 ---- */
+function argSpan(src, open) { // open 指向 '(',返回配平的 ')' 下标
+  let depth = 0, q = null;
+  for (let i = open; i < src.length; i++) {
+    const c = src[i];
+    if (q) { if (c === '\\') i++; else if (c === q) q = null; continue; }
+    if (c === "'" || c === '"' || c === '`') { q = c; continue; }
+    if ('([{'.includes(c)) depth++;
+    else if (')]}'.includes(c)) { depth--; if (!depth) return i; }
+  }
+  return -1;
+}
+/* U.confirm(…) 的实参跨度清单:判断某个下发点是否落在确认闸内 */
+function confirmSpans(src) {
+  const out = [];
+  for (let i = src.indexOf('U.confirm('); i >= 0; i = src.indexOf('U.confirm(', i + 1)) {
+    const end = argSpan(src, src.indexOf('(', i));
+    if (end > 0) out.push({ start: i, end });
+  }
+  return out;
+}
+/* 动作执行器实参里的 acts 那一个(集级 runEpisodeActions 第 3 个、全局 runGlobalActions 第 2 个) */
+function dispatchActsArg(src, open) {
+  const end = argSpan(src, open);
+  if (end < 0) return null;
+  const args = [];
+  let depth = 0, q = null, cur = '';
+  for (let i = open + 1; i < end; i++) {
+    const c = src[i];
+    if (q) { cur += c; if (c === '\\') cur += src[++i]; else if (c === q) q = null; continue; }
+    if (c === "'" || c === '"' || c === '`') { q = c; cur += c; continue; }
+    if ('([{'.includes(c)) depth++;
+    else if (')]}'.includes(c)) depth--;
+    if (c === ',' && !depth) { args.push(cur.trim()); cur = ''; continue; }
+    cur += c;
+  }
+  args.push(cur.trim());
+  return args[/runEpisodeActions\($/.test(src.slice(Math.max(0, open - 30), open + 1)) ? 2 : 1] || null;
+}
+
 /* ================= 套件 1:agent-ops.js ================= */
 const agentOpsTests = [
   { name: 'splitOps:数据类/动作类 ops 分流', fn() {
@@ -1132,6 +1172,85 @@ const agentOpsTests = [
     const evSeg = srv.slice(srv.indexOf("pathname === '/api/wf/evolve-expert'"));
     assert(!/cmdManual|\.manual\b/.test(evSeg.slice(0, 4000)), '/api/wf/evolve-expert 一个字没动(人手入口的落点)');
     assert(/ops: out\.ops, manual: out\.manual/.test(srv), '/api/wf/agent 应把被拦的命令名回给调用方');
+  } },
+
+  /* ---- W213:「免确认自动执行」档的现场判据——不经 U.confirm 的 run 下发点必须先过 cmdManual ----
+   * 停工位现场(W208 基线 live 举证:无头 Chrome 打真实页面跑出来的,不是读代码读出来的):
+   * settings.agentAuto(「⚡ 自动执行」)这一档确实在,按钮显示「⚡ 自动·开」,但它并不免 exec 类的确认——
+   * 让模型恒返回 {"op":"run","cmd":"expert.evolve"},集级面板与全局抽屉两条路都把它分流进 U.confirm:
+   * 用户不点确认时 Commands.execute 一次没跑、customExperts 一条没多(persona 一个字没改),消息尾注是
+   * 「(⚠ 1 个执行类动作待确认)」;把确认点掉才跑 expert.evolve 并追加进化条款。真正免确认的自动路只有
+   * 自修复轮,而它已经先过 WfCore.cmdManual(W203 落的闸,live 复核仍拦得住 evolve、放行 preflight)。
+   * 所以本轮没有"免确认档"可接,也不新造一个开关,改把判据钉在这里:浏览器侧两个动作执行器的每个下发点
+   * 都要能归进四类之一——U.confirm 闸内 / 按 opRisk 排除了 exec / 经 cmdManual 过滤 / 走 ACT_CMD 别名面
+   * (而别名面里不许出现人手动作命令)。新开一条不经确认的 run 下发路而不先过 cmdManual,本组即红。 */
+  { name: 'W213 exec 类 run:自动执行档下仍只在 U.confirm 闸内下发(集级面板与全局抽屉两条路)', fn() {
+    [['agent.js', 'runOps', 'runEpisodeActions'], ['agent-global.js', 'runOpsG', 'runGlobalActions']].forEach(([f, list, fn]) => {
+      const src = fs.readFileSync(path.join(ROOT, 'js', f), 'utf8');
+      assert(new RegExp('const ' + list + ' = [\\s\\S]{0,80}opRisk\\(o\\) === \'exec\'').test(src), f + ' 的 exec 支应按 opRisk 取 exec 类');
+      const at = src.indexOf(fn + '(' + (f === 'agent.js' ? 'p, ep, ' : 'ctx, ') + list);
+      assert(at > 0, f + ' 应有且只有一处下发 ' + list);
+      assertEq(src.indexOf(fn + '(' + (f === 'agent.js' ? 'p, ep, ' : 'ctx, ') + list, at + 1), -1, f + ' 的 ' + list + ' 下发点不止一处(新开的那处也得进闸)');
+      assert(confirmSpans(src).some(s => at > s.start && at < s.end), f + ' 的 exec 类 run 下发点跑到 U.confirm 闸外了');
+    });
+  } },
+  { name: 'W213 自动执行档直执行的那支:按 opRisk 排除 exec,exec 一条也混不进去', fn() {
+    const sb = loadAgentOps(); const AO = sb.AgentOps;
+    assertEq(AO.opRisk({ op: 'run', cmd: 'expert.evolve' }), 'exec', 'run 是 exec 级(免确认档直执行的那支据此排除它)');
+    assertEq(AO.opRisk({ op: 'goto', target: '剪辑' }), 'read');
+    [['agent.js', 'safeActs'], ['agent-global.js', 'safeActsG']].forEach(([f, list]) => {
+      const src = fs.readFileSync(path.join(ROOT, 'js', f), 'utf8');
+      assert(new RegExp('const ' + list + ' = [\\s\\S]{0,80}opRisk\\(o\\) !== \'exec\'').test(src), f + ' 的直执行支应排除 exec 类');
+    });
+  } },
+  { name: 'W213 判据:两个动作执行器的每个下发点都归得了类(新开的免确认 run 路必须先过 cmdManual)', fn() {
+    /* 分类口径:闸内(U.confirm 跨度内)/ 非 exec(safeActs*)/ 人手动作已过滤(retries)/
+     * 人手点击(预览卡的 actOps|g.acts,与 chips/事件卡的别名字面量)。归不了类即红。 */
+    const EXPECT = {
+      'agent.js': ['别名面', '别名面', '人手点击', '非exec', '闸内'],
+      'agent-global.js': ['别名面', '别名面', '别名面', '人手点击', '非exec', '闸内'],
+      'agent-ops.js': ['cmdManual'],
+    };
+    Object.keys(EXPECT).forEach(f => {
+      const src = fs.readFileSync(path.join(ROOT, 'js', f), 'utf8');
+      const spans = confirmSpans(src);
+      const got = [];
+      const re = /(?<!function )run(?:Episode|Global)Actions\(/g;
+      let m;
+      while ((m = re.exec(src))) {
+        const arg = dispatchActsArg(src, m.index + m[0].length - 1);
+        if (arg === null) continue;                                  // 函数定义本身
+        if (spans.some(s => m.index > s.start && m.index < s.end)) got.push('闸内');
+        else if (/^safeActs/.test(arg)) got.push('非exec');
+        else if (arg === 'retries') got.push('cmdManual');
+        else if (arg === 'actOps' || arg === 'g.acts') got.push('人手点击');
+        else if (arg[0] === '[') got.push('别名面');
+        else got.push('未归类:' + arg);
+      }
+      assertEq(got.join(','), EXPECT[f].join(','), f + ' 的动作下发点分类与在册清单不符(新增的那处要么进 U.confirm 闸,要么先过 WfCore.cmdManual)');
+    });
+    // cmdManual 那一类:自修复轮的重试名单确实是它过滤出来的(不是同名巧合)
+    const ops = fs.readFileSync(path.join(ROOT, 'js', 'agent-ops.js'), 'utf8');
+    assert(/const isManual = cmd => WfCore\.cmdManual\(/.test(ops), '自修复轮的判据应直读 WfCore.cmdManual');
+    assert(/const retries = wanted\.filter\(o => !isManual\(cmdOf\(o\)\)\)/.test(ops), 'retries 应是 isManual 过滤后的余量');
+  } },
+  { name: 'W213 别名面不许夹带人手动作:ACT_CMD 与情境 chips 的 run 值全不是 manual 命令', fn() {
+    /* chips/事件卡的别名下发是点一下就走、不过 U.confirm 的,所以别名表本身就是闸:
+     * 只要 ACT_CMD 里没有人手动作命令,这条路就够不着 expert.evolve。 */
+    const sb = loadAgentOps(); const AO = sb.AgentOps;
+    const CR = require('../js/cmd-registry.js');
+    const W = require('../js/wf-core.js');
+    const manual = Object.values(AO.ACT_CMD).filter(c => W.cmdManual(CR.byName, c));
+    assertEq(manual.join(','), '', 'ACT_CMD 别名面出现了人手动作命令(点一下 chip 就跑掉了)');
+    assert(Object.keys(AO.ACT_CMD).length >= 6, '别名面不该被顺手清空(那是砍功能不是设闸)');
+  } },
+  { name: 'W213 不新造开关:浏览器侧没有第二个"免确认/跳过确认"设置位', fn() {
+    ['agent.js', 'agent-global.js', 'agent-ops.js'].forEach(f => {
+      const src = fs.readFileSync(path.join(ROOT, 'js', f), 'utf8');
+      assert(!/agentAutoRun|autoConfirm|skipConfirm|noConfirm|confirmFree/.test(src), f + ' 不许另起一个免确认开关(判据是 U.confirm + cmdManual 这两样)');
+    });
+    const ag = fs.readFileSync(path.join(ROOT, 'js', 'agent.js'), 'utf8');
+    assert(/Store\.state\.settings\.agentAuto = !Store\.state\.settings\.agentAuto/.test(ag), '现有「⚡ 自动执行」档不动(它管的是数据类改动免预览,不是 exec 免确认)');
   } },
 
   /* ---- 第三阶段:按需查询(queryProtocol/answerQueries)与事件总线订阅(subscribeBus) ---- */
