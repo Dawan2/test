@@ -3859,6 +3859,29 @@ function releaseReadyEp(over) {
   return Object.assign({ id: 'ep1', title: '第一集', content: '剧本正文', shots: [s],
     lastReview: { avg: 8, perShot: [{ shotId: 'sh0', order: 0, score: 8 }] } }, over || {});
 }
+/* 交付包落地面:装真 js/ziputil.js 与最小下载桩,数得清"用户到手几个文件、每个文件里装的是什么"。
+ * urlFail 让第 N 次 URL.createObjectURL 抛错(N 从 1 起),用来走 downloadReleaseZip 的兜底那条路。 */
+function loadReleaseZip(urlFail) {
+  const sb = loadRelease();
+  sb.TextEncoder = TextEncoder;
+  sb.Blob = function (parts, opt) { this.parts = parts; this.type = opt && opt.type; };
+  sb.__clicks = [];
+  const blobs = new Map();
+  let n = 0;
+  sb.URL = {
+    createObjectURL(b) {
+      if (++n === urlFail) throw new Error('createObjectURL 不可用');
+      const u = 'blob:' + n; blobs.set(u, b); return u;
+    },
+    revokeObjectURL() {},
+  };
+  sb.document.createElement = () => {
+    const a = { href: '', download: '', click() { sb.__clicks.push({ name: a.download, blob: blobs.get(a.href) }); } };
+    return a;
+  };
+  loadFile(sb, 'ziputil.js');
+  return sb;
+}
 const releaseTests = [
   { name: 'collect:齐备项目 overall=pass(score 10-1 警告门=9;因为 G10 账目离线只 warn 1 条,cond-pass 或 pass 取决于 warn 数)', fn() {
     const sb = loadRelease();
@@ -4268,6 +4291,43 @@ const releaseTests = [
       assert(!core.includes(t), 'release-core.js 不得引用环境句柄:' + t));
     assert(!/Tasks\.run/.test(core) && !/Tasks\.run/.test(rel.slice(rel.indexOf('function stampRelease'), rel.indexOf('function releaseList'))),
       '发布留痕不是计费动作:两端都不进 Tasks.run');
+  } },
+  /* 落地那一步失败时用户必须看见失败。基线的兜底 catch 走 ZipUtil.download,而它就是同一套
+   * Blob → URL.createObjectURL → a.click:主路径落不下来它同样落不下来;偶尔落得下来时给的是一个
+   * 名字仍叫「交付包_*.zip」、里面只有一句"请重新打包"的空壳,后面那条"交付包已下载 N 个文件"
+   * 的成功提示还照发——用户拿着空壳被告知交付成功。 */
+  { name: 'downloadReleaseZip:浏览器落地失败时如实抛错,用户到手 0 个文件且不发"已下载"成功提示', fn: async () => {
+    const sb = loadReleaseZip(1); // 主路径那次 createObjectURL 就抛
+    const ep = releaseReadyEp({ composedSrt: '1\n00:00:00,000 --> 00:00:05,000\n台词\n' });
+    const p = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [ep] };
+    let err = null;
+    await sb.Release.downloadReleaseZip(p).catch(e => { err = e; });
+    assert(err, '落地失败必须抛出去,不许静默兜底(基线在这里改落一个空壳包并当成功返回)');
+    assert(/下载没能落地/.test(err.message) && /createObjectURL 不可用/.test(err.message),
+      '报错要说清是下载这一步没落地并带上原因:' + (err && err.message));
+    assertEq(sb.__clicks.length, 0, '主路径落不下来时用户不该再收到任何文件(兜底那份空壳同样是这条路,落不下来)');
+    assert(!sb.__toasts.some(t => t.includes('交付包已下载')), '失败之后不许接着报"已下载":' + JSON.stringify(sb.__toasts));
+  } },
+  /* 失败要走到用户眼前:交付检查弹窗的「📦 打包交付 ZIP」按钮是唯一入口,它 catch 后 toast「打包失败」。
+   * 基线走兜底不抛,按钮一路走完只有绿色的"交付包已下载",失败在 UI 上根本不存在。 */
+  { name: '打包交付 ZIP 按钮:落地失败播报「打包失败」并恢复按钮,不留下"已下载"的假成功', fn: async () => {
+    const sb = loadReleaseZip(1);
+    const ep = releaseReadyEp({ composedSrt: '1\n00:00:00,000 --> 00:00:05,000\n台词\n' });
+    const p = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [ep] };
+    const nodes = {};
+    const node = sel => (nodes[sel] = nodes[sel] || { onclick: null, disabled: false, textContent: '', value: '7',
+      innerHTML: '', querySelectorAll: () => [] });
+    let mounted = null;
+    sb.U.openModal = o => { mounted = o; o.onMount({ querySelector: node, querySelectorAll: () => [] }, () => {}); };
+    sb.Release.openModal(p, {});
+    assert(mounted, '交付检查弹窗应已挂载');
+    const btn = nodes['[data-x=pack]'];
+    await btn.onclick();
+    assert(sb.__toasts.some(t => t.startsWith('打包失败:')), '按钮必须把失败播报出来:' + JSON.stringify(sb.__toasts));
+    assert(!sb.__toasts.some(t => t.includes('交付包已下载')), '不许同时报成功:' + JSON.stringify(sb.__toasts));
+    assertEq(sb.__clicks.length, 0, '报了失败就不该有文件落地(否则用户手里那份是空壳)');
+    assertEq(btn.disabled, false, '失败后按钮恢复可点(能重试)');
+    assertEq(btn.textContent, '📦 打包交付 ZIP');
   } },
 ];
 
@@ -7527,7 +7587,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 509, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 511, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 130, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -7663,7 +7723,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 162;
+    const FLOOR = 163;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接

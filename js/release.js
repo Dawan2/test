@@ -352,8 +352,7 @@ ${summary.stale.length ? summary.stale.map(s => ' - ' + s).join('\n') : ' (无)'
   async function downloadReleaseZip(p, opts) {
     const r = await buildReleaseZip(p, opts);
     const name = '交付包_' + safeName(p.name) + '_v' + (p.__ver || 0) + '.zip';
-    ZipUtil.download(name, [{ name: 'PLACEHOLDER', data: '' }]);  // 先占位触发下载;ZipUtil.download 接受 files,直接重写
-    // 正确写法:用 URL.createObjectURL,避免上一行占位生成额外空 zip
+    // 直接落 buildReleaseZip 已经打好的 bytes:再走一次 ZipUtil.download 等于另打一个包,用户会多收到一个 zip
     try {
       const blob = new Blob([r.bytes], { type: 'application/zip' });
       const a = document.createElement('a');
@@ -361,7 +360,12 @@ ${summary.stale.length ? summary.stale.map(s => ' - ' + s).join('\n') : ' (无)'
       a.download = name;
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 3000);
-    } catch (_) { ZipUtil.download(name, [{ name: 'project_meta.json', data: '空下载兜底:请重新打包' }]); }
+    } catch (e) {
+      /* 落地失败就如实失败:兜底再调 ZipUtil.download 是同一套 Blob/createObjectURL/a.click,
+       * 这条路不通时那条路同样不通;万一通了,落的是个名字仍叫「交付包」、里面只有一句
+       * 「请重新打包」的空壳 zip,用户还会接着收到下面那条「交付包已下载 N 个文件」的成功提示。 */
+      throw new Error('交付包已打好,但浏览器下载没能落地:' + ((e && e.message) || e) + '(请重试打包,或换用其他浏览器)');
+    }
     if (window.U) U.toast(`交付包已下载:${r.files} 个文件,${r.videosOK}/${(p.episodes || []).length} 集成片${r.videosSkipped.length ? '(' + r.videosSkipped.length + ' 跳过)' : ''}`, 'success', 4000);
     if (r.stale && r.stale.length && window.U) U.toast(`注意:${r.stale.length} 集成片/SRT 已过期(输入或剧本已变化),建议先重新合成再交付`, 'info', 5000); // 判旧警告不拦截打包,如实提示
     return r;
