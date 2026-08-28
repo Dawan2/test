@@ -39,6 +39,11 @@
     (Domain.gateBlockers(p) || []).forEach(g => { m[g.code] = g; });
     return m;
   };
+  /* 显式不占计划步的门槛码 + 理由(与 TODO_OF 登记 null 同一纪律:不投是写下来的决定,不是漏掉)。
+   * Domain.GATE_CODES 的其余码都得有取材器接住,漏投由契约用例按码点名。 */
+  const GATE_SKIP = {
+    'no-script': '整本剧本靠上传/粘贴入库,没有能替用户写剧本的命令;它在场时提取主体与剧本拆集两步一律不出(前置守卫写在上面两个取材器里)',
+  };
 
   /* 投影步取材器:cmd → (ctx)=>{key,label,goto?}|null(不待办);ctx 项目级 {p, gates},集级另带 {ep, st, hash}。
    * 登记为 null = 该投影步不占计划步(理由写在旁注)——投影加了新步而这里漏登记时,Plans.projection() 的契约断言先红。 */
@@ -129,6 +134,8 @@
       occupies: !!TODO_OF[x.cmd],
     }));
   }
+  /* 不投门槛码的白名单(契约断言用,每次现生成副本:调用方污染不回写本表) */
+  function gateSkips() { return Object.assign({}, GATE_SKIP); }
 
   /* ================= LLM 规划:用户目标 → 步骤清单(1 积分,失败退费) =================
    * 步骤钳制:cmd 必须在 Commands.list() 注册表内;集级命令必须能按分集标题定位到 epid,否则丢弃该步。
@@ -340,5 +347,5 @@
     return `📋 计划${sm ? (sm.pending ? ` ${sm.done}/${sm.total}` : ' ✓') : ''}`;
   }
 
-  window.Plans = { of, summary, fromWorkflow, projection, generate, replace, execStep, runAll, openModal, badgeHTML };
+  window.Plans = { of, summary, fromWorkflow, projection, gateSkips, generate, replace, execStep, runAll, openModal, badgeHTML };
 })();
