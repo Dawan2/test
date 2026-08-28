@@ -2070,6 +2070,27 @@ const commandsTests = [
     assertEq(r.result.episodes, 1, '应如实回报现有分集数');
     assert(!sb.__called.includes('splitCore'), '未授权覆盖不应进入切分');
   } },
+  /* 「剧本这一步走过没有」认 extractDone,「有没有整本原文可切」只认原文本身:
+   * 提取过主体的老项目上两问结论相反,而拆集要的是后者。判据收在 Domain.projectScript 一处,
+   * 命令层与计划层同读——命令层退回内联 p.script,下面那个桩当场看得出来。 */
+  { name: 'splitEpisodes:切分输入现取 Domain.projectScript(提取过主体的老项目仍 blocked no-script,提取结论不冒充原文)', fn: async () => {
+    const sb = loadCommands();
+    const { p } = cmdCtx(sb);
+    p.episodes = [];
+    p.extractDone = true; // 老项目:流程条上剧本步画 ✓,整本原文却没入库
+    assert(!sb.Domain.gateBlockers(p).some(g => g.code === 'no-script'), '前提:门槛派生认这类项目的剧本步已过');
+    let r = await sb.Commands.execute('project.splitEpisodes', { pid: 'p1' });
+    assertEq(r.status, 'blocked'); assertEq(r.error.code, 'no-script', 'extractDone 与主体库都不是原文,不能当切分输入');
+    assert(!sb.__called.includes('splitCore'), '拿不到原文不应进入切分');
+    // 输入取的是派生:项目对象一字不改,把派生打桩成有原文,同一次调用就能真跑
+    const real = sb.Domain.projectScript;
+    sb.Domain.projectScript = () => '第一集 开场\n第二集 反击';
+    r = await sb.Commands.execute('project.splitEpisodes', { pid: 'p1' });
+    sb.Domain.projectScript = real;
+    assertEq(r.ok, true, '实际:' + JSON.stringify(r.error || {}));
+    assert(sb.__called.includes('splitCore'), '应把派生回的那份原文交给切分核心');
+    assertEq(sb.Domain.projectScript(p), '', '桩撤掉后这个项目仍然没有原文(用例没有偷偷写 p.script)');
+  } },
   { name: 'splitEpisodes:overwrite 授权后回执 mode/分集数/next;local 透传强制均分', fn: async () => {
     const sb = loadCommands();
     const { p } = cmdCtx(sb);
@@ -4011,10 +4032,40 @@ const plansTests = [
       '前提:流程条认这类老项目的剧本步已过');
     const pl = sb.Plans.fromWorkflow(legacy);
     assert(pl, '同一个项目流程条说剧本已在库、计划层说无待推进事项——两个面结论不许相反');
-    assertEq(pl.steps.map(s => s.cmd).join(','), 'project.extractSubjects,project.splitEpisodes',
+    /* 拆集那一步在这类项目上是导航步(整本原文不在库,切分没有输入;下一条专钉这个两态) */
+    assertEq(pl.steps.map(s => s.cmd || 'goto:' + s.key).join(','), 'project.extractSubjects,goto:split',
       '实际:' + pl.steps.map(s => s.label).join(' / '));
     // 反向:剧本这一步真没过时提取/拆集仍不出——本条钉的是同口径,不是把门槛拆掉
     assertEq(sb.Plans.fromWorkflow({ id: 'p2', subjects: [], episodes: [] }), null, '两个字段都空时前置两步仍不出');
+  } },
+  /* 「剧本这一步走过没有」与「整本原文读不读得到」是两问:门槛派生认 extractDone 也算走过,
+   * 而拆集切的就是原文。上一条把这类老项目从"整份计划推不出来"救了回来,但拆集步挂的还是
+   * 一条注定 blocked/no-script 的命令——点下去只换来一句"请先上传剧本"。这里钉两态分流:
+   * 原文在库照旧出命令步,原文缺位出补原文的导航步(步照出、位置照旧,只换成真能办到的动作),
+   * 且分流判据取的是命令层同读的那一份派生,不在计划层另写一份"命令能不能跑"。 */
+  { name: 'fromWorkflow:拆集步按整本原文在不在分两态(缺原文出补原文导航步,不推注定 blocked 的命令步)', fn() {
+    const sb = loadPlans();
+    // 主体齐备、无分集:计划里只剩拆集这一步,两态各看一次
+    const withScript = { id: 'p1', script: '整本剧本', subjects: [{ id: 'sj1', name: '主角', image: 'u' }], episodes: [] };
+    let steps = sb.Plans.fromWorkflow(withScript).steps;
+    assertEq(steps.length, 1, '实际:' + steps.map(s => s.label).join(' / '));
+    assertEq(steps[0].cmd, 'project.splitEpisodes', '原文在库:照旧是可执行的拆集命令步');
+    assert(!steps[0].goto, '命令步不带 goto');
+    // 老项目:提取过主体(门槛派生认剧本步已过)但整本原文没入库
+    const legacy = { id: 'p1', extractDone: true, subjects: [{ id: 'sj1', name: '主角', image: 'u' }], episodes: [] };
+    assert(!sb.Domain.gateBlockers(legacy).some(g => g.code === 'no-script'), '前提:门槛派生认这类老项目的剧本步已过');
+    assertEq(sb.Domain.projectScript(legacy), '', '前提:同一个项目上整本原文并不在库(拆集没有可切的输入)');
+    steps = sb.Plans.fromWorkflow(legacy).steps;
+    assertEq(steps.length, 1, '这一步照出不藏,只是换了动作;实际:' + steps.map(s => s.label).join(' / '));
+    assertEq(steps[0].key, 'split', '仍占拆集这一步的位置');
+    assertEq(steps[0].cmd, undefined, '注定 blocked/no-script 的命令不该挂上去');
+    assertEq(steps[0].goto, '#/project/p1', '应导航到能补原文的项目页');
+    assert(steps[0].label.includes('剧本原文'), '步骤文案应点名缺的是整本原文;实际:' + steps[0].label);
+    // 分流判据现取派生:项目对象一字不改,只把派生打桩成"原文在库",这一步立刻变回命令步
+    const real = sb.Domain.projectScript;
+    sb.Domain.projectScript = () => '桩:整本原文';
+    assertEq(sb.Plans.fromWorkflow(legacy).steps[0].cmd, 'project.splitEpisodes', '内联判 p.script 拿不到这个桩');
+    sb.Domain.projectScript = real;
   } },
   { name: 'fromWorkflow:需授权/需人工挑选的状态一律出导航步(重拆覆盖/过期镜子集/确认闸不代授权)', fn() {
     const sb = loadPlans();
@@ -5708,6 +5759,27 @@ const contractTests = [
     const used = [...src.matchAll(/gates\['([a-z-]+)'\]/g)].map(m => m[1]);
     assertEq(used.length, 5, '项目级三步按码取材共五处(提取步与拆集步各判两码:剧本这一步过了没、本步自己的断点在不在;补图步一处)');
     used.forEach(c => assert(codes.has(c), 'js/plans.js 按码取材的 ' + c + ' 不是 Domain.gateBlockers 会回的码(码名分裂即静默筛空)'));
+  } },
+  { name: '拆集的切分输入单源:整本原文在不在只在 Domain.projectScript 一处,命令层与计划层同读', fn() {
+    /* 门槛派生答的是「剧本这一步走过没有」(extractDone 也算走过),拆集要的是「整本原文读不读得到」——
+     * 提取过主体却没存原文的老项目上两问结论相反,而这是有意的,不能靠改门槛去抹平。
+     * 要收的是第二问的判据:它此前只写在拆集命令入口,计划层据第一问推步,推出来的那一步注定 blocked。
+     * 收进 Domain.projectScript 之后两个消费方同读一份;谁退回内联 p.script,两边的入口条件就再次分叉。 */
+    const Domain = require('../js/domain.js');
+    assertEq(typeof Domain.projectScript, 'function', 'Domain 应导出整本原文取数口');
+    assertEq(Domain.projectScript({ script: '  整本  ' }), '整本', '取到的是去空白后的原文');
+    assertEq(Domain.projectScript({ extractDone: true, subjects: [{ name: '甲' }], scriptMeta: { synopsis: '梗概' } }), '',
+      '提取结论(主体库/卖点梗概)都不是原文:它们切不出逐字保留的分集正文');
+    const legacy = { id: 'p', extractDone: true, subjects: [{ name: '甲', image: 'u' }], episodes: [] };
+    assert(!Domain.gateBlockers(legacy).some(g => g.code === 'no-script'), '同一个项目:门槛派生认剧本这一步已过');
+    assertEq(Domain.projectScript(legacy), '', '同一个项目:原文取不到——两问结论不同是有意的');
+    const cmd = fs.readFileSync(path.join(ROOT, 'js', 'commands.js'), 'utf8');
+    const body = cmd.slice(cmd.indexOf("reg('project.splitEpisodes'"), cmd.indexOf("reg('episode.understanding'"));
+    assert(body.length > 100 && body.includes('splitCore'), '取到的应是拆集命令体,实际 ' + body.length + ' 字');
+    assertEq((body.match(/p\.script/g) || []).length, 0, '拆集命令不得再自己读 p.script');
+    assert(body.includes('Domain.projectScript(p)'), '拆集命令的切分输入应现取 Domain.projectScript');
+    assert(fs.readFileSync(path.join(ROOT, 'js', 'plans.js'), 'utf8').includes('Domain.projectScript(p)'),
+      '计划层的拆集步应按同一份派生分流(出命令步还是出补原文导航步)');
   } },
   /* ================= 分集阻塞码扇出(Domain.episodeState → 问题中心分集条目 / 中段流程模板断点) =================
    * 上面两条钉的是项目级前置门槛;分集级那组阻塞码另有两个按码分工的消费方:
@@ -8526,7 +8598,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 539, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 542, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 141, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
