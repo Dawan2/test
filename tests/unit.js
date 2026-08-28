@@ -4684,8 +4684,20 @@ const releaseTests = [
     assert(!/ZipUtil\.download\(/.test(seg),
       '下载落地失败不许再兜底改调 ZipUtil.download(它走的是同一套 Blob/createObjectURL,落不下来照样落不下来,给的是个能打开的空壳):' + seg.match(/ZipUtil\.download\([^)]*\)/g));
     assert(/throw new Error\('交付包已打好,但浏览器下载没能落地:/.test(seg), '落地失败得如实抛出带原因的错误');
-    // G4–G6 那三门的计数口径同样不在本轮射程内
-    assert(/aggFail: 0/.test(rel) || /counts/.test(rel), 'G4–G6 计数仍取 Domain.episodeState.counts');
+    /* G4–G6 那三门的计数口径同样不在本轮射程内。原先这一格写的是
+     * `/aggFail: 0/.test(rel) || /counts/.test(rel)`:前一半在 js/release.js 里一次都不命中(空转),
+     * 后一半只要整份文件任一处出现 `counts` 就成立——而那段的段头注释里就写着「统一从 Domain.counts 聚合」,
+     * 故把三门改成就地数镜头、注释原样留着(实测变异),这一格照绿。改钉那段的**可执行行**:
+     * 注释按行首形态整段排除(不许再靠一句陈述充数),三门共用的那次遍历必须现取 Domain.episodeState(...),
+     * 且进 agg 的加数得是它回的 counts。段头取不到即红,挪窝或改写就同轮改这里,不许留成恒真。 */
+    const aggAt = rel.indexOf('/* G4 过期镜'), aggEnd = rel.indexOf('/* G7 合规命中');
+    assert(aggAt > 0 && aggEnd > aggAt, 'G4–G6 那段聚合取不到(段头挪窝或改写就同轮改本条,别把它留成恒真)');
+    const aggCode = rel.slice(aggAt, aggEnd).split('\n').filter(t => t.trim() && !/^\s*(\/\/|\/?\*)/.test(t));
+    assert(aggCode.length > 10, 'G4–G6 那段的可执行行取不到(整段被判成注释本条就成恒真),实测 ' + aggCode.length + ' 行');
+    assert(aggCode.some(t => /Domain\.episodeState\(/.test(t)),
+      'G4–G6 计数仍取 Domain.episodeState(...)(改成就地数镜头即红),那段可执行行:' + aggCode.join('\n'));
+    assert(aggCode.some(t => /agg\[[^\]]+\]\s*\+=[^;]*\bcounts\b/.test(t)),
+      '进 agg 的加数仍得是 episodeState 回的 counts(换个来源即红),那段可执行行:' + aggCode.join('\n'));
     const sb = loadRelease();
     sb.ZipUtil = { create: () => { throw new Error('ZipUtil 崩了'); }, download() {} };
     const p = { id: 'p1', name: '剧', subjects: [], episodes: [releaseReadyEp()] };
