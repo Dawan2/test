@@ -4168,7 +4168,10 @@ function blankNonCode(src) {
 }
 /* 还原套件里每条 report(...) 调用的外层块链:逐字符配对括号,取栈上每个未闭合
  * 开括号所在行的行首至该括号那段原文(「块头」)。抹码后括号必须净配平,配不平
- * 说明扫描失准,直接抛错而不是拿半截栈静默放行。 */
+ * 说明扫描失准,直接抛错而不是拿半截栈静默放行。
+ * 另给出 pre:该次调用往前到最近一处语句边界(`;`/`{`/`}`)之间的抹码后原文——
+ * 块链看不见"没开花括号"的包裹层(单表达式箭头 helper 一层括号都不留),要判
+ * "这条 report 是不是裸表达式语句"只能看这一段。 */
 function reportBlockHeads(rel) {
   const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
   const code = blankNonCode(src);
@@ -4178,7 +4181,13 @@ function reportBlockHeads(rel) {
     const c = code[i];
     if (c === '\n') { line++; continue; }
     if (code.startsWith('report(', i) && !/[\w$.]/.test(code[i - 1] || '') && !/function\s+$/.test(code.slice(Math.max(0, i - 12), i))) {
-      found.push({ line, heads: stack.map(pos => src.slice(src.lastIndexOf('\n', pos) + 1, pos + 1)) });
+      let b = i - 1;
+      while (b >= 0 && !';{}'.includes(code[b])) b--;
+      found.push({
+        line,
+        heads: stack.map(pos => src.slice(src.lastIndexOf('\n', pos) + 1, pos + 1)),
+        pre: code.slice(b + 1, i),
+      });
     }
     if (c === '{' || c === '(' || c === '[') stack.push(i);
     else if (c === '}' || c === ')' || c === ']') {
@@ -6839,6 +6848,57 @@ action 二选一:
       assertEq(bad.join(' / '), '', label + ':report(...) 不得写在循环/迭代回调体内(一行会跑出多条,静态点数就代表不了实跑条数)');
     });
   } },
+  { name: '集成/冒烟 report(...) 不许包进函数 helper(块链不是循环,循环禁令那条点不到)', fn() {
+    /* 上一条按块链禁循环,判的是"块头字面命中循环词表"。可一条静态 report(...) 跑出多条,
+     * 除了循环还有第二条路:把它包进一个 helper 再从多处调用——
+     *   const emit = (label, cond) => { report('名', cond); };
+     *   emit('a', …); emit('b', …);
+     * 块链上那层是箭头函数、循环词表一个字都点不到,行首点数/调用数/名字面数/不同名数
+     * 全不变而实跑翻倍。一处静态登记点跑出多条的来路只有两种——循环与函数复用,
+     * 前者归上一条,后者归本条,两条的失败含义不合并。本条分两点报:
+     *   1. 带花括号的 helper:块链上出现 main 之外的函数体块头(箭头体/具名函数体/对象方法体);
+     *   2. 不带花括号的箭头 helper(`const emit = (…) =>` 换行接 `report(…);`):
+     *      它一层括号都不往块链上留,只有"report 不是裸表达式语句"这一点看得出来。 */
+    const CTRL = /^(?:if|for|while|switch|catch|do|else|try|finally|with|await)$/;
+    /* 块头以 `{` 收尾且这个 `{` 开的是函数体:箭头体、`function` 体,或 `名字(参数) {` 这类
+     * 具名/方法体(控制结构的 `if (…) {`、`for (…) {` 形状相同,按关键词排除)。 */
+    const isFuncBody = h => {
+      const t = h.trim();
+      if (!/\{$/.test(t)) return false;
+      if (/=>\s*\{$/.test(t)) return true;
+      const m = t.match(/(?:^|[^\w$])([\w$]*)\s*\([^()]*\)\s*\{$/);
+      return (!!m && !CTRL.test(m[1])) || /(?:^|[^\w$])function(?![\w$])/.test(t);
+    };
+    const isMain = h => /^(?:async\s+)?function\s+main\s*\(\s*\)\s*\{$/.test(h.trim());
+    [['tests/integration.js', '集成测试'], ['tests/cli.smoke.js', 'CLI 冒烟']].forEach(([rel, label]) => {
+      const wrapped = [], embedded = [];
+      reportBlockHeads(rel).forEach(({ line, heads, pre }) => {
+        heads.filter(h => isFuncBody(h) && !isMain(h))
+          .forEach(h => wrapped.push(rel + ':' + line + ' 外层「' + h.trim() + '」'));
+        if (/\S/.test(pre)) embedded.push(rel + ':' + line + ' 语句前缀「' + pre.replace(/\s+/g, ' ').trim() + '」');
+      });
+      assertEq(wrapped.join(' / '), '', label + ':report(...) 不得写在 main 以外的函数体里(helper 被调用几次就跑几条,静态登记点只算一条)');
+      assertEq(embedded.join(' / '), '', label + ':report(...) 须是裸表达式语句(前面还有代码即已被包成 helper 或表达式,单表达式箭头体在块链上不留痕)');
+    });
+  } },
+  { name: '集成/冒烟 report(...) 不许落在 for 与 ( 不相邻的迭代体内(for await 溜得过循环词表)', fn() {
+    /* 循环禁令那条按块头字面点 `for\s*\(`,中间隔一个 `await` 就点不到:
+     *   for await (const v of arr) { report('名', …); }
+     * 块头里明明白白写着 for,词表却匹配不上。这不是"漏收一种语法糖",是按词表匹配字面
+     * 这类判据的固有面——词表列举得再全,写法比词表多;故本条不往那份词表里再塞词,
+     * 改判"块头里有 for 关键字、却不是词表认的那个紧邻形状":凡 for 引出的块,
+     * 要么被循环禁令点到,要么红在这里,中间不留缝。 */
+    const FOR_KW = /(?:^|[^\w$])for(?![\w$])/;
+    const FOR_ADJACENT = /(?:^|[^\w$])for\s*\(/;
+    [['tests/integration.js', '集成测试'], ['tests/cli.smoke.js', 'CLI 冒烟']].forEach(([rel, label]) => {
+      const bad = [];
+      reportBlockHeads(rel).forEach(({ line, heads }) => {
+        heads.filter(h => FOR_KW.test(h) && !FOR_ADJACENT.test(h))
+          .forEach(h => bad.push(rel + ':' + line + ' 外层「' + h.trim() + '」'));
+      });
+      assertEq(bad.join(' / '), '', label + ':report(...) 不得写在 for await 这类 for 与 ( 不相邻的迭代体内(循环禁令那份词表点不到这形状)');
+    });
+  } },
   { name: '三套件用例数只增不减:unit/integration/cli.smoke 各自不低于下限(真删测且把 README 一并改小即红)', fn() {
     /* 上面两条对账钉的是"实测与文档相等",而相等这件事两边一起改小照样成立:真删掉一行 report(...)
      * 再把 README 那个数字改小,那两条一条不红。这里另立一层与相等无关的判据——三个套件各有一个下限,
@@ -6849,7 +6909,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 477, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 479, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 130, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -6956,7 +7016,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 138;
+    const FLOOR = 139;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
