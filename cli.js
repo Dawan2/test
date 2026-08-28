@@ -1211,6 +1211,17 @@ EXEC['episode.produce'] = { needs: ['p', 'ep'], meter: true, run: async (args, f
     // 而是同一集在两端解析出两个上限——用户在参数配置面板调过的次数在 headless 这一侧读不到,
     // 调低时这边多烧几轮真钱,调高时这边先到顶(浏览器还能再跑)。
     const maxRetry = Domain.reviseRetryLimit(args.maxRetry, ep.sbConfig && ep.sbConfig.maxRetry);
+    // 钳过的轮次随即落库,与浏览器命令层 episode.produce 同一份写回:两端点名一次 maxRetry 之后,
+    // 参数配置面板与下一轮不带入参的 produce 读到的都是这一次真跑的次数,不是被入参绕过去的旧值
+    // (只写这一处编排——单独调 episode.smartReview 那一端没有重抽循环,不许替它假写一个没跑过的次数)。
+    // 钳位仍归 Domain,本层只负责落库;值没变时不空发一次 PUT。
+    if (!ep.sbConfig || ep.sbConfig.maxRetry !== maxRetry) {
+      await withProject(args.pid, f, projLive => {
+        const epLive = findEp(projLive, args.epid);
+        epLive.sbConfig = epLive.sbConfig || {};
+        epLive.sbConfig.maxRetry = maxRetry;
+      });
+    }
     // 重抽面由编排层现取实况派生(不摘回执里那份名单);本轮审片没出结论时不派生,
     // 留给下面的 review-unavailable 分支如实报"质量闸门未执行",不拿上一份报告冒充本轮结论
     let low = (rv.result && rv.result.reviewed) ? await reviseTargets(args, f) : [];

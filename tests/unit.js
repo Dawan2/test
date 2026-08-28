@@ -1902,6 +1902,40 @@ function cliCtx(sb, shots) {
   sb.genImage = async () => ({ url: '/uploads/img/x.png' });
   return { p, ep };
 }
+/* CLI 落库夹具(写回类判据专用):内存里那份 disk 当服务端 state——stateGet 每次现取一份**拷贝**,
+ * 只有 withProject 真提交的补丁才落到 disk 上。写回判据一律用这一份:cliCtx 那份读写同一个对象,
+ * 编排层只在自己手里那份快照上改一改也会看起来"落库了",量不出真假。
+ * 生成/合成/服务端往返换成桩:审片恒低分(轮次上限直接从实跑轮数读得出来),
+ * 且与真端点同样把整集报告写回 state(修订循环的重抽面靠它现取实况派生)。 */
+function cliDisk(sb, epOver) {
+  const clone = x => JSON.parse(JSON.stringify(x));
+  const disk = { projects: [{ id: 'p1', subjects: [], episodes: [Object.assign({
+    id: 'ep1', title: '第一集', content: '测试剧本正文', sbConfig: {},
+    shots: [makeShot(0, { confirm: true, image: 'i0.png' })],
+  }, epOver || {})] }], settings: {} };
+  sb.stateGet = async () => ({ rev: 0, state: clone(disk) });
+  sb.withProject = async (pid, flags, fn) => {
+    const live = clone(disk.projects[0]);
+    const ret = await fn(live, clone(disk));
+    disk.projects[0] = live;
+    return { ret };
+  };
+  sb.genShotVideo = async (proj, epLive, s) => { sb.__genShots.push(s.id); s.video = { status: 'done', url: '/uploads/gen/' + s.id + '.mp4' }; return s; };
+  sb.genImage = async () => ({ url: '/uploads/img/x.png' });
+  sb.composeCore = async () => ({ url: '/uploads/gen/final.mp4', count: 1 });
+  sb.api = async (method, url) => {
+    if (/smart-review/.test(url)) {
+      disk.projects[0].episodes[0].lastReview = { avg: 5, time: 'x', perShot: [{ shotId: 'sh0', order: 1, score: 5 }] };
+      return { rev: 1, avg: 5, reviewed: 1, failed: [], lowShots: [{ shotId: 'sh0', order: 1, score: 5, fixes: '构图偏' }], common: null, cut: null };
+    }
+    if (/llm\/chat/.test(url)) return { parsed: { prompt: '修订后的提示词', changes: '按审片意见修订' } };
+    return {};
+  };
+  /* 实跑轮数从产品自己的进度日志上读(「第 x/N 轮」),不从回执里的数字读 */
+  const rounds = [];
+  sb.process.stderr.write = s => { const m = String(s).match(/第 (\d+)\/(\d+) 轮/); if (m) rounds.push(m[0]); return true; };
+  return { disk, rounds, epOf: () => disk.projects[0].episodes[0] };
+}
 /* 剧本解析向导(js/director.js)沙箱:主体提取与入库由 commands.js 真跑(与 CLI exec 同一份口径与回流),
  * 向导侧只桩掉 DOM 与下游三个入口。加载序与 index.html 同:commands.js 在 director.js 之前。
  * bgDock/openModal 的桩按真实契约建:close() 触发 onCancel(否则向导的进度定时器不会停),
@@ -2460,6 +2494,58 @@ const commandsTests = [
     const WfCore = require('../js/wf-core.js');
     assertEq(JSON.stringify(WfCore.sanitizeCmdArgs(R.byName['episode.smartReview'], { maxRetry: 5 })), '{}',
       'Agent 侧按注册表整形:没登记的参数一律抹掉(登记面与实况对不上时,这里就是那道静默的口子)');
+  } },
+  { name: 'CLI exec produce:点名的轮次钳过即落库,下一轮不带入参跑的就是这个次数(单独调 smartReview 那一端仍不写库)', fn: async () => {
+    /* 此前这一端只读不写:`exec episode.produce --args '{"maxRetry":4}'` 当轮真跑 4 轮,
+     * 磁盘上那份 sbConfig.maxRetry 却还是旧的 1——用户在浏览器打开该集参数面板看到的仍是 1,
+     * 下一轮不带入参的 produce 也悄悄跑回 1 轮(以为"上次已经设成 4"的人,每集少改三轮)。
+     * 浏览器命令层那一路一直是写回的,两端因此对同一条命令给出两套持久化结果。 */
+    const D = require('../js/domain.js');
+    const run = async (args) => {
+      const sb = loadCli();
+      const fx = cliDisk(sb, { sbConfig: { maxRetry: 1 } });
+      const r1 = await sb.EXEC['episode.produce'].run(Object.assign({ pid: 'p1', epid: 'ep1', riskyCompose: true }, args), {});
+      const first = { status: r1.status, rounds: fx.rounds.length, cfg: fx.epOf().sbConfig.maxRetry };
+      fx.rounds.length = 0;
+      await sb.EXEC['episode.produce'].run({ pid: 'p1', epid: 'ep1', riskyCompose: true }, {}); // 下一轮:不带入参
+      return { first, nextRounds: fx.rounds.length, cfg: fx.epOf().sbConfig.maxRetry };
+    };
+    const named = await run({ maxRetry: 4 });
+    assertEq(named.first.status, 'done', '前提:这一集一路跑到合成,实际:' + named.first.status);
+    assertEq(named.first.rounds, 4, '前提:当轮真按入参跑了 4 轮(恒低分,轮数即上限)');
+    assertEq(named.first.cfg, 4, '钳过的轮次应落库:参数面板下次打开读得到的就是这次真跑的次数');
+    assertEq(named.nextRounds, 4, '下一轮不带入参的 produce 应跑同一个次数,不是悄悄跑回旧的 1 轮');
+    assertEq(named.cfg, 4, '第二轮之后库里仍是这个数(不带入参不改它)');
+    // 越界入参照旧按 Domain 钳了再落库(落库的是真跑的那个数,不是入参原值)
+    const over = await run({ maxRetry: 9 });
+    assertEq(over.first.rounds, D.REVISE_RETRY_MAX, '越界入参按登记上限跑,不按入参烧钱');
+    assertEq(over.first.cfg, D.REVISE_RETRY_MAX, '落库的是钳过的值,库里不许出现跑不到的越界数');
+    // 单独调 smartReview 那一端没有重抽循环:它一次都没重抽,不许替它假写一个次数
+    const sbSolo = loadCli();
+    const solo = cliDisk(sbSolo, { sbConfig: { maxRetry: 1 } });
+    await sbSolo.EXEC['episode.smartReview'].run({ pid: 'p1', epid: 'ep1', maxRetry: 4 }, {});
+    assertEq(solo.epOf().sbConfig.maxRetry, 1, '单独调用只评一次,写回一个没跑过的轮次就是在库里撒谎');
+  } },
+  { name: 'produce 写回两端同一份:同一份入参与分集配置,浏览器与 CLI 落库的轮次逐格相同', fn: async () => {
+    /* 上一条钉的是 headless 这一端有没有写回,这一条钉两端写回的是不是同一个数——
+     * 钳位与择先都归 Domain 那一份,谁在自己那侧另钳一道/另兜一个缺省,这里当场对不上。 */
+    const cases = [
+      [{ maxRetry: 4 }, { maxRetry: 1 }], [{ maxRetry: 9 }, { maxRetry: 1 }], [{ maxRetry: 2.7 }, { maxRetry: 1 }],
+      [{ maxRetry: 0 }, { maxRetry: 5 }], [{ maxRetry: '3' }, { maxRetry: 1 }], [{}, { maxRetry: 5 }], [{}, {}],
+    ];
+    for (const [args, sbConfig] of cases) {
+      const sbB = loadProduce();
+      const epB = makeEp({ content: '测试剧本正文', composed: false, shots: [makeShot(0, { confirm: true })], sbConfig: JSON.parse(JSON.stringify(sbConfig)) });
+      sbB.__proj = { id: 'p1', episodes: [epB], subjects: [{ id: 'sub1', name: '主角', kind: 'character', image: 'x.png' }] };
+      sbB.__reviewSeq = { sh0: [8] };
+      await sbB.Commands.execute('episode.produce', Object.assign({ pid: 'p1', epid: 'ep1', riskyCompose: true }, args));
+      const sbC = loadCli();
+      const fx = cliDisk(sbC, { sbConfig: JSON.parse(JSON.stringify(sbConfig)) });
+      await sbC.EXEC['episode.produce'].run(Object.assign({ pid: 'p1', epid: 'ep1', riskyCompose: true }, args), {});
+      assertEq(fx.epOf().sbConfig.maxRetry, epB.sbConfig.maxRetry,
+        'args=' + JSON.stringify(args) + ' + sbConfig=' + JSON.stringify(sbConfig)
+        + ':两端 produce 落库的轮次应是同一个数(一端写回、另一端只读,或某一端另钳一道即红)');
+    }
   } },
   { name: 'generateStoryboard:headless hooks.quiet=true,ui 模式 quiet=false(决策弹窗归 UI)', fn: async () => {
     const sb = loadCommands();
@@ -10260,7 +10346,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 602, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 604, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 143, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 108, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
