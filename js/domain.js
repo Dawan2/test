@@ -269,7 +269,10 @@
   };
   /* 批量生成一镜也没跑时,回执上「为什么是 0 镜」那句话(单源:命令层与 CLI 同读这一份)。
    * 「一镜也没跑」与「跑完了」在两端都是 ok/total:0——不带这句话,回执上两者一模一样。
-   * picked 是调用方点过名的镜集(空=整集批量),分档逐条对着两端待跑镜的筛法来:
+   * picked 是调用方点过名的镜集(空=整集批量),点名判据与两端选人闸(Array.isArray(shotIds) && length)逐字同形:
+   * 人手 --args 递来的字符串/类数组走不进选人闸(命令实跑的是整集那一路),回执也不许把它当点名——
+   * 字符串会被去重拆成字符冒充镜数,类数组连去重都做不了,当场把 ok 变成异常。
+   * 分档逐条对着两端待跑镜的筛法来:
    *   点名这一路不跑 = 不在本集 / 已定稿(!s.final 锁) / 已出片且不过期(!ready || stale 的反面);
    *   整集这一路不跑 = 已定稿 / 已出片(!s.final && !ready 的反面)。
    * 判旧判就绪全取本模块既有派生(shotVideoReady/shotVideoStale),不另写第三份。 */
@@ -278,7 +281,7 @@
     if (!shots.length) return '本集还没有分镜,一镜也没跑';
     const parts = [];
     const say = (n, t) => { if (n) parts.push(n + ' 镜' + t); };
-    if (picked && picked.length) {
+    if (Array.isArray(picked) && picked.length) {
       const ids = [...new Set(picked)]; // 点名清单按镜去重:重复的 id 指的是同一镜,不该被数成两镜
       const hit = shots.filter(s => ids.includes(s.id));
       const locked = hit.filter(s => s.final).length;
