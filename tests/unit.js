@@ -3412,6 +3412,35 @@ const issuesTests = [
     assert(it.detail.includes('上游超时'), '失败原因应入明细');
     assertEq(list[0].kind, 'failed-shots', '高危问题应排最前');
   } },
+  { name: 'collect:低分审片带派生 shotIds 子集(恒等 Domain.reviseShotIds;空重抽面不出这个字段)', fn() {
+    const sb = loadIssues();
+    /* 夹具有意让"照 detail 文案回抠一份"与真派生分道扬镳:分镜表已调序(sh1 在前)、
+     * sh3 已定稿(定稿不重抽)、sh9 在报告写下之后被删、sh2 达标——四种都得被派生挡在子集外。 */
+    const shot = (id, order, over) => Object.assign({
+      id, order, name: '', plot: 'p', prompt: CLEAN_PROMPT, camera: '固定镜头', duration: 5,
+      characters: [], scene: '', props: [], confirm: true, video: { status: 'done', url: 'http://x/v.mp4' },
+    }, over || {});
+    const ep = cleanEp({ composed: false,
+      shots: [shot('sh1', 0), shot('sh3', 1, { final: true }), shot('sh0', 2), shot('sh2', 3)],
+      lastReview: { avg: 6, perShot: [
+        { shotId: 'sh0', order: 0, score: 5 }, { shotId: 'sh1', order: 1, score: 6 },
+        { shotId: 'sh2', order: 2, score: 9 }, { shotId: 'sh3', order: 3, score: 4 },
+        { shotId: 'sh9', order: 4, score: 3 },
+      ] } });
+    const p = { id: 'p1', script: '整本剧本原文', subjects: [{ id: 'sj1', name: '主角', image: 'u' }], episodes: [ep] };
+    const it = sb.Issues.collect(p).find(x => x.kind === 'low-review');
+    assert(it, '低分审片应入清单');
+    assertEq((it.shotIds || []).join(','), 'sh1,sh0', '子集应就是重抽面:达标/定稿/已删镜都不在,序取分镜表实位');
+    assertEq((it.shotIds || []).join(','), sb.Domain.reviseShotIds(ep).join(','), 'shotIds 应恒等 Domain.reviseShotIds(调用方不再手填一份)');
+    assertEq(it.count, 2, '条目计数与子集同源(都是重抽面的镜数)');
+    assert(!it.cmd && it.goto, '仍不挂命令:重抽前得先按审片意见改提示词,shotIds 是给人挑的清单不是替人按下处置');
+    // 空重抽面(报告只有均分、无逐镜分)不出这个字段:子集位上的空数组等于"整集",会把几镜的活儿放大成整集重跑
+    const bare = cleanEp({ composed: false, lastReview: { avg: 4 } });
+    const it2 = sb.Issues.collect({ id: 'p2', script: '整本剧本原文', subjects: [{ id: 'sj1', name: '主角', image: 'u' }], episodes: [bare] })
+      .find(x => x.kind === 'low-review');
+    assert(it2, '只有均分的低分记录同样报低分审片');
+    assert(!('shotIds' in it2), '空重抽面不得出 shotIds(空数组在子集位上等于整集重跑),实际:' + JSON.stringify(it2.shotIds));
+  } },
   { name: 'collect:缺剧本/未分镜/主体缺图/低分审片/待确认/成片过期 各归其类', fn() {
     const sb = loadIssues();
     const doneShot = cleanEp().shots[0];
@@ -5365,6 +5394,40 @@ const contractTests = [
     assert(!/=\s*(?:\(?rv\.result[^\n]*\.lowShots|rv\.result\.lowShots)/.test(cli),
       'cli.js produce 不许把回执里的 lowShots 直接当作下一步 shotIds 的名单(它与分镜表漂移时会重抽错镜)');
     assert(/shotIds: fix\.revised/.test(cli) && /reviseTargets\(args, f\)/.test(cli), 'produce 的重抽/复审子集应源自派生出来的重抽面');
+  } },
+  { name: '问题中心不把重抽面留在文案里:low-review 的 shotIds 现取 Domain.reviseShotIds,空面不出字段', fn() {
+    /* 上一条钉的是"低分镜面别自筛第二份";这条钉的是算出来之后**往哪儿放**——
+     * 只拼成给人看的 detail 时,编排层(CLI issues / MCP hujing_issues / 助手)要拿这几镜就得照文案回抠
+     * 或自己再筛一遍,第二份名单就是这么来的。三件事分开钉:子集恒等那一份派生、
+     * 取的是 Domain.reviseShotIds 本身(不在调用侧把它的函数体抄一遍)、空面不出字段。 */
+    const Issues = require('../js/issues.js');
+    const Domain = require('../js/domain.js');
+    const iss = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
+    assert(iss.includes('Domain.reviseShotIds(ep)'), 'low-review 的 shotIds 应现取 Domain.reviseShotIds');
+    assert(!/\.map\(\w+ => \w+\.shotId\)/.test(iss),
+      '不许在调用侧把 reviseShotIds 的函数体抄一遍(值一样也是第二份投影,改口径时它不会跟着走)');
+    const shot = (id, order, over) => Object.assign({ id, order, prompt: 'q', confirm: true, video: { status: 'done', url: 'http://x/v.mp4' } }, over || {});
+    const ep = { id: 'ep1', title: '一', content: '剧本正文', contentRev: 0, graphRev: 0,
+      shots: [shot('sh1', 0), shot('sh3', 1, { final: true }), shot('sh0', 2), shot('sh2', 3)],
+      lastReview: { avg: 6, perShot: [
+        { shotId: 'sh0', order: 0, score: 5 }, { shotId: 'sh1', order: 1, score: 6 },
+        { shotId: 'sh2', order: 2, score: 9 }, { shotId: 'sh3', order: 3, score: 4 },
+        { shotId: 'sh9', order: 4, score: 3 },
+      ] } };
+    const p = { id: 'p1', script: '整本', subjects: [{ id: 'sj1', name: '主角', image: 'u' }], episodes: [ep] };
+    const it = Issues.collect(p, { online: false }).find(x => x.kind === 'low-review');
+    assert(it, 'low-review 应在清单里(夹具没摊出这条则本条是假对照)');
+    assert(it.shotIds && it.shotIds.length, '夹具须真的摊出非空子集(空面上"恒等"是恒真的)');
+    assertEq(JSON.stringify(it.shotIds), JSON.stringify(Domain.reviseShotIds(ep)),
+      '问题中心给出的子集须逐项等于那一份派生(达标/定稿/已删镜与实位序都由它判)');
+    /* "空子集等于整集"不是本层自定的口径,是两端子集过滤的实况:逐个取数点点名(只判"某处出现过这个写法"
+     * 拦不住其中一处被改——两处里改掉一处,那一句照旧命中另一处)。它哪天变了,空面那条纪律要跟着改。 */
+    [['js/commands.js', path.join(ROOT, 'js', 'commands.js')], ['cli.js', path.join(ROOT, 'cli.js')]].forEach(([rel, abs]) => {
+      const hits = [...fs.readFileSync(abs, 'utf8').matchAll(/Array\.isArray\(args\.shotIds\)([\s\S]{0,26})/g)];
+      assert(hits.length, rel + ' 找不到 shotIds 子集位的取数点(挪窝或改名就同轮改这里,别把本条留成恒真)');
+      hits.forEach(m => assert(m[1].startsWith(' && args.shotIds.length'),
+        rel + ' 的 shotIds 子集位应仍是"空数组即整集";问题中心因此在空重抽面上不出这个字段,实际:' + JSON.stringify(m[0])));
+    });
   } },
   { name: 'SK-25 记账两向对账(G-03):收敛面已落地要记进已落地那半、形态面仍欠不许抹,两半互串都红', fn() {
     /* W136 给这条立的护栏钉的是"两个余面都还欠着";本槽收敛面落地(Domain.reviseRetryLimit 双端单源),
@@ -8294,7 +8357,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 532, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 534, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 141, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -8481,7 +8544,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 177;
+    const FLOOR = 178;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接

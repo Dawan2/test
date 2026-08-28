@@ -155,7 +155,9 @@
   /* ================= 问题清单推导(纯数据,可 vm 沙箱与 Node 直跑) =================
    * 条目:{ kind, sev(high|mid|low), count, label, detail, epid?, epTitle?, cmd?, shotIds?, goto? }
    * ctx:{ online } 由调用方注入(浏览器薄封装按在线态取,CLI/服务端按登录态给);
-   * cmd 条目由调用方经统一命令层带 {pid,epid,shotIds} 处置,goto 条目直接跳转——两者都在本层之外发生。 */
+   * cmd 条目由调用方经统一命令层带 {pid,epid,shotIds} 处置,goto 条目直接跳转——两者都在本层之外发生;
+   * shotIds 是本层派生出的镜头子集(有就是准的、空就不出这个字段),两类条目都可能带,
+   * 带在 goto 条目上时是"该动这几镜"的清单(要人先改提示词/自己挑),不代表本层替调用方按下处置。 */
   function collect(p, ctx) {
     const out = [];
     if (!p) return out;
@@ -223,7 +225,16 @@
       }
       if (!st.reviewStale && st.reviewAvg !== null && st.reviewAvg !== undefined && st.reviewAvg < Domain.REVIEW_MIN) { // 判旧(rev/快照失配)的旧分不再报问题;「需重审」语义由上面 review-stale 那条承接
         const lows = Domain.reviseTargets(ep); // 低分镜面与修订闭环重抽面同一份派生(达标线/判旧/交集不写第二份)
-        out.push(Object.assign({}, base, { kind: 'low-review', sev: 'mid', count: lows.length || 1, label: `「${ep.title}」审片均分 ${st.reviewAvg} 低于达标线`, detail: lows.length ? `低分镜:${lows.map(x => x.order + '镜' + x.score + '分').slice(0, 6).join('、')}` : '整体质量待修订(可让助手按问题清单优化提示词)', goto: `#/project/${p.id}/episode/${ep.id}` }));
+        /* 重抽面非空时把它的 shotId 投影一并带出:该修哪几镜这一份已经算出来了,只给人看的 detail 文案
+         * 等于让编排层(CLI issues / MCP / 助手)照文案回抠一遍或自筛一遍低分镜——那就是第二份名单。
+         * 投影取 Domain.reviseShotIds(它就是这个子集参数的单源),调用侧不就地 map 一份同样的东西。
+         * 空重抽面不出这个字段:子集位上的空数组等于"整集"(见 js/commands.js 的子集过滤),
+         * 会把只该修几镜的活儿放大成整集重跑,与 failed-shots 从不带空子集同口径。
+         * 仍不挂 cmd:重抽前要先按审片意见改提示词,原样重跑只是再抽一次卡——处置照旧导航到分集页,
+         * shotIds 是给人挑的清单,不是编排层替人按下那一下(与过期镜那条同一条纪律)。 */
+        const low = Object.assign({}, base, { kind: 'low-review', sev: 'mid', count: lows.length || 1, label: `「${ep.title}」审片均分 ${st.reviewAvg} 低于达标线`, detail: lows.length ? `低分镜:${lows.map(x => x.order + '镜' + x.score + '分').slice(0, 6).join('、')}` : '整体质量待修订(可让助手按问题清单优化提示词)', goto: `#/project/${p.id}/episode/${ep.id}` });
+        if (lows.length) low.shotIds = Domain.reviseShotIds(ep);
+        out.push(low);
       }
       if (ep.composed && !st.composedReady) out.push(Object.assign({}, base, { kind: 'composed-stale', sev: EPB['composed-stale'], count: 1, label: `「${ep.title}」成片已过期`, detail: '合成输入或剧本已变化,需重新合成', cmd: 'episode.compose' }));
       /* 跨镜主体一致性 / 分镜景别衔接 / 提示词稳定词 / 成片字幕可读性:四条同为投影表里的分集级低危提醒
