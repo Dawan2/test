@@ -3327,6 +3327,90 @@ const commandsTests = [
     assertEq(sbc2.__genShots.join(','), 'dup,solo,dup,dup', 'CLI 整集那一路照旧四行全跑');
     assertEq(gc.result.note, undefined, 'CLI 整集那一路同样不说这句');
   } },
+  { name: 'episode.generateVideos 同 id 多行:每一轮的片落到本轮那一行(扣几笔就得有几行出片,两端同一个结果)', fn: async () => {
+    /* 上一条钉的是这一趟说没说出"多花了几行的钱",这一条钉那几笔钱**买到了什么**:
+     * CLI 每轮拿 s.id 回最新树上重取那一行,取的若是首行,点名 ["dup"] 的三轮就全写在首行身上——
+     * 扣三笔视频钱只有一行出片,而回执照报 ok:3 failed:[],第二、三行下轮仍判"未就绪"再扣一遍。
+     * 浏览器那一端整批对象直接交给 SBGen.batchGenVideos,三行各得一段;两端得落到同一个结果上。
+     * 落库面一律读 clone 语义的 disk 夹具:编排层只在自己手里那份快照上改一改也会看起来"落库了"。
+     * 与主体侧那条(subject.generateImage 同 id 多位)成对,收法同形。 */
+    const pending = { confirm: true, image: 'i.png', video: { status: 'none' } };
+    const dupRows = () => [
+      makeShot(0, Object.assign({ id: 'dup', plot: '首行' }, pending)),
+      makeShot(1, Object.assign({ id: 'solo', plot: '不重复的那一镜' }, pending)),
+      makeShot(2, Object.assign({ id: 'dup', plot: '第二行' }, pending)),
+      makeShot(3, Object.assign({ id: 'dup', plot: '第三行' }, pending)),
+    ];
+    const vids = ss => ss.map(s => s.plot + ':' + ((s.video && s.video.url) || '无片')).join(' | ');
+    const filmed = ss => ss.filter(s => s.video && s.video.status === 'done');
+    /* 引擎桩按下发次序给各不相同的片:cliDisk 那份默认按 s.id 命名,同 id 三行会撞成同一个 url */
+    const seqGen = sb => { sb.genShotVideo = async (proj, epLive, s) => {
+      sb.__genShots.push(s.id);
+      s.video = { status: 'done', url: '/uploads/gen/v' + sb.__genShots.length + '.mp4' };
+      return s;
+    }; };
+    // ① CLI 点名 ["dup"]:三笔钱三行出片,且三段各不相同(同一段写三遍也是只买到一段)
+    const sb = loadCli();
+    const fx = cliDisk(sb, { shots: dupRows() });
+    seqGen(sb);
+    const r = await sb.EXEC['episode.generateVideos'].run({ pid: 'p1', epid: 'ep1', shotIds: ['dup'] }, {});
+    const rows = fx.epOf().shots;
+    assertEq(sb.__genShots.join(','), 'dup,dup,dup', '前提:选人闸按行筛,三行都真下发(三笔视频钱)');
+    assertEq(r.result.ok, 3, '前提:回执报三行都成了');
+    assertEq(filmed(rows).length, 3,
+      '扣了三笔就得有三行出片,不能三轮全写在首行身上(回执照报 ok:3 failed:[],下一轮那两行仍判未就绪再扣一遍),实际:' + vids(rows));
+    assertEq(rows[1].video.status, 'none', '没点到的那一行(solo)不许被顺带写片:' + vids(rows));
+    assertEq(new Set(filmed(rows).map(s => s.video.url)).size, 3,
+      '三行手里得是三段不同的片(同一段写三遍等于只买到一段):' + vids(rows));
+    // ② CLI 整集那一路同样中招过:四笔钱四行出片
+    const sb2 = loadCli();
+    const fx2 = cliDisk(sb2, { shots: dupRows() });
+    seqGen(sb2);
+    await sb2.EXEC['episode.generateVideos'].run({ pid: 'p1', epid: 'ep1' }, {});
+    const rows2 = fx2.epOf().shots;
+    assertEq(sb2.__genShots.length, 4, '前提:整集那一路四行全跑');
+    assertEq(filmed(rows2).length, 4, 'CLI 整集那一路同样:四笔钱四行出片,实际:' + vids(rows2));
+    // ③ 首行已出片的整集那一路:序数得在全表上数,只数待跑清单会整体错位(首行被覆盖、末行补不上)
+    const sb3 = loadCli();
+    const pre = dupRows();
+    pre[0].video = { status: 'done', url: '/uploads/gen/old.mp4' };
+    const fx3 = cliDisk(sb3, { shots: pre });
+    seqGen(sb3);
+    await sb3.EXEC['episode.generateVideos'].run({ pid: 'p1', epid: 'ep1' }, {});
+    const rows3 = fx3.epOf().shots;
+    assertEq(sb3.__genShots.length, 3, '前提:整集那一路只补未就绪的三行(首行已出片被跳过)');
+    assertEq(rows3[0].video.url, '/uploads/gen/old.mp4', '已出片的首行这一趟一个字不许被改写:' + vids(rows3));
+    assertEq(filmed(rows3).length, 4, '三笔钱补上三行,连同原有那行共四行出片:' + vids(rows3));
+    // ④ 浏览器那一端:同一份表同一个点名,落库结果与 CLI 对齐(一端写对一端写错就在这里岔开)
+    const sbB = loadPipelineFix();
+    const cb = cmdCtx(sbB, { shots: dupRows() });
+    await sbB.Commands.execute('episode.generateVideos', { pid: cb.p.id, epid: cb.ep.id, ui: true, shotIds: ['dup'] });
+    assertEq(filmed(cb.ep.shots).length, 3, '浏览器那一端三行各得一段:' + vids(cb.ep.shots));
+    assertEq(cb.ep.shots.map(s => !!(s.video && s.video.status === 'done')).join(','), rows.map(s => !!(s.video && s.video.status === 'done')).join(','),
+      '两端得落到同一个结果上(哪几行出片逐行相同),浏览器:' + vids(cb.ep.shots) + ' / CLI:' + vids(rows));
+    /* ⑤ 并发改表(这一趟跑到一半别处把行删了):序数越界得退回原行为,不许抛 TypeError 把整趟带走;
+     * 同 id 一行都不剩时照旧走 findShot 那个「镜头不存在」出口,如实进 failed 而不是静默丢产物。 */
+    const drop = async (keep) => {
+      const sbX = loadCli();
+      const fxX = cliDisk(sbX, { shots: dupRows() });
+      seqGen(sbX);
+      const origWp = sbX.withProject;
+      let round = 0;
+      sbX.withProject = async (pid, flags, fn) => {
+        if (++round === 3) fxX.epOf().shots = fxX.epOf().shots.filter(keep); // 末轮开跑前别处删了行
+        return origWp(pid, flags, fn);
+      };
+      return { r: await sbX.EXEC['episode.generateVideos'].run({ pid: 'p1', epid: 'ep1', shotIds: ['dup'] }, {}), rows: fxX.epOf().shots };
+    };
+    const gone1 = await drop(s => s.plot !== '第三行'); // 只删末行:序数 3 越界
+    assertEq(gone1.r.result.failed.length, 0,
+      '序数越界得退回首行(原行为),不许让 undefined.image 把这一趟炸成失败:' + JSON.stringify(gone1.r.result.failed));
+    assertEq(filmed(gone1.rows).length, 2, '剩下的两行照旧各有一段片:' + vids(gone1.rows));
+    const gone2 = await drop(s => s.id !== 'dup'); // 同 id 一行不剩
+    assertEq(gone2.r.result.failed.length, 1, '同 id 一行不剩时这一轮如实失败(退费口在 Tasks/服务端),不许静默丢产物');
+    assert(/镜头不存在/.test(gone2.r.result.failed[0].error),
+      '走的仍是 findShot 那个出口,不另造第二个错误说法:' + JSON.stringify(gone2.r.result.failed[0]));
+  } },
   { name: 'CLI exec smartReview:单独调用只评一次(重抽循环只在 produce 编排里),故注册表不替它登记 maxRetry', fn: async () => {
     /* 浏览器那一端 episode.smartReview 自己带重抽循环,轮次入参有落点;headless 这一端不是同一形态——
      * 它是一次 /api/wf/smart-review 往返,重抽循环长在 produce 编排里。故 --args '{"maxRetry":5}'
@@ -12432,7 +12516,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 666, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 667, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 148, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -12840,7 +12924,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 262;
+    const FLOOR = 263;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
