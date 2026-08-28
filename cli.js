@@ -1124,11 +1124,11 @@ EXEC['episode.generateVideos'] = { needs: ['p', 'ep'], meter: true, run: async (
   const skipped = args.confirmAll ? [] : pend.filter(s => !s.confirm).map(s => ({ shotId: s.id, order: s.order + 1, reason: '未确认' }));
   const todo = pend.filter(s => args.confirmAll || s.confirm);
   if (!todo.length) {
-    if (skipped.length) return execBlocked('unconfirmed', skipped.length + ' 镜未确认已跳过(--confirm-all 可授权全量生成)', { total: 0, ok: 0, failed: [], skipped });
+    if (skipped.length) return execBlocked('unconfirmed', skipped.length + ' 镜未确认已跳过(--confirm-all 可授权全量生成)', { total: 0, ok: 0, landed: 0, failed: [], skipped });
     // 待跑镜本来就是空:仍是 ok,但得说清为什么是 0 镜(与前端 digest 同读 Domain.emptyBatchNote 一份)
     const note = Domain.emptyBatchNote(p, ep, args.shotIds, true);
     log(note);
-    return execOk({ total: 0, ok: 0, failed: [], skipped: [], note });
+    return execOk({ total: 0, ok: 0, landed: 0, failed: [], skipped: [], note });
   }
   /* 点名的 id 在表里占着多行时,这一趟按行跑、按行计费,而 total 与正常批量长得一样:
    * 先说在跑之前,回执上也留一份(与前端 digest 同读 Domain.dupRowsNote 一份;选人闸一个字没动) */
@@ -1141,6 +1141,10 @@ EXEC['episode.generateVideos'] = { needs: ['p', 'ep'], meter: true, run: async (
   const seenIds = Object.create(null);
   (ep.shots || []).forEach(s => { const n = seenIds[s.id] || 0; seenIds[s.id] = n + 1; nthOf.set(s, n); });
   const failed = [];
+  /* 本轮那条片真落到哪一行(id + 它在同 id 那几行里排第几):并发改表时序数越界会按兜底退回首行,
+   * 两轮写到同一行身上,而 okCnt 数的是引擎调用成功次数、数不出这件事——回执另报 landed = 这个集合的大小。
+   * 座位键得带 id:只记行内序数时,一趟点名三个各占一行的不同 id 会全记成第 0 行、landed 缩成 1。 */
+  const seats = new Set();
   let okCnt = 0;
   for (const s of todo) {
     try {
@@ -1156,6 +1160,7 @@ EXEC['episode.generateVideos'] = { needs: ['p', 'ep'], meter: true, run: async (
         } catch (e) {
           return e; // 失败态已由 genShotVideo 写回 sLive.video:先随补丁落库(含已补底图),再在循环外汇总
         }
+        seats.add(s.id + '#' + (epLive.shots || []).filter(x => x.id === s.id).indexOf(sLive));
         return null;
       });
       if (r.ret) throw r.ret;
@@ -1166,8 +1171,11 @@ EXEC['episode.generateVideos'] = { needs: ['p', 'ep'], meter: true, run: async (
       log('镜 ' + s.id + ' ✗ ' + e.message);
     }
   }
-  const r = { ok: failed.length === 0, status: failed.length ? 'failed' : 'done', result: { total: todo.length, ok: okCnt, failed, skipped } };
-  if (dupNote) r.result.note = dupNote;
+  const r = { ok: failed.length === 0, status: failed.length ? 'failed' : 'done', result: { total: todo.length, ok: okCnt, landed: seats.size, failed, skipped } };
+  /* ok 与 landed 岔开(几轮共用了同一行)时把差在哪说出来,与前端 digest 同读 Domain.landedNote 一份 */
+  const landedNote = Domain.landedNote(okCnt, seats.size, '行');
+  if (dupNote || landedNote) r.result.note = [dupNote, landedNote].filter(Boolean).join('');
+  if (landedNote) log(landedNote);
   if (failed.length) r.error = { code: okCnt ? 'partial' : 'gen-failed', message: failed.length + ' 镜生成失败(已退费),可修复后重试' };
   return r;
 } };
@@ -1400,7 +1408,7 @@ EXEC['subject.generateImage'] = { needs: ['p'], meter: true, run: async (args, f
     // 待补图主体本来就是空:仍是 ok,但得说清为什么是 0 位(与前端 digest 同读 Domain.emptySubjectImageNote 一份)
     const note = Domain.emptySubjectImageNote(p, args.subjectIds);
     log(note);
-    return execOk({ total: 0, ok: 0, failed: [], note });
+    return execOk({ total: 0, ok: 0, landed: 0, failed: [], note });
   }
   /* 点名的 id 在主体库里存着多位时,这一趟按位跑、按位计费,而 total 与正常批量长得一样:
    * 先说在跑之前,回执上也留一份(与前端 digest 同读 Domain.dupSubjectRowsNote 一份;选人闸一个字没动) */
@@ -1413,6 +1421,10 @@ EXEC['subject.generateImage'] = { needs: ['p'], meter: true, run: async (args, f
   const seenIds = Object.create(null);
   (p.subjects || []).forEach(s => { const n = seenIds[s.id] || 0; seenIds[s.id] = n + 1; nthOf.set(s, n); });
   const failed = [];
+  /* 本轮那张图真落到哪一位(id + 它在同 id 那几位里排第几):并发改表时序数越界会按兜底退回首位,
+   * 两轮写到同一位身上,而 okCnt 数的是引擎调用成功次数、数不出这件事——回执另报 landed = 这个集合的大小。
+   * 座位键得带 id:只记行内序数时,一趟点名三个各占一位的不同 id 会全记成第 0 位、landed 缩成 1。 */
+  const seats = new Set();
   let okCnt = 0;
   for (const s of todo) {
     try {
@@ -1422,6 +1434,7 @@ EXEC['subject.generateImage'] = { needs: ['p'], meter: true, run: async (args, f
         sj.image = (await genImage(prompt, f, {})).url;
         sj.prompt = sj.prompt || prompt;
         sj.status = 'done';
+        seats.add(s.id + '#' + (projLive.subjects || []).filter(x => x.id === s.id).indexOf(sj));
       });
       okCnt++;
       log('主体 ' + s.name + ' ✓ (' + okCnt + '/' + todo.length + ')');
@@ -1431,8 +1444,11 @@ EXEC['subject.generateImage'] = { needs: ['p'], meter: true, run: async (args, f
       log('主体 ' + s.name + ' ✗ ' + ((e && e.message) || e));
     }
   }
-  const r = { ok: failed.length === 0, status: failed.length ? 'failed' : 'done', result: { total: todo.length, ok: okCnt, failed } };
-  if (dupNote) r.result.note = dupNote;
+  const r = { ok: failed.length === 0, status: failed.length ? 'failed' : 'done', result: { total: todo.length, ok: okCnt, landed: seats.size, failed } };
+  /* ok 与 landed 岔开(几轮共用了同一位)时把差在哪说出来,与前端 digest 同读 Domain.landedNote 一份 */
+  const landedNote = Domain.landedNote(okCnt, seats.size, '位');
+  if (dupNote || landedNote) r.result.note = [dupNote, landedNote].filter(Boolean).join('');
+  if (landedNote) log(landedNote);
   if (failed.length) r.error = { code: okCnt ? 'partial' : 'gen-failed', message: failed.length + ' 位主体生图失败(已退费),可重试' };
   return r;
 } };
