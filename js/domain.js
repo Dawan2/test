@@ -283,10 +283,16 @@
     const say = (n, t) => { if (n) parts.push(n + ' 镜' + t); };
     if (Array.isArray(picked) && picked.length) {
       const ids = [...new Set(picked)]; // 点名清单按镜去重:重复的 id 指的是同一镜,不该被数成两镜
-      const hit = shots.filter(s => ids.includes(s.id));
-      const locked = hit.filter(s => s.final).length;
-      const fresh = hit.filter(s => !s.final && D.shotVideoReady(s, online) && !D.shotVideoStale(p, s, online)).length;
-      const gone = ids.length - hit.length;
+      /* 四堆一律数「点名 id」,不数命中的镜条数:分镜表里同 id 存了两镜时,拿镜条数去数会让
+       * locked/fresh 各多算一遍、gone = 点名数 − 命中条数 变负(回执逐字报「-1 镜不在本集」),
+       * 同一笔多减还会把真不在本集的 id 抵消掉、让它连安全阀都兜不住。
+       * 归堆按「这个 id 底下的镜是不是清一色如此」判:同 id 多镜口径不一(一镜定稿一镜鲜)时不硬派,
+       * 落进安全阀那一堆——各堆之和照旧恒等于点名数。 */
+      const hits = ids.map(id => shots.filter(s => s.id === id));
+      const all = (h, f) => h.length > 0 && h.every(f);
+      const locked = hits.filter(h => all(h, s => s.final)).length;
+      const fresh = hits.filter(h => all(h, s => !s.final && D.shotVideoReady(s, online) && !D.shotVideoStale(p, s, online))).length;
+      const gone = hits.filter(h => !h.length).length;
       say(locked, '已定稿(批量重生成不覆盖定稿产物,需先解锁终稿)');
       say(fresh, '产物已是最新');
       say(gone, '不在本集');

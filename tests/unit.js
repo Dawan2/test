@@ -4744,6 +4744,57 @@ const domainTests = [
     assertEq(sb.Domain.emptyBatchNote(p, ep, [], false), whole, '合法空数组与选人闸同形:仍是整集那一路');
     assert(/^点名的 1 镜/.test(sb.Domain.emptyBatchNote(p, ep, ['sh0'], false)), '合法非空数组照旧走点名那一路');
   } },
+  { name: 'emptyBatchNote:分镜表里同 id 存着两镜时四堆都按点名 id 数(gone 不许为负,更不许把真不在本集的那镜抵消掉)', fn: () => {
+    /* 分镜表里出现同 id 两镜(复制镜头/导入分镜时并非不可能)时,拿命中的镜条数去数就多算了一遍:
+     * gone = 点名数 − 命中条数 变成 -1,回执上明明白白报「-1 镜不在本集」;
+     * 同一笔多减还会把真不在本集的那个 id 抵消成 0,让它悄悄落进安全阀那一堆。
+     * 收它得四堆一起判:locked / fresh 同样从命中的镜条数里数,只补 gone 那一句会把安全阀顶成负数。
+     * 修的是数法(按点名 id 逐个问本集有没有),「同 id 点名跑几镜」的选人一字未动。 */
+    const sb = loadDomain();
+    const mk = (id, order, ex) => Object.assign({ id, order, prompt: 'p', plot: 'plot', characters: [], dialogue: '',
+      narration: '', scene: '', props: [], duration: 5, camera: '固定镜头', confirm: true,
+      video: { status: 'done', url: 'u' } }, ex || {});
+    const ep = { id: 'ep1', content: '正文', shots: [
+      mk('dup', 0, { final: true }), mk('dup', 1, { final: true }), // 同 id 两镜:都定稿
+      mk('fdup', 2), mk('fdup', 3),                                 // 同 id 两镜:都是鲜镜
+      mk('mix', 4, { final: true }), mk('mix', 5),                  // 同 id 两镜:一定稿一鲜镜,口径不一
+    ] };
+    const p = makeP([ep], []);
+    ep.shots.filter(s => !s.final).forEach(s => { s.video.inputHash = sb.Domain.shotInputHash(p, s); });
+    assertEq(ep.shots.filter(s => s.id === 'dup').length, 2, '夹具前提:本集真躺着同 id 两镜');
+    const heaps = t => (t.match(/(-?\d+) 镜/g) || []).map(x => +x.match(/-?\d+/)[0]).slice(1); // 开头那个是点名数
+    // ① 只点重复的那个 id:点名数是 1,四堆加起来也得是 1(负数在这里露面)
+    const a = sb.Domain.emptyBatchNote(p, ep, ['dup'], false);
+    assert(!/-\d+ 镜/.test(a), '任何一堆都不许报出负数镜:' + a);
+    assert(/1 镜已定稿/.test(a), '点名一个 id 就是一镜,本集躺着两条不该把这堆数成两镜:' + a);
+    assert(!/不在本集/.test(a), '点名的 id 本集有(还有两镜),一镜也不许算成"不在本集":' + a);
+    assertEq(heaps(a).reduce((x, y) => x + y, 0), 1, '各堆之和仍等于点名数:' + a);
+    // ② 同一句里既有重复 id 又有真不在本集的 id:钳 0(max(0, …))在这里红——它把 ghost 吃掉;
+    //    只把 gone 改成按 id 数、locked 仍从命中的镜条数里数,则安全阀被顶成 -1 镜,同样红
+    const b = sb.Domain.emptyBatchNote(p, ep, ['dup', 'ghost'], false);
+    assert(/1 镜不在本集/.test(b), '同 id 那两镜多算的一笔不许拿真不在本集的那镜来抵:' + b);
+    assert(/1 镜已定稿/.test(b), '定稿那堆也得按点名 id 数(只补 gone 一句在这里红):' + b);
+    assert(!/-\d+ 镜/.test(b), '任何一堆都不许报出负数镜:' + b);
+    assertEq(heaps(b).reduce((x, y) => x + y, 0), 2, '各堆之和仍等于点名数:' + b);
+    assertEq(sb.Domain.emptyBatchNote(p, ep, ['dup', 'dup', 'ghost'], false), b, '点名清单去重照旧:同一 id 点两次仍是一镜');
+    // ③ 鲜镜那堆同理(四堆里第二堆:只收 locked 与 gone 在这里红)
+    const c = sb.Domain.emptyBatchNote(p, ep, ['fdup', 'ghost'], false);
+    assert(/1 镜产物已是最新/.test(c) && /1 镜不在本集/.test(c), '鲜镜那堆也得按点名 id 数:' + c);
+    assert(!/-\d+ 镜/.test(c), '任何一堆都不许报出负数镜:' + c);
+    assertEq(heaps(c).reduce((x, y) => x + y, 0), 2, '各堆之和仍等于点名数:' + c);
+    // ④ 同 id 两镜口径不一时不硬派:落进安全阀,和仍等于点名数(硬派成定稿或鲜镜都是替用户下结论)
+    const d = sb.Domain.emptyBatchNote(p, ep, ['mix'], false);
+    assert(/1 镜没能说清原因/.test(d), '一定稿一鲜的同 id 两镜归不了堆,安全阀须让它露头:' + d);
+    assert(!/-\d+ 镜/.test(d) && !/不在本集/.test(d), '既不许负数也不许算成"不在本集":' + d);
+    assertEq(heaps(d).reduce((x, y) => x + y, 0), 1, '各堆之和仍等于点名数:' + d);
+    // ⑤ 对照:本集没有重复 id 时四堆一字不变(数法一换就把正常那一路带走了即红)
+    const epOne = { id: 'ep2', content: '正文', shots: [mk('sh0', 0, { final: true }), mk('sh1', 1)] };
+    const pOne = makeP([epOne], []);
+    epOne.shots[1].video.inputHash = sb.Domain.shotInputHash(pOne, epOne.shots[1]);
+    assertEq(sb.Domain.emptyBatchNote(pOne, epOne, ['sh0', 'sh1', 'ghost'], false),
+      '点名的 3 镜一镜也没跑:1 镜已定稿(批量重生成不覆盖定稿产物,需先解锁终稿)、1 镜产物已是最新、1 镜不在本集',
+      '无重复 id 那一路逐字照旧');
+  } },
   { name: 'emptySubjectImageNote:一位也没跑时逐堆说清为什么(分档与镜头那一侧分得开;各堆之和 = 点名数)', fn: () => {
     const sb = loadDomain();
     /* 主体这一侧的分档不是镜头那一侧的翻版:没有终稿锁、没有判旧,而点名到的主体一律按「含已有图重生」真跑。
@@ -11463,7 +11514,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 643, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 644, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 147, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 109, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
