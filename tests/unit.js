@@ -5007,6 +5007,141 @@ const contractTests = [
     assertEq(Object.keys(Skills.gaps()).length, 20, 'gaps() 键数不应变');
     assertEq(Skills.validate({ Prompts: P, KB: require('../js/knowledge.js') }).join(';'), '', '新登记的提示词键须通过引用自检');
   } },
+  /* ---- 专家工坊两步人设(W88):锻造器与进化器。两者作用在「专家」这个对象上而不在主线某一步上,
+   * 故键排在主线各步与 Agent 各模式之后;角色不同(无中生有铸新专家 vs 就地改写已有专家)故不合成一个键。
+   * 预置 persona 库(js/experts-data.js)不在本面内——那是专家数据而不是工坊的提示词。 ---- */
+  { name: '专家工坊两步人设:锻造器/进化器各一键,缺省拼出的整串逐字节等于收编前的内联字面', fn: async () => {
+    const Prompts = require('../js/prompts.js');
+    const FORGE = '你是「专家 skill 生成器」(元智能体)。用户会描述想要的短剧创作专家(导演/编剧/摄像/策划等,含题材、风格、擅长点),你为其生成完整专家 skill。';
+    const EVOLVE = '你是专家人设进化器。';
+    assertEq(Prompts.get('forge.system'), FORGE, '锻造器缺省人设句应与收编前的内联字面逐字节相同');
+    assertEq(Prompts.get('forge.evolveSystem'), EVOLVE, '进化器缺省人设句应与收编前的内联字面逐字节相同');
+    // 条目形态:无变量、条目名点名是哪一步
+    [['forge.system', '锻造器'], ['forge.evolveSystem', '进化器']].forEach(([k, label]) => {
+      const it = Prompts.list().find(x => x.key === k);
+      assert(it && !it.vars.length && it.name.includes('专家') && it.name.includes(label) && it.name.includes('系统人设'),
+        '注册表应登记该步人设条目(无变量,可在全局默认值页在线改写):' + k);
+    });
+    // 每句字面恰好命中注册表一条;两句互不相同且与既有键都不同字面(合成一键或复用既有键当场红)
+    [FORGE, EVOLVE].forEach(def => assertEq(Prompts.list().filter(x => x.def === def).length, 1,
+      '该人设句应恰好命中注册表一条:' + def));
+    assert(FORGE !== EVOLVE, '两步措辞应互不相同(字面同才谈得上共用一键)');
+    Prompts.list().filter(x => !x.key.startsWith('forge.')).forEach(x =>
+      assert(x.def !== FORGE && x.def !== EVOLVE, '两步人设不应与既有键同字面(同字面才该复用):' + x.key));
+    // 键序:两条相邻、锻造器在前,且都排在 Agent 各模式之后(工坊不在主线步序里)
+    const keys = Prompts.list().map(x => x.key);
+    assertEq(keys.indexOf('forge.evolveSystem') - keys.indexOf('forge.system'), 1,
+      '两键应相邻且锻造器在前(后续槽插到中间即红)');
+    assert(keys.indexOf('forge.system') > keys.indexOf('agent.previsSystem'),
+      '工坊两键应排在主线各步与 Agent 各模式之后');
+    // 契约半不开放:两处的 JSON 字段面一个不进注册表(用户改一个字即规范化/蒸馏整轮失败)
+    const defs = Prompts.list().map(x => x.def).join('\n');
+    ['"persona"', '"dims"', '"tpl"', '"clauses"', 'tplImage', '≤40字'].forEach(f =>
+      assert(!defs.includes(f), '两步的契约半字面不应进注册表(不开放覆盖):' + f));
+    /* 锻造器取值口真跑:缺省拼出的 Experts.FORGE_SYS 与收编前那一整串逐字节相同。
+     * 人设句与「只返回严格 JSON:」原在同一行,故取值时直接相接、不补分隔符。 */
+    const a = loadExperts();
+    assertEq(a.Experts.FORGE_SYS, FORGE + `只返回严格 JSON:
+{"name":"专家名(≤8字)","ico":"一个emoji","role":"导演|编剧|摄像|策划|其他","kind":"style|function","style":"漫剧|动漫|写实","tags":["≤4个"],"desc":"80字内简介","persona":"系统人设提示词(你是…创作原则…,具体可执行)","dims":{"光影":"","色调":"","情感氛围":"","服化道审美":"","表演气质":""},"tpl":{"tplImage":"文生图模板,含{style}{subject}变量","tplVideo":"文生视频模板,含{style}{shot}变量","tplReview":"审片模板,含{shot}变量"}}
+规则:kind=style 表示全局风格雇佣专家,dims 与 tpl 必填(dims 五维仅 role=导演时给具体内容,其他 role 可给空字符串);kind=function 表示板块功能专家,不给 dims/tpl。用户提出修改意见时,在上一版基础上改稿并重新输出完整 JSON。`,
+      '缺省 FORGE_SYS 应与收编前的内联整串逐字节相同');
+    // 覆盖只换人设句:契约半逐字节不变,且取值口不是加载期冻结(改完覆盖表再读即跟随)
+    const OV = '你是专家铸造师(覆盖生效)。';
+    a.Store.state.settings.promptOverrides = { 'forge.system': OV };
+    assert(a.Experts.FORGE_SYS.startsWith(OV), '取值口不是加载期冻结:改完覆盖表再读即跟随');
+    assertEq(a.Experts.FORGE_SYS.slice(OV.length), loadExperts().Experts.FORGE_SYS.slice(FORGE.length),
+      '覆盖只换人设句:锻造器契约半(字段面 + 改稿规则)逐字节不变');
+    // 进化器取值口真跑:蒸馏那一次的 system 半缺省逐字节不变,覆盖时只换开头那一句
+    const evolve = async ov => {
+      const sb = loadExperts();
+      if (ov) sb.Store.state.settings.promptOverrides = ov;
+      sb.Store.myProjects = () => [{ id: 'p1', boards: { 分镜: { expert: 'cx_1' } } }];
+      sb.Store.state.agentMemory = [{ text: '相邻景别不硬切', scope: '分镜' }];
+      sb.__apiReady = true;
+      sb.__llm = [];
+      sb.API.chatJSON = async req => { sb.__llm.push(req.system); return { clauses: ['每镜给出摄影意图'] }; };
+      await sb.Experts.evolveExpert({ id: 'cx_1', name: '我的分镜专家', persona: '基础人设' });
+      assertEq(sb.__llm.length, 1, '应只发一次蒸馏请求');
+      return sb.__llm[0];
+    };
+    const evDef = await evolve(null);
+    assertEq(evDef, EVOLVE + '根据用户与创作助手在「分镜」板块的历史协作记忆(用户的纠正/偏好/已确认决定),'
+      + '为该板块的指定专家蒸馏「进化条款」。只返回 JSON {"clauses":["条款1","条款2"]}(1-4条)。'
+      + '要求:与该专家人设领域及「分镜」板块职责相关、具体可执行、不重复其已有条款;每条≤40字。',
+      '缺省蒸馏 system 半应与收编前的内联整串逐字节相同');
+    const EVOV = '你是条款蒸馏器(覆盖生效)。';
+    assertEq(await evolve({ 'forge.evolveSystem': EVOV }), EVOV + evDef.slice(EVOLVE.length),
+      '覆盖只换人设句:进化器的板块点名与 clauses 契约半逐字节不变');
+    // 两键互不串台:覆盖一条时另一条仍取缺省
+    assertEq(await evolve({ 'forge.system': OV }), evDef, '覆盖锻造器不应改动进化器那一步');
+    const b = loadExperts();
+    b.Store.state.settings.promptOverrides = { 'forge.evolveSystem': EVOV };
+    assertEq(b.Experts.FORGE_SYS, loadExperts().Experts.FORGE_SYS, '覆盖进化器不应改动锻造器那一步');
+  } },
+  { name: '专家工坊两步人设(源级):js/experts.js 零内联、gsettings 仍只引用常量,全仓只剩注册表一份', fn() {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'experts.js'), 'utf8');
+    const gs = fs.readFileSync(path.join(ROOT, 'js', 'gsettings.js'), 'utf8');
+    // 取值口与各步锚点配对:两个键互换位置即红
+    assert(/get FORGE_SYS\(\) \{ return Prompts\.get\('forge\.system'\) \+ FORGE_CONTRACT; \}/.test(src),
+      '锻造器应经注册表取人设句再接就地契约半(不带第二参数=隐式读 Store 覆盖表)');
+    const i = src.indexOf("Prompts.get('forge.evolveSystem')");
+    assert(i >= 0, '进化器应经注册表取人设(不带第二参数=隐式读 Store 覆盖表)');
+    assert(src.slice(i, i + 400).includes('为该板块的指定专家蒸馏「进化条款」'),
+      '进化器取值口应与该步 user 侧锚点配对(两个键串了位即红)');
+    // js/experts.js 内联人设归零(W80 5.4 记的那 1 处 + 未计数的 FORGE_SYS 常量)
+    assertEq((src.match(/system: ['`]你是/g) || []).length, 0, 'js/experts.js 应零内联人设');
+    assert(!/const FORGE_SYS = /.test(src), '锻造器人设不应再以整串常量写死在源码里');
+    // 消费侧一行未改:gsettings 工坊页仍只引用 Experts.FORGE_SYS 这一个常量,自己不持有人设句
+    assert(gs.includes('system: FORGE_SYS,'), 'gsettings 工坊页应仍只引用 Experts.FORGE_SYS 这一个常量');
+    assert(!gs.includes(Prompts.get('forge.system')) && !gs.includes(Prompts.get('forge.evolveSystem')),
+      'gsettings 不应持有工坊人设句(注册表 def 为唯一来源)');
+    // 全仓持有者名单:两句字面恰好只剩注册表一份(别处抄第二份即红,哪怕原文件仍走注册表)
+    const files = ['index.html', 'server.js', 'cli.js', 'mcp.js']
+      .concat(fs.readdirSync(path.join(ROOT, 'js')).filter(f => f.endsWith('.js')).map(f => 'js/' + f));
+    ['forge.system', 'forge.evolveSystem'].forEach(k => {
+      const def = Prompts.get(k);
+      const holders = files.filter(f => fs.readFileSync(path.join(ROOT, f), 'utf8').includes(def));
+      assertEq(holders.join(','), 'js/prompts.js', k + ' 的人设句字面应全仓只剩注册表一份(逐字节比对)');
+    });
+    // 预置 persona 库不在本面内:experts-data.js 一行未被收编(那是专家数据,不是工坊提示词)
+    const data = fs.readFileSync(path.join(ROOT, 'js', 'experts-data.js'), 'utf8');
+    assert(!data.includes('Prompts.get'), 'js/experts-data.js 预置 persona 库不该被收进注册表(本槽只收工坊两步)');
+    assert(require('../js/experts-data.js').EXPERTS.every(e => (e.persona || '').startsWith('你是')),
+      '预置专家 persona 仍是数据字面(未被改成取值口)');
+    // 不许长出第二端:工坊两步只在浏览器,收编解决的是「可覆盖」不是「可 headless」
+    ['server.js', 'cli.js', 'mcp.js'].forEach(f => {
+      const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
+      ['为该板块的指定专家蒸馏', '含{style}{subject}变量'].forEach(anchor =>
+        assert(!s.includes(anchor), f + ' 不应出现工坊两步的契约半:' + anchor));
+    });
+    // 记账宿主:锻造器归 SK-02(专家条目面)、进化器归 SK-26(evolveExpert 的记账宿主),都写在「已落地」那半
+    [['core.expertSkillRef', 'forge.system', '仍欠'], ['review.memoryFeedback', 'forge.evolveSystem', '仍欠(G-11)']]
+      .forEach(([id, key, owedMark]) => {
+        const sk = Skills.byId(id);
+        assert(sk.prompts && sk.prompts.includes(key), id + ' 应登记 ' + key);
+        assert(sk.note.includes(key), id + ' 的 note 须点名新收编的键:' + key);
+        const owed = (sk.note || '').split(owedMark).slice(1).join(owedMark);
+        assert(!owed.includes(key), '新收编的键应写在「已落地」那半,不许挤进仍欠段:' + key);
+      });
+    // G-11 的人手触发那一面仍欠,收人设句不等于自进化自动化了(如实写)
+    const sk26 = Skills.byId('review.memoryFeedback');
+    assert(sk26.note.includes('仍欠(G-11)') && sk26.note.includes('人手动作') && sk26.note.includes('只对自定义专家开放'),
+      'SK-26 的仍欠段应仍如实写着 G-11 人手点自进化与预置专家两处');
+    assert(sk26.gaps.includes('G-11'), 'G-11 标记不摘');
+    /* SK-02 的仍欠段应写明工坊那份字段面同样没有 skills[](G-09 的另一头)。
+     * 锚点取仍欠段内的两个词,不能只查 note 里有没有 skills[] —— 该条第一句本来就有这个字面。 */
+    const owed02 = Skills.byId('core.expertSkillRef').note.split('仍欠').slice(1).join('仍欠');
+    assert(owed02.includes('skills[]') && owed02.includes('铸出'),
+      'SK-02 的仍欠段须写明工坊铸出的专家挂不上能力引用(G-09 的另一头)');
+    // 收两处动不到关联索引投影
+    assertEq(Object.keys(Skills.gaps()).length, 20, 'gaps() 键数不应变');
+    assertEq((Skills.gaps()['G-13'] || []).join(','),
+      'script.hookType,script.aiToneBan,subjects.refDiscipline,eps.structureStage,gen.videoTpl,film.rhythmInject',
+      '收编工坊两处不动 gaps() 投影(工坊不在 G-13 的关联索引上)');
+    assertEq(Skills.validate({ Prompts, KB: require('../js/knowledge.js') }).join(';'), '', '新登记的提示词键须通过引用自检');
+  } },
   { name: 'Agent 单轮人设:经 WfCore.buildAgentSystem(agent.system) 取值,缺省逐字节等于收编前的模板串', fn() {
     const Prompts = require('../js/prompts.js');
     const Skills = require('../js/skills.js');
