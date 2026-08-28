@@ -3223,6 +3223,8 @@ const commandsTests = [
     assertEq(done.renamed.map(x => x.order + '→' + x.to).join(','),
       after.shots.map((s, i) => i + '→' + s.id).filter((_, i) => i >= 2).join(','),
       '回执里那份改名映射要与落库实况逐条对得上');
+    assertEq(JSON.stringify(done.duplicates), JSON.stringify(dry.duplicates),
+      '--apply 回执报的重复面须与 dry-run 那份逐字相同(两条路各算一份就会漂,用户照 dry-run 点头、apply 干的却是别的)');
     // ③ 引用面:三处一个字没改,且去重前后落到的是同一行(这就是"不改引用"的现跑依据)
     assertEq(after.uiSel, 'dup', 'ep.uiSel 不许被改写');
     assertEq(JSON.stringify(after.lastReview.perShot), JSON.stringify(review.perShot), 'lastReview.perShot 不许被改写');
@@ -3249,15 +3251,21 @@ const commandsTests = [
     assert(body && !/Tasks\.run|billingAction|charge|operationId/.test(body),
       'shots-dedupe 纯改分镜表、零上游零 LLM,不许走计费路径:' + body);
     assert(/f\.apply/.test(body), '写不写库只能由 --apply 这一个位决定(默认档得是 dry-run)');
-    assert(/dedupeShotScan/.test(body) && /crypto\.randomBytes/.test(cliSrc.slice(cliSrc.indexOf('const dedupeShotScan'), cliSrc.indexOf("CMD['shots-dedupe']"))),
-      '扫描与改名计划得在一处算(dry-run 报的与 --apply 写的必须是同一份计算)');
+    assertEq((body.match(/dedupeShotScan\(/g) || []).length, 2,
+      '两条路(dry-run 读一份、--apply 落库前按最新那棵树重算一份)都得调同一个 dedupeShotScan,'
+      + '各写一份计算迟早漂——用户照 dry-run 点的那个头就不作数了');
+    assert(/crypto\.randomBytes/.test(cliSrc.slice(cliSrc.indexOf('const dedupeShotScan'), cliSrc.indexOf("CMD['shots-dedupe']"))),
+      '新 id 得是真发出来的(改名计划里那个 to 不许是拼出来的可预测串)');
     // 引用面的源级判据只看代码骨架:注释与回执/日志字面里提到那几个名字是说明,不是改写
     assert(!/lastReview|uiSel|perShot|groupId/.test(blankNonCode(body)),
       'shots-dedupe 的代码骨架里出现了引用字段:现跑证明首行留原 id 时三处引用落到的是同一行,动它才是新增风险——'
       + '真要迁移请连着"改哪几处、凭什么"一起判,别顺手塞进来:' + blankNonCode(body));
     // 对照面:那道导入闸与逃生舱那条不设闸的路都得还在(三条判据是一组,少一条本条不许还绿着)
-    assert(/taken\.has\(s\.id\)[\s\S]*renamedIds/.test(cliSrc.slice(cliSrc.indexOf("CMD['shots-import']")).split('\n};')[0]),
-      '对照面:shots-import 那道写入闸得还在(本命令的落库口径就是照它写的)');
+    /* 对照面查的是判据本身外加"真改了 id":只查 taken.has(s.id) 与 renamedIds 两个字面时,
+     * 把闸的躯干掏空成 `if (taken.has(s.id)) { renamed += 0; }` 而字面全留着,本条不红——量过才收紧的。 */
+    const impBody = blankNonCode(cliSrc.slice(cliSrc.indexOf("CMD['shots-import']")).split('\n};')[0]);
+    assert(/taken\.has\(s\.id\)[\s\S]*?s\.id = /.test(impBody) && /renamedIds/.test(impBody),
+      '对照面:shots-import 那道写入闸得还在且真改 id(本命令的落库口径就是照它写的)');
     assert(/shots-dedupe/.test(cliSrc.slice(cliSrc.indexOf('/* ---- 逃生舱'), cliSrc.indexOf("CMD['state-get']"))),
       '逃生舱那段注释须把这条收拾办法点出来(不设闸的那条路得说清收拾走哪儿)');
   } },
