@@ -893,7 +893,7 @@
         'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem', 'agent.selfFixSystem', 'agent.compactSystem',
         'narration.system', 'reading.system', 'concept.system', 'light.system',
         'voice.recommendSystem', 'voice.recommendBatchSystem', 'comic.bubbleSystem', 'dirset.system', 'dist.copySystem',
-        'rip.system', 'gen.editSystem', 'persona.editSystem', 'plan.system', 'agent.routeSystem'],
+        'rip.system', 'gen.editSystem', 'persona.editSystem', 'plan.system', 'agent.routeSystem', 'planner.chatSystem', 'trans.localizeSystem'],
       cmds: ['episode.understanding', 'episode.generateStoryboard', 'episode.smartReview'], gaps: ['G-01'],
       note: 'G-01 已落地:服务端 /api/wf/* 各端点经唯一装配口 wfPersonaNote 注入生效人设(板块雇佣 > 全局雇佣),'
         + '浏览器同装配口;infra 面的 pending 已按实况清空(gaps() 只投影 gaps 字段、不看 pending,清账动不到投影),'
@@ -951,11 +951,18 @@
         + '板块清单按 AGENT_BOARDS 现拼、判据句与 {"board","reason"} 返回契约仍留在装配口不开放覆盖;'
         + 'js/agent-global.js 至此零内联人设(该文件另有两句上下文框定语不在本判据内:'
         + '全局任务上下文块尾那句与板块协作那句都是随实况现拼的装配半,与 ops 协议同不开放覆盖)。'
+        + '项目实验台两步(js/proj-planner.js 的 AI 策划对话/剧本译制)的人设句同形收编为两条独立键'
+        + '(planner.chatSystem/trans.localizeSystem——两处 def 字面不同,故不共用一个键),'
+        + '策划那步取值口经 Prompts.get、其后的「当前项目信息:」上下文仍由取值口现拼,'
+        + '译制那步经 Prompts.fill 按 {market}/{lang} 填目标市场与语言;'
+        + 'js/proj-planner.js 至此零内联人设,两键同为纯浏览器链路的一个消费点。'
         + '仍欠:四处的 ops 协议/字段面/命令白名单/返回 JSON 约定仍由各自装配口拼、不开放覆盖'
         + '(那半是 ops 解析契约,用户改坏即整轮无 ops);'
         + '音色推荐两条同理只收人设句——音色库取值范围与返回 JSON 约定仍写在各自调用点、不开放覆盖'
         + '(用户改坏即推荐值落不回音色库,只能退随机);'
         + '漫剧气泡那处同口径——返回 JSON 形状与 type 词表是解析判据,同样只收人设句不开放契约半;'
+        + '剧本译制那处同口径——「第X集」分集标记是「应用译制结果」按标记拆分的判据,'
+        + '那一条留在取值口常量 TRANS_CONTRACT、不开放覆盖(用户改坏即整轮译制一集都写不回);'
         + '该步也不过本条的 ctx 通道(编辑器工具步不注入生效人设与协作记忆,只是人设句进了注册表);'
         + '主体按指令改那条同理只收人设句——主体名/项目风格/当前设定提示词的摘取与返回 JSON 约定仍写在调用点、'
         + '不开放覆盖(用户改坏即改写结果落不回设定提示词);'
@@ -1067,8 +1074,11 @@
         + 'js/experts.js 专家工坊那两处(锻造器与进化器)同形收编为 forge.system/forge.evolveSystem,该文件也随之归零。'
         + 'js/plans.js 制作计划 LLM 规划步的人设句同形收编为 plan.system,该文件也随之归零。'
         + 'js/agent-global.js 全局抽屉的意图路由辅助步同形收编为 agent.routeSystem,该文件也随之归零。'
+        + 'js/proj-planner.js 项目实验台的 AI 策划对话与剧本译制两步同形收编为 planner.chatSystem/trans.localizeSystem,'
+        + '该文件也随之归零——按「system:/content:/= 后紧跟人设句」这一口径全仓余量至此为零。'
         + '仍欠 G-13 的已不在剧本模块自己这两个文件里,而是别处还没收的那几处内联人设:'
-        + 'js/proj-planner.js 的短剧策划/编剧与出海本土化译制两步仍是内联字面,'
+        + '仍在的是判据更宽那张名单还计着的那一处:单镜视频审片(js/wf-core.js 的 buildReviewPrompt)'
+        + '把人设句写在 user 半开头、仍不在注册表里(system 半的 review.system 早已在表),'
         + '那几步既取不到条目正文、用户也覆盖不到',
     },
     /* ---- 主体 ---- */
@@ -1085,7 +1095,7 @@
         + '两处装配口都经 Prompts.get 取值、用户在「全局默认值」页改得到(模板本身也一直改得到),'
         + '故本条自己的登记面已无收编余量;剧本模块那几步、Agent 对话闭环的辅助两步与专家工坊那两步都已收编。'
         + '仍欠 G-13 的不在本条名下:全仓其余模块的内联人设未进注册表'
-        + '(js/proj-planner.js 的短剧策划/编剧与出海本土化译制两步仍是内联字面),'
+        + '(单镜视频审片 js/wf-core.js 的 buildReviewPrompt 把人设句写在 user 半开头,仍不在注册表里),'
         + '缺口未闭合故按关联索引口径不摘标记。'
         + '生成请求构造点(Domain.buildVideoRequest)不注方法论文本,生成指纹口径不动;'
         + '校验半判定输入就是那份请求的参考图组(人物数上限、被上限挤出、三视图当视频参考),'
