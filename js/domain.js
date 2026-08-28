@@ -561,6 +561,22 @@
     return { status, counts, blockers, action, reviewAvg, reviewStale, composedReady, shotsStale };
   };
 
+  /* 项目级前置门槛断点(剧本/主体/分集三步的阻塞项,双端单源):
+   * 这三步的判定输入全是项目对象本身(整本剧本 / 主体库 / 分集表),与逐集推导无关——
+   * 故单独收成一函数,workflow 的这三步与问题中心同读本份,码名与文案不在两处各写一遍。
+   * 逐项 { step, code, label, count?(计数类阻塞的条目数) };空项目/只有剧本/只有主体三态正由本函数出结论。 */
+  D.gateBlockers = function (p) {
+    const eps = (p && p.episodes) || [];
+    const subjects = (p && p.subjects) || [];
+    const noImg = subjects.filter(s => !s.image).length;
+    const out = [];
+    if (!(p && (p.script || p.extractDone))) out.push({ step: 'script', code: 'no-script', label: '未上传剧本' });
+    if (!subjects.length) out.push({ step: 'subjects', code: 'no-subjects', label: '未提取主体' });
+    else if (noImg) out.push({ step: 'subjects', code: 'subjects-no-image', label: noImg + ' 个主体缺权威图', count: noImg });
+    if (!eps.length) out.push({ step: 'eps', code: 'no-eps', label: '未建分集' });
+    return out;
+  };
+
   /* 项目级工作流:主线步骤(含支线标记),逐步 status/done/doing/blockers/recommendedAction */
   D.workflow = function (p, online) {
     const eps = (p && p.episodes) || [];
@@ -577,6 +593,8 @@
     const rvStale = epStates.filter(st => st.reviewStale).length;
     const rvNone = epStates.filter(st => st.reviewAvg === null && !st.reviewStale).length;
     const noImg = subjects.filter(s => !s.image).length;
+    const gates = D.gateBlockers(p); // 前置三步(剧本/主体/分集)的阻塞项与问题中心同读一份
+    const gateOf = k => gates.filter(g => g.step === k).map(g => ({ code: g.code, label: g.label }));
     const sh = (p && p.shell) || {};
     const step = (key, name, done, doing, blockers, action, side) => ({
       key, name, done: !!done, doing: !!doing, side: !!side,
@@ -586,14 +604,14 @@
     const steps = [
       step('prod', '制片', !!(sh.selling || sh.owner || sh.startDate), false, null, null, true),
       step('script', '剧本', !!(p && (p.script || p.extractDone)), false,
-        !(p && (p.script || p.extractDone)) ? [{ code: 'no-script', label: '未上传剧本' }] : [],
+        gateOf('script'),
         { key: 'script', label: '上传剧本', hash: '#/project/' + p.id }),
       step('director', '导演', !!(p && p.concept && p.concept.statement), false, null, null, true),
       step('subjects', '主体', subjects.length > 0 && noImg === 0, subjects.length > 0 && noImg > 0,
-        !subjects.length ? [{ code: 'no-subjects', label: '未提取主体' }] : noImg ? [{ code: 'subjects-no-image', label: noImg + ' 个主体缺权威图' }] : [],
+        gateOf('subjects'),
         { key: 'subjects', label: noImg ? `主体提取与生成(${noImg} 角色缺图)` : '主体提取与生成', hash: '#/project/' + p.id + '/roles' }),
       step('eps', '分集', eps.length > 0, false,
-        !eps.length ? [{ code: 'no-eps', label: '未建分集' }] : [],
+        gateOf('eps'),
         { key: 'eps', label: '新建分集', hash: '#/project/' + p.id }),
       step('shots', '分镜', eps.length > 0 && epStates.every(st => st.counts.total > 0) && !anyShotsStale, epStates.some(st => st.counts.total > 0),
         (() => {
