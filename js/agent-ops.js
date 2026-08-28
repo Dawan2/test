@@ -436,11 +436,13 @@
     if (lr) {
       d.reviewAvg = lr.avg;
       d.reviewStale = !!(window.Review && Review.episodeReviewStale && Review.episodeReviewStale(ep));
-      d.lowShots = (lr.perShot || []).filter(x => x.score < 7).map(x => {
-        const i = (ep.shots || []).findIndex(s => s.id === x.shotId);
-        // 二十轮:低分镜带审片问题原文(按 reportId 精确取回报告;被挤出最近 5 条时为空数组降级)
-        const rep = i >= 0 ? ((ep.shots[i].reviews || []).find(r => r.id === x.reportId)) : null;
-        return { n: i >= 0 ? i + 1 : (x.order || 0) + 1, score: x.score,
+      // 低分镜面取修订闭环那一份派生(Domain.reviseTargets:达标线/判旧/与分镜表取交集/定稿不重抽同口径),
+      // 助手看见的名单与 chip 发出去的重抽面因此恒一致;二十轮的问题原文照旧按 reportId 精确取回报告
+      // (被挤出最近 5 条时为空数组降级)
+      d.lowShots = Domain.reviseTargets(ep).map(t => {
+        const s = (ep.shots || []).find(x => x.id === t.shotId);
+        const rep = t.reportId && s ? ((s.reviews || []).find(r => r.id === t.reportId)) : null;
+        return { n: t.order, score: t.score,
           issues: rep ? (rep.issues || []).slice(0, 2).map(it => String(it.analysis || it.type || '').slice(0, 40)) : [] };
       }).slice(0, 5);
     }
@@ -464,7 +466,9 @@
         parts.push('分镜:' + seg.join('/'));
       }
       if (d.reviewAvg !== null && d.reviewAvg !== undefined) {
-        parts.push(`审片:均分${d.reviewAvg}${d.reviewStale ? '(旧版)' : ''}` + (d.lowShots.length ? `;低分镜:${d.lowShots.map(x => x.n + '镜' + x.score + '分').join('、')}` : ';全部达标'));
+        // 判旧的报告不出低分镜面(旧分不驱动重抽),也就不能拿"全部达标"回话——只报均分与旧版标记
+        parts.push(`审片:均分${d.reviewAvg}${d.reviewStale ? '(旧版)' : ''}`
+          + (d.lowShots.length ? `;低分镜:${d.lowShots.map(x => x.n + '镜' + x.score + '分').join('、')}` : (d.reviewStale ? '' : ';全部达标')));
       } else if (d.done) parts.push('审片:未审');
       if (d.total && d.done === d.total) parts.push(d.composed ? '成片:已合成' : '成片:全部出片可合成');
       if (d.running) parts.push(`在飞任务:${d.running}个`);
@@ -648,10 +652,8 @@
       if (window.Agent && Agent.notify) Agent.notify(p, ep, main, `🎬 整集审片开始(${total} 镜):进度在右侧面板,期间可正常操作页面。`);
     });
     Bus.on('review.episodeDone', ({ p, ep, main, avg }) => {
-      const lows = ((ep.lastReview || {}).perShot || []).filter(x => x.score < 7).map(x => {
-        const li = (ep.shots || []).findIndex(s => s.id === x.shotId);
-        return (li >= 0 ? li + 1 : (x.order || 0) + 1) + '镜(' + x.score + '分)';
-      });
+      // 低分镜面同取修订闭环那一份派生:卡片上点名的镜与"逐镜优化提示词"真会动的镜恒一致
+      const lows = Domain.reviseTargets(ep).map(t => t.order + '镜(' + t.score + '分)');
       pushEvent(p, ep, {
         key: 'review:' + ((ep.lastReview || {}).time || avg),
         text: `🎬 整集审片完成:均分 ${avg}${lows.length ? ';低于 7 分:' + lows.slice(0, 6).join('、') : ',全部达标'}。报告已生成${lows.length ? ',需要的话我可以按问题清单逐镜优化提示词' : ''}。`,

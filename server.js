@@ -3619,12 +3619,10 @@ const server = http.createServer(async (req, res) => {
         const rev = wfSave(user.id, cur, tree);
         return ok(res, {
           rev, avg, reviewed: reports.length, failed,
-          // 低分镜带 shotId 与修正意见串(fixes):CLI produce 据此修订提示词后 shotIds 子集重抽+复审;
-          // 合并口径下未复审的历史低分镜同样在列(fixes 仅新报告可给)
-          lowShots: perShot.filter(x => x.score < 7).map(x => {
-            const fresh = reports.find(y => y.shot.id === x.shotId);
-            return { shotId: x.shotId, order: x.order + 1, score: x.score, fixes: fresh ? WfCore.reviewFixes(fresh.report) : undefined };
-          }),
+          // 低分镜带 shotId 与修正意见串(fixes):CLI produce 据此修订提示词后 shotIds 子集重抽+复审。
+          // 镜集/达标线/判旧一律由 WfCore.reviseSubset 从刚写回的 lastReview 派生(与编排层同一份),
+          // 合并口径下未复审的历史低分镜同样在列(fixes 按 reportId 回取报告,取不到时为空串)
+          lowShots: WfCore.reviseSubset(ep),
           common, cut, sumErr: sumErr || undefined, cutErr: cutErr || undefined,
         });
       } catch (e) {
