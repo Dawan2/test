@@ -3726,6 +3726,109 @@ const commandsTests = [
     assert(/主体不存在/.test(gone2.r.result.failed[0].error),
       '走的仍是 findSubject 那个出口,不另造第二个错误说法:' + JSON.stringify(gone2.r.result.failed[0]));
   } },
+  { name: '回执 ok 与 landed 各说一件事:ok 数引擎调用成功次数、landed 数产物真落到几位/几行,共位那一趟岔开并经 note 说清', fn: async () => {
+    /* 上面两条钉的是"扣几笔就得有几位/几行到手",而它们都只在**表没被别处改过**时成立:
+     * 并发改表那一趟(序数越界按兜底退回首位)引擎实收 3 次全成功,回执报 ok:3 failed:[],
+     * 到手产物却只有 2 位——两轮写到了同一位身上,后一轮盖掉前一轮。读 ok:3 的人会以为 3 位各有产物。
+     * 这里钉的是回执把这两件事分开说:ok 的口径一个字不改(它就是引擎调用成功次数,计费按这个数走,
+     * 那 3 次都真花了钱,改成 fail 就是拿假失败掩盖真扣费),另报 landed = 真落到几位/几行,
+     * 两个数岔开时经 note 说出差在哪(单源 Domain.landedNote,两端与 digest 同读一份)。 */
+    const D = require('../js/domain.js');
+    const dupSubs = () => [
+      { id: 'dup', name: 'A-首位', kind: 'character' }, { id: 'solo', name: 'B-不重复', kind: 'character' },
+      { id: 'dup', name: 'C-第二位', kind: 'character' }, { id: 'dup', name: 'D-第三位', kind: 'character' },
+    ];
+    const pending = { confirm: true, image: 'i.png', video: { status: 'none' } };
+    const dupRows = () => [
+      makeShot(0, Object.assign({ id: 'dup', plot: '首行' }, pending)),
+      makeShot(1, Object.assign({ id: 'solo', plot: '不重复的那一镜' }, pending)),
+      makeShot(2, Object.assign({ id: 'dup', plot: '第二行' }, pending)),
+      makeShot(3, Object.assign({ id: 'dup', plot: '第三行' }, pending)),
+    ];
+    /* 末轮开跑前别处删掉末位/末行:序数 2 越界,兜底退回首位,两轮共位 */
+    const dropLast = async (cmd, seed, args) => {
+      const sb = loadCli();
+      const fx = cliDisk(sb, cmd === 'subject.generateImage' ? undefined : { shots: dupRows() });
+      if (cmd === 'subject.generateImage') fx.disk.projects[0].subjects = dupSubs();
+      sb.__imgs = [];
+      sb.genImage = async () => { sb.__imgs.push(1); return { url: '/uploads/img/g' + sb.__imgs.length + '.png' }; };
+      sb.genShotVideo = async (proj, epLive, s) => {
+        sb.__genShots.push(s.id);
+        s.video = { status: 'done', url: '/uploads/gen/v' + sb.__genShots.length + '.mp4' };
+        return s;
+      };
+      const origWp = sb.withProject;
+      let round = 0;
+      sb.withProject = async (pid, flags, fn) => {
+        if (seed && ++round === 3) seed(fx);
+        return origWp(pid, flags, fn);
+      };
+      const r = await sb.EXEC[cmd].run(Object.assign({ pid: 'p1', epid: 'ep1' }, args), {});
+      return { r, fx, engine: cmd === 'subject.generateImage' ? sb.__imgs.length : sb.__genShots.length };
+    };
+    // ① 主体侧共位那一趟:引擎 3 次全成功 → ok:3 landed:2,而到手图正是 2 位
+    const s1 = await dropLast('subject.generateImage', fx => {
+      fx.disk.projects[0].subjects = fx.disk.projects[0].subjects.filter(x => x.name !== 'D-第三位');
+    }, { subjectIds: ['dup'] });
+    const gotImg = s1.fx.disk.projects[0].subjects.filter(x => x.image).length;
+    assertEq(s1.engine, 3, '前提:三位都真下发(三笔生图钱)');
+    assertEq(s1.r.result.failed.length, 0, '前提:三次调用都成功,一次也没失败');
+    assertEq(s1.r.result.ok, 3, 'ok 的口径不改:它数的是引擎调用成功次数(计费同口径),不许改成 fail 来凑落库数');
+    assertEq(s1.r.result.landed, gotImg, 'landed 得等于到手图的位数(实测 ' + gotImg + ' 位)');
+    assertEq(s1.r.result.landed, 2, '共位那一趟 landed 是 2:两轮写到了同一位上');
+    assert(/产物只落到 2 位/.test(s1.r.result.note || ''), '两个数岔开时 note 得说清「3 次调用、2 位落库」:' + s1.r.result.note);
+    assert(/多花了 2 位的钱/.test(s1.r.result.note || ''), '原有那句「多花了几位的钱」不许被这句挤掉:' + s1.r.result.note);
+    // ② 镜头侧同形(同一个漏、同一份说法,单位换成"行")
+    const v1 = await dropLast('episode.generateVideos', fx => {
+      fx.epOf().shots = fx.epOf().shots.filter(x => x.plot !== '第三行');
+    }, { shotIds: ['dup'] });
+    const gotVid = v1.fx.epOf().shots.filter(x => x.video && x.video.status === 'done').length;
+    assertEq(v1.engine, 3, '前提:三行都真下发(三笔视频钱)');
+    assertEq(v1.r.result.failed.length, 0, '前提:三次调用都成功');
+    assertEq(v1.r.result.ok, 3, 'ok 同样按引擎调用成功次数报');
+    assertEq(v1.r.result.landed, gotVid, 'landed 得等于出片的行数(实测 ' + gotVid + ' 行)');
+    assert(/产物只落到 2 行/.test(v1.r.result.note || ''), '镜头侧同样得说清「3 次调用、2 行落库」:' + v1.r.result.note);
+    // ③ 没被并发改过的正常一趟:两个数相等,且不多说那一句(相等时重复一遍是废话)
+    const s0 = await dropLast('subject.generateImage', null, { subjectIds: ['dup'] });
+    assertEq(s0.r.result.ok + '/' + s0.r.result.landed, '3/3', '正常一趟 ok 与 landed 相等');
+    assert(!/landed/.test(s0.r.result.note || ''), '相等时不加那句:' + s0.r.result.note);
+    const v0 = await dropLast('episode.generateVideos', null, { shotIds: ['dup'] });
+    assertEq(v0.r.result.ok + '/' + v0.r.result.landed, '3/3', '镜头侧正常一趟同样相等');
+    assert(!/landed/.test(v0.r.result.note || ''), '相等时不加那句:' + v0.r.result.note);
+    // ④ 座位键带 id:点名三个各占一位的不同 id,三位各自到手,landed 不许缩成 1
+    const sbM = loadCli();
+    const fxM = cliDisk(sbM);
+    fxM.disk.projects[0].subjects = [{ id: 'a1', name: 'A', kind: 'character' }, { id: 'a2', name: 'B', kind: 'character' }, { id: 'a3', name: 'C', kind: 'character' }];
+    const rM = await sbM.EXEC['subject.generateImage'].run({ pid: 'p1', subjectIds: ['a1', 'a2', 'a3'] }, {});
+    assertEq(rM.result.ok + '/' + rM.result.landed, '3/3', '三个不同 id 各占一位:座位只按行内序数记会全记成第 0 位、landed 缩成 1');
+    assertEq(rM.result.note, undefined, '正常批量的成功回执一句不加:' + rM.result.note);
+    // ⑤ 一位/一镜也没跑那一路照样带 landed:机器读 result.landed 不该拿到 undefined
+    const sbE = loadCli();
+    cliDisk(sbE);
+    const rE = await sbE.EXEC['subject.generateImage'].run({ pid: 'p1', subjectIds: ['not_here'] }, {});
+    assertEq(rE.result.landed, 0, '空跑回执也得带 landed:0(字段时有时无,调用方就得先判 undefined)');
+    const sbEV = loadCli();
+    cliDisk(sbEV, { shots: [makeShot(0, { confirm: true, image: 'i0.png' })] });
+    const rEV = await sbEV.EXEC['episode.generateVideos'].run({ pid: 'p1', epid: 'ep1' }, {});
+    assertEq(rEV.result.landed, 0, '镜头侧空跑同样带 landed:0');
+    // ⑥ 浏览器那一端:同一份库同一个点名,两端回执的 ok/landed 逐格相同
+    const sbB = loadCommands();
+    sbB.__engine = [];
+    sbB.EpisodeUtil.genSubjectImage = async (p, s) => { sbB.__engine.push(s.id); s.image = '/uploads/img/b' + sbB.__engine.length + '.png'; };
+    const cb = cmdCtx(sbB);
+    cb.p.subjects = dupSubs();
+    const rB = await sbB.Commands.execute('subject.generateImage', { pid: 'p1', ui: true, subjectIds: ['dup'] });
+    assertEq(rB.result.ok + '/' + rB.result.landed, s0.r.result.ok + '/' + s0.r.result.landed,
+      '两端的 ok/landed 得逐格相同,浏览器:' + rB.result.ok + '/' + rB.result.landed);
+    assert(!/landed/.test(rB.result.note || ''), '这一端写的就是循环里那个对象,不会共位,故不说那句:' + rB.result.note);
+    // ⑦ 判词自身:相等或更多一律回空(只在真岔开时开口),非数不硬造句,单位跟着调用方走
+    assertEq(D.landedNote(3, 3, '位'), '', '相等回空');
+    assertEq(D.landedNote(3, 4, '位'), '', '落库比调用还多是不可能的形态,不替它造句');
+    assertEq(D.landedNote(0, 0, '位'), '', '一次都没跑回空');
+    assertEq(D.landedNote(undefined, 2, '位'), '', '非数回空,不报出 NaN');
+    assertEq(D.landedNote(3, null, '行'), '', 'null 不当 0 用(否则空跑那一路会平白多一句)');
+    assert(/2 行/.test(D.landedNote(3, 2, '行')) && !/位/.test(D.landedNote(3, 2, '行')), '单位按调用方给的走,镜头侧不许论起"位"来');
+  } },
   { name: 'CLI exec produce:点名的轮次钳过即落库,下一轮不带入参跑的就是这个次数(单独调 smartReview 那一端仍不写库)', fn: async () => {
     /* 此前这一端只读不写:`exec episode.produce --args '{"maxRetry":4}'` 当轮真跑 4 轮,
      * 磁盘上那份 sbConfig.maxRetry 却还是旧的 1——用户在浏览器打开该集参数面板看到的仍是 1,
@@ -12613,7 +12716,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 667, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 668, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 148, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {

@@ -392,8 +392,11 @@
    * 把它改成 fail 来凑落库数就是拿假失败掩盖真扣费);回执另报 `landed` = 真落到几位,
    * 两个数岔开时把差在哪说出来。相等的正常一趟不说这句(那时 `ok` 就是到手数,重复一遍是废话)。 */
   D.landedNote = function (okCnt, landed, unit) {
-    const o = +okCnt, l = +landed;
-    if (!Number.isFinite(o) || !Number.isFinite(l) || !(l < o)) return '';
+    /* 两个数一律按真数字收:null/undefined 被 + 号折成 0 会在"根本没给这个数"时平白报出一句
+     * 「产物只落到 0 位」,那是调用方漏传,不是落库真丢了 */
+    const num = x => typeof x === 'number' && Number.isFinite(x);
+    const o = okCnt, l = landed;
+    if (!num(o) || !num(l) || !(l < o)) return '';
     const u = unit === '行' ? '行' : '位';
     return '这一趟 ' + o + ' 次调用成功,产物只落到 ' + l + ' ' + u + '(landed):同 id 的多轮写到了同一' + u + '上,'
       + '后一轮的产物盖掉了前一轮的——跑到一半别处改了表、本轮序数越界退回首' + u + '时会这样。'
