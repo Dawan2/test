@@ -1602,7 +1602,18 @@ function wfMockOut(kind, opt) {
   if (kind === 'shotReview') return { score: 8.2, dimensions: { technical: { score: 8, comment: 'mock 技术评语', suggestion: 'mock 建议' }, matching: { score: 8, comment: 'mock 匹配评语', suggestion: 'mock 建议' }, directing: { score: 8, comment: 'mock 导演评语', suggestion: 'mock 建议' } }, issues: [] };
   if (kind === 'sum') return { summary: 'mock 整集总评', issues: [] };
   if (kind === 'cut') return { natural: { score: 8, comment: 'mock' }, continuity: { score: 8, comment: 'mock' }, framing: { score: 8, comment: 'mock' }, pacing: { score: 8, comment: 'mock' }, overall: 'mock 整集剪辑总评' };
-  if (kind === 'agent') return { reply: 'mock 回复:当前状态已同步,建议按工作台状态推进下一步。', thinking: 'mock 思考', ops: [] };
+  /* agent mock:罐头回复 + 按指令原文里点名的领域命令出 run 类 ops(命令名后可跟内联 JSON 当 args)——
+   * ops 通道(白名单过滤 / 人手动作拦截)本来在 MOCK_LLM 下测不到,罐头恒空 ops 时怎么改都是绿的 */
+  if (kind === 'agent') {
+    const t = String((opt && opt.mockText) || '');
+    const ops = CmdRegistry.names().filter(n => t.includes(n)).map(n => {
+      const m = t.match(new RegExp(n.replace(/\./g, '\\.') + '\\s*(\\{[^{}]*\\})'));
+      let args = {};
+      try { args = m ? JSON.parse(m[1]) : {}; } catch (_) {}
+      return { op: 'run', cmd: n, args };
+    });
+    return { reply: 'mock 回复:当前状态已同步,建议按工作台状态推进下一步。', thinking: 'mock 思考', ops };
+  }
   if (kind === 'evolve') return { clauses: ['mock 条款:先定人物关系再定形象'] };
   if (kind === 'extract') return {
     characters: [{ name: '林晚晴', aliases: ['晚晴'], description: 'mock 女主', prompt: 'mock 人物提示词', persona: { 五官: 'mock', 性格: 'mock' } }],
@@ -3697,6 +3708,8 @@ const server = http.createServer(async (req, res) => {
     /* Agent 单轮对话(服务端管线):{pid,epid?,text,scope?} → 拼装注入(KB/专家 persona/协作记忆/状态摘要)
      * → wfLLM(llm.agent,失败退费) → 规整 {reply,thinking,ops,receipts}。
      * ops 只解析不执行(run 类命令白名单过滤,调用方按需走 hujing exec / Commands.execute 执行并各自计费);
+     * 但调用方(CLI agent --apply / MCP hujing_agent apply)是逐条直跑、中间没有确认闸的自动发令路径,
+     * 故人手动作命令(注册表 manual 位)在 agentNormalize 就不进 ops,被拦的命令名如实回 manual 由调用方转告用户;
      * 浏览器工作台面板仍走 agent.js 原路径(数据类 ops/预览确认/冲突闸是工作台语义,本端点面向 CLI/MCP/外部编排)。 */
     if (pathname === '/api/wf/agent' && req.method === 'POST') {
       if (!CONFIG.apiKey && !(process.env.MOCK_LLM === '1' || CONFIG.mockLlm)) return fail(res, 503, '服务端未配置 LLM key,请创建 config.json 并填入 apiKey', 503);
@@ -3728,11 +3741,11 @@ const server = http.createServer(async (req, res) => {
             shotsText: ep ? WfCore.agentShotsBrief(ep) : '',
             text,
           }),
-          temperature: 0.4, max_tokens: 2500, projectId: p.id, mockKind: 'agent',
+          temperature: 0.4, max_tokens: 2500, projectId: p.id, mockKind: 'agent', mockText: text,
         });
         const out = WfCore.agentNormalize(r.parsed, CmdRegistry.byName);
         return ok(res, {
-          reply: out.reply, thinking: out.thinking, ops: out.ops,
+          reply: out.reply, thinking: out.thinking, ops: out.ops, manual: out.manual,
           receipts: [{ action: 'llm.agent', opId, step: 'main', model: r.model || 'mock-llm', cached: !!r.cached, mock: !!r.mock }],
         });
       } catch (e) {

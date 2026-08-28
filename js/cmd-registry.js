@@ -80,8 +80,11 @@
     },
     {
       /* 专家自进化:作用在「专家」这个对象上而不在某个项目上,故 needs 为空(不吃 pid/epid)——
-       * 四端唯一一条项目外的领域命令。它是**人手**动作:不挂在任何主线闭环收尾上,也不进 SK-26 的 playbook 步序。 */
-      name: 'expert.evolve', label: '专家自进化', risk: 'exec', needs: [],
+       * 四端唯一一条项目外的领域命令。它是**人手**动作:不挂在任何主线闭环收尾上,也不进 SK-26 的 playbook 步序。
+       * manual:人手动作位——助手自动发令路径(/api/wf/agent 出的 ops、浏览器自修复轮的重试)一律不得跑它,
+       * 人手入口(专家库「🧠 进化」按钮 / CLI exec / MCP hujing_expert_evolve)照旧。蒸馏改写 persona 无撤回口,
+       * 得由人明确要它才发生;判据 WfCore.cmdManual 双端同读本位,不在别处再列一份人手命令名单。 */
+      name: 'expert.evolve', label: '专家自进化', risk: 'exec', needs: [], manual: true,
       desc: '把导演助手记忆里该专家生效板块的沉淀蒸馏为 ≤4 条进化条款追加进其 persona(1 积分,失败退费);预置专家的条款落自定义副本(同一预置只派生一份)。未在任何板块生效或该板块无沉淀一律在扣费前如实 blocked',
       args: [{ name: 'expert', type: 'string', required: true, desc: '专家 id 或名称(预置 ex_* 或自定义 cx_*)' }, UI],
     },

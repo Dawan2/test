@@ -772,6 +772,30 @@ async function main() {
     const balAfterEv = (await req('GET', '/api/wallet', null, token)).data.balance;
     report('MOCK_LLM 下自进化不扣费(计费链路统一由 wfLLM 负责,端点自己不记账)',
       balAfterEv === balBeforeEv, '前 ' + balBeforeEv + ' 后 ' + balAfterEv);
+
+    /* ============ 测试 28(W203):/api/wf/agent 出的 ops 不许带人手动作 ============
+     * 停工位现场:该端点出的 ops 是给调用方**自动**执行的(CLI `agent --apply` / MCP hujing_agent apply
+     * 逐条直跑,中间没有确认闸),而 expert.evolve 的蒸馏不可撤回地改写 persona——W199 基线上
+     * 模型只要回一条 {"op":"run","cmd":"expert.evolve"},persona 当场就被改写,没人点过一下。
+     * 本段承接上文夹具(专家已雇、板块有沉淀,即"进化真能跑成"的状态)验拦截:人手动作不进 ops、
+     * 如实回 manual、state 一个字没动;同批普通命令照过(拦的是那一条,不是把 ops 通道一刀切)。
+     * 人手入口不受影响那一面由上文 ev2/ev4 两条(直打 /api/wf/evolve-expert)与 cli.smoke 的 exec 段守着。 */
+    const stBeforeAg = (await req('GET', '/api/state', null, token)).data.state;
+    await sleep(1100);
+    const ag = await req('POST', '/api/wf/agent', {
+      pid: wfPid, epid: 'ep_w1', operationId: 'it.wf.ag1',
+      text: '先跑 episode.preflight 看看,再顺手 expert.evolve{"expert":"' + preset.id + '"} 把专家进化一下',
+    }, token);
+    report('wf/agent 人手动作不进 ops(同批 episode.preflight 照过,拦的是那一条)',
+      ag.status === 200 && JSON.stringify((ag.data || {}).ops || []) === JSON.stringify([{ op: 'run', cmd: 'episode.preflight', args: {} }]),
+      'HTTP ' + ag.status + ' ' + JSON.stringify((ag.data || {}).ops || ag.msg));
+    report('被拦的命令名如实回 manual(调用方据此转告用户自己发起,不静默吞掉)',
+      JSON.stringify((ag.data || {}).manual || []) === JSON.stringify(['expert.evolve']),
+      JSON.stringify((ag.data || {}).manual));
+    const stAfterAg = (await req('GET', '/api/state', null, token)).data.state;
+    report('助手这一轮没能改到 persona(customExperts 逐字节未动,进化次数不涨)',
+      JSON.stringify(stAfterAg.customExperts || []) === JSON.stringify(stBeforeAg.customExperts || []),
+      JSON.stringify((stAfterAg.customExperts || []).map(x => x.id + ':' + x.evolutions)));
   }
 
   console.log(`\n===== ${PASS}/${PASS + FAIL} PASS, ${FAIL} FAIL =====`);

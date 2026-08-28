@@ -112,7 +112,7 @@
   /* ---- 回执回喂自修复轮(二十轮;settings.agentSelfFix 开关,二十二轮起默认开——step:'fix' 辅助槽位本就不另扣费) ----
    * run 类命令的执行回执不再只拼进聊天文案:含失败(✕)/不支持(⊘)项时,回执作为新上下文追加一轮
    * 「核验/修复」调用——模型归因并可输出两类修复:数据类 ops(update/insert/move/batch/beatupdate/sceneupdate)
-   * 与「重试同一个失败命令」的 run 重试(白名单=回执中失败过的命令,同 opId 幂等,服务端防双扣;最多 2 轮转人工);
+   * 与「重试同一个失败命令」的 run 重试(白名单=回执中失败过的命令,人手动作除外,同 opId 幂等,服务端防双扣;最多 2 轮转人工);
    * 修复直接自动执行(沿用本条消息的 undo 快照,verifyOps 回读校验,与自动执行同纪律);
    * 计费复用本条消息的 operationId(step:'fix' 辅助步骤槽位,九轮状态机:辅助步不交付 operation,不另扣费)。
    * 返回追加进聊天文案的摘要;无修复动作/异常/离线均返回 ''(静默降级,不影响主流程)。 */
@@ -140,7 +140,7 @@
     const all = Array.isArray(out.ops) ? out.ops.filter(o => o && o.op) : [];
     const sp = splitOps(all);
     const fixes = sp.data;
-    /* run 重试白名单:仅允许回执中失败过的命令(防自修复轮发起新动作/执行循环) */
+    /* run 重试白名单:仅允许回执中失败过的命令(防自修复轮发起新动作/执行循环);人手动作另在下面拦掉 */
     const retrySet = new Set();
     failed.forEach(x => {
       const m = String(x).match(/▶\s*([^:：]+)[:：]/);
@@ -149,9 +149,15 @@
       const cmd = (window.Commands && Commands.list && Commands.list().some(c => c.name === t)) ? t : ACT_CMD[t];
       if (cmd) retrySet.add(cmd);
     });
-    const retries = sp.acts
-      .filter(o => o.op === 'run' && retrySet.has(String(o.cmd || '').trim() || ACT_CMD[String(o.action || '').trim()] || ''))
-      .slice(0, 2);
+    /* 人手动作(注册表 manual 位,判据 WfCore.cmdManual 双端同读)不进自动重发:
+     * 主路的 exec 类动作有 U.confirm 把关,自修复轮却是回执回喂后直接发令的自动路径——
+     * 人点过一次「确认执行」不等于授权这里再自动发第二次(如专家自进化,蒸馏改写 persona 无撤回口)。
+     * 被拦的照实写进摘要交还用户,不静默吞掉。 */
+    const cmdOf = o => String(o.cmd || '').trim() || ACT_CMD[String(o.action || '').trim()] || '';
+    const isManual = cmd => WfCore.cmdManual((typeof CmdRegistry !== 'undefined' && CmdRegistry.byName) || null, cmd);
+    const wanted = sp.acts.filter(o => o.op === 'run' && retrySet.has(cmdOf(o)));
+    const manualWanted = wanted.map(cmdOf).filter((c, i, a) => isManual(c) && a.indexOf(c) === i);
+    const retries = wanted.filter(o => !isManual(cmdOf(o))).slice(0, 2);
     let note = '';
     if (fixes.length) {
       // 沿用本条消息已有 undo 快照(不覆盖——一次「↩ 撤销」回滚含自修复在内的全部改动)
@@ -164,6 +170,7 @@
         note = `\n(🩹 自修复:已自动修复 ${fixes.length} 项——${changes.slice(0, 2).join(';').slice(0, 60)}${vf ? ' ' + verifyNote(vf) : ''},可点「↩ 撤销」回滚)`;
       } catch (_) { note = '\n(🩹 自修复:修复方案应用失败,未做改动)'; }
     }
+    if (manualWanted.length) note += `\n(🩹 自修复:${manualWanted.join('、')} 是人手动作,不自动重发——需要的话请你自己再发起一次)`;
     if (retries.length) {
       const rr = await runEpisodeActions(p, ep, retries, main);
       note += '\n(🩹 自修复重试:' + rr.join(';') + ')';

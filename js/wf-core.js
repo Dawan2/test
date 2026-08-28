@@ -820,6 +820,12 @@ ${JSON.stringify(brief)}`;
    * 服务端拼装对话注入(KB/专家 persona/协作记忆/状态摘要)→ LLM → 解析 run 类 ops;
    * 浏览器面板仍走 agent.js 原路径(数据类 ops/预览确认/冲突闸是浏览器工作台语义),
    * 本组函数供服务端端点与 CLI `agent`/MCP hujing_agent 消费;命令词表经参数注入(cmd-registry 单源)。 */
+  /* 人手动作判据(双端唯一一份):注册表条目带 manual 位即「只能由人明确发起」——
+   * 助手自动发令的两条路(服务端单轮 agentNormalize 出的 ops、浏览器自修复轮的重试)都读这里,
+   * 不各自维护一份命令名单;人手入口(按钮/exec/MCP 同名工具)不经本判据,一律照旧。 */
+  W.cmdManual = function (byName, cmd) {
+    return !!(((byName || {})[String(cmd || '').trim()]) || {}).manual;
+  };
   /* run 类命令协议文本(浏览器 AgentOps.cmdProtocol 委托本函数,数据源各端自取:Commands.list()/CmdRegistry.META) */
   W.agentCmdProtocol = function (metaList) {
     const T = { boolean: 'bool', number: '数字', string: '文本', array: '数组' };
@@ -828,7 +834,8 @@ ${JSON.stringify(brief)}`;
       const at = args.length
         ? args.map(a => `"${a.name}":${T[a.type] || a.type}${a.required ? '(必填)' : ''}${a.desc ? '—' + a.desc : ''}`).join(' ')
         : '无参数';
-      return `· ${c.name}(${c.label}${c.risk === 'read' ? ',只读' : ''}): ${at}`;
+      // 人手动作照实标出:模型据此不再把它当可自动发起的一步(真发了也会被 agentNormalize 拦下,此处省一轮空转)
+      return `· ${c.name}(${c.label}${c.risk === 'read' ? ',只读' : ''}${c.manual ? ',人手动作:只能由用户自己发起,不要输出为 ops' : ''}): ${at}`;
     }).join('\n');
   };
   /* run 类 op 参数白名单与类型整形(meta=注册表条目):未声明的键丢弃,防模型幻觉参数污染执行/计费 */
@@ -904,14 +911,24 @@ ${ctx.cmdText || '(无可用命令)'}
     return `${ctx.stateText ? ctx.stateText + '\n' : ''}${ctx.scriptBrief ? '剧本摘要:' + ctx.scriptBrief + '\n' : ''}${ctx.shotsText ? '当前分镜表:\n' + ctx.shotsText + '\n' : ''}
 用户指令:${ctx.text}`;
   };
-  /* 单轮结果规整:reply 兜底 + ops 白名单过滤(仅 run 类且 cmd 在注册表词表内,args 经 sanitizeCmdArgs 整形,≤5 条) */
+  /* 单轮结果规整:reply 兜底 + ops 白名单过滤(仅 run 类且 cmd 在注册表词表内,args 经 sanitizeCmdArgs 整形,≤5 条)。
+   * 人手动作(manual)不进 ops:本端点出的 ops 是给调用方自动执行的(CLI agent --apply / MCP hujing_agent apply
+   * 逐条直跑,中间没有确认闸),而 manual 命令要人自己发起,故在此就拦下,并把被拦的命令名如实回 manual——
+   * 调用方据此照实告诉用户「这一步得你自己来」,不静默吞掉;人手入口(exec/按钮/MCP 同名工具)不经本函数。 */
   W.agentNormalize = function (out, byName) {
     out = out || {};
+    const manual = [];
     const ops = (Array.isArray(out.ops) ? out.ops : [])
       .filter(o => o && o.op === 'run' && byName[String(o.cmd || '').trim()])
       .slice(0, 5)
+      .filter(o => {
+        const cmd = String(o.cmd).trim();
+        if (!W.cmdManual(byName, cmd)) return true;
+        if (manual.indexOf(cmd) < 0) manual.push(cmd);
+        return false;
+      })
       .map(o => { const cmd = String(o.cmd).trim(); return { op: 'run', cmd, args: W.sanitizeCmdArgs(byName[cmd], o.args) }; });
-    return { reply: String(out.reply || '').trim() || '(助手无回复内容)', thinking: String(out.thinking || ''), ops };
+    return { reply: String(out.reply || '').trim() || '(助手无回复内容)', thinking: String(out.thinking || ''), ops, manual };
   };
 
   /* ================= LLM 主体提取(自 episode-util.js 下沉) =================
