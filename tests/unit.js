@@ -7135,7 +7135,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 491, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 492, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 130, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -7144,6 +7144,35 @@ action 二选一:
       assert(docs.length, label + '用例数:README.md 找不到该数字表述(下限这一层不许靠删掉那句话绕过)');
       docs.forEach(n => assert(n >= floor,
         label + '用例数:README.md 写的 ' + n + ' 低于下限 ' + floor + '(把文档数字改小来迁就删测即红)'));
+    });
+  } },
+  { name: '棘轮下限不得静默落后实况:四条 FLOOR 与 live 的差额有上限(加测不抬下限、把下限改小都红在这里)', fn() {
+    /* 上一条与记账件份数那条钉的都是 `live >= floor`,这个方向只拦"往下走"、拦不住"停在原地":
+     * 加了用例不抬 FLOOR,下限就静默停在旧水位(某一槽加 6 条只抬了记账件那格,单元那格从 480 松到 486 一条不红);
+     * 反过来把 FLOOR 字面改小而一条用例都没删,同样全绿。两种改法落到同一个后果——
+     * 下限守的水位低于实况,那段差额里的用例删起来只剩文档数字一道守卫,棘轮形同虚设。
+     * 判据不取 `live === floor`:那会让每加一条用例都必须同轮改这个字面,等于再造一个要人工同步的数
+     * (`>=` 当年正是为避开这一点才这么写的)。这里钉的是**差额本身有上限**:下限允许落后,
+     * 但不得落后超过 SLACK 格——差额就是"能被静默删掉的条数",今天它无界,本条把它钉成 SLACK。
+     * 常规加测槽(一轮 1–3 条)照旧不必动那些字面,连着几槽不抬、一槽加 4 条以上不抬、或把下限调小都当场红。
+     * 四个 FLOOR 字面现取自本文件源码:取不到即红,挪窝或改名都得同轮改这里,不许把本条留成恒真。 */
+    const SLACK = 3;
+    const self = fs.readFileSync(__filename, 'utf8');
+    const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
+    const live = {
+      '单元测试': Object.values(SUITES).reduce((n, t) => n + t.length, 0),
+      '集成测试': reportLines('tests/integration.js'),
+      'CLI 冒烟': reportLines('tests/cli.smoke.js'),
+      '记账件份数': fs.readdirSync(path.join(ROOT, 'docs', 'skills-wave')).filter(f => /^w\d+-.+\.md$/.test(f)).length,
+    };
+    const floors = [...self.matchAll(/\['(单元测试|集成测试|CLI 冒烟)', (\d+),/g)].map(m => [m[1], +m[2]]);
+    assertEq(floors.length, 3, '三套件棘轮那条的 FLOOR 字面取不到(改了那张表的形状就同轮改这里,别把本条留成恒真)');
+    const ledger = [...self.matchAll(/^ *const FLOOR = (\d+);$/gm)];
+    assertEq(ledger.length, 1, '记账件份数那条的 FLOOR 字面取不到(同上)');
+    floors.concat([['记账件份数', +ledger[0][1]]]).forEach(([label, floor]) => {
+      assert(live[label] - floor <= SLACK, label + ':下限 ' + floor + ' 落后实测 ' + live[label] + ' 共 ' +
+        (live[label] - floor) + ' 格(上限 ' + SLACK + ' 格);加了用例/记账件就把那个 FLOOR 字面抬到当轮实况,' +
+        '把它改小同样红在这里——这个差额就是能被静默删掉的条数');
     });
   } },
   { name: '集成/冒烟用例名各自唯一:名集大小恰等于 report(...) 登记行数(与单元那条同形)', fn() {
@@ -7242,7 +7271,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 145;
+    const FLOOR = 146;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
