@@ -247,9 +247,11 @@
   /* ================= 智能审片闭环(自 storyboard.js 迁入量产域) ================= */
   /* 生成后逐镜评审,不达标自动重生成,最多 maxRetry 次(审片 COST.review/镜,重生成 COST.video/次)
    * 次数口径取 Domain.reviseRetryLimit 双端单源(1-5,默认 2),与命令层/CLI produce 同一份,不在本处另钳;
+   * 候选按优先级两档:调用方点名的轮次(命令层 episode.smartReview 的 args.maxRetry)→ 分集配置那份,
+   * 择先与钳位一律由 Domain 那一份判,本处不兜缺省——批量生成那一路不点名,自然落到分集配置档;
    * 非模态:进度走右侧后台侧边栏(可最小化/可中止),页面全程可操作 */
-  async function autoSmartReview(p, ep, main, shots, quiet) {
-    const maxRetry = Domain.reviseRetryLimit(ep.sbConfig.maxRetry);
+  async function autoSmartReview(p, ep, main, shots, quiet, maxRetryArg) {
+    const maxRetry = Domain.reviseRetryLimit(maxRetryArg, ep.sbConfig.maxRetry);
     const targets = (shots || ep.shots).filter(s => s.video && Store.shotVideoReady(s) && !s.final);
     if (!targets.length) return { pass: 0, retry: 0, manual: 0 };
     const dock = quiet ? null : U.bgDock({ title: `🧠 智能审片 · ${ep.title}(${targets.length} 镜)` });

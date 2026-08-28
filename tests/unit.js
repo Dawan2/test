@@ -1749,6 +1749,55 @@ const produceTests = [
     assertEq(sb.__confirms.length, 1, '应先弹确认');
     assertEq(sb.__called.filter(c => c !== 'reviewShot').length, 0, '拒绝后不应执行生成/合成');
   } },
+  { name: 'episode.smartReview 单独调用:收敛轮次吃 args.maxRetry(候选 入参→分集配置,钳位归 Domain,入参不落库)', fn: async () => {
+    /* 闭环本来就有重抽循环,喂给 Domain.reviseRetryLimit 的候选却只有分集配置那一档:
+     * 单独调 episode.smartReview 时点名的轮次一路被丢掉(sbConfig=1 时传 4 照旧只重抽 1 轮),
+     * 而一键成片之所以看着"吃到了",靠的是它先把入参写回 ep.sbConfig ——
+     * 入参靠改库传参,单独调用这一路就没人替它写。候选补齐后两路同走一条漏斗。 */
+    const runReview = async (cfgMaxRetry, argMaxRetry) => {
+      const sb = loadProduce();
+      const ep = makeEp({ content: '测试剧本正文', composed: false, shots: [makeShot(0)], sbConfig: { maxRetry: cfgMaxRetry } });
+      sb.__proj = { id: 'p1', episodes: [ep], subjects: [{ id: 'sub1', name: '主角', kind: 'character', image: 'x.png' }] };
+      sb.__reviewSeq = { sh0: [5, 5, 5, 5, 5, 5, 5, 5] }; // 恒不达标:重抽次数直接读得出轮次上限
+      const args = { pid: 'p1', epid: 'ep1', quiet: true };
+      if (argMaxRetry !== undefined) args.maxRetry = argMaxRetry;
+      const r = await sb.Commands.execute('episode.smartReview', args);
+      return { retry: r.result.retry, manual: r.result.manual, status: r.status, cfgAfter: ep.sbConfig.maxRetry };
+    };
+    const named = await runReview(1, 4);
+    assertEq(named.retry, 4, '入参点名的轮次应直达闭环(此前恒按分集配置那份的 1 轮)');
+    assertEq(named.manual, 1, '超限仍如实转人工(质量闸门据此阻断合成)');
+    assertEq(named.status, 'needs_human', '待人工镜仍出 needs_human,轮次候选补齐不改闸门语义');
+    assertEq(named.cfgAfter, 1, '单独调用点名的轮次只本次生效,不许顺手改写分集配置');
+    assertEq((await runReview(1, 9)).retry, sb0Max(), '越界入参按 Domain 登记上限钳,不按入参烧钱');
+    assertEq((await runReview(1, '3')).retry, 3, '字符串数字照读(CLI --args / dataset 都可能给字符串)');
+    assertEq((await runReview(2)).retry, 2, '入参缺位时落回分集配置那一档');
+    assertEq((await runReview(4, 0)).retry, 4, '入参 0 读不出轮次,应落到下一候选而不是与缺省并档(并档的话这里是 2)');
+    function sb0Max() { return require('../js/domain.js').REVISE_RETRY_MAX; }
+  } },
+  { name: 'episode.smartReview 与 episode.produce 的审片子步骤同一处漏斗:同一份入参两路轮次逐字相同', fn: async () => {
+    /* 两路都经命令层 episode.smartReview 进闭环,分歧只在"入参怎么到 Domain":
+     * 编排那一路先把入参钳过写回 ep.sbConfig(那份落库是有意的,配置面板下次打开读得到),
+     * 单独调用这一路靠候选链。同一份入参两路得出同一个轮次,才谈得上是一处漏斗;
+     * 哪天有人把候选链摘掉,单独调用那一路当场掉回分集配置那份,本条先红。 */
+    const mkSb = () => {
+      const sb = loadProduce();
+      const ep = makeEp({ content: '测试剧本正文', composed: false, shots: [makeShot(0, { confirm: true })], sbConfig: { maxRetry: 1 } });
+      sb.__proj = { id: 'p1', episodes: [ep], subjects: [{ id: 'sub1', name: '主角', kind: 'character', image: 'x.png' }] };
+      sb.__reviewSeq = { sh0: [5, 5, 5, 5, 5, 5, 5, 5] };
+      return { sb, ep };
+    };
+    const solo = mkSb();
+    const rSolo = await solo.sb.Commands.execute('episode.smartReview', { pid: 'p1', epid: 'ep1', quiet: true, maxRetry: 4 });
+    const orch = mkSb();
+    const rOrch = await orch.sb.Commands.execute('episode.produce', { pid: 'p1', epid: 'ep1', maxRetry: 4, riskyCompose: true });
+    const rv = (rOrch.result.steps || []).find(x => x.step === 'smartReview');
+    assert(rv && rv.result, '一键成片应留下 smartReview 步骤回执');
+    assertEq(rSolo.result.retry, 4, '单独调用按入参重抽 4 轮');
+    assertEq(rv.result.retry, rSolo.result.retry, '编排那一路的轮次须与单独调用逐字相同(对不上即两套入口)');
+    assertEq(orch.ep.sbConfig.maxRetry, 4, '编排那一路照旧把钳过的轮次落库(配置面板下次读得到),这一面不变');
+    assertEq(solo.ep.sbConfig.maxRetry, 1, '单独调用那一路不落库:两路轮次一致不是靠单独调用也去改库换来的');
+  } },
 ];
 
 /* ================= 套件 3.5:commands.js(统一领域命令注册表,第二阶段) ================= */
@@ -2386,6 +2435,31 @@ const commandsTests = [
       '整集这一路的实话与点名那一路分得开,实际:' + JSON.stringify(gen.result.note));
     assert(new RegExp(ep.shots.length + ' 镜已出片').test(gen.result.note), '数得对上本集镜数,实际:' + gen.result.note);
     assert(sb.__called.includes('composeVideo'), '合成照做');
+  } },
+  { name: 'CLI exec smartReview:单独调用只评一次(重抽循环只在 produce 编排里),故注册表不替它登记 maxRetry', fn: async () => {
+    /* 浏览器那一端 episode.smartReview 自己带重抽循环,轮次入参有落点;headless 这一端不是同一形态——
+     * 它是一次 /api/wf/smart-review 往返,重抽循环长在 produce 编排里。故 --args '{"maxRetry":5}'
+     * 在这一端没有任何落点。注册表是双端共享的那份元数据:给 smartReview 登记 maxRetry 就等于
+     * 让 CLI 用法清单宣称吃一个它静默忽略的参数。哪天这一端也补上重抽循环,本条先红,提醒同轮登记。 */
+    const sb = loadCli();
+    cliCtx(sb, [makeShot(0, { confirm: true, image: 'i0.png' })]);
+    const posts = [];
+    sb.api = async (method, url, payload) => {
+      posts.push({ method, url, payload: payload || {} });
+      return { rev: 1, avg: 5, reviewed: 1, failed: [], lowShots: [{ shotId: 'sh0', order: 1, score: 5, fixes: '' }], common: null, cut: null };
+    };
+    const r = await sb.EXEC['episode.smartReview'].run({ pid: 'p1', epid: 'ep1', maxRetry: 5 }, {});
+    assertEq(r.ok, true, '实际:' + JSON.stringify(r.error || {}));
+    assertEq(posts.length, 1, '单独调用只评一次:轮次入参在这一端没有落点(有循环了就是另一回事)');
+    assertEq(posts[0].url, '/api/wf/smart-review');
+    assert(!('maxRetry' in posts[0].payload), '轮次入参不许糊进端点载荷冒充"传下去了"');
+    const R = require('../js/cmd-registry.js');
+    const argNames = c => (R.byName[c].args || []).map(a => a.name);
+    assert(argNames('episode.smartReview').indexOf('maxRetry') < 0, '这一端没有落点,注册表就不许替 smartReview 登记 maxRetry');
+    assert(argNames('episode.produce').indexOf('maxRetry') >= 0, '有落点的那条(produce 两端都有轮次循环)照旧登记');
+    const WfCore = require('../js/wf-core.js');
+    assertEq(JSON.stringify(WfCore.sanitizeCmdArgs(R.byName['episode.smartReview'], { maxRetry: 5 })), '{}',
+      'Agent 侧按注册表整形:没登记的参数一律抹掉(登记面与实况对不上时,这里就是那道静默的口子)');
   } },
   { name: 'generateStoryboard:headless hooks.quiet=true,ui 模式 quiet=false(决策弹窗归 UI)', fn: async () => {
     const sb = loadCommands();
@@ -10052,7 +10126,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 598, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 601, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 143, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 108, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -10387,7 +10461,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 209;
+    const FLOOR = 210;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接

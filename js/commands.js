@@ -161,13 +161,15 @@
   }));
 
   /* 智能审片(exec):autoSmartReview 闭环(不达标先修订提示词再重抽);manual>0 → needs_human;
-   * ui 模式 quiet=false(后台面板可视),headless 默认 quiet */
+   * ui 模式 quiet=false(后台面板可视),headless 默认 quiet;
+   * 收敛轮次 args.maxRetry 直接进闭环的候选链(入参 → 分集配置,择先与钳位归 Domain 单源):
+   * 一键成片编排与单独调用共用这一处漏斗,入参靠这条路生效而不是靠先改写分集配置 */
   reg('episode.smartReview', { label: '智能审片' }, ({ p, ep, args }) => metered(REG['episode.smartReview'], async () => {
     if (!window.Review || !window.SB || !SB.autoSmartReview) return fail('unavailable', '审片模块未加载');
     ensureSBCfg(p, ep);
     // shotIds 子集复审(与 CLI/服务端同参):修订重抽后只复检指定镜
     const shots = Array.isArray(args.shotIds) && args.shotIds.length ? (ep.shots || []).filter(s => args.shotIds.includes(s.id)) : ep.shots;
-    const r = await SB.autoSmartReview(p, ep, sinkOf(args), shots, args.ui ? false : args.quiet !== false);
+    const r = await SB.autoSmartReview(p, ep, sinkOf(args), shots, args.ui ? false : args.quiet !== false, args.maxRetry);
     const out = ok(r);
     if (r && r.manual > 0) out.status = 'needs_human'; // 待人工镜头:质量闸门语义,produce/跑批据此阻断合成
     out.next = nextOf(p, ep);
