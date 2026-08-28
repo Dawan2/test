@@ -637,16 +637,29 @@
    * 与当前分镜表取交集(报告写下之后被删掉的镜不出面),已定稿镜不出面(定稿不重抽,与可审镜口径一致)。
    * 报告判旧(reviewStaleByScript)一律回空:旧分不驱动重抽,与发布门 G3「视为未审」同口径。
    * order 取当前分镜表实位(1 起)而非报告里记的旧位,顺序按实位;编排层与展示层都读这一份,
-   * 调用方不再各自攒一份会与分镜表漂移的名单。 */
+   * 调用方不再各自攒一份会与分镜表漂移的名单。
+   * 同 id 多行时逐条落到自己那一行(nth = 第几条同 id 的逐镜分 = 第几行同 id,序数口径同 CLI 的 nthShot):
+   * 整集审片是按行出报告的,perShot 上同 id 有几条就是几行各自的分与 reportId;
+   * 全用 findIndex 首行会让这几条一律指向首行——展示上几镜都报"镜 1",
+   * 回写侧(CLI produce 修订)则是几笔优化钱全改首行那一句提示词,后几行的低分片子照旧没人动。
+   * 序数在整份 perShot 上数、不在低分子集上数:只数低分那几条会在"首行达标被筛掉"时整体错位。
+   * 同 id 的行不够数时退回首行(与 nthShot 的越界口径逐字相同)。 */
   D.reviseTargets = function (ep) {
     if (!ep || !ep.lastReview || D.reviewStaleByScript(ep)) return [];
     const shots = ep.shots || [];
+    const rowsOf = Object.create(null); // id → 该 id 各行的实位下标
+    shots.forEach((s, i) => { (rowsOf[s.id] = rowsOf[s.id] || []).push(i); });
+    const seen = Object.create(null);
     return (ep.lastReview.perShot || [])
-      .filter(x => x && typeof x.score === 'number' && x.score < D.REVIEW_MIN)
-      .map(x => ({ x, i: shots.findIndex(s => s.id === x.shotId) }))
+      .map(x => {
+        const nth = (seen[x && x.shotId] = (seen[x && x.shotId] || 0) + 1) - 1;
+        const rows = (x && rowsOf[x.shotId]) || [];
+        return { x, nth, i: rows.length ? (rows[nth] !== undefined ? rows[nth] : rows[0]) : -1 };
+      })
+      .filter(t => t.x && typeof t.x.score === 'number' && t.x.score < D.REVIEW_MIN)
       .filter(t => t.i >= 0 && !shots[t.i].final)
       .sort((a, b) => a.i - b.i)
-      .map(t => ({ shotId: t.x.shotId, order: t.i + 1, score: t.x.score, reportId: t.x.reportId || '' }));
+      .map(t => ({ shotId: t.x.shotId, order: t.i + 1, score: t.x.score, reportId: t.x.reportId || '', nth: t.nth }));
   };
   /* 修订循环重抽子集参数:episode.generateVideos / episode.smartReview 的 shotIds 由本函数派生 */
   D.reviseShotIds = ep => D.reviseTargets(ep).map(t => t.shotId);

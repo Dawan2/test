@@ -1229,6 +1229,10 @@ async function reviseTargets(args, f) {
 
 /* produce 闭环辅助:按审片意见逐镜修订提示词(重写模板 wf-core 单源,计费 llm.optimize;LLM 失败回退
  * 本地规则,无修正意见沿用原提示词),并重置视频态+确认(供 shotIds 子集重抽)。
+ * 同 id 多行时改的是本轮那一行(nth 随重抽面带下来,序数口径同 nthShot):
+ * 整集审片按行出报告,同 id 几行就有几条低分各带各自的意见——一律 findShot 首行等于
+ * 几笔优化钱全改首行那一句提示词、只重置首行的视频态,后几行的低分片子既没按自己那份意见改词
+ * 也没被重抽,下一轮照旧低分,轮次烧完止于 needs_human 而每轮的钱都真扣了。
  * 单镜异常跳过如实回执;积分不足(402)整轮中止向外抛,不逐镜空烧 */
 async function reviseLowShots(args, f, low) {
   const okIds = [], failedFix = [];
@@ -1238,7 +1242,8 @@ async function reviseLowShots(args, f, low) {
   const ov = (state.settings || {}).promptOverrides; // Node 侧无 window,覆盖表须显式传入
   for (const x of low) {
     try {
-      const s = ep0 && (ep0.shots || []).find(sh => sh.id === x.shotId);
+      const rows = ep0 ? (ep0.shots || []).filter(sh => sh.id === x.shotId) : [];
+      const s = rows[x.nth || 0] !== undefined ? rows[x.nth || 0] : rows[0]; // 越界退回首行,同 nthShot
       if (!s) { failedFix.push({ shotId: x.shotId, error: '镜头不存在' }); continue; }
       let newPrompt = '', changes = '';
       if (x.fixes) {
@@ -1257,7 +1262,7 @@ async function reviseLowShots(args, f, low) {
         }
       }
       await withProject(args.pid, f, projLive => {
-        const sL = findShot(findEp(projLive, args.epid), x.shotId);
+        const sL = nthShot(findEp(projLive, args.epid), x.shotId, x.nth || 0);
         if (newPrompt && newPrompt !== sL.prompt) {
           sL.promptHistory = sL.promptHistory || [];
           sL.promptHistory.unshift({ prompt: sL.prompt, time: new Date().toLocaleString('zh-CN') });
