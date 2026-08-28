@@ -1923,6 +1923,41 @@ const produceTests = [
     assertEq(orch.ep.sbConfig.maxRetry, 4, '编排那一路照旧把钳过的轮次落库(配置面板下次读得到),这一面不变');
     assertEq(solo.ep.sbConfig.maxRetry, 1, '单独调用那一路不落库:两路轮次一致不是靠单独调用也去改库换来的');
   } },
+  { name: 'autoSmartReview:重抽上限是这一次调用的预算——落库那份数据重新水化再跑,拿到的是同样一整份 limit,回执也只报这一次的花销', fn: async () => {
+    /* 计数器只活在这一次调用的内存里,这是口径不是漏账:maxRetry 在注册表上是**每次调用**的入参
+     * (候选链 命令入参 → 分集 sbConfig),参数配置面板随时可改,到顶后平台自己推荐的下一步又是「审片修订」。
+     * 本条把这条口径钉成正面判据——刷新页面(= 全新沙箱 + 上一次 Store.save() 落库的那份数据)再点一次,
+     * 逐镜仍是一整份 maxRetry;而回执报的是**这一次**的花销,不是从项目开张累计的总数。
+     * 哪天有人把 attempt 落进库当终身次数用,第二次就只剩 0 次,本条当场红——那是产品决策,得先改回执口径。 */
+    const runOnce = async projJSON => {
+      const sb = loadProduce();
+      const say = [];
+      sb.U.bgDock = opt => { say.push(opt.title); return { say: h => say.push(String(h)), finish() {}, close() {}, cancelled: false, m: { querySelector: () => null, querySelectorAll: () => [] } }; };
+      const p = projJSON ? JSON.parse(projJSON)
+        : { id: 'p1', episodes: [makeEp({ content: '测试剧本正文', composed: false, shots: [makeShot(0, { confirm: true }), makeShot(1, { confirm: true })], sbConfig: { maxRetry: 3 } })] };
+      sb.__proj = p;
+      const ep = p.episodes[0];
+      sb.__reviewSeq = { sh0: [5, 5, 5, 5, 5, 5], sh1: [5, 5, 5, 5, 5, 5] }; // 两镜恒不达标:逐镜重抽次数直接读得出这一次的预算
+      const r = await sb.SB.autoSmartReview(p, ep, null, ep.shots, false);
+      const perShot = {};
+      sb.__called.forEach(c => { if (c === 'createShotVideo') perShot.n = (perShot.n || 0) + 1; });
+      return { r, say, regen: perShot.n || 0, projJSON: JSON.stringify(p) };
+    };
+    const first = await runOnce(null);
+    assertEq(first.r.retry, 6, '首跑两镜各 3 次(sbConfig.maxRetry=3)');
+    assertEq(first.regen, 6, '回执里的重抽数应与真下发的重生成次数逐格相同');
+    assertEq(first.r.manual, 2, '到顶转人工');
+    assert(first.say.some(l => /每镜最多 3 次/.test(l)), '开场那句报的是这一次解析出的上限');
+    assert(first.say.some(l => /已达最大重试/.test(l)), '到顶那句照旧说得出口');
+    // 刷新页面:上一次调用的内存全丢,只剩落库那份数据
+    const second = await runOnce(first.projJSON);
+    assertEq(second.r.retry, 6, '再点一次仍是一整份预算(每次点按钮都是一次新的审片调用)');
+    assertEq(second.regen, 6, '第二次真下发的重生成次数同样是一整份');
+    assert(second.say.some(l => /每镜最多 3 次/.test(l)), '第二次开场仍按这一次解析,不报"剩余 0 次"');
+    assertEq(second.r.retry, first.r.retry, '两次逐格相同——预算按调用给,不跨调用累计');
+    // 反向钉住:两次的花销各报各的,回执不是从项目开张累起来的总账
+    assert(!/自动重生成 12 次/.test(second.say.join('|')), '第二次的回执报的是这一次的 6 次,不是累计 12 次');
+  } },
 ];
 
 /* ================= 套件 3.5:commands.js(统一领域命令注册表,第二阶段) ================= */
@@ -2619,6 +2654,52 @@ const commandsTests = [
     const WfCore = require('../js/wf-core.js');
     assertEq(JSON.stringify(WfCore.sanitizeCmdArgs(R.byName['episode.smartReview'], { maxRetry: 5 })), '{}',
       'Agent 侧按注册表整形:没登记的参数一律抹掉(登记面与实况对不上时,这里就是那道静默的口子)');
+  } },
+  { name: 'CLI exec produce:修订轮次是这一次调用的预算——同一份 state 再 exec 一次,拿到的仍是一整份轮次,回执分母也不递减', fn: async () => {
+    /* 与浏览器闭环那条(produce 套件)成对:轮次计数只活在这一次调用里,两端一致,而这是口径不是漏账——
+     * maxRetry 在注册表上就是 episode.produce 的**每次调用**入参,参数配置面板随时可改,
+     * 到顶后 Domain.epFixOf 推荐的下一步又是 episode.produce 自己。哪天有人把轮次落库当终身次数用,
+     * 第二次 exec 就一轮也不跑、日志分母还照写「第 x/3 轮」,本条当场红——那是产品决策,得先改回执口径。
+     * cli.js 全文真跑,只把 api() 换成记录桩(POST/GET 是 const 词法绑定,覆盖不到也不必覆盖)。 */
+    const sb = loadCli();
+    const { ep } = cliCtx(sb, [makeShot(0, { confirm: true, image: 'i0.png' }), makeShot(1, { confirm: true, image: 'i1.png' })]);
+    ep.sbConfig = { maxRetry: 3 };
+    const WfCore = require('../js/wf-core.js');
+    let repN = 0;
+    sb.api = async (method, url, body, f, opt) => {
+      if (url === '/api/wf/smart-review') { // 服务端 wf 端点的写回口径:逐镜报告进 s.reviews,整集分合并进 ep.lastReview
+        const ids = (body && body.shotIds) || null;
+        const tg = ep.shots.filter(s => (!ids || ids.includes(s.id)) && s.video && s.video.status === 'done' && !s.final);
+        const per = tg.map(s => {
+          const rep = { id: 'rep' + (++repN), score: 5, issues: [{ type: '主体一致性', suggestion: "保持角色一致 'consistent character'" }] };
+          s.reviews = [rep].concat(s.reviews || []).slice(0, 5);
+          return { shotId: s.id, order: s.order, score: 5, reportId: rep.id };
+        });
+        const old = (ep.lastReview && ep.lastReview.perShot) || [];
+        const merged = old.filter(x => !per.some(y => y.shotId === x.shotId)).concat(per);
+        ep.lastReview = { time: 't', avg: 5, perShot: merged, snapshotHash: WfCore.reviewSnapshotHashOf(ep), sourceRev: ep.contentRev || 0, graphRev: ep.graphRev || 0, common: { summary: '', issues: [] }, cut: null };
+        // 回执里那份名单有意留空:编排层的重抽面每轮现取实况自己派生(W131),桩不喂它也照跑得起来
+        return { rev: 1, avg: 5, reviewed: tg.length, failed: [], lowShots: [], common: null, cut: null };
+      }
+      if (url === '/api/llm/chat') return { code: 0, parsed: { prompt: '修订后的提示词 v' + repN, changes: '按审片意见修订' } };
+      throw new Error('本条不该打到 ' + method + ' ' + url);
+    };
+    const runProduce = async () => {
+      sb.__genShots = [];
+      const r = await sb.EXEC['episode.produce'].run({ pid: 'p1', epid: 'ep1' }, {});
+      return { r, rounds: (r.result.steps || []).filter(x => /^revise\d+$/.test(x.step)).length, regen: sb.__genShots.length };
+    };
+    const first = await runProduce();
+    assertEq(first.r.status, 'needs_human', '恒不达标应止于质量闸门:' + JSON.stringify(first.r.error || {}));
+    assertEq(first.rounds, 3, '首跑按分集配置跑满 3 轮');
+    assertEq(first.regen, 6, '两镜 × 3 轮 = 6 次真下发到引擎(轮次上限管的就是这一笔钱)');
+    // 「再 exec 一次不带入参」:state 是同一份(cliCtx 的 stateGet/withProject 都指着这一个 ep),
+    // 上一次调用的内存全丢——这正是刷新页面/换一次进程之后的实况
+    const second = await runProduce();
+    assertEq(second.rounds, 3, '第二次仍是一整份轮次(每次 exec 都是一次新的编排调用)');
+    assertEq(second.regen, 6, '第二次真下发的重抽次数同样是一整份');
+    assertEq(second.rounds, first.rounds, '两次逐格相同——预算按调用给,不跨调用累计');
+    assert(!Object.keys(ep).some(k => /attempt|round/i.test(k)), '落库的分集对象上不该冒出第二份轮次账(要落库先定语义,并同轮改回执)');
   } },
   { name: 'subject.generateImage:一位也没跑时回执自带实话(仍是 ok,digest 照播;点名到的主体照旧重生成)', fn: async () => {
     /* 与批量生成视频同一形状的空跑:全部主体都有图 / 点名的主体已不在库里,两档都是 ok/total:0,
@@ -10784,7 +10865,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 622, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 624, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 147, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 109, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -11119,7 +11200,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 221;
+    const FLOOR = 222;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
