@@ -3184,6 +3184,55 @@ const domainTests = [
     assertEq(wm.epStates.map(st => st.reviewGate).join(','), 'pass,unready');
     assertEq(wm.recommendedAction, null, '没有可审的集时不许拿不可审那集冒充"整集审片:第二集"');
   } },
+  /* 整本原文不在库的项目(「新建分集」手工粘正文、「拉片建集」按参考视频建集,两条入口都只写各集正文,
+   * 从不写 p.script/extractDone)上,剧本步恒未完成——它此前恒占着"下一步",从建完分集一路占到成片:
+   * 差一集没合成时下一步写着"上传剧本"、全片走完(每集 done、交付门只剩账目待后台确认)时还是"上传剧本"。
+   * 补进整本推不动其中任何一步:读整本原文的只有提取主体与剧本拆集两件事,而这两件早办成了。
+   * 两半各钉一次:该让位时让位(下面前三段),该占位时(下游还要读原文)照旧占位(后三段)。 */
+  { name: 'workflow:整本原文缺口只在下游还要读它时才占"下一步"(走完全片的项目不再被支去上传剧本)', fn: () => {
+    const D = loadDomain().Domain;
+    const doneEp = () => {
+      const s = { id: 'a', order: 0, video: { status: 'done', url: 'http://x/v.mp4' }, confirm: true };
+      const ep = { id: 'ep1', title: '第一集', content: '本集正文', shots: [s], contentRev: 0, graphRev: 0,
+        sbConfig: { ratio: '16:9' }, lastReview: { avg: 8 }, composed: 'http://x/film.mp4',
+        composedSourceRev: 0, composedGraphRev: 0 };
+      ep.composedInputHash = D.composedInputHash(ep, true);
+      return ep;
+    };
+    // 整本原文不在库(p.script 与 extractDone 都没有),但这一集主线真的走完了
+    const noBook = () => makeP([doneEp()], [{ id: 'sj1', name: '主角', image: 'u' }]);
+    const p = noBook();
+    assertEq(D.episodeState(p, p.episodes[0], true).status, 'done', '前提:这一集主线真的走完了');
+    const w = D.workflow(p, true);
+    const scriptStep = w.steps.find(s => s.key === 'script');
+    assertEq(scriptStep.done, false, '剧本步照旧未完成(整本原文确实不在库,流程条不许改口)');
+    assertEq(scriptStep.blockers[0].code, 'no-script', '门槛派生一个字不动');
+    assertEq(w.steps.filter(s => !s.side && !s.done).map(s => s.key).join(','), 'script', '主线只剩剧本这一步没完成');
+    assertEq(w.recommendedAction.key, 'produce', '走完全片的项目下一步是交付,不是上传剧本');
+    assertEq(w.recommendedAction.label, '量产跑批 / 导出交付');
+    // 中途态:还差一集没合成 → 下一步落在主线真正未完成的那一步(不是"全走完了才让位")
+    const mid = noBook();
+    mid.episodes[0].composed = '';
+    delete mid.episodes[0].composedInputHash;
+    assertEq(D.workflow(mid, true).recommendedAction.label, '合成成片:第一集');
+    // 中途态之二:镜头还没出片 → 下一步是继续生成
+    const gen = noBook();
+    gen.episodes[0].shots[0].video = null;
+    assertEq(D.workflow(gen, true).recommendedAction.label, '继续生成:第一集');
+    // 主体缺权威图:G9 真挡交付,剧本步让位后下一步落在主体,不许跨过它直报交付
+    const noImg = noBook();
+    noImg.subjects = [{ id: 'sj1', name: '主角', image: '' }];
+    assertEq(D.workflow(noImg, true).recommendedAction.key, 'subjects');
+    assertEq(D.workflow(noImg, true).recommendedAction.label, '主体提取与生成(1 角色缺图)');
+    // 下游还要读原文的两态:提取主体读它、剧本拆集切的就是它 —— 剧本步照旧占"下一步"
+    assertEq(D.workflow(makeP([doneEp()], []), true).recommendedAction.key, 'script', '主体库还空时补原文仍是下一步');
+    assertEq(D.workflow(makeP([], [{ id: 'sj1', name: '主角', image: 'u' }]), true).recommendedAction.key, 'script', '分集还没建时补原文仍是下一步');
+    assertEq(D.workflow(makeP(), true).recommendedAction.key, 'script', '空项目仍从上传剧本起步');
+    // 有整本原文的项目一字未变(本条只让缺原文那类项目的下一步落到实处,不动其余任何一步)
+    const book = Object.assign(noBook(), { script: '整本原文' });
+    assertEq(D.workflow(book, true).recommendedAction.key, 'produce');
+    assertEq(D.workflow(book, true).steps.find(s => s.key === 'script').done, true);
+  } },
   { name: 'REVIEW_MIN:达标线单源,episodeState 与主线审片步骤同用一个常量', fn: () => {
     const sb = loadDomain();
     assertEq(sb.Domain.REVIEW_MIN, 7);
@@ -4317,6 +4366,34 @@ const plansTests = [
     assertEq(sb.__cmdCalls.length, 1, '首个命令步失败后应停止,不继续执行后续步骤');
     assertEq(p.agentPlan.steps[1].status, 'failed');
   } },
+  /* 计划层与"下一步"是同一个问题的两个面(该做的事 / 现在做哪一件),同一个项目上不许说反话。
+   * 整本原文不在库的项目此前正是反话的现场:计划层照旧列着"合成成片:第一集"(提取与拆集两步早已不出),
+   * 而"下一步"写着"上传剧本"。两面各自的判据都不动,只钉住结论一致。 */
+  { name: 'fromWorkflow 与"下一步"不许对同一项目说反话(整本原文不在库时两面同指主线真正未完成那一步)', fn() {
+    const sb = loadPlans();
+    const D = sb.Domain;
+    const mkEp = () => {
+      const s = { id: 'a', order: 0, prompt: 'q', video: { status: 'done', url: 'http://x/v.mp4' }, confirm: true };
+      return { id: 'ep1', title: '第一集', content: '本集正文', shots: [s], contentRev: 0, graphRev: 0,
+        sbConfig: { ratio: '16:9' }, lastReview: { avg: 8 } };
+    };
+    // 整本原文不在库,只差合成:两面都该说"合成成片:第一集"
+    const mid = { id: 'p1', subjects: [{ id: 'sj1', name: '主角', image: 'u' }], episodes: [mkEp()] };
+    assertEq(D.workflow(mid, false).recommendedAction.label, '合成成片:第一集');
+    assertEq(sb.Plans.fromWorkflow(mid).steps.map(s => s.label).join(','), '合成成片:第一集');
+    // 全片走完:计划层说无待推进事项,下一步说交付——同一个结论的两种说法
+    const done = { id: 'p1', subjects: [{ id: 'sj1', name: '主角', image: 'u' }], episodes: [mkEp()] };
+    Object.assign(done.episodes[0], { composed: 'http://x/film.mp4', composedSourceRev: 0, composedGraphRev: 0 });
+    done.episodes[0].composedInputHash = D.composedInputHash(done.episodes[0], false);
+    assertEq(D.episodeState(done, done.episodes[0], false).status, 'done', '前提:这一集主线真的走完了');
+    assertEq(sb.Plans.fromWorkflow(done), null, '计划层:无待推进事项');
+    assertEq(D.workflow(done, false).recommendedAction.key, 'produce', '下一步:交付(不是回头上传剧本)');
+    // 反向:主体库还空时两面同样一致——提取主体读原文,补原文这一步两边都还认
+    const bare = { id: 'p1', subjects: [], episodes: [mkEp()] };
+    assertEq(D.workflow(bare, false).recommendedAction.key, 'script');
+    assertEq(sb.Plans.fromWorkflow(bare).steps.filter(s => s.cmd === 'project.extractSubjects').length, 0,
+      '计划层同样认这一步没过:提取主体步不出');
+  } },
 ];
 
 /* ================= 套件 15:continuity.js(连续性,第四阶段) ================= */
@@ -4528,6 +4605,29 @@ const releaseTests = [
     assertEq(r.warns <= 1, true, '最多 1 条 warn');
     const passCodes = r.gates.filter(g => g.status === 'pass').map(g => g.code);
     ['g1-workflow', 'g3-review', 'g4-stale', 'g5-unconfirmed', 'g6-failed', 'g9-subjects'].forEach(c => assert(passCodes.includes(c), '门 ' + c + ' 应 pass,实际 status=' + (r.gates.find(g => g.code === c) || {}).status));
+  } },
+  /* 停工位的两半在同一个项目上同时成立过:十门只剩账目待后台确认(cond-pass,可打版本),
+   * 而"下一步"写着"上传剧本"——两边都不假(交付门本来就不读 p.script,剧本步本来就没过),
+   * 只是"下一步"指到了与交付无关的地方。本条把两半钉在一起:门禁判据与计数一个字不动,
+   * 缺口照旧由流程条的剧本步与问题中心的 no-script 报出来,变的只是"现在该做哪一件"。 */
+  { name: '走完全片但没有整本原文:十门 cond-pass 的同一项目上,"下一步"落到交付而不是上传剧本', fn() {
+    const sb = loadRelease();
+    const ep = releaseReadyEp({ composed: true, composedInputHash: sb.Domain.composedInputHash(releaseReadyEp(), false), composedSourceRev: 0, composedGraphRev: 0 });
+    const p = { id: 'p1', name: '剧', script: '', subjects: [{ id: 'sj1', name: '主', kind: 'character', image: 'u' }], episodes: [ep] };
+    const r = sb.Release.collect(p, { online: false });
+    assertEq(r.overall, 'cond-pass', '十门只剩 G10 账目 warn(实际 f=' + r.fails + ' w=' + r.warns + ')');
+    assertEq(r.fails, 0, '整本原文有无不进任何一门的 fail 计数');
+    assertEq(r.gates.find(g => g.code === 'g1-workflow').status, 'pass', 'G1 逐集判正文,照旧 pass');
+    const w = sb.Domain.workflow(p, false);
+    assertEq(w.steps.find(s => s.key === 'script').done, false, '剧本步照旧未完成:流程条不许跟着改口');
+    assertEq(w.steps.find(s => s.key === 'script').blockers[0].code, 'no-script');
+    assertEq(w.recommendedAction.key, 'produce', '下一步是交付');
+    assertEq(w.recommendedAction.hash, '#/project/p1/produce');
+    // 缺口不被静默抹掉:问题中心照旧报 no-script,且照旧是低危(不进 G2 的高/中危计数)
+    const noScript = sb.Issues.collect(p, { online: false }).filter(x => x.kind === 'no-script');
+    assertEq(noScript.length, 1, '问题中心仍报"未上传剧本"');
+    assertEq(noScript[0].sev, 'low');
+    assertEq(sb.Release.collect(p, { online: false }).gates.find(g => g.code === 'g2-issues').status, 'pass', 'G2 只数高/中危,结论不变');
   } },
   { name: 'collect:低分审片(g3 fail)+主体缺图(g9 fail)+失败镜(g6 fail) → overall fail,fix 命令已挂', fn() {
     const sb = loadRelease();
