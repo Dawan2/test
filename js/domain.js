@@ -318,7 +318,10 @@
     const say = (n, t) => { if (n) parts.push(n + ' 位' + t); };
     if (Array.isArray(picked) && picked.length) {
       const ids = [...new Set(picked)]; // 点名清单按主体去重:重复的 id 指的是同一位,不该被数成两位
-      const gone = ids.length - subs.filter(s => ids.includes(s.id)).length;
+      /* 数的是「点名了却在库里找不到」的 id 数,不拿命中的主体条数去减点名数:
+       * 库里同 id 存了两位时后者一位多减一次,gone 会变负(回执报「-1 位不在主体库」),
+       * 且同一笔多减会把真不在库的那位抵消掉、让它落进安全阀那一堆。 */
+      const gone = ids.filter(id => !subs.some(s => s.id === id)).length;
       say(gone, '不在主体库');
       say(ids.length - gone, '没能说清原因'); // 各堆之和恒等于点名数:说不清的主体也得露头,不许被抹平
       return '点名的 ' + ids.length + ' 位主体一位也没跑:' + parts.join('、');
