@@ -4654,8 +4654,9 @@ const contractTests = [
     assertEq([...body.matchAll(/code: '([^']+)'/g)].length, 0,
       'gateBlockers 不得直接写码字面(绕开登记表的码进不了 gateCodes(),扇出契约就漏检那一码)');
     assert(CODES.length >= 4, '码全集不能是空表(空表会让下面的逐码点名变成空转),实际 ' + CODES.length + ' 码');
+    const codeList = CODES.join(','); // 同上:回的若是表本身,污染会连 CODES 一起改,只有字面快照比得出来
     sbD.Domain.gateCodes().push('污染');
-    assertEq(sbD.Domain.gateCodes().length, CODES.length, 'gateCodes() 每次应现生成新数组');
+    assertEq(sbD.Domain.gateCodes().join(','), codeList, 'gateCodes() 每次应现生成新数组');
     [
       { id: 'f0', subjects: [], episodes: [] },
       { id: 'f1', script: '整本', subjects: [], episodes: [] },
@@ -4686,6 +4687,7 @@ const contractTests = [
     const pl = loadPlans();
     const realP = pl.Domain.gateBlockers;
     const skips = pl.Plans.gateSkips();
+    const skipKeys = Object.keys(skips).join(','); // 字面快照:回的若是表本身,下面那次污染连它一起改,比对就成了自己等于自己
     const proj = { id: 'p1', script: '整本剧本', subjects: [{ id: 'sj1', name: '主角', image: '' }], episodes: [] };
     CODES.forEach(code => {
       pl.Domain.gateBlockers = () => [{ step: 'script', code, label: '桩阻塞项:' + code, count: 3 }];
@@ -4700,7 +4702,7 @@ const contractTests = [
       assert(String(skips[c]).length > 12, c + ' 的不投理由要写清楚(白名单不是许愿池),实际:' + skips[c]);
     });
     pl.Plans.gateSkips()['污染'] = 1;
-    assertEq(Object.keys(pl.Plans.gateSkips()).length, Object.keys(skips).length, 'gateSkips() 每次应现生成副本');
+    assertEq(Object.keys(pl.Plans.gateSkips()).join(','), skipKeys, 'gateSkips() 每次应现生成副本');
     const plSrc = fs.readFileSync(path.join(ROOT, 'js/plans.js'), 'utf8');
     const read = [...plSrc.matchAll(/gates\['([^']+)'\]/g)].map(m => m[1]);
     assert(read.length >= 4, '计划层应按码取材,实际取材点 ' + read.length + ' 处');
