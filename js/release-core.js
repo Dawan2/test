@@ -65,12 +65,22 @@
     // 这一次遍历失手不许静静吞掉:吞了三门就照常印「0 镜 pass」,等于宣称"查过了,一镜不缺",
     // 而实际上一镜未查(半途抛出时更坏——拿半截计数当全量报)。缺注入按未过门算、Domain 自身抛错按 warn 记。
     const agg = { stale: 0, unconfirmed: 0, failed: 0 };
+    // 过期镜里定稿的那几镜批量重生成锁着不放:与浏览器 G4 同读 Domain.staleShotSplit/staleSplitNote,
+    // 两端不各拼一句"其中几镜要人工"(计数与判旧本来就是同一份,说法分家的话回执就有两种口径)。
+    const staleSplit = { rerun: 0, locked: 0 };
     let aggErr = null;
     if (!Domain || typeof Domain.episodeState !== 'function') aggErr = { status: 'fail', info: '缺 Domain 注入:镜次计数判不出来' };
     else try {
       eps.forEach(ep => {
         const st = Domain.episodeState(p, ep, online);
         ['stale', 'unconfirmed', 'failed'].forEach(k => { agg[k] += (st.counts && +st.counts[k]) || 0; });
+        // 本层对注入 Domain 的硬契约只有 episodeState(缺它上面已按未过门算);分堆是回执上的增量,
+        // 注入方给的是只带 episodeState 的窄 Domain 时退回原样只报总数,不把这门连累成"判不出来"。
+        if (typeof Domain.staleShotSplit === 'function') {
+          const sp = Domain.staleShotSplit(p, ep, online);
+          staleSplit.rerun += sp.rerun.length;
+          staleSplit.locked += sp.locked.length;
+        }
       });
     } catch (e) { aggErr = { status: 'warn', info: 'Domain 异常:' + e.message }; }
     [['g4-stale', '过期镜=0', 'stale'], ['g5-unconfirmed', '未确认镜=0', 'unconfirmed'], ['g6-failed', '失败镜=0', 'failed']].forEach(t => {
@@ -79,7 +89,9 @@
         if (aggErr.status === 'fail') fails++; else warns++;
         return;
       }
-      list.push(gate(t[0], t[1], agg[t[2]] ? 'fail' : 'pass', agg[t[2]] + ' 镜')); if (agg[t[2]]) fails++;
+      const note = t[0] === 'g4-stale' && Domain && typeof Domain.staleSplitNote === 'function'
+        ? Domain.staleSplitNote(staleSplit.rerun, staleSplit.locked) : '';
+      list.push(gate(t[0], t[1], agg[t[2]] ? 'fail' : 'pass', agg[t[2]] + ' 镜' + note)); if (agg[t[2]]) fails++;
     });
     // G9 主体缺图
     const noImg = ((p && p.subjects) || []).filter(s => !s.image).length;

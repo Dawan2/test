@@ -114,6 +114,9 @@
      * "过期/未确认/失败镜都查过了,一镜不缺",而实际一镜未查(半途抛出更坏——拿半截计数当全量报)。
      * 判不出来按本模块既有降级纪律如实记 warn,与 G1 同形(模块未加载 / 校验异常各自点名),不抬成 fail。 */
     const agg = { stale: 0, unconfirmed: 0, failed: 0, noSubjectImage: 0 };
+    /* 过期镜里定稿的那几镜批量重生成锁着不放(终稿产物不许被覆盖),处置按下去跑不到它们:
+     * 分堆现取 Domain.staleShotSplit,与 counts.stale 同一份判旧函数,只用来在回执上把两堆分开报。 */
+    const staleSplit = { rerun: 0, locked: 0 };
     let firstStale = null, firstFailed = null, firstUnconfirmed = null;
     let aggErr = (typeof Domain === 'undefined' || !Domain || !Domain.episodeState) ? 'Domain 模块未加载,无法校验' : null;
     if (!aggErr) {
@@ -121,8 +124,11 @@
         eps.forEach(ep => {
           const st = Domain.episodeState(p, ep, online);
           ['stale', 'unconfirmed', 'failed'].forEach(k => { agg[k] += (st.counts && +st.counts[k]) || 0; });
+          const sp = Domain.staleShotSplit(p, ep, online);
+          staleSplit.rerun += sp.rerun.length;
+          staleSplit.locked += sp.locked.length;
           if (!firstStale && st.counts && +st.counts.stale)
-            firstStale = { epid: ep.id, shotIds: (ep.shots || []).filter(s => Domain.shotVideoStale(p, s, online)).map(s => s.id) };
+            firstStale = { epid: ep.id, shotIds: sp.all, rerunShotIds: sp.rerun, lockedShotIds: sp.locked };
           if (!firstFailed && st.counts && +st.counts.failed)
             firstFailed = { epid: ep.id, shotIds: (ep.shots || []).filter(s => s.video && s.video.status === 'failed').map(s => s.id) };
           if (!firstUnconfirmed && st.counts && +st.counts.unconfirmed) firstUnconfirmed = { epid: ep.id };
@@ -134,8 +140,14 @@
       gates.push(gate('g5-unconfirmed', '未确认镜 = 0', 'warn', aggErr));
       gates.push(gate('g6-failed', '失败镜 = 0', 'warn', aggErr));
     } else {
-      gates.push(gate('g4-stale', '素材过期镜 = 0', agg.stale ? 'fail' : 'pass', agg.stale + ' 镜素材与当前剧本不一致',
-        agg.stale && firstStale ? { severity: 'mid', fix: { type: 'command', cmd: 'episode.generateVideos', epid: firstStale.epid, shotIds: firstStale.shotIds } } : null));
+      /* 门槛一字未动:agg.stale 仍含定稿的过期镜,0/非 0 分档与 fix.shotIds 子集照旧。
+       * 分报只加在回执上——info 尾巴上那句 + staleSplit 结构位(全项目计数,与 info 里的数同源),
+       * fix 上另带这一集里跑得到/跑不到的两份镜号,免得用户按「N 镜过期」点下去再自己数少了哪几镜。 */
+      gates.push(gate('g4-stale', '素材过期镜 = 0', agg.stale ? 'fail' : 'pass',
+        agg.stale + ' 镜素材与当前剧本不一致' + Domain.staleSplitNote(staleSplit.rerun, staleSplit.locked),
+        agg.stale && firstStale ? { severity: 'mid', staleSplit: { total: agg.stale, rerun: staleSplit.rerun, locked: staleSplit.locked },
+          fix: { type: 'command', cmd: 'episode.generateVideos', epid: firstStale.epid, shotIds: firstStale.shotIds,
+            rerunShotIds: firstStale.rerunShotIds, lockedShotIds: firstStale.lockedShotIds } } : null));
       gates.push(gate('g5-unconfirmed', '未确认镜 = 0', agg.unconfirmed ? 'fail' : 'pass', agg.unconfirmed + ' 镜用户未确认最终',
         agg.unconfirmed && firstUnconfirmed ? { fix: { type: 'nav', hash: '#/project/' + p.id + '/episode/' + firstUnconfirmed.epid } } : null));
       gates.push(gate('g6-failed', '失败镜 = 0', agg.failed ? 'fail' : 'pass', agg.failed + ' 镜生成失败未处理',

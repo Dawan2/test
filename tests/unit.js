@@ -3455,6 +3455,44 @@ const domainTests = [
     assertEq(sm.missing, 0, '未配音但有文本的镜数(s4 无文本不计)');
     assertEq(sm.noText, 1);
   } },
+  { name: 'staleShotSplit:过期镜按终稿锁分两堆(判旧仍只此一份;两堆之和 = counts.stale)', fn: () => {
+    const sb = loadDomain();
+    const mk = (id, order, ex) => Object.assign({ id, order, prompt: 'p', plot: 'plot', characters: [], dialogue: '',
+      narration: '', scene: '', props: [], duration: 5, camera: '固定镜头', confirm: true,
+      video: { status: 'done', url: 'u' } }, ex || {});
+    /* 判旧那两条分支都得摊开,分堆才是"现取 shotVideoStale"而不是就地另写一份等价判据:
+     * sh5 有指纹但对得上(第二份判据若只看"有没有指纹"就会把它误判过期),
+     * sh6 没指纹但引用素材换过版(只看指纹的第二份判据会漏掉它)。 */
+    const subs = [{ id: 'sj9', name: '主角', kind: 'character', image: 'u', imgVer: 3 }];
+    const sh5 = mk('sh5', 5, { characters: ['主角'], video: { status: 'done', url: 'u', assetVer: 3 } });
+    const ep = { id: 'ep1', content: '正文', shots: [
+      mk('sh0', 0),                                                        // 鲜镜:没指纹也没换过素材
+      mk('sh1', 1, { video: { status: 'done', url: 'u', inputHash: 'x' } }),
+      mk('sh2', 2, { final: true, video: { status: 'done', url: 'u', inputHash: 'x' } }),
+      mk('sh3', 3, { video: { status: 'failed', error: 'e' } }),           // 失败镜:过期按定义只落在 done 镜上
+      mk('sh4', 4, { final: true, video: { status: 'done', url: 'u' } }),  // 定稿但没过期:哪一堆都不进
+      sh5,                                                                 // 指纹对得上 + 素材版跟得上:不过期
+      mk('sh6', 6, { characters: ['主角'], video: { status: 'done', url: 'u', assetVer: 0 } }), // 换过素材版:过期
+    ] };
+    const p = makeP([ep], subs);
+    sh5.video.inputHash = sb.Domain.shotInputHash(p, sh5);
+    const sp = sb.Domain.staleShotSplit(p, ep, false);
+    assertEq(sp.all.join(','), 'sh1,sh2,sh6', '过期镜全集(鲜镜/失败镜/定稿但没过期/指纹对得上的镜都不在)');
+    assertEq(sp.rerun.join(','), 'sh1,sh6', '批量重生成够得着的那堆');
+    assertEq(sp.locked.join(','), 'sh2', '定稿锁挡着、要人工先解锁的那堆');
+    assertEq(sp.rerun.length + sp.locked.length, sb.Domain.episodeState(p, ep, false).counts.stale,
+      '两堆之和须等于 counts.stale:分堆只管回执怎么报,门槛那一侧一个数不动');
+    assertEq(sb.Domain.staleShotSplit(p, { shots: [] }, false).all.length, 0, '空集不抛');
+    assertEq(sb.Domain.staleShotSplit(p, null, false).all.length, 0, '缺集不抛');
+    // 回执上那句话同样只此一份:不分家回空串,分家的两种形状各说各的
+    assertEq(sb.Domain.staleSplitNote(3, 0), '', '没有定稿过期镜时不加尾巴(原文案一字不变)');
+    assert(/可重跑 2 镜/.test(sb.Domain.staleSplitNote(2, 1)) && /1 镜已定稿/.test(sb.Domain.staleSplitNote(2, 1)),
+      '两堆都有时各报各的数:' + sb.Domain.staleSplitNote(2, 1));
+    assert(/全部已定稿/.test(sb.Domain.staleSplitNote(0, 2)) && !/可重跑/.test(sb.Domain.staleSplitNote(0, 2)),
+      '一镜也跑不到时不许报「可重跑 0 镜」:' + sb.Domain.staleSplitNote(0, 2));
+    assert(/解锁终稿/.test(sb.Domain.staleSplitNote(2, 1)) && /解锁终稿/.test(sb.Domain.staleSplitNote(0, 2)),
+      '两种形状都得给出人工出路');
+  } },
 ];
 
 /* ================= 套件 12:bus.js(管线事件总线,第三阶段) ================= */
@@ -4428,6 +4466,21 @@ function staleFixProject(over) {
   }, over || {});
   return { p: { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [ep] }, ep };
 }
+/* G4 分报夹具:kinds 按序列出这一集要哪几种镜——'fresh' 鲜镜 / 'stale' 过期且没定稿 / 'locked' 过期且已定稿。
+ * 过期走 video.inputHash 与当前输入对不上这条(与 Domain.shotVideoStale 的指纹分支同一条路,不另造判据)。 */
+function releaseStaleEp(kinds, over) {
+  const shots = kinds.map((kind, i) => {
+    const s = { id: 'sh' + i, order: i, name: '', plot: 'p', prompt: 'q', camera: '固定镜头', duration: 5,
+      characters: [], scene: '', props: [], confirm: true, video: { status: 'done', url: 'http://x/v.mp4' } };
+    if (kind !== 'fresh') s.video.inputHash = '与当前输入对不上';
+    if (kind === 'locked') s.final = true;
+    return s;
+  });
+  return releaseReadyEp(Object.assign({ shots, lastReview: { avg: 8, perShot: shots.map((s, i) => ({ shotId: s.id, order: i, score: 8 })) } }, over || {}));
+}
+function releaseStaleP(kinds, pid) {
+  return { id: pid || 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [releaseStaleEp(kinds)] };
+}
 /* 交付包落地面:装真 js/ziputil.js 与最小下载桩,数得清"用户到手几个文件、每个文件里装的是什么"。
  * urlFail 让第 N 次 URL.createObjectURL 抛错(N 从 1 起),用来走 downloadReleaseZip 的兜底那条路。 */
 function loadReleaseZip(urlFail) {
@@ -4661,6 +4714,51 @@ const releaseTests = [
     assertEq(ep.shots[1].video.inputHash, 'v3:oldstale', '终稿镜的产物一个字节没被覆盖');
     assertEq(got && got.result && got.result.total, 1, '回执按真跑的镜数报(终稿那镜没碰,不算处理过)');
   } },
+  { name: 'G4 回执分报:过期镜里定稿的那几镜单列报出来(counts.stale 与 fix.shotIds 一个数没动)', fn() {
+    /* 定稿的过期镜照旧计进 counts.stale 让 G4 fail,而一键处置两端都锁着 !s.final 不碰它。
+     * 回执把两堆混成一个数时,用户看着「2 镜过期」按下处置,最多只重跑其中没定稿的那几镜,
+     * 回来门禁照旧 fail 而没有一处告诉过他差在哪。本条钉的是回执分报,门槛一个字不许动。 */
+    const sb = loadRelease();
+    const p = releaseStaleP(['fresh', 'stale', 'locked']);
+    // 先与 Domain 对账:夹具日后被调、或 counts.stale 判据变了先红在这一句,不让下面几句悄悄变成恒真
+    assertEq(sb.Domain.episodeState(p, p.episodes[0], false).counts.stale, 2, '夹具应有 2 镜过期(其中 1 镜已定稿)');
+    const g = sb.Release.collect(p, { online: false }).gates.find(x => x.code === 'g4-stale');
+    // 门槛这一侧:分档、总数、处置子集三样都与分报之前逐字相同
+    assertEq(g.status, 'fail', '定稿的过期镜照旧让 G4 fail(本槽没把 final 剔出 counts.stale)');
+    assert(g.info.indexOf('2 镜素材与当前剧本不一致') === 0, '总数照旧按 counts.stale 报在最前,实际:' + g.info);
+    assertEq((g.fix.shotIds || []).join(','), 'sh1,sh2', 'fix 子集照旧是 counts.stale 那几镜(定稿镜不从子集里摘)');
+    // 分报这一侧:两堆各自的数与镜号
+    assertEq(g.staleSplit.total, 2, 'staleSplit.total 与 counts.stale 同数');
+    assertEq(g.staleSplit.rerun, 1, '可重跑的过期镜数');
+    assertEq(g.staleSplit.locked, 1, '定稿过期、需人工先解锁的镜数');
+    assertEq((g.fix.rerunShotIds || []).join(','), 'sh1', '这一集里处置真跑得到的镜号');
+    assertEq((g.fix.lockedShotIds || []).join(','), 'sh2', '这一集里处置跑不到、要先解锁终稿的镜号');
+    assert(/可重跑 1 镜/.test(g.info) && /1 镜已定稿/.test(g.info) && /解锁终稿/.test(g.info),
+      'info 须把两堆分开说清楚并给出人工出路,实际:' + g.info);
+    // 没有定稿过期镜时不许凭空多这句尾巴(原文案一字不变)
+    const plain = sb.Release.collect(releaseStaleP(['fresh', 'stale'], 'p2'), { online: false }).gates.find(x => x.code === 'g4-stale');
+    assertEq(plain.info, '1 镜素材与当前剧本不一致', '两堆不分家时 G4 文案照旧,实际:' + plain.info);
+    assertEq(plain.staleSplit.locked, 0);
+  } },
+  { name: 'G4 回执分报:过期镜全是定稿镜时如实说一镜也重跑不到(不报「可重跑 0 镜」糊过去)', fn() {
+    /* 这一形状是分报的另一个方向:处置按下去连一镜都跑不到。只钉"定稿的那几镜被单列"时,
+     * 把尾巴写成恒印「可重跑 N 镜」也不会红——那句话在 N=0 时说的是"有得跑",与实况正相反。 */
+    const sb = loadRelease();
+    const p = releaseStaleP(['fresh', 'locked']);
+    assertEq(sb.Domain.episodeState(p, p.episodes[0], false).counts.stale, 1, '夹具:唯一的过期镜已定稿');
+    const g = sb.Release.collect(p, { online: false }).gates.find(x => x.code === 'g4-stale');
+    assertEq(g.status, 'fail', '门照旧 fail(定稿的过期镜确实与当前剧本不一致)');
+    assertEq(g.staleSplit.rerun, 0);
+    assertEq(g.staleSplit.locked, 1);
+    assert(/全部已定稿/.test(g.info) && /一镜也重跑不到/.test(g.info), 'info 须如实说处置跑不到,实际:' + g.info);
+    assert(!/可重跑/.test(g.info), '一镜也跑不到时不许还报「可重跑 N 镜」,实际:' + g.info);
+    /* 有意留着的:处置仍原样挂在门上,子集仍是 counts.stale 那几镜。
+     * 摘不摘这个按钮是产品口径(要么自动解锁终稿、要么改挂"去解锁"导航),不在本槽射程内。 */
+    assertEq(g.fix.cmd, 'episode.generateVideos', '处置照旧挂着,本槽只改回执怎么报');
+    assertEq((g.fix.shotIds || []).join(','), 'sh1');
+    assertEq((g.fix.rerunShotIds || []).length, 0, '跑得到的一镜也没有,如实报空');
+    assertEq((g.fix.lockedShotIds || []).join(','), 'sh1');
+  } },
   { name: 'G2 问题清零:真实 Issues 数组契约——脏项目 fail 挂问题中心导航,干净项目 pass', fn() {
     const sb = loadRelease();
     // 脏:失败镜(高危)→ G2 fail;原实现把 Issues.collect 返回的数组当 {list} 读,恒 pass 永久放行
@@ -4874,6 +4972,30 @@ const releaseTests = [
     });
     assert(g.warns >= 4, '三门 + G10 至少四条 warn,实际 ' + g.warns);
     assertEq(RC.passed(g), false, '判不出来的门禁结论不放行打版本');
+  } },
+  { name: 'release-core · G4 分报两端同一句:headless 与浏览器同读 Domain 的分堆,窄 Domain 退回只报总数', fn() {
+    /* 「其中几镜要人工」这句话在两端各拼一版的话,同一个项目在弹窗与 CLI 上会读到两种口径;
+     * 分堆与那句话都收在 Domain,两端只是取来接在各自原文案后面(源级由 contract 那条钉住取数口)。 */
+    const RC = require('../js/release-core.js');
+    const sb = loadRelease();
+    const p = releaseStaleP(['fresh', 'stale', 'locked']);
+    const note = sb.Domain.staleSplitNote(1, 1);
+    assert(note, '夹具应落在两堆分家那一档');
+    const h = RC.gates(p, { Domain: sb.Domain, online: false }).gates.find(x => x.code === 'g4-stale');
+    const b = sb.Release.collect(p, { online: false }).gates.find(x => x.code === 'g4-stale');
+    assertEq(h.status, 'fail');
+    assertEq(h.info, '2 镜' + note, 'headless 原文案只多这一句尾巴,总数照旧');
+    assert(b.info.endsWith(note), '浏览器那半接的是同一句(两端不各拼一版),实际:' + b.info);
+    // 没有定稿过期镜时两端都回原样
+    const plain = releaseStaleP(['fresh', 'stale'], 'p2');
+    assertEq(RC.gates(plain, { Domain: sb.Domain, online: false }).gates.find(x => x.code === 'g4-stale').info, '1 镜',
+      '两堆不分家时 headless 文案一字不变');
+    /* 本层对注入 Domain 的硬契约只有 episodeState:注入方给的是窄 Domain 时,
+     * 这门退回原样只报总数,不因为拿不到分堆就把一个判得出来的数说成"判不出来"。 */
+    const narrow = { episodeState: (proj, ep, on) => sb.Domain.episodeState(proj, ep, on) };
+    const nd = RC.gates(p, { Domain: narrow, online: false }).gates.find(x => x.code === 'g4-stale');
+    assertEq(nd.status, 'fail', '窄 Domain 照旧判得出总数');
+    assertEq(nd.info, '2 镜', '分堆是回执上的增量,拿不到就退回原样,不连累这门的结论');
   } },
   { name: 'release-core · precheck:空项目 / 缺门禁结论 / 未过门各给明确错误码;force 授权位放行且如实标 forced', fn() {
     const RC = require('../js/release-core.js');
@@ -5749,6 +5871,38 @@ const contractTests = [
     assertEq(r.gates.find(g => g.code === 'g4-stale').fix.shotIds.join(','), 'sh1', 'G4 只带过期镜子集');
     assertEq(r.gates.find(g => g.code === 'g6-failed').fix.shotIds.join(','), 'sh2', 'G6 只带失败镜子集');
     assertEq(r.gates.find(g => g.code === 'g9-subjects').fix.subjectIds.join(','), 'sj1', 'G9 只带缺图主体子集');
+  } },
+  { name: '过期镜分报的取数口:两端 G4 都现取 Domain 的分堆与那句话,谁也不自写第二份终稿判据', fn() {
+    /* 「哪几镜处置跑得到、哪几镜要人工先解锁终稿」这件事,判据(!s.final)与说法各只此一份。
+     * 一端改了另一端没改,或某一端顺手在自己那段里手写 `!s.final` / 手拼一句尾巴,都在这里红。 */
+    const D = require('../js/domain.js');
+    ['staleShotSplit', 'staleSplitNote'].forEach(k => assertEq(typeof D[k], 'function', 'Domain 须导出分报单源:' + k));
+    const rel = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
+    const rc = fs.readFileSync(path.join(ROOT, 'js', 'release-core.js'), 'utf8');
+    /* 各按自己那段 G4 实现切片再判:整文件搜的话,别处出现过同一写法就能把这条糊过去。
+     * 注释抹掉、字面量留着——判的是代码里真跑的那几行,不是某段说明里提过这个词。 */
+    const seg = (src, from, to, label) => {
+      const a = src.indexOf(from), b = src.indexOf(to, a + 1);
+      assert(a >= 0 && b > a, label + ' 应能定位到实现段');
+      return blankNonCode(src.slice(a, b), true);
+    };
+    [
+      ['js/release.js', seg(rel, 'const agg = { stale: 0', "gate('g5-unconfirmed', '未确认镜 = 0', agg.unconfirmed", 'js/release.js')],
+      ['js/release-core.js', seg(rc, 'const agg = { stale: 0', '// G9 主体缺图', 'js/release-core.js')],
+    ].forEach(([f, s]) => {
+      assert(/Domain\.staleShotSplit\(/.test(s), f + ' 的 G4 段须现取 Domain.staleShotSplit 分堆');
+      assert(/Domain\.staleSplitNote\(/.test(s), f + ' 的 G4 段须现取 Domain.staleSplitNote 拼回执那句');
+      assert(!/\.final/.test(s), f + ' 的 G4 段不得自写第二份终稿判据(分堆只在 Domain 一处):'
+        + (s.match(/[^\n]*\.final[^\n]*/g) || []).join(' | '));
+      assert(!/解锁终稿|已定稿/.test(s), f + ' 的 G4 段不得自拼分报文案(两端会长成两种说法)');
+      assert(/counts\[k\]|counts\.stale/.test(s), f + ' 的 G4 总数照旧取 counts.stale(分报不改门槛)');
+    });
+    // 门槛这一侧:counts.stale 仍数定稿的过期镜——把 final 剔出去是改门槛,不是分报
+    const dom = fs.readFileSync(path.join(ROOT, 'js', 'domain.js'), 'utf8');
+    const cnt = seg(dom, 'D.episodeState = function', 'const blockers = []', 'js/domain.js');
+    assert(/if \(D\.shotVideoStale\(p, s, online\)\) counts\.stale\+\+;/.test(cnt), 'counts.stale 判据须原样在');
+    assertEq((cnt.slice(cnt.indexOf('shots.forEach')).match(/[^\n]*final[^\n]*/g) || []).map(x => x.trim()).join(' | '),
+      'if (s.final) counts.final++;', 'counts 计数段里 final 只用来数定稿镜:拿它给 counts.stale 分档就是改门槛');
   } },
   { name: 'Issues 命令类条目的 cmd 同样在注册表内(与 fixIssue 执行路径一致)', fn() {
     const sb = loadContract();
@@ -8989,7 +9143,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 554, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 559, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 143, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -9258,7 +9412,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 192;
+    const FLOOR = 193;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
