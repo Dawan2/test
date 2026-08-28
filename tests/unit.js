@@ -7720,6 +7720,41 @@ const contractTests = [
       assertEq(wrong.join(' | '), '', rel + ' 的主体补图不许改读镜头那一份派生(分档不同,混用会让回执论起"镜"来)');
     });
   } },
+  { name: '成片合成没有"ok+静默"那一档:两端零素材拦截点在位,不许改读镜头/主体那两份 note,点名子集这一位不在成片侧', fn() {
+    /* 镜头(emptyBatchNote)与主体(emptySubjectImageNote)各补过一句"为什么是 0 条",成片这一路**没有**开第三份。
+     * 理由是三档都不落在"ok + 静默"上,live 现跑过:无可合成镜(全无素材 / 时间线全剔除)两端都拦得住并说得出话;
+     * 已合成且指纹未变再点一次是**真跑**(引擎实收全部段落、真扣一次合成费),不是空跑;
+     * 点名子集这一位成片侧压根没有。这一条把那三条结论各钉一个源级落点——
+     * 拦截点被摘掉、顺手套用隔壁那两份 note、或给合成加了点名子集而没重判空跑分档,都红在这里。 */
+    const seg = (rel, head, tail) => {
+      const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      const i = src.indexOf(head);
+      assert(i >= 0, rel + ' 找不到「' + head + '」(挪窝或改名就同轮改这里,别把本条留成恒真)');
+      const rest = src.slice(i + head.length);
+      const j = rest.indexOf(tail);
+      return rest.slice(0, j >= 0 ? j : rest.length);
+    };
+    /* CLI 那一端:缺素材的镜逐个点名报出来 + 时间轴一段都没有时如实拦下(两道都在 composeCore 里) */
+    const core = seg('cli.js', 'async function composeCore(', '\nCMD.compose');
+    assert(/无视频也无底图,无法合成/.test(core), 'cli.js composeCore 须点名报出无素材的镜(--skip-incomplete 才跳过)');
+    assert(/need\(items\.length,/.test(core), 'cli.js composeCore 须在时间轴一段都没有时如实拦下(不许静默回 0 段成功)');
+    /* 浏览器那一端:在线零素材退费并如实提示 + 时间轴空抛错(两道都在 doCompose 里) */
+    const dc = seg('js/sb-io.js', 'async function doCompose(', '\n  /* 对外出口');
+    assert(/无可合成素材/.test(dc) && /U\.refund\(COST\.compose/.test(dc), 'js/sb-io.js doCompose 在线零素材须退费并如实提示(不许静默走完)');
+    assert(/if \(!items\.length\) throw/.test(dc), 'js/sb-io.js doCompose 时间轴一段都没有时须抛错(不许拿 0 段冒充合成完成)');
+    /* 命令层:拿不到任务句柄那一档如实 failed;段内不许改读镜头/主体那两份 note */
+    const reg = seg('js/commands.js', "reg('episode.compose'", "\n  reg('");
+    const code = reg.split('\n').filter(t => !(/^\s*(\/\/|\/?\*)/.test(t) || !t.trim()));
+    assert(code.length > 8, 'js/commands.js 的 episode.compose 段可执行行取不到(整段被判成注释本条即恒真),实测 ' + code.length + ' 行');
+    assert(/fail\('intercepted'/.test(reg), '命令层拿不到合成任务句柄那一档须如实 failed(零素材/积分不足都由它兜住,不许回 ok)');
+    const wrong = code.filter(t => /Domain\.empty(BatchNote|SubjectImageNote)\(/.test(t));
+    assertEq(wrong.join(' | '), '', '成片合成不许改读镜头/主体那两份 note(分档不同:成片没有点名子集,也没有"产物已是最新就跳过"这一堆)');
+    /* 点名子集在镜头侧与主体侧各有一位,成片侧今天没有:加上它就得同轮重判"过滤后为空算不算空跑" */
+    const argsOf = n => ((require('../js/cmd-registry.js').byName[n] || {}).args || []).map(a => a.name).join(',');
+    assertEq(argsOf('episode.generateVideos').includes('shotIds'), true, '镜头侧的点名子集位是本条的对照面,没了就同轮改这里');
+    assertEq(argsOf('subject.generateImage').includes('subjectIds'), true, '主体侧的点名子集位是本条的对照面,没了就同轮改这里');
+    assertEq(argsOf('episode.compose'), 'pid,epid,ui', 'episode.compose 的参数面变了:加了点名子集就得同轮重判空跑分档(那才是第三份派生该不该开的入口)');
+  } },
   { name: '分集级审片门槛单源:达标线/判旧/"这一集当下能不能审"只在 episodeState.reviewGate 一处,流程条与问题中心都不另判', fn() {
     /* 行为面由 domain/issues 两条用例双向钉住;这一条钉源级:判据抄回第二份时行为可以完全一致,
      * 那种改法只有源级判据接得住(与前置门槛码那条同形)。 */
@@ -10865,7 +10900,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 624, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 625, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 147, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 109, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
