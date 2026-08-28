@@ -1603,6 +1603,7 @@ function wfMockOut(kind, opt) {
   if (kind === 'sum') return { summary: 'mock 整集总评', issues: [] };
   if (kind === 'cut') return { natural: { score: 8, comment: 'mock' }, continuity: { score: 8, comment: 'mock' }, framing: { score: 8, comment: 'mock' }, pacing: { score: 8, comment: 'mock' }, overall: 'mock 整集剪辑总评' };
   if (kind === 'agent') return { reply: 'mock 回复:当前状态已同步,建议按工作台状态推进下一步。', thinking: 'mock 思考', ops: [] };
+  if (kind === 'evolve') return { clauses: ['mock 条款:先定人物关系再定形象'] };
   if (kind === 'extract') return {
     characters: [{ name: '林晚晴', aliases: ['晚晴'], description: 'mock 女主', prompt: 'mock 人物提示词', persona: { 五官: 'mock', 性格: 'mock' } }],
     scenes: [{ name: '宴会厅', description: 'mock 场景', prompt: 'mock 场景提示词' }],
@@ -3736,6 +3737,59 @@ const server = http.createServer(async (req, res) => {
         });
       } catch (e) {
         return fail(res, e.httpStatus || 502, e.message || 'Agent 对话失败', e.httpStatus || 502);
+      } finally { rateLimitDone(user.id); }
+    }
+
+    /* 专家自进化(headless 人手出口):{expert,operationId?} → 把该专家生效板块的协作记忆沉淀
+     * 蒸馏为 ≤4 条「进化条款」追加进其 persona。与浏览器 js/experts.js evolveExpert 同一份判据与同一套提示词
+     * (WfCore.expertBoards/memForBoards 定记忆源,evolveTarget 定落点,evolveSystem/buildEvolveUser 出提示词两半,
+     * evolveClauses/evolveApply 出条款与落盘),两端一字不抄;计费 llm.evolve 服务端定死,失败退费。
+     * 两道闸(未在任何板块生效 / 该板块无沉淀)一律在扣费之前 400 如实拒绝,不空烧一次调用;
+     * 预置专家不可改写(注册表是双端共享静态数据),条款落该预置专家的自定义副本(同一预置只派生一份)。
+     * 无新增条款是业务结论不是失败:LLM 已交付故不退费,回 changed=false 且不写盘。
+     * **人手动作**:本端点只应由用户/助手显式调用(CLI exec expert.evolve / MCP 同名工具),
+     * 不挂在任何主线闭环收尾上——自动蒸馏仍无出口(G-11 的余面)。 */
+    if (pathname === '/api/wf/evolve-expert' && req.method === 'POST') {
+      if (!CONFIG.apiKey && !(process.env.MOCK_LLM === '1' || CONFIG.mockLlm)) return fail(res, 503, '服务端未配置 LLM key,请创建 config.json 并填入 apiKey', 503);
+      if (!rateLimitOk(user.id)) return fail(res, 429, '请求过于频繁,请稍候', 429);
+      try {
+        const b = await readJSONBody(req, 256 * 1024);
+        const { cur, tree } = wfLoadCtx(user.id, '', '');
+        if (!tree) return fail(res, 404, '尚无云端状态数据(请先创建项目或写入一次状态)', 404);
+        const key = String(b.expert || '').trim();
+        if (!key) return fail(res, 400, '缺少 expert(专家 id 或名称)', 400);
+        const all = ExpertsData.allOf(tree.customExperts);
+        const e = all.find(x => x.id === key) || all.find(x => x.name === key);
+        if (!e) return fail(res, 404, '专家不存在:' + key + '(预置 ex_* 或自定义 cx_*,按 id 或名称)', 404);
+        const st = (tree && tree.settings) || {};
+        const boards = WfCore.expertBoards({
+          expert: e, projects: tree.projects, hiredId: st.hiredExpert, boards: wfMemBoards(),
+        });
+        if (!boards.length) return fail(res, 400, `「${e.name}」还没在任何板块生效(全局雇佣或按板块雇佣),无法确定该蒸馏哪个板块的沉淀`, 400);
+        const bt = boards.join('/');
+        const mem = WfCore.memForBoards(tree.agentMemory, boards).map(m => m.text);
+        if (!mem.length) return fail(res, 400, `「${bt}」板块暂无使用记录(协作记忆)可供进化,先在该板块沉淀几条再来`, 400);
+        // 落点在两道闸之后才算:闸没过就跳过,不给用户的专家库留一条什么也没蒸出来的副本
+        const tg = WfCore.evolveTarget(e, { presets: ExpertsData.EXPERTS, customs: tree.customExperts || [], uid: uid('cx') });
+        const t = tg.target;
+        const r = await wfLLM(user.id, {
+          action: 'llm.evolve', reason: '专家自进化(' + t.name + ')', opId: sanitizeOpId(b.operationId) || uid('wfev'), step: 'main', wfName: 'evolve-expert',
+          model: st.defLLM || 'qwen-turbo',
+          system: WfCore.evolveSystem(bt, st.promptOverrides), // Node 无 window,覆盖表须显式传
+          user: WfCore.buildEvolveUser(t, bt, mem),
+          temperature: 0.3, max_tokens: 600, mockKind: 'evolve',
+        });
+        const clauses = WfCore.evolveClauses(r.parsed, t.persona);
+        const base = { expertId: t.id, name: t.name, from: t.from || '', boards, clauses, model: r.model || 'mock-llm' };
+        // 无新增条款:已交付不退费,副本不入库(没蒸出东西就不往用户专家库里塞条目),不写盘
+        if (!clauses.length) return ok(res, Object.assign({ rev: cur.rev || 0, changed: false, derived: false, evolutions: t.evolutions || 0 }, base));
+        WfCore.evolveApply(t, clauses, new Date());
+        tree.customExperts = Array.isArray(tree.customExperts) ? tree.customExperts : [];
+        if (tg.copy) tree.customExperts.push(tg.copy);
+        const rev = wfSave(user.id, cur, tree);
+        return ok(res, Object.assign({ rev, changed: true, derived: !!tg.copy, evolutions: t.evolutions }, base));
+      } catch (e) {
+        return fail(res, e.httpStatus || 502, e.message || '专家自进化失败', e.httpStatus || 502);
       } finally { rateLimitDone(user.id); }
     }
 

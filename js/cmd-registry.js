@@ -78,6 +78,13 @@
         { name: 'model', type: 'string', desc: '指定文本模型(浏览器:剧本解析向导里用户选的那个;缺省取默认 LLM 设置)' },
         { name: 'local', type: 'boolean', desc: '强制本地启发式提取(零 LLM 零计费;浏览器离线/重试回退语境)' }, UI],
     },
+    {
+      /* 专家自进化:作用在「专家」这个对象上而不在某个项目上,故 needs 为空(不吃 pid/epid)——
+       * 四端唯一一条项目外的领域命令。它是**人手**动作:不挂在任何主线闭环收尾上,也不进 SK-26 的 playbook 步序。 */
+      name: 'expert.evolve', label: '专家自进化', risk: 'exec', needs: [],
+      desc: '把导演助手记忆里该专家生效板块的沉淀蒸馏为 ≤4 条进化条款追加进其 persona(1 积分,失败退费);预置专家的条款落自定义副本(同一预置只派生一份)。未在任何板块生效或该板块无沉淀一律在扣费前如实 blocked',
+      args: [{ name: 'expert', type: 'string', required: true, desc: '专家 id 或名称(预置 ex_* 或自定义 cx_*)' }, UI],
+    },
   ];
 
   const byName = {};

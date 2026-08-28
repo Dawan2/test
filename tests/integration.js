@@ -684,6 +684,83 @@ async function main() {
       JSON.stringify(memCap.map(m => m.fb || '-')).slice(0, 200));
   }
 
+  /* ============ 测试 27(W143):专家自进化的 headless 出口 /api/wf/evolve-expert ============
+   * 此前「🧠 进化」只有浏览器一个入口。本段验 headless 那条路与它同判据同落点:
+   * 两道闸(未在任何板块生效 / 该板块无沉淀)在扣费之前 400 拦下、预置专家的条款落自定义副本
+   * (同一预置只派生一份,再进化落回同一份)、无新增条款不写盘、自定义专家就地改写不派生。
+   * MOCK_LLM 下 wfLLM 不走计费链路,故余额面只验"没有多扣一笔"。 */
+  {
+    const ED = require('../js/experts-data.js');
+    const preset = ED.EXPERTS[0];
+    const loose = { text: '板块归属不明的手工沉淀', time: '2026-08-28 09:00:00' };
+    const scoped = { text: '用户纠正:一个镜头只给一个运镜', time: '2026-08-28 09:10:00', scope: '分镜' };
+    /* meta 是整组替换(服务端 PUT 语义),故每次都把三个桶一并推,不能只推变的那个 */
+    const putMeta = async meta => {
+      const s = await req('GET', '/api/state', null, token);
+      return req('PUT', '/api/state', { rev: +(s.data && s.data.rev || 0), changes: { meta } }, token);
+    };
+    const balBeforeEv = (await req('GET', '/api/wallet', null, token)).data.balance;
+    const putEv = await putMeta({ customExperts: [], settings: {}, agentMemory: [loose] });
+    report('进化夹具就位(记忆桶只剩无板块条目,且一个专家都没雇)', putEv.status === 200, 'HTTP ' + putEv.status);
+
+    await sleep(600);
+    const ev0 = await req('POST', '/api/wf/evolve-expert', { expert: preset.id }, token);
+    report('闸一:专家未在任何板块生效即 400(蒸馏哪个板块的沉淀说不清,扣费前拦下)',
+      ev0.status === 400 && /还没在任何板块生效/.test(ev0.msg || ''), 'HTTP ' + ev0.status + ' ' + ev0.msg);
+    await sleep(600);
+    const evNoArg = await req('POST', '/api/wf/evolve-expert', {}, token);
+    report('缺 expert 参数 400(不拿"随便挑一个专家"兜底)', evNoArg.status === 400 && /缺少 expert/.test(evNoArg.msg || ''), 'HTTP ' + evNoArg.status + ' ' + evNoArg.msg);
+    await sleep(600);
+    const evGhost = await req('POST', '/api/wf/evolve-expert', { expert: 'ex_ghost' }, token);
+    report('专家不存在 404(预置与自定义两张表都查不到)', evGhost.status === 404, 'HTTP ' + evGhost.status + ' ' + evGhost.msg);
+
+    const putEv2 = await putMeta({ customExperts: [], settings: { hiredExpert: preset.id }, agentMemory: [loose] });
+    await sleep(600);
+    const ev1 = await req('POST', '/api/wf/evolve-expert', { expert: preset.id }, token);
+    report('闸二:全局雇佣但生效板块无沉淀即 400(无 scope 的手工条目不算,不拿全桶凑数)',
+      putEv2.status === 200 && ev1.status === 400 && /暂无使用记录/.test(ev1.msg || ''), 'HTTP ' + ev1.status + ' ' + ev1.msg);
+
+    const putEv3 = await putMeta({ customExperts: [], settings: { hiredExpert: preset.id }, agentMemory: [scoped, loose] });
+    await sleep(600);
+    const ev2 = await req('POST', '/api/wf/evolve-expert', { expert: preset.name }, token);
+    report('预置专家按名进化 200:条款落自定义副本(derived=true,同一次调用把副本一并入库)',
+      putEv3.status === 200 && ev2.status === 200 && ev2.data && ev2.data.derived === true && ev2.data.changed === true
+      && /^cx_/.test(ev2.data.expertId || '') && (ev2.data.clauses || []).length === 1,
+      'HTTP ' + ev2.status + ' ' + JSON.stringify(ev2.data || ev2.msg));
+    const evState = (await req('GET', '/api/state', null, token)).data.state;
+    const copy = (evState.customExperts || [])[0] || {};
+    report('副本写回 state:from 记派生源、条款进 persona、evolutions 计到 1',
+      (evState.customExperts || []).length === 1 && copy.from === preset.id
+      && /【进化条款 · /.test(copy.persona || '') && copy.persona.indexOf(preset.persona) === 0 && copy.evolutions === 1,
+      JSON.stringify({ n: (evState.customExperts || []).length, from: copy.from, ev: copy.evolutions }));
+    report('预置注册表一个字没改(改写只落在用户自己的 customExperts 上)',
+      !(evState.customExperts || []).some(x => x && x.id === preset.id) && copy.id !== preset.id,
+      JSON.stringify((evState.customExperts || []).map(x => x.id)));
+
+    await sleep(600);
+    const ev3 = await req('POST', '/api/wf/evolve-expert', { expert: preset.id }, token);
+    const evState2 = (await req('GET', '/api/state', null, token)).data.state;
+    report('再进化落回同一副本(不重复派生),无新增条款时 changed=false 且一个字不写盘',
+      ev3.status === 200 && ev3.data.expertId === copy.id && ev3.data.derived === false && ev3.data.changed === false
+      && (evState2.customExperts || []).length === 1 && evState2.customExperts[0].evolutions === 1,
+      'HTTP ' + ev3.status + ' ' + JSON.stringify(ev3.data || ev3.msg));
+
+    const mine = { id: 'cx_it_evolve', name: '我的分镜专家', custom: true, role: '分镜', persona: '你是我的分镜专家。创作原则:先定关系再定形象。' };
+    const putEv4 = await putMeta({ customExperts: [copy, mine], settings: { hiredExpert: mine.id }, agentMemory: [scoped, loose] });
+    await sleep(600);
+    const ev4 = await req('POST', '/api/wf/evolve-expert', { expert: mine.id }, token);
+    const evState3 = (await req('GET', '/api/state', null, token)).data.state;
+    const mine2 = (evState3.customExperts || []).find(x => x && x.id === mine.id) || {};
+    report('自定义专家就地改写(derived=false,不派生副本),条款追加进它自己的 persona',
+      putEv4.status === 200 && ev4.status === 200 && ev4.data.derived === false && ev4.data.changed === true
+      && (evState3.customExperts || []).length === 2 && /【进化条款 · /.test(mine2.persona || '') && mine2.evolutions === 1,
+      'HTTP ' + ev4.status + ' ' + JSON.stringify(ev4.data || ev4.msg));
+
+    const balAfterEv = (await req('GET', '/api/wallet', null, token)).data.balance;
+    report('MOCK_LLM 下自进化不扣费(计费链路统一由 wfLLM 负责,端点自己不记账)',
+      balAfterEv === balBeforeEv, '前 ' + balBeforeEv + ' 后 ' + balAfterEv);
+  }
+
   console.log(`\n===== ${PASS}/${PASS + FAIL} PASS, ${FAIL} FAIL =====`);
 }
 

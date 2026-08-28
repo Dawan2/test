@@ -304,6 +304,53 @@ async function main() {
       JSON.stringify(memCap.map(m => m.fb || '-')).slice(0, 160));
   }
 
+  /* ---- 专家自进化的 headless 出口(W143):exec expert.evolve → /api/wf/evolve-expert ----
+   * 上一段的夹具刚把记忆桶灌满「分镜」板块条目,正好当蒸馏输入。此处走真实 CLI 子进程:
+   * 两道闸在扣费前如实 blocked(exit 2)、专家不存在 exit 4、预置专家的条款落自定义副本。
+   * 这是项目外命令(不吃 --pid),故 next 也不推。 */
+  {
+    const ED = require(ROOT + '/js/experts-data.js');
+    const preset = ED.EXPERTS[0];
+    const tk = JSON.parse(fs.readFileSync(CFG_DIR + '/config.json', 'utf8')).token;
+    const api = async (method, p, body) => {
+      const res = await fetch(BASE + p, { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tk }, body: body ? JSON.stringify(body) : undefined });
+      return res.json();
+    };
+    /* meta 是整组替换:把当前 tree 的非 projects 桶原样带上,只改雇佣状态与自定义专家表 */
+    const putMeta = async patch => {
+      const cur = await api('GET', '/api/state');
+      const tree = (cur.data && cur.data.state) || {};
+      const meta = {};
+      Object.keys(tree).forEach(k => { if (k !== 'projects') meta[k] = tree[k]; });
+      return api('PUT', '/api/state', { rev: +((cur.data && cur.data.rev) || 0), changes: { meta: Object.assign(meta, patch) } });
+    };
+    r = cli('exec', 'expert.evolve');
+    report('exec expert.evolve 缺 --expert → blocked exit 2(不拿"随便挑一个"兜底)',
+      r.code === 2 && r.out && r.out.error && /缺 --expert/.test(r.out.error.message || ''), 'exit=' + r.code + ' ' + JSON.stringify((r.out && r.out.error) || r.err));
+    await sleep(1100);
+    r = cli('exec', 'expert.evolve', '--expert', 'ex_ghost');
+    report('exec expert.evolve 专家不存在 → exit 4(404 原样映射,不当 blocked)', r.code === 4, 'exit=' + r.code + ' ' + String((r.out && r.out.error && r.out.error.message) || r.err).slice(0, 60));
+    await putMeta({ customExperts: [], settings: {} });
+    await sleep(1100);
+    r = cli('exec', 'expert.evolve', '--expert', preset.id);
+    report('闸一:未在任何板块生效 → blocked no-source exit 2(扣费前拦下,不空烧一次调用)',
+      r.code === 2 && r.out && r.out.error && r.out.error.code === 'no-source' && /还没在任何板块生效/.test(r.out.error.message || ''),
+      'exit=' + r.code + ' ' + JSON.stringify((r.out && r.out.error) || r.err).slice(0, 90));
+    await putMeta({ customExperts: [], settings: { hiredExpert: preset.id } });
+    await sleep(1100);
+    r = cli('exec', 'expert.evolve', '--expert', preset.name);
+    const evOut = (r.out && r.out.result) || {};
+    report('exec expert.evolve 按名进化 exit 0:预置专家的条款落自定义副本(derived=true)',
+      r.code === 0 && r.out.ok === true && evOut.derived === true && evOut.changed === true
+      && /^cx_/.test(evOut.expertId || '') && (evOut.clauses || []).length === 1 && (evOut.boards || []).length > 0,
+      'exit=' + r.code + ' ' + JSON.stringify(r.out && (r.out.result || r.out.error)).slice(0, 120));
+    const evState = ((await api('GET', '/api/state')).data || {}).state || {};
+    report('副本落进 state.customExperts(from 记派生源、条款进 persona),预置注册表一个字没改',
+      (evState.customExperts || []).length === 1 && evState.customExperts[0].from === preset.id
+      && /【进化条款 · /.test(evState.customExperts[0].persona || '') && evState.customExperts[0].id !== preset.id,
+      JSON.stringify((evState.customExperts || []).map(x => x.id + '<-' + x.from)));
+  }
+
   // ---- workflow 统一工作流状态(domain.js 单源口径) ----
   r = cli('workflow', pid);
   report('workflow 项目级(steps+recommendedAction)', r.code === 0 && Array.isArray(r.out.steps) && !!r.out.recommendedAction, (r.out && r.out.recommendedAction && r.out.recommendedAction.key) || '');

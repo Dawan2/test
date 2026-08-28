@@ -1434,6 +1434,108 @@ const expertsTests = [
     assertEq(sb.projType(), 'narration', '雇佣副本后仍是解说模式');
     assertEq(sb.allExperts().length, sb.Experts.EXPERTS.length + 1, '副本并入全部专家表');
   } },
+  /* ---- W143 G-11 第四面:headless 人手出口。蒸馏四步(落点/提示词两半/条款规整/落 persona)
+   * 下沉 js/wf-core.js 双端单源,浏览器与 /api/wf/evolve-expert 同吃这一份。
+   * 下面三条钉的是「这一份是纯的」「浏览器真的在用它」「回执够命令层出结构化结果」。 ---- */
+  { name: 'WfCore 蒸馏四步纯函数:落点判定 / 条款规整 / 条款落 persona(headless 与浏览器同吃这一份)', fn() {
+    const WfCore = require('../js/wf-core.js');
+    const presets = require('../js/experts-data.js').EXPERTS;
+    const dp = presets.find(x => x.id === 'ex_dp');
+    // 落点一:预置专家 → 新派生副本(深拷贝、记 from、名字带派生源名),copy 非空交调用方入库
+    const customs = [];
+    const r1 = WfCore.evolveTarget(dp, { presets, customs, uid: 'cx_t1' });
+    assertEq(r1.copy && r1.copy.id, 'cx_t1', '新派生副本的 id 由调用方给(两端各自的 uid 规则)');
+    assertEq(r1.target, r1.copy, '本次落点就是这份新副本');
+    assertEq(r1.copy.from, 'ex_dp', '副本须记派生源 id(expertBoards 认这一层)');
+    assertEq(r1.copy.custom, true);
+    assertEq(r1.copy.name, (dp.name + '·我的').slice(0, 20));
+    assert(r1.copy.persona === dp.persona && r1.copy !== dp, '内容照搬但不是同一个对象');
+    assert(!dp.from && !dp.custom, '派生不许回改预置注册表一个字');
+    assertEq(presets.find(x => x.id === 'ex_dp').name, dp.name, '预置名字不受副本改名影响');
+    // 落点二:同一预置只派生一份 —— 已有副本时复用,copy 为空(调用方不再入库第二条)
+    customs.push(r1.copy);
+    const r2 = WfCore.evolveTarget(dp, { presets, customs, uid: 'cx_t2' });
+    assertEq(r2.copy, null, '再次进化不派生第二份');
+    assertEq(r2.target.id, 'cx_t1', '落回同一副本(条款不分散在两份上)');
+    // 落点三:自定义专家就地落;不在注册表里的对象同样就地(判"是不是预置"靠注册表反查而非 e.custom)
+    const mine = { id: 'cx_9', name: '我的', persona: 'p' };
+    assertEq(WfCore.evolveTarget(mine, { presets, customs, uid: 'cx_t3' }).target, mine);
+    assertEq(WfCore.evolveTarget(mine, { presets, customs, uid: 'cx_t3' }).copy, null);
+    assertEq(WfCore.evolveTarget({ id: 'ex_dp', custom: true, name: 'x' }, { presets: [], customs: [] }).copy, null,
+      'presets 为空即无从反查:一律就地,不凭 custom 字段猜');
+    // 条款规整:去空白空条、不重复落点已有条款、上限 4 条、非数组回空
+    assertEq(WfCore.evolveClauses({ clauses: ['  a  ', '', '   ', 'b'] }, '').join('|'), 'a|b');
+    assertEq(WfCore.evolveClauses({ clauses: ['已有条款', '新条款'] }, '人设含已有条款一句').join('|'), '新条款');
+    assertEq(WfCore.evolveClauses({ clauses: ['1', '2', '3', '4', '5'] }, '').length, 4, '上限 4 条');
+    assertEq(WfCore.evolveClauses({ clauses: '不是数组' }, '').length, 0);
+    assertEq(WfCore.evolveClauses(null, '').length, 0);
+    // 落 persona:首次新开一段(段名带日期),再次落并入同一段末尾,evolutions 逐次 +1
+    const d = new Date(2026, 7, 28);
+    const t = { name: '我的', persona: '基础人设' };
+    WfCore.evolveApply(t, ['开场三秒进冲突'], d);
+    assertEq(t.persona, '基础人设\n【进化条款 · 2026/8/28】\n- 开场三秒进冲突');
+    assertEq(t.evolutions, 1);
+    WfCore.evolveApply(t, ['台词更口语化'], d);
+    assertEq(t.persona, '基础人设\n【进化条款 · 2026/8/28】\n- 开场三秒进冲突\n- 台词更口语化', '第二轮并入同一段,不另起一段');
+    assertEq(t.evolutions, 2);
+  } },
+  { name: '专家自进化两端同字面:浏览器发出的 system/user 逐字节等于 WfCore 直算(headless 同吃这一份)', fn: async () => {
+    const WfCore = require('../js/wf-core.js');
+    const sb = loadExperts();
+    sb.Store.myProjects = () => [{ id: 'p1', boards: { 分镜: { expert: 'cx_1' } } }];
+    sb.Store.state.agentMemory = [
+      { text: '相邻景别不硬切', scope: '分镜' },
+      { text: '定调偏好', scope: '导演' }, // 板块过滤把它挡在外面,两端算出来的 user 半也就都没有它
+    ];
+    sb.__apiReady = true;
+    sb.__llm = [];
+    sb.API.chatJSON = async req => { sb.__llm.push({ system: req.system, user: ((req.messages || [])[0] || {}).content }); return { clauses: ['每镜给出摄影意图'] }; };
+    const e = { id: 'cx_1', name: '我的分镜专家', role: '摄像', persona: '基础人设' };
+    await sb.Experts.evolveExpert(e);
+    const sent = sb.__llm[0];
+    /* headless 侧(server.js /api/wf/evolve-expert)拿到的就是这两个函数的返回值:
+     * 浏览器不传覆盖表(Prompts.get 隐式读 Store),服务端显式传,缺省下两端逐字节相同 */
+    assertEq(sent.system, WfCore.evolveSystem('分镜'), 'system 半应就是 WfCore.evolveSystem(两端一份)');
+    assertEq(sent.user, WfCore.buildEvolveUser({ name: '我的分镜专家', role: '摄像', persona: '基础人设' }, '分镜', ['相邻景别不硬切']),
+      'user 半应就是 WfCore.buildEvolveUser(两端一份)');
+    assert(!sent.user.includes('定调偏好'), '板块过滤在两端之前:非本板块沉淀不进 user 半');
+    assertEq(WfCore.evolveSystem('分镜', { 'forge.evolveSystem': '覆盖人设。' }).indexOf('覆盖人设。'), 0,
+      '服务端显式传覆盖表时只换人设句(板块点名与 clauses 契约半不变)');
+    assertEq(WfCore.evolveSystem('分镜', { 'forge.evolveSystem': '覆盖人设。' }).slice('覆盖人设。'.length),
+      WfCore.evolveSystem('分镜').slice(require('../js/prompts.js').get('forge.evolveSystem').length));
+  } },
+  { name: 'evolveExpert 回执:两道闸/无新增/成功各有 code,命令层据此出 blocked 与 ok', fn: async () => {
+    const sb = loadExperts();
+    sb.__apiReady = true;
+    sb.__chatJSONResult = { clauses: ['每镜给出摄影意图'] };
+    // 第一道闸:未在任何板块生效(零调用零计费),回 no-board 供命令层出 blocked
+    sb.Store.myProjects = () => [{ id: 'p1', boards: { 分镜: { expert: 'cx_other' } } }];
+    sb.Store.state.agentMemory = [{ text: '相邻景别不硬切', scope: '分镜' }];
+    const e = { id: 'cx_1', name: '我的分镜专家', persona: '基础人设' };
+    const r0 = await sb.Experts.evolveExpert(e);
+    assertEq(r0.ok, false); assertEq(r0.code, 'no-board');
+    assertEq(sb.__charges.length, 0, '前置拦截零计费');
+    // 第二道闸:生效板块无沉淀
+    sb.Store.myProjects = () => [{ id: 'p1', boards: { 分镜: { expert: 'cx_1' } } }];
+    sb.Store.state.agentMemory = [{ text: '定调偏好', scope: '导演' }];
+    const r1 = await sb.Experts.evolveExpert(e);
+    assertEq(r1.code, 'no-memory'); assertEq(r1.boards.join(','), '分镜');
+    assertEq(sb.__charges.length, 0);
+    // 成功:回落点专家 id/名/板块/条款/次数(预置路径回的是副本那一份)
+    sb.Store.state.agentMemory = [{ text: '相邻景别不硬切', scope: '分镜' }];
+    const r2 = await sb.Experts.evolveExpert(e);
+    assertEq(r2.ok, true); assertEq(r2.code, 'done'); assertEq(r2.changed, true);
+    assertEq(r2.expertId, 'cx_1'); assertEq(r2.clauses.join('|'), '每镜给出摄影意图'); assertEq(r2.evolutions, 1);
+    // 无新增条款:LLM 已交付故 ok(不退费),但 changed=false —— 命令层不许把它报成失败
+    sb.__chatJSONResult = { clauses: ['每镜给出摄影意图'] };
+    const r3 = await sb.Experts.evolveExpert(e);
+    assertEq(r3.ok, true); assertEq(r3.code, 'no-clause'); assertEq(r3.changed, false);
+    assertEq(r3.clauses.length, 0);
+    assertEq(sb.__refunds.length, 0, '无新增不退费(与十轮交付边界一致)');
+    // 离线:连闸都不进
+    sb.__apiReady = false;
+    assertEq((await sb.Experts.evolveExpert(e)).code, 'offline');
+  } },
 ];
 
 /* ================= 套件 3:produce.js ================= */
@@ -6426,10 +6528,15 @@ const contractTests = [
     // 取值口与各步锚点配对:两个键互换位置即红
     assert(/get FORGE_SYS\(\) \{ return Prompts\.get\('forge\.system'\) \+ FORGE_CONTRACT; \}/.test(src),
       '锻造器应经注册表取人设句再接就地契约半(不带第二参数=隐式读 Store 覆盖表)');
-    const i = src.indexOf("Prompts.get('forge.evolveSystem')");
-    assert(i >= 0, '进化器应经注册表取人设(不带第二参数=隐式读 Store 覆盖表)');
-    assert(src.slice(i, i + 400).includes('为该板块的指定专家蒸馏「进化条款」'),
+    /* 进化器的取值口自 W143 起在 js/wf-core.js(蒸馏四步下沉双端单源,headless 出口同吃这一份);
+     * 浏览器只剩委托,故这里查的是 wf-core 那一处,并要求 experts.js 不许再自己拼一份 system 半 */
+    const wfc = fs.readFileSync(path.join(ROOT, 'js', 'wf-core.js'), 'utf8');
+    const i = wfc.indexOf("Prompts.get('forge.evolveSystem', ov)");
+    assert(i >= 0, '进化器应在 wf-core 经注册表取人设(覆盖表由调用方注入:浏览器不传、服务端显式传)');
+    assert(wfc.slice(i, i + 400).includes('为该板块的指定专家蒸馏「进化条款」'),
       '进化器取值口应与该步 user 侧锚点配对(两个键串了位即红)');
+    assert(src.includes('WfCore.evolveSystem(bt)') && !src.includes("Prompts.get('forge.evolveSystem')"),
+      'js/experts.js 应委托 WfCore.evolveSystem,不许再就地拼一份进化器 system 半');
     // js/experts.js 内联人设归零(W80 5.4 记的那 1 处 + 未计数的 FORGE_SYS 常量)
     assertEq((src.match(/system: ['`]你是/g) || []).length, 0, 'js/experts.js 应零内联人设');
     assert(!/const FORGE_SYS = /.test(src), '锻造器人设不应再以整串常量写死在源码里');
@@ -6450,12 +6557,16 @@ const contractTests = [
     assert(!data.includes('Prompts.get'), 'js/experts-data.js 预置 persona 库不该被收进注册表(本槽只收工坊两步)');
     assert(require('../js/experts-data.js').EXPERTS.every(e => (e.persona || '').startsWith('你是')),
       '预置专家 persona 仍是数据字面(未被改成取值口)');
-    // 不许长出第二端:工坊两步只在浏览器,收编解决的是「可覆盖」不是「可 headless」
+    /* 契约半也只许一份:锻造器仍只在浏览器(js/experts.js FORGE_CONTRACT),进化器已双端但落点是
+     * js/wf-core.js 那一份——三端各自照抄一份契约半即红(它们只许经 WfCore.evolveSystem 取) */
     ['server.js', 'cli.js', 'mcp.js'].forEach(f => {
       const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
       ['为该板块的指定专家蒸馏', '含{style}{subject}变量'].forEach(anchor =>
         assert(!s.includes(anchor), f + ' 不应出现工坊两步的契约半:' + anchor));
     });
+    assertEq(([].concat(...['js/experts.js', 'js/wf-core.js', 'js/gsettings.js', 'js/commands.js']
+      .map(f => (fs.readFileSync(path.join(ROOT, f), 'utf8').match(/为该板块的指定专家蒸馏/g) || []).map(() => f)))).join(','),
+    'js/wf-core.js', '进化器契约半全仓只许 wf-core 一份(浏览器与 headless 同吃它)');
     // 记账宿主:锻造器归 SK-02(专家条目面)、进化器归 SK-26(evolveExpert 的记账宿主),都写在「已落地」那半
     [['core.expertSkillRef', 'forge.system', '仍欠'], ['review.memoryFeedback', 'forge.evolveSystem', '仍欠(G-11)']]
       .forEach(([id, key, owedMark]) => {
@@ -7527,9 +7638,9 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 509, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
-      ['集成测试', 130, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
-      ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
+    [['单元测试', 512, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+      ['集成测试', 141, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
+      ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
       assert(live >= floor, label + '用例数不得少于 ' + floor + '(实测 ' + live + ');确要删测须同轮说明理由,新增用例时把下限抬到当轮实况');
       const docs = [...readme.matchAll(docRe)].map(m => +m[1]);
@@ -7663,7 +7774,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 162;
+    const FLOOR = 163;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
@@ -9948,8 +10059,14 @@ const memoryTests = [
     const names = require('../js/cmd-registry.js').names();
     sk.steps.forEach(st => assert(names.includes(st.cmd), '步骤命令须已注册:' + st.cmd));
     assertEq(sk.cmds.join(','),
-      'project.extractSubjects,project.splitEpisodes,episode.understanding,episode.generateStoryboard,episode.smartReview,project.release',
-      '命令面由 steps 推出:主线六步按步序登记,发布留痕已是注册命令,不再需要挂假命令名');
+      'project.extractSubjects,project.splitEpisodes,episode.understanding,episode.generateStoryboard,episode.smartReview,project.release,expert.evolve',
+      '命令面 = 回流六步(按步序)+ 人手出口 expert.evolve;发布留痕已是注册命令,不再需要挂假命令名');
+    /* 进化命令有意只进 cmds、不进 steps:steps 是 playbook 投影的来源,
+     * 把「进化」串进主线回流步序就等于把自动蒸馏写成了编排口径,而那正是 G-11 仍欠的那一面 */
+    assert(!sk.steps.some(st => st.cmd === 'expert.evolve'),
+      'expert.evolve 不许进 steps(编排步序里出现进化=自动蒸馏被写成口径)');
+    assert(!(Skills.playbook(sk.id) || { steps: [] }).steps.some(st => st.cmd === 'expert.evolve'),
+      'SK-26 的 playbook 投影里同样不许出现 expert.evolve');
     assert(Skills.playbooks().some(x => x.id === sk.id), '已落地编排面应进 playbooks 投影');
     ['G-11', 'G-02'].forEach(g => assert(sk.gaps.includes(g), '缺口标记按关联索引口径保留:' + g));
     assert(sk.note.includes('仍欠(G-11)') && sk.note.includes('evolveExpert'), 'note 须点名仍欠的自进化面(清 pending 不等于这条没有余量)');
@@ -9977,6 +10094,25 @@ const memoryTests = [
     assert(iMem > 0 && iMem < iCopy && iCopy < iChg, '副本落库须在两道闸之后、扣费之前');
     assert(sk.note.includes('自定义副本') && sk.note.includes('from='), 'note 须写明预置专家的进化落点与派生源字段');
     assert(sk.note.includes('人手动作'), 'note 须如实写明 G-11 仍欠人手触发这一面');
+    /* headless 那一面(W143):出口是领域命令 expert.evolve,四端各自到位且都不另抄一份蒸馏。
+     * 服务端两道闸须落在 wfLLM 之前——闸挪到调用之后就成了"扣完费再告诉你没得蒸",
+     * 而这两道闸零调用零计费正是浏览器那端一直守着的口径。 */
+    const srvEv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    const evSeg = srvEv.slice(srvEv.indexOf("pathname === '/api/wf/evolve-expert'"));
+    const iBoardGate = evSeg.indexOf('还没在任何板块生效');
+    const iMemGate = evSeg.indexOf('暂无使用记录');
+    const iEvLLM = evSeg.indexOf("action: 'llm.evolve'");
+    assert(iBoardGate > 0 && iMemGate > iBoardGate && iEvLLM > iMemGate,
+      '/api/wf/evolve-expert 的两道闸须在 wfLLM 之前(挪到调用之后即扣完费再报没得蒸)');
+    ['evolveTarget', 'evolveSystem', 'buildEvolveUser', 'evolveClauses', 'evolveApply'].forEach(f =>
+      assert(evSeg.indexOf('WfCore.' + f + '(') > 0, '/api/wf/evolve-expert 须委托 WfCore.' + f + '(headless 不许另抄一份蒸馏)'));
+    assert(require('../js/cmd-registry.js').byName['expert.evolve'], 'expert.evolve 须在命令元数据注册表里(四端词表同源)');
+    assert(/POST\('\/api\/wf\/evolve-expert'/.test(fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8')),
+      'CLI exec expert.evolve 须走服务端端点,不在 headless 侧另拼一份提示词');
+    assert(/cmd: 'expert\.evolve'/.test(fs.readFileSync(path.join(ROOT, 'mcp.js'), 'utf8')),
+      'MCP 须有 expert.evolve 的工具出口(走 exec 同链路)');
+    assert(sk.note.includes('expert.evolve') && sk.note.includes('/api/wf/evolve-expert'),
+      'note 须写明 headless 出口的命令名与端点');
     // SK-04 的第三处余量同步改写:审片/发布两个闭环已回流,其余 wf 步仍不回流
     const sk4 = Skills.byId('core.memoryDual');
     assert(sk4.note.includes('SK-26'), 'SK-04 的 note 须随回流面落地同步改写');
