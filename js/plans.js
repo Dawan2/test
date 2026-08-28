@@ -48,9 +48,17 @@
   /* 投影步取材器:cmd → (ctx)=>{key,label,goto?}|null(不待办);ctx 项目级 {p, gates},集级另带 {ep, st, hash}。
    * 登记为 null = 该投影步不占计划步(理由写在旁注)——投影加了新步而这里漏登记时,Plans.projection() 的契约断言先红。 */
   const TODO_OF = {
-    // 剧本那一步已过(gateBlockers 不报 no-script)而主体库还空着
-    'project.extractSubjects': ({ gates }) => (!gates['no-script'] && gates['no-subjects'])
-      ? { key: 'extract', label: '提取主体:剧本已在库,主体库还空着' } : null,
+    /* 剧本那一步已过(gateBlockers 不报 no-script)而主体库还空着;这一步再按「有没有可读的原文」分两态:
+     * 门槛派生认 extractDone 也算走过,而提取真正读入的是整本原文、没有整本才退回各集正文
+     * (Domain.extractSourceText,与三端命令入口同读)。提取过一轮却没留下原文、连分集都还没建的老项目上
+     * 两者结论相反:推命令步等于推一条注定 blocked/no-script 的步,点下去只换来一句"请先上传剧本"——
+     * 那句话本身才是该做的事,故直接出补原文的导航步。步照出、位置照旧,只把动作换成真能办到的那个。 */
+    'project.extractSubjects': ({ p, gates }) => {
+      if (gates['no-script'] || !gates['no-subjects']) return null;
+      return Domain.extractSourceText(p)
+        ? { key: 'extract', label: '提取主体:剧本已在库,主体库还空着' }
+        : { key: 'extract', label: '补上剧本原文:提取主体要读原文,项目里只留了提取记录', goto: '#/project/' + p.id };
+    },
     'subject.generateImage': ({ gates }) => {
       const g = gates['subjects-no-image'];
       return g ? { key: 'subj', label: `补齐主体参考图(${g.count} 个缺图)` } : null;

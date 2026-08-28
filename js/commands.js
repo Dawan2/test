@@ -235,7 +235,7 @@
    * args.local:强制本地启发式(零 LLM 零计费)——向导离线/重试回退走它,故浏览器不再有第二条入库路径 */
   reg('project.extractSubjects', { label: '提取主体' }, ({ p, args }) => metered(REG['project.extractSubjects'], async () => {
     if (!window.EpisodeUtil || !EpisodeUtil.llmExtractSubjects) return fail('unavailable', '主体提取模块未加载');
-    const text = String(p.script || '').trim() || (p.episodes || []).map(e => e.content || '').filter(Boolean).join('\n').trim();
+    const text = Domain.extractSourceText(p); // 提取的输入文本:与 CLI/服务端/计划层同读这一份派生,四处不各写一遍
     if (!text) return blocked('no-script', '项目暂无剧本内容,请先上传剧本');
     const mode = args.mode === 'fine' ? 'fine' : 'normal';
     const types = { character: true, scene: true, prop: true };

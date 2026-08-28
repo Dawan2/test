@@ -1298,7 +1298,7 @@ EXEC['subject.generateImage'] = { needs: ['p'], meter: true, run: async (args, f
 EXEC['project.extractSubjects'] = { needs: ['p'], meter: true, run: async (args, f) => {
   const { p } = await execCtx(args, f);
   if (args.local || args.model) return execBlocked('browser-only', 'local/model 是浏览器语境参数(服务端提取一律走 LLM,模型取账号默认 LLM 设置),headless 请去掉后重跑');
-  const text = String(p.script || '').trim() || (p.episodes || []).map(e => e.content || '').filter(Boolean).join('\n').trim();
+  const text = Domain.extractSourceText(p); // 与浏览器命令层/服务端端点同读一份派生
   if (!text) return execBlocked('no-script', '项目暂无剧本内容,请先上传剧本'); // 前置拦截零调用零计费(剧本正文由服务端重读)
   const b = await POST('/api/wf/extract-subjects', {
     pid: args.pid, mode: args.mode === 'fine' ? 'fine' : 'normal', operationId: crypto.randomUUID(),
