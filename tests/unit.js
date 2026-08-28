@@ -9770,6 +9770,25 @@ const memoryTests = [
     assert(iMem > 0 && iMem < iCopy && iCopy < iChg, '副本落库须在两道闸之后、扣费之前');
     assert(sk.note.includes('自定义副本') && sk.note.includes('from='), 'note 须写明预置专家的进化落点与派生源字段');
     assert(sk.note.includes('人手动作'), 'note 须如实写明 G-11 仍欠人手触发这一面');
+    /* headless 那一面(W143):出口是领域命令 expert.evolve,四端各自到位且都不另抄一份蒸馏。
+     * 服务端两道闸须落在 wfLLM 之前——闸挪到调用之后就成了"扣完费再告诉你没得蒸",
+     * 而这两道闸零调用零计费正是浏览器那端一直守着的口径。 */
+    const srvEv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    const evSeg = srvEv.slice(srvEv.indexOf("pathname === '/api/wf/evolve-expert'"));
+    const iBoardGate = evSeg.indexOf('还没在任何板块生效');
+    const iMemGate = evSeg.indexOf('暂无使用记录');
+    const iEvLLM = evSeg.indexOf("action: 'llm.evolve'");
+    assert(iBoardGate > 0 && iMemGate > iBoardGate && iEvLLM > iMemGate,
+      '/api/wf/evolve-expert 的两道闸须在 wfLLM 之前(挪到调用之后即扣完费再报没得蒸)');
+    ['evolveTarget', 'evolveSystem', 'buildEvolveUser', 'evolveClauses', 'evolveApply'].forEach(f =>
+      assert(evSeg.indexOf('WfCore.' + f + '(') > 0, '/api/wf/evolve-expert 须委托 WfCore.' + f + '(headless 不许另抄一份蒸馏)'));
+    assert(require('../js/cmd-registry.js').byName['expert.evolve'], 'expert.evolve 须在命令元数据注册表里(四端词表同源)');
+    assert(/POST\('\/api\/wf\/evolve-expert'/.test(fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8')),
+      'CLI exec expert.evolve 须走服务端端点,不在 headless 侧另拼一份提示词');
+    assert(/cmd: 'expert\.evolve'/.test(fs.readFileSync(path.join(ROOT, 'mcp.js'), 'utf8')),
+      'MCP 须有 expert.evolve 的工具出口(走 exec 同链路)');
+    assert(sk.note.includes('expert.evolve') && sk.note.includes('/api/wf/evolve-expert'),
+      'note 须写明 headless 出口的命令名与端点');
     // SK-04 的第三处余量同步改写:审片/发布两个闭环已回流,其余 wf 步仍不回流
     const sk4 = Skills.byId('core.memoryDual');
     assert(sk4.note.includes('SK-26'), 'SK-04 的 note 须随回流面落地同步改写');
