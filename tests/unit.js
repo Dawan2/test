@@ -2770,6 +2770,25 @@ const pipelineTests = [
     p.episodes[1].lastReview = { avg: 8 };
     assertEq(sb.Pipeline.hashOf(p, 'review'), '#/project/p1/episode/ep1', '全部达标退回首集(回看报告)');
   } },
+  { name: 'hashOf:审片步骤跳过当下审不了的集(门槛读 episodeState.reviewGate,不再只看 reviewAvg)', fn() {
+    /* 流程条上的「审片」随时点得到,不必等它成为当前步:此前挑集只问"有没有达标分",
+     * 缺正文/未拆镜/分镜判旧的集一律 reviewAvg=null,于是排在前面的那种集把用户接走——
+     * 落地页开口说的却是「编写剧本」「生成分镜」「重新拆镜」。门槛与分集状态同读一份后,这几种集不再是审片的落点。 */
+    const sb = loadPipeline();
+    const mk = (id, over) => makeEp(Object.assign({ id, title: id, content: '剧本', composed: false, shots: [makeShot(0, { confirm: true })] }, over || {}));
+    const p = { id: 'p1', script: 'x', subjects: [], episodes: [
+      mk('ep1', { lastReview: { avg: 8 } }),        // 达标,不是落点
+      mk('ep2', { content: '' }),                    // 缺正文
+      mk('ep3', { shots: [] }),                      // 未拆镜
+      mk('ep4', { shotsSourceRev: 1, lastReview: { avg: 5 } }), // 分镜判旧:低分报告审的不是当前分镜表
+      mk('ep5'),                                     // 三关都过、未审 → 真正的落点
+    ] };
+    assertEq(sb.Pipeline.hashOf(p, 'review'), '#/project/p1/episode/ep5', '应越过三种审不了的集直达首个真待审集');
+    ['ep2', 'ep3', 'ep4'].forEach((id, i) => assertEq(
+      sb.Domain.episodeState(p, p.episodes[i + 1], false).reviewGate, 'unready', id + ' 在分集状态里就是 unready(两处同一道门槛)'));
+    p.episodes.pop(); // 只剩达标集与三种审不了的集 → 无落点,退回首集(与"全部达标"同一条退路)
+    assertEq(sb.Pipeline.hashOf(p, 'review'), '#/project/p1/episode/ep1', '没有可审的集时退回首集,不挑一个审不了的集顶上');
+  } },
 ];
 
 /* ================= 套件 8:sb-views.js(镜头状态归一 shotStatusHTML,P1-4) ================= */
@@ -3124,6 +3143,31 @@ const domainTests = [
     const st2 = sb.Domain.episodeState(p, ep, true);
     assertEq(st2.reviewStale, false, '快照匹配不判旧');
     assertEq(st2.status, 'needs_human', '有效低分仍卡 needs_human(质量闸门)');
+  } },
+  { name: 'episodeState:reviewGate 单源门槛——缺正文/未拆镜/分镜判旧一律 unready,过关后按未审/判旧/低分/达标归码', fn: () => {
+    /* 「这一集该不该去审」此前没有一个可读的字段,消费方各按 reviewAvg 自己判一遍,
+     * 谁也没先问"这一集当下审得了吗":手上留着一份低分报告而分镜表已判旧时,那份报告审的不是当前分镜表,
+     * 主线断点落在拆镜那一步。门槛收在这里出结论,unready 不占任何一档。 */
+    const sb = loadDomain();
+    const mkEp = over => Object.assign({
+      content: '剧本', contentRev: 0, graphRev: 0,
+      shots: [{ id: 'a', order: 0, video: { status: 'done', url: 'v' }, confirm: true }],
+    }, over || {});
+    const stOf = ep => sb.Domain.episodeState(makeP([ep]), ep, true);
+    const gateOf = ep => stOf(ep).reviewGate;
+    assertEq(gateOf(mkEp({ content: '', lastReview: { avg: 5 } })), 'unready', '缺正文:整集审片无从谈起,手上那份低分报告不出档');
+    assertEq(gateOf(mkEp({ shots: [], lastReview: { avg: 5 } })), 'unready', '未拆镜:同上');
+    assertEq(gateOf(mkEp({ shotsSourceRev: 1, lastReview: { avg: 5 } })), 'unready', '分镜表判旧:那份报告审的不是当前分镜表');
+    assertEq(gateOf(mkEp()), 'no-review', '三关都过、没审过 → no-review');
+    assertEq(gateOf(mkEp({ lastReview: { avg: 5 } })), 'low-review', '低于达标线 → low-review');
+    assertEq(gateOf(mkEp({ lastReview: { avg: sb.Domain.REVIEW_MIN } })), 'pass', '恰好达标即 pass');
+    const stale = mkEp();
+    stale.lastReview = { avg: 8, snapshotHash: 'bogus-stale' };
+    assertEq(gateOf(stale), 'review-stale', '记录判旧 → review-stale(判旧优先于分档)');
+    // 门槛与 status 的 needs_human 可达性同一条:三关没过时低分不卡 needs_human,过关后才卡
+    const blocked = mkEp({ shotsSourceRev: 1, lastReview: { avg: 5 } });
+    assertEq(stOf(blocked).status, 'stale', '分镜判旧时断点是重新拆镜,不是审片修订');
+    assertEq(stOf(mkEp({ lastReview: { avg: 5 } })).status, 'needs_human', '过了门槛的低分仍卡 needs_human(质量闸门一字未动)');
   } },
   /* ---- 配音渲染清单(音色配置单源 + audioMeta 凭据 + 判旧 + 成片去向) ---- */
   { name: 'normVoiceCfg:字符串音色 → 结构化;越界数值钳回设置面板区间;空值取缺省', fn: () => {
@@ -8172,7 +8216,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 528, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 530, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 141, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
