@@ -74,77 +74,79 @@
   /* 预置专家的进化落点:自定义副本。预置注册表 js/experts-data.js 是浏览器与服务端共享的静态数据,
    * 原地往 persona 追加条款既存不进 Store(刷新即失),也会让 /api/wf/* 与浏览器两端漂移。
    * 副本记 from=派生源 id:雇佣事实仍挂在预置 id 上,WfCore.expertBoards 认 from,故副本自身还没被雇佣时
-   * 生效板块仍按派生源算,蒸馏输入照样只吃这些板块的沉淀。同一预置专家只派生一份,再次进化落回同一副本。 */
+   * 生效板块仍按派生源算,蒸馏输入照样只吃这些板块的沉淀。同一预置专家只派生一份,再次进化落回同一副本。
+   * 落点判定与副本造形走 WfCore.evolveTarget 双端单源(headless /api/wf/evolve-expert 同一份),
+   * 本函数只做浏览器侧的副作用:入库 Store 与派生提示。 */
   function presetCopy(e) {
-    const had = customExperts().find(x => x.from === e.id);
-    if (had) return had;
-    const c = Object.assign(JSON.parse(JSON.stringify(e)), {
-      id: 'cx_' + Date.now(), custom: true, from: e.id, name: (e.name + '·我的').slice(0, 20),
-    });
-    customExperts().push(c);
+    const r = WfCore.evolveTarget(e, { presets: EXPERTS, customs: customExperts(), uid: 'cx_' + Date.now() });
+    if (!r.copy) return r.target;
+    customExperts().push(r.copy);
     Store.save();
-    U.toast(`预置专家不可改写:已建可进化副本「${c.name}」,条款写进副本,雇佣该副本后生效`, 'info', 4000);
-    return c;
+    U.toast(`预置专家不可改写:已建可进化副本「${r.copy.name}」,条款写进副本,雇佣该副本后生效`, 'info', 4000);
+    return r.copy;
   }
 
   /* ---- 🧠 专家自进化:把导演助手记忆里用户的纠正/偏好沉淀,一次 LLM 调用蒸馏为 ≤4 条「进化条款」追加进该专家 persona ----
    * 预置与自定义专家同一个人手入口、同一份计费口径(收费 1 积分,失败/无新增退费);预置专家的条款落到自定义副本。
    * 记忆源按该专家的生效板块过滤(判据双端单源 WfCore.expertBoards/memForBoards):蒸馏是写死进 persona,
-   * 别的板块的沉淀混进来会让该专家在自己每条链路上都带着不属于它的口径;板块或条目取不到即在扣费前跳过。 */
+   * 别的板块的沉淀混进来会让该专家在自己每条链路上都带着不属于它的口径;板块或条目取不到即在扣费前跳过。
+   * 落点判定/提示词两半/条款规整/条款落 persona 一律走 WfCore(evolveTarget/evolveSystem/buildEvolveUser/
+   * evolveClauses/evolveApply),与 headless 出口 /api/wf/evolve-expert 同一份——本函数只留浏览器侧的
+   * 在线判定、计费五件套与 toast。
+   * 回执 {ok,code,...}:toast 仍照旧播报(四个人手按钮的语义不变),命令层 expert.evolve 据此出结构化结果。 */
   async function evolveExpert(e, done) {
-    if (!e) return;
-    if (!API.isReady()) return U.toast('需要真实 LLM 在线才能进化,请先到「模型配置」完成配置', 'error', 3000);
+    if (!e) return { ok: false, code: 'no-expert', message: '专家不存在' };
+    if (!API.isReady()) { U.toast('需要真实 LLM 在线才能进化,请先到「模型配置」完成配置', 'error', 3000); return { ok: false, code: 'offline', message: '需要真实 LLM 在线才能进化,请先到「模型配置」完成配置' }; }
     const boards = WfCore.expertBoards({
       expert: e, projects: Store.myProjects(), hiredId: (Store.state.settings || {}).hiredExpert,
       boards: (window.AGENT_BOARDS || []).map(b => b.key),
     });
     if (!boards.length) {
-      return U.toast(`「${e.name}」还没在任何板块生效(全局雇佣或到「制片 → 智能体分工」按板块雇佣),无法确定该蒸馏哪个板块的沉淀`, 'info', 4000);
+      const m0 = `「${e.name}」还没在任何板块生效(全局雇佣或到「制片 → 智能体分工」按板块雇佣),无法确定该蒸馏哪个板块的沉淀`;
+      U.toast(m0, 'info', 4000);
+      return { ok: false, code: 'no-board', message: m0 };
     }
     const bt = boards.join('/');
     const mem = WfCore.memForBoards(Store.state.agentMemory, boards).map(m => m.text);
-    if (!mem.length) return U.toast(`「${bt}」板块暂无使用记录(导演助手记忆)可供进化,先在该板块与导演助手协作几轮再来`, 'info', 4000);
+    if (!mem.length) {
+      const m1 = `「${bt}」板块暂无使用记录(导演助手记忆)可供进化,先在该板块与导演助手协作几轮再来`;
+      U.toast(m1, 'info', 4000);
+      return { ok: false, code: 'no-memory', message: m1, boards };
+    }
     // 副本在两道闸之后才落库:闸没过就跳过,不给用户的专家库留一条什么也没蒸出来的副本
     const t = EXPERTS.some(x => x.id === e.id) ? presetCopy(e) : e;
-    if (!U.requireCredits(1, '专家自进化')) return;
+    if (!U.requireCredits(1, '专家自进化')) return { ok: false, code: 'no-credits', message: '积分不足:专家自进化需 1 积分' };
     // 计费走标准五件套展开式(登记→扣费→执行→失败退费),任务监控可对账
     const tk = Tasks.start({ type: '专家自进化', model: 'LLM', target: t.name, cost: 1 });
-    if (!U.charge(1, '专家自进化', tk.id)) { Tasks.fail(tk, '积分不足'); return; }
+    if (!U.charge(1, '专家自进化', tk.id)) { Tasks.fail(tk, '积分不足'); return { ok: false, code: 'no-credits', message: '积分不足:专家自进化需 1 积分' }; }
     try {
       const out = await API.chatJSON({
         model: (Store.state.settings || {}).defLLM || API.getConfig().model,
-        system: Prompts.get('forge.evolveSystem') + `根据用户与创作助手在「${bt}」板块的历史协作记忆(用户的纠正/偏好/已确认决定),为该板块的指定专家蒸馏「进化条款」。只返回 JSON {"clauses":["条款1","条款2"]}(1-4条)。要求:与该专家人设领域及「${bt}」板块职责相关、具体可执行、不重复其已有条款;每条≤40字。`,
-        messages: [{ role: 'user', content: `专家:「${t.name}」(${t.role || '其他'})生效板块:${bt}\n人设:\n${t.persona}\n\n「${bt}」板块历史协作记忆:\n${mem.map((x, i) => (i + 1) + '. ' + x).join('\n')}` }],
+        system: WfCore.evolveSystem(bt), // 浏览器不传覆盖表:Prompts.get 隐式读 Store(与本文件其余取值口同纪律)
+        messages: [{ role: 'user', content: WfCore.buildEvolveUser(t, bt, mem) }],
         temperature: 0.3, max_tokens: 600,
         billingAction: 'llm.evolve', operationId: tk.id,
       });
-      const clauses = (out && Array.isArray(out.clauses) ? out.clauses : []).map(c => String(c).trim()).filter(Boolean)
-        .filter(c => !(t.persona || '').includes(c)).slice(0, 4); // 本地再去重一次,不重复已有条款
+      const clauses = WfCore.evolveClauses(out, t.persona); // 含本地再去重一次(不重复落点已有条款)
       if (!clauses.length) {
         /* 十轮:LLM 蒸馏已成功(服务端 operation 已交付)——无新增条款是业务结论而非失败,
          * 不再本地退款(退款无对应服务端路径,下次同步会把余额改回,两端漂移) */
         Tasks.fail(tk, '无新增条款(蒸馏已完成,记忆与现有人设无增量)');
-        return U.toast('未蒸馏出新的进化条款(记忆与现有人设无增量),本次调用已消耗', 'info', 3500);
+        U.toast('未蒸馏出新的进化条款(记忆与现有人设无增量),本次调用已消耗', 'info', 3500);
+        return { ok: true, code: 'no-clause', expertId: t.id, name: t.name, boards, clauses: [], changed: false };
       }
-      // 追加到 persona:已有「【进化条款 · 日期】」段则并入该段末尾,否则新开一段
-      const d = new Date();
-      const seg = `【进化条款 · ${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}】`;
-      const body = clauses.map(c => '- ' + c).join('\n');
-      if (t.persona.includes('【进化条款 · ')) {
-        t.persona = t.persona.replace(/(【进化条款 · [^\n]+】\n(?:(?:- [^\n]*)\n?)*)/, m2 => m2.replace(/\n?$/, '\n') + body);
-      } else {
-        t.persona = (t.persona || '').replace(/\s*$/, '') + `\n${seg}\n${body}`;
-      }
-      t.evolutions = (t.evolutions || 0) + 1;
+      WfCore.evolveApply(t, clauses, new Date()); // 追加进 persona(已有条款段则并入)+ evolutions 计数
       Store.save();
       Tasks.done(tk);
       U.toast(`🧠「${t.name}」已进化:新增 ${clauses.length} 条进化条款(第 ${t.evolutions} 次进化)`, 'success', 3500);
       if (done) done();
+      return { ok: true, code: 'done', expertId: t.id, name: t.name, from: t.from || '', boards, clauses, changed: true, evolutions: t.evolutions };
     } catch (err) {
       // 十轮:失败退款带 operationId——镜像到服务端按原账单退(服务端未交付自动退费,两端一致)
       U.refund(1, '专家自进化失败:' + (err.message || '未知错误'), tk.id);
       Tasks.fail(tk, err.message || '未知错误');
       U.toast('进化失败,已退费:' + err.message, 'error', 3500);
+      return { ok: false, code: 'evolve', message: err.message || '未知错误' };
     }
   }
 

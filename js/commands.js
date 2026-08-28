@@ -298,6 +298,24 @@
     return out;
   });
 
+  /* 专家自进化(exec,项目外):把该专家生效板块的协作记忆沉淀蒸馏为 ≤4 条进化条款追加进其 persona。
+   * 引擎复用 Experts.evolveExpert(四个人手按钮同一个函数、同一份板块过滤与同一份计费五件套),
+   * 本层只做「按 id 或名称取到专家 → 转结构化回执」,不另起一套蒸馏——与 CLI/MCP 的 headless 出口
+   * (/api/wf/evolve-expert)判据同源。needs 为空:它作用在专家上,不吃 pid/epid,故 next 也不推。 */
+  reg('expert.evolve', { label: '专家自进化', needs: [] }, ({ args }) => metered(REG['expert.evolve'], async () => {
+    if (!window.Experts || !Experts.evolveExpert) return fail('unavailable', '专家模块未加载');
+    const key = String(args.expert || '').trim();
+    if (!key) return blocked('not-found', '缺 expert(专家 id 或名称)');
+    const all = window.allExperts ? allExperts() : [];
+    const e = all.find(x => x.id === key) || all.find(x => x.name === key);
+    if (!e) return blocked('not-found', '专家不存在:' + key);
+    const r = await Experts.evolveExpert(e);
+    if (!r) return fail('evolve', '进化未返回结果');
+    if (r.ok) return ok({ expertId: r.expertId, name: r.name, from: r.from || '', boards: r.boards || [], clauses: r.clauses || [], changed: !!r.changed, evolutions: r.evolutions || 0 });
+    // 两道闸/离线/积分不足一律是前置拦截(零调用零计费),蒸馏本身报错才算失败
+    return r.code === 'evolve' ? fail('evolve', r.message) : blocked(r.code, r.message, { boards: r.boards || [] });
+  }));
+
   /* 一键成片(exec,编排):就绪检查 → 批量生成 → 智能审片(质量闸门) → 合成成片;
    * 待人工镜头默认阻断合成(riskyCompose 放行);审片被关闭/模块缺失时步骤如实登记 skipped
    * (模块缺失=质量闸门无法执行,默认 blocked,riskyCompose 放行);onStep(stepKey) 供跑批行内状态回报;

@@ -1314,6 +1314,10 @@
         { cmd: 'episode.smartReview', args: {}, note: '审片闭环收尾即把该集可判定结论(待返工镜数/共性问题类型/四维最弱维)写回成片板块记忆桶,下一轮审片提示词按板块召回时吃到' },
         { cmd: 'project.release', args: {}, note: '发布闭环收尾同理:门禁状态与未过门项写回项目级记忆桶(未过门不留痕也就不回流)' },
       ],
+      /* 命令面 = steps 六步(回流闭环)+ expert.evolve。后者有意**不进 steps**:它是人手动作,
+       * 串进步序等于把"跑完主线就该进化"写成编排口径,那正是 G-11 余面要先定产品口径的那件事。 */
+      cmds: ['project.extractSubjects', 'project.splitEpisodes', 'episode.understanding',
+        'episode.generateStoryboard', 'episode.smartReview', 'project.release', 'expert.evolve'],
       note: '回流面覆盖主线六个闭环:审片、发布,加前段四步理解/分镜/拆集/提取主体。各步收尾把**可判定**结论'
         + '(待返工镜数、共性问题类型、四维最弱维、发布门状态与未过门项;六维产出数与缺的维名;镜数与缺提示词/未挂主体镜数;'
         + '集数与超长集数;新增主体位数与缺参考图位数)写回既有记忆桶 state.agentMemory,派生只此一份 '
@@ -1338,10 +1342,9 @@
         + 'WfCore.expertBoards(板块雇佣 > 全局雇佣,与 personaFor 同一套)+ WfCore.memForBoards'
         + '(只收 scope 命中的条目,无 scope 的手工沉淀不收),板块或条目取不到在扣费前跳过——'
         + '别的板块的沉淀不再混进本专家 persona,也不拿全量记忆桶凑数。'
-        + '蒸馏那一步的人设句(进化器)也已收编为独立键 forge.evolveSystem,取值口就在 evolveExpert 经 Prompts.get,'
+        + '蒸馏那一步的人设句(进化器)也已收编为独立键 forge.evolveSystem,取值口在 WfCore.evolveSystem 经 Prompts.get,'
         + '缺省逐字节不变、用户在「全局默认值」页改得到——蒸馏用什么口径提炼条款不再写死;'
-        + '与工坊锻造器 forge.system 分两条键(无中生有铸新专家 vs 就地改写已有专家,角色不同),'
-        + '两条同为只有浏览器一个消费点的键(收编解决的是可覆盖不是可 headless)。'
+        + '与工坊锻造器 forge.system 分两条键(无中生有铸新专家 vs 就地改写已有专家,角色不同)。'
         + '同样只收人设句:返回 JSON 的 clauses 约定、1-4 条上限与每条 ≤40 字仍由该步 user 半与 system 契约半拼,'
         + '不开放覆盖(改坏即整轮蒸馏不出条款,且已交付的那次调用不退费)。'
         + '预置专家那一面也已补齐:专家雇佣页的预置卡(风格与功能两类)挂同一个「🧠 进化」按钮,走同一个 '
@@ -1349,8 +1352,15 @@
         + '预置注册表 experts-data.js 是双端共享的静态数据,改不得也存不住,故条款落到该预置专家的自定义副本'
         + '(副本记 from=派生源,同一预置专家只派生一份;副本自身未被雇佣时生效板块按派生源算,'
         + 'WfCore.expertBoards 认 from),副本被雇佣后其条款才进链路。'
-        + '仍欠(G-11):蒸馏仍是人手动作——回流条目要人在专家库点「🧠 进化」才进 persona,'
-        + '自动进化仍无出口;人设句可覆盖不改这一面——改得到提炼口径,改不出自动触发',
+        + 'headless 那一面也已补齐:蒸馏四步(落点 evolveTarget/提示词两半 evolveSystem+buildEvolveUser/'
+        + '条款规整 evolveClauses/落 persona evolveApply)下沉 js/wf-core.js 双端单源,出口是领域命令 expert.evolve——'
+        + '浏览器 Commands 走 evolveExpert、CLI exec 与 MCP hujing_expert_evolve 走服务端 /api/wf/evolve-expert'
+        + '(计费 llm.evolve 服务端定死,两道闸仍在扣费之前 400 拦下,预置专家同样落自定义副本);'
+        + '本条的 cmds 因此比 steps 多一条 expert.evolve,而它有意不进 steps——'
+        + '编排步序里出现"进化"就等于把自动蒸馏写成了口径。'
+        + '仍欠(G-11):蒸馏仍是人手动作——回流条目要人点「🧠 进化」或显式发一条 expert.evolve 才进 persona,'
+        + '自动进化仍无出口;补 headless 出口只是把人手那条路从一端变四端,'
+        + '人设句可覆盖同样不改这一面——改得到提炼口径,改不出自动触发',
     },
     /* ---- 成片 ---- */
     {

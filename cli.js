@@ -98,7 +98,9 @@ async function api(method, apiPath, body, flags, opt) {
   if (r.ok && j && j.code === 0) return opt.fullBody ? j : j.data;
   const msg = (j && (j.message || j.error)) || ('HTTP ' + r.status);
   const exit = r.status === 401 ? 3 : r.status === 404 ? 4 : r.status === 402 ? 6 : r.status === 409 ? 7 : r.status >= 500 ? 5 : 1;
-  throw new CliError(msg, exit);
+  const err = new CliError(msg, exit);
+  err.status = r.status; // 原始 HTTP 状态(exit 把 400 与"连不上服务端"并成了 1,前置拦截要区分得出)
+  throw err;
 }
 const GET = (p, f) => api('GET', p, undefined, f);
 const POST = (p, b, f, o) => api('POST', p, b, f, o);
@@ -1351,12 +1353,34 @@ EXEC['project.release'] = { needs: ['p'], meter: false, run: async (args, f) => 
   }
 } };
 
+/* 专家自进化(exec,项目外):薄封装服务端 /api/wf/evolve-expert——记忆源的板块过滤、落点(预置落自定义副本)、
+ * 提示词两半与条款落 persona 都在端点里走 js/wf-core.js 同一份(与浏览器「🧠 进化」按钮同源),CLI 只调用+结构化回执。
+ * 两道闸(未在任何板块生效 / 该板块无沉淀)服务端 400 前置拦下,零调用零计费 → blocked;
+ * 计费 llm.evolve 服务端定死(1 积分,失败退费),故 meter 走钱包差值。
+ * 人手动作:本命令不进任何 playbook 步序,自动蒸馏没有出口。 */
+EXEC['expert.evolve'] = { needs: [], meter: true, next: false, run: async (args, f) => {
+  const key = String(args.expert || '').trim();
+  if (!key) return execBlocked('intercepted', '缺 --expert(专家 id 或名称)');
+  try {
+    const d = await POST('/api/wf/evolve-expert', { expert: key, operationId: crypto.randomUUID() }, f, { timeoutMs: 240000 });
+    return execOk({
+      expertId: d.expertId, name: d.name, from: d.from || '', boards: d.boards || [],
+      clauses: d.clauses || [], changed: !!d.changed, derived: !!d.derived, evolutions: d.evolutions || 0,
+    });
+  } catch (e) {
+    // 两道闸是前置拦截(服务端 400:未调 LLM、未扣费),如实 blocked 不当失败;
+    // 按原始状态码判而不是 exit——exit 把 400 与"连不上服务端"并成了同一个 1,后者必须照旧抛出去
+    if (e instanceof CliError && e.status === 400) return execBlocked('no-source', e.message);
+    throw e;
+  }
+} };
+
 /* needs 校验面与注册表单源对齐(执行体各端自治;contract 套件锁死 EXEC 键集 = 注册表词表) */
 CmdRegistry.META.forEach(m => { if (EXEC[m.name]) EXEC[m.name].needs = m.needs.slice(); });
 
 CMD.exec = async (a, f) => {
   const name = a[0];
-  need(name, '用法:hujing exec <command> [--args \'{"pid":".."}\'] [--confirm-all] [--no-image] [--timeout 分钟/镜] [--note 说明] [--force] [--min-score 7]\n'
+  need(name, '用法:hujing exec <command> [--args \'{"pid":".."}\'] [--confirm-all] [--no-image] [--timeout 分钟/镜] [--note 说明] [--force] [--min-score 7] [--expert id|名]\n'
     + '  统一领域命令(与前端 Commands.execute 同名同结构,cmd-registry.js 单源):\n'
     + CmdRegistry.META.map(m => `    ${m.name} ${CmdRegistry.usageOf(m)} — ${m.label}`).join('\n'));
   need(EXEC[name], '未注册命令:' + name + ';可用:' + CmdRegistry.names().join(', '));
@@ -1365,7 +1389,7 @@ CMD.exec = async (a, f) => {
    * 未给的 flag 留 undefined 并**跳过赋值**——Object.assign 会把 undefined 也写进去覆盖掉 --args 里的同名值
    * (MCP 各工具正是只传 --args,pid 就此被抹掉),故这里逐键判定后再写。 */
   const flags = {
-    pid: f.pid, epid: f.epid, sid: f.sid, timeout: f.timeout, note: f.note,
+    pid: f.pid, epid: f.epid, sid: f.sid, timeout: f.timeout, note: f.note, expert: f.expert,
     confirmAll: !!f['confirm-all'], noImage: !!f['no-image'], // 布尔开关恒定义:缺省 false 即"未授权"
     overwrite: f.overwrite ? true : undefined, local: f.local ? true : undefined,
     force: f.force ? true : undefined, minScore: f['min-score'] !== undefined ? +f['min-score'] : undefined,
@@ -1581,7 +1605,8 @@ const HELP = `虎鲸漫剧 CLI —— 面向 AI 助手与人工的全链路命�
 
 统一领域命令(与前端 Commands.execute 同名同结构 {ok,status,result,error,cost,next};词表/参数面由 js/cmd-registry.js 单源生成)
 ${CmdRegistry.META.map(m => '  exec ' + (m.name + (CmdRegistry.usageOf(m) ? ' ' + CmdRegistry.usageOf(m) : '')).padEnd(58) + m.label + ':' + m.desc).join('\n')}
-  (exit 映射:ok→0 | blocked→2/6/4 | failed→5;--args '{"pid":".."}' 可整体传参;拆集另支持 --overwrite / --local,发布留痕另支持 --note / --force / --min-score)
+  (exit 映射:ok→0 | blocked→2/6/4 | failed→5;--args '{"pid":".."}' 可整体传参;拆集另支持 --overwrite / --local,发布留痕另支持 --note / --force / --min-score,
+   专家自进化另支持 --expert id|名——项目外命令,不吃 --pid)
 
 工具
   agent "自然语言指令" --pid X [--epid Y] [--scope 板块] [--apply]

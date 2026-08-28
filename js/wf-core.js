@@ -182,6 +182,62 @@
       return true;
     });
   };
+  /* ---- 专家自进化的蒸馏面(双端唯一一份) ----
+   * 板块过滤(上面两个函数)之后的四步:落点判定 → 提示词两半 → 条款规整 → 条款落 persona。
+   * 浏览器 js/experts.js evolveExpert 与服务端 /api/wf/evolve-expert 一律委托这里,两端一字不抄——
+   * 蒸馏结果是写死进专家人设的,两端提炼口径分叉即同一个专家在浏览器与 headless 上长成两份。
+   * 环境差异(落库/toast/计费/记账)留在各端调用点,本层只出判定与文本,不碰环境句柄。 */
+  /* 预置专家的自定义副本(纯造形):深拷贝——浅拷贝会让副本与预置共用 dims/tpl 嵌套对象(改副本即污染注册表);
+   * from 记派生源 id(雇佣事实仍挂在预置 id 上,expertBoards 认这一层);名字带派生源名以便在专家库里认得出。 */
+  W.presetCopyOf = function (e, id) {
+    return Object.assign(JSON.parse(JSON.stringify(e)), {
+      id, custom: true, from: e.id, name: (e.name + '·我的').slice(0, 20),
+    });
+  };
+  /* 蒸馏落点(双端同判):预置注册表是双端共享的静态数据,改不得也存不住,故预置专家的条款落自定义副本;
+   * 同一预置专家只派生一份(已派生过就复用,再次进化落回同一副本),自定义专家就地落。
+   * o={presets:预置注册表, customs:自定义专家库, uid:新副本 id}。
+   * 回 {target, copy}:copy 非空表示这一份是本次新派生、由调用方负责入库(浏览器 Store.save,服务端随 wfSave)。
+   * 判"是不是预置"用注册表反查而不是 e.custom——自定义专家不一定带 custom:true(早年数据与测试夹具不带)。 */
+  W.evolveTarget = function (e, o) {
+    o = o || {};
+    const customs = Array.isArray(o.customs) ? o.customs : [];
+    if (!e || !(Array.isArray(o.presets) ? o.presets : []).some(x => x && x.id === e.id)) return { target: e, copy: null };
+    const had = customs.find(x => x && x.from === e.id);
+    if (had) return { target: had, copy: null };
+    const c = W.presetCopyOf(e, o.uid);
+    return { target: c, copy: c };
+  };
+  /* 蒸馏 system 半:人设句取注册表 forge.evolveSystem(浏览器隐式读覆盖表、服务端显式传),
+   * 其后的板块点名与 clauses 契约(1-4 条、每条 ≤40 字)不开放覆盖——改坏即整轮蒸不出条款而那次调用已交付。 */
+  W.evolveSystem = (bt, ov) => Prompts.get('forge.evolveSystem', ov) + `根据用户与创作助手在「${bt}」板块的历史协作记忆(用户的纠正/偏好/已确认决定),为该板块的指定专家蒸馏「进化条款」。只返回 JSON {"clauses":["条款1","条款2"]}(1-4条)。要求:与该专家人设领域及「${bt}」板块职责相关、具体可执行、不重复其已有条款;每条≤40字。`;
+  /* 蒸馏 user 半:落点专家的身份/生效板块/现有人设 + 该板块沉淀条目(mem 为文本数组,已由 memForBoards 过滤去重) */
+  W.buildEvolveUser = (t, bt, mem) => `专家:「${t.name}」(${t.role || '其他'})生效板块:${bt}
+人设:
+${t.persona}
+
+「${bt}」板块历史协作记忆:
+${(Array.isArray(mem) ? mem : []).map((x, i) => (i + 1) + '. ' + x).join('\n')}`;
+  /* 条款规整:取 clauses 数组 → 去空白空条 → 本地再去重一次(不重复落点已有条款)→ 截 1-4 条上限。
+   * 回空数组即"无新增条款"——业务结论而非失败,调用方据此不退费(LLM 已交付)。 */
+  W.evolveClauses = function (out, persona) {
+    return (out && Array.isArray(out.clauses) ? out.clauses : []).map(c => String(c).trim()).filter(Boolean)
+      .filter(c => !String(persona || '').includes(c)).slice(0, 4);
+  };
+  /* 条款落 persona(就地改写落点专家):已有「【进化条款 · 日期】」段则并入该段末尾,否则新开一段;
+   * evolutions 计数 +1(专家卡的进化角标)。d 为日期对象(段名取年/月/日,两端同格式)。 */
+  W.evolveApply = function (t, clauses, d) {
+    d = d || new Date();
+    const seg = `【进化条款 · ${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}】`;
+    const body = clauses.map(c => '- ' + c).join('\n');
+    if (String(t.persona || '').includes('【进化条款 · ')) {
+      t.persona = t.persona.replace(/(【进化条款 · [^\n]+】\n(?:(?:- [^\n]*)\n?)*)/, m2 => m2.replace(/\n?$/, '\n') + body);
+    } else {
+      t.persona = String(t.persona || '').replace(/\s*$/, '') + `\n${seg}\n${body}`;
+    }
+    t.evolutions = (t.evolutions || 0) + 1;
+    return t;
+  };
   /* 审片侧三步(分镜评审/整集共性汇总/四维成片评审)的人设+记忆注入段:
    * 这三步的 user 模板是纯指令 + JSON 清单,注入段独立成段拼在提示词最前(不进模板变量,不受用户覆盖影响);
    * personaNote 以「。」起头(与 directorNote 同通道口径),独立成行时去掉句首标点。
