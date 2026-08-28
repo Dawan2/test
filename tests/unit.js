@@ -2195,6 +2195,54 @@ const commandsTests = [
     assertEq((got || []).join(','), 'sh1', '子集里点名的鲜镜不重跑(每镜都真扣费),过期镜照跑');
     assertEq(ep.shots[0].video.url, '/uploads/gen/v0.mp4', '鲜镜的产物没被覆盖');
   } },
+  { name: 'generateVideos:一镜也没跑时回执自带实话(仍是 ok,digest 照播;真跑到镜时不带这句也不播)', fn: async () => {
+    /* 「一镜也没跑」与「跑完了」在命令层都是 ok/total:0,引擎一次都没起来故也没有引擎提示可依赖——
+     * 不在回执上把两者分开,用户点完处置连"什么都没发生"都读不到。 */
+    const sb = loadCommands();
+    const { p, ep } = cmdCtx(sb, { shots: [
+      makeShot(0, { confirm: true }),                                                                            // 鲜镜
+      makeShot(1, { confirm: true, final: true, video: { status: 'done', url: 'u', inputHash: 'v3:oldstale' } }), // 定稿 + 过期
+      makeShot(2, { confirm: true, final: true, video: { status: 'done', url: 'u', inputHash: 'v3:oldstale' } }), // 定稿 + 过期
+    ] });
+    const locked = ep.shots.filter(s => s.final).map(s => s.id);
+    assertEq(sb.Domain.episodeState(p, ep, false).counts.stale, locked.length, '夹具前提:过期镜清一色被终稿锁挡着');
+    const r = await sb.Commands.execute('episode.generateVideos', { pid: 'p1', epid: 'ep1', ui: true, shotIds: locked });
+    assertEq(r.ok, true, '这一档仍是 ok:改判 blocked 会让「整集已出片」的计划步与一键成片记上假拦截');
+    assertEq(r.status, 'done');
+    assertEq(r.result.total, 0);
+    assert(!sb.__called.includes('batchGenVideos'), '引擎一次都不该起来(零计费)');
+    assert(new RegExp(locked.length + ' 镜已定稿').test(r.result.note || ''),
+      '回执得点名跑不到的镜数与出路,实际:' + JSON.stringify(r.result.note));
+    sb.Commands.digest(r);
+    assertEq(sb.__toasts.length, 1, '成功档默认静默,唯独这句要播——不播用户读不到任何回音');
+    assertEq(sb.__toasts[0], r.result.note, '播的就是回执上那一句,不另拼第二句');
+    // 点名的镜都是鲜镜:同样一镜没跑,但说的是另一件事(两档串位在这里红)
+    const r2 = await sb.Commands.execute('episode.generateVideos', { pid: 'p1', epid: 'ep1', ui: true, shotIds: ['sh0'] });
+    assert(/1 镜产物已是最新/.test(r2.result.note || ''), '鲜镜档得说清是"没必要跑"而不是"被锁住",实际:' + r2.result.note);
+    // 反面:真跑到镜时不许带这句(带成恒有的话,每次成功都要弹一条)
+    const sb2 = loadCommands();
+    cmdCtx(sb2, { shots: [makeShot(0, { confirm: true, video: { status: 'none' } })] });
+    const r3 = await sb2.Commands.execute('episode.generateVideos', { pid: 'p1', epid: 'ep1', ui: true });
+    assertEq(r3.result.total, 1, '这一档真跑到了镜');
+    assertEq(r3.result.note, undefined, '跑到镜就没有"为什么没跑"可说');
+    sb2.Commands.digest(r3);
+    assertEq(sb2.__toasts.length, 0, '跑完了仍归引擎自己播报,命令层不重复');
+  } },
+  { name: 'generateVideos:整集全出片时"没得跑"不是拦截——produce 照旧走到合成,那一步登记 ok 并附实话', fn: async () => {
+    /* 这一档为什么不改判 blocked:整集已出片再点「一键成片」是正常的重新合成,
+     * 判成 blocked 后计划步(Plans 按 r.ok 归档)会记成失败步、produce 的 steps 里会多一条假拦截。 */
+    const sb = loadCommands();
+    const { ep } = cmdCtx(sb, { shots: [makeShot(0, { confirm: true }), makeShot(1, { confirm: true })] });
+    const r = await sb.Commands.execute('episode.produce', { pid: 'p1', epid: 'ep1' });
+    assertEq(r.ok, true, '一路走到合成:' + JSON.stringify(r.error || {}));
+    const gen = r.result.steps.find(x => x.step === 'generateVideos');
+    assertEq(gen.ok, true, '批量生成这一步不该记成拦截');
+    assertEq(gen.result.total, 0, '本来就没有待跑镜');
+    assert(new RegExp('^本集没有待生成的镜头').test(gen.result.note || ''),
+      '整集这一路的实话与点名那一路分得开,实际:' + JSON.stringify(gen.result.note));
+    assert(new RegExp(ep.shots.length + ' 镜已出片').test(gen.result.note), '数得对上本集镜数,实际:' + gen.result.note);
+    assert(sb.__called.includes('composeVideo'), '合成照做');
+  } },
   { name: 'generateStoryboard:headless hooks.quiet=true,ui 模式 quiet=false(决策弹窗归 UI)', fn: async () => {
     const sb = loadCommands();
     cmdCtx(sb, { shots: [] });
@@ -3493,6 +3541,54 @@ const domainTests = [
     assert(/解锁终稿/.test(sb.Domain.staleSplitNote(2, 1)) && /解锁终稿/.test(sb.Domain.staleSplitNote(0, 2)),
       '两种形状都得给出人工出路');
   } },
+  { name: 'emptyBatchNote:一镜也没跑时逐堆说清为什么(判就绪判旧仍只此一份;各堆之和 = 点名数)', fn: () => {
+    const sb = loadDomain();
+    const mk = (id, order, ex) => Object.assign({ id, order, prompt: 'p', plot: 'plot', characters: [], dialogue: '',
+      narration: '', scene: '', props: [], duration: 5, camera: '固定镜头', confirm: true,
+      video: { status: 'done', url: 'u' } }, ex || {});
+    /* 「产物已是最新」这一堆得真拿 shotVideoReady + shotVideoStale 判,故两条判旧分支各摆一镜:
+     * sh3 指纹对不上、sh4 引用素材换过版——就地另写一份(只看 video.status==='done',或干脆拿 !s.final 当鲜镜)
+     * 会把这两镜连同没出片的 sh5 一起算进「产物已是最新」,那三镜本该落在「没能说清原因」那一堆。 */
+    const subs = [{ id: 'sj9', name: '主角', kind: 'character', image: 'u', imgVer: 3 }];
+    const sh0 = mk('sh0', 0, { characters: ['主角'], video: { status: 'done', url: 'u', assetVer: 3 } });
+    const ep = { id: 'ep1', content: '正文', shots: [
+      sh0,                                                                             // 鲜镜:指纹对得上、素材版跟得上
+      mk('sh1', 1, { final: true, video: { status: 'done', url: 'u', inputHash: 'x' } }), // 定稿 + 过期
+      mk('sh2', 2, { final: true }),                                                   // 定稿但没过期:同样跑不到
+      mk('sh3', 3, { video: { status: 'done', url: 'u', inputHash: 'x' } }),           // 过期(指纹对不上)
+      mk('sh4', 4, { characters: ['主角'], video: { status: 'done', url: 'u', assetVer: 0 } }), // 过期(素材换过版)
+      mk('sh5', 5, { video: { status: 'none' } }),                                     // 没出片
+    ] };
+    const p = makeP([ep], subs);
+    sh0.video.inputHash = sb.Domain.shotInputHash(p, sh0);
+    const picked = ['sh0', 'sh1', 'sh2', 'sh3', 'sh4', 'sh5', 'ghost1', 'ghost2', 'ghost3', 'ghost4'];
+    const note = sb.Domain.emptyBatchNote(p, ep, picked, false);
+    const nums = (note.match(/(\d+) 镜/g) || []).map(x => +x.match(/\d+/)[0]);
+    assertEq(nums[0], picked.length, '开头报的是点名数:' + note);
+    assertEq(nums.slice(1).reduce((a, b) => a + b, 0), picked.length,
+      '各堆之和须等于点名数(有镜没归堆就是回执把它抹掉了):' + note);
+    assert(/2 镜已定稿/.test(note) && /解锁终稿/.test(note), '定稿那堆:2 镜 + 人工出路,实际:' + note);
+    assert(/1 镜产物已是最新/.test(note), '鲜镜那堆只该有 sh0 一镜,实际:' + note);
+    assert(/4 镜不在本集/.test(note), '点名了本集没有的 4 个 id,实际:' + note);
+    assert(/3 镜没能说清原因/.test(note), '两镜过期 + 一镜没出片本该重跑,不许被算进「产物已是最新」,实际:' + note);
+    assertEq(new Set([2, 1, 4, 3]).size, 4, '夹具自证:四堆的数两两不等,否则分堆串位不红');
+    assertEq(sb.Domain.emptyBatchNote(p, ep, ['sh1', 'sh1', 'sh1'], false),
+      sb.Domain.emptyBatchNote(p, ep, ['sh1'], false), '同一镜点名多次仍是一镜');
+    // 整集这一路(不点名):跑不到 = 已定稿 或 已出片;离线模拟产物在线时不算出片,同样得露头
+    const ep2 = { id: 'ep2', content: '正文', shots: [
+      mk('a0', 0), mk('a1', 1),
+      mk('a2', 2, { final: true }), mk('a3', 3, { final: true }), mk('a4', 4, { final: true }),
+      mk('a5', 5, { video: { status: 'done', url: 'u', simulated: true } }),
+    ] };
+    const n2 = sb.Domain.emptyBatchNote(makeP([ep2], subs), ep2, null, true);
+    assert(/^本集没有待生成的镜头/.test(n2), '整集这一路换一句开头(与点名那一路分得开):' + n2);
+    assert(/2 镜已出片/.test(n2) && /3 镜已定稿/.test(n2) && /1 镜没能说清原因/.test(n2),
+      '整集这一路三堆各报各的数(离线模拟产物在线不算出片):' + n2);
+    assertEq((n2.match(/(\d+) 镜/g) || []).map(x => +x.match(/\d+/)[0]).reduce((a, b) => a + b, 0), ep2.shots.length,
+      '整集这一路各堆之和须等于本集镜数:' + n2);
+    assert(/还没有分镜/.test(sb.Domain.emptyBatchNote(p, { shots: [] }, null, false)), '空集如实说没分镜');
+    assert(/还没有分镜/.test(sb.Domain.emptyBatchNote(p, null, ['sh0'], false)), '缺集不抛');
+  } },
 ];
 
 /* ================= 套件 12:bus.js(管线事件总线,第三阶段) ================= */
@@ -4758,6 +4854,34 @@ const releaseTests = [
     assertEq((g.fix.shotIds || []).join(','), 'sh1');
     assertEq((g.fix.rerunShotIds || []).length, 0, '跑得到的一镜也没有,如实报空');
     assertEq((g.fix.lockedShotIds || []).join(','), 'sh1');
+  } },
+  { name: 'G4 一键处置:一镜也没跑时按钮按下去有回音(门上说得清 ≠ 按下去读得到)', fn: async () => {
+    /* 门上那句「全部已定稿…一镜也重跑不到」是按下去之前的话。按下之后:命令层早退 ok/total:0、
+     * 引擎一次都没起来故没有引擎提示、digest 对成功档默认静默——用户点完连"什么都没发生"都读不到。
+     * 本条走的是门禁 → execFix → 命令层 → digest 整条链,数的是引擎实收与用户实读。 */
+    const sb = loadReleaseFix();
+    const p = releaseStaleP(['fresh', 'locked', 'locked']);
+    sb.__proj = p;
+    const g = sb.Release.collect(p, { online: true }).gates.find(x => x.code === 'g4-stale');
+    assertEq(g.staleSplit.rerun, 0, '夹具前提:过期镜清一色被终稿锁挡着');
+    assertEq(g.staleSplit.locked, 2, '夹具前提:两镜定稿过期');
+    let got = null;
+    await sb.Release.execFix(p, g, null, r => { got = r; });
+    assertEq(sb.__genShots.length, 0, '引擎实收 0 镜(这一按本来就跑不动,零计费)');
+    assertEq(got && got.ok, true, '仍是 ok:改判 blocked 会波及计划步与一键成片,不在回执这一面动门槛');
+    assertEq(sb.__toasts.length, 1, '用户须读到恰一条回音(基线这里是 0 条:点完什么都没有)');
+    assert(new RegExp(g.staleSplit.locked + ' 镜已定稿').test(sb.__toasts[0]) && /解锁终稿/.test(sb.__toasts[0]),
+      '回音须点名跑不到的镜数与人工出路,实际:' + sb.__toasts[0]);
+    assertEq(sb.Release.collect(p, { online: true }).gates.find(x => x.code === 'g4-stale').status, 'fail',
+      '门禁重收照旧 fail(本条只补回音,一个门槛没动)');
+    // 对照面:有跑得到的镜时不弹这句(引擎自己会播报,命令层不重复)
+    const sb2 = loadReleaseFix();
+    const p2 = releaseStaleP(['fresh', 'stale', 'locked'], 'p2');
+    sb2.__proj = p2;
+    const g2 = sb2.Release.collect(p2, { online: true }).gates.find(x => x.code === 'g4-stale');
+    await sb2.Release.execFix(p2, g2, null, () => {});
+    assertEq(sb2.__genShots.join(','), 'sh1', '跑得到的那镜照跑');
+    assertEq(sb2.__toasts.length, 0, '真跑到镜就不该多这一条(写成恒播的话这里红)');
   } },
   { name: 'G2 问题清零:真实 Issues 数组契约——脏项目 fail 挂问题中心导航,干净项目 pass', fn() {
     const sb = loadRelease();
@@ -6212,6 +6336,31 @@ const contractTests = [
         rel + ' 的子集过滤须现取 Domain.shotVideoStale 放过期镜过(与挑子集那一侧同一份判据)');
       assert(/!s\.final && ids\.has\(s\.id\)/.test(body), rel + ' 的子集过滤仍须挡住终稿镜(定稿产物不许被覆盖)');
     });
+  } },
+  { name: '一镜也没跑那句实话双端单源:两端空跑早退都现取 Domain.emptyBatchNote,digest 照读回执上那一句', fn() {
+    /* 「一镜也没跑」与「跑完了」在两端都是 ok/total:0,分开它们的只有回执上那句话。
+     * 两端各拼一句就会长成两种说法(浏览器 toast 与 CLI 回执对不上口径),故句子只许有一份;
+     * 浏览器那一端的行为由 commands/release 两套件真跑钉住,CLI 那一端单测层没有可真跑的引擎,故在此源级点名。 */
+    const D = require('../js/domain.js');
+    assertEq(typeof D.emptyBatchNote, 'function', 'Domain 须导出空跑回执单源 emptyBatchNote');
+    [['js/commands.js', path.join(ROOT, 'js', 'commands.js'), "reg('episode.generateVideos'", "\n  reg('"],
+      ['cli.js', path.join(ROOT, 'cli.js'), "EXEC['episode.generateVideos']", '\nEXEC[']].forEach(([rel, abs, head, tail]) => {
+      const src = fs.readFileSync(abs, 'utf8');
+      const i = src.indexOf(head);
+      assert(i >= 0, rel + ' 找不到 episode.generateVideos 的实现(挪窝或改名就同轮改这里,别把本条留成恒真)');
+      const rest = src.slice(i + head.length);
+      const body = rest.slice(0, rest.indexOf(tail) >= 0 ? rest.indexOf(tail) : rest.length);
+      assert(/Domain\.emptyBatchNote\(/.test(body), rel + ' 的空跑早退须现取 Domain.emptyBatchNote(不许就地拼第二句)');
+      /* 那句话的字面不许在两端的可执行行里露面(注释里讲这件事不算);整段被判成注释时本条会成恒真,故先自证行数 */
+      const code = body.split('\n').filter(t => !(/^\s*(\/\/|\/?\*)/.test(t) || !t.trim()));
+      assert(code.length > 20, rel + ' 的 generateVideos 段可执行行取不到(整段被判成注释本条即恒真),实测 ' + code.length + ' 行');
+      const dup = code.filter(t => /一镜也没跑|镜已定稿|产物已是最新/.test(t));
+      assertEq(dup.join(' | '), '', rel + ' 的可执行行里不许出现那句话的字面(出现即说明又抄了一份)');
+    });
+    const cmd = fs.readFileSync(path.join(ROOT, 'js', 'commands.js'), 'utf8');
+    const dg = cmd.slice(cmd.indexOf('function digest('), cmd.indexOf('window.Commands = '));
+    assert(/r\.result && r\.result\.note/.test(dg), 'digest 须读回执上的 note(不读的话浏览器这一端仍是静默)');
+    assert(/U\.toast\(note/.test(dg), 'digest 播的须是回执原句,不另拼一句');
   } },
   { name: '分集级审片门槛单源:达标线/判旧/"这一集当下能不能审"只在 episodeState.reviewGate 一处,流程条与问题中心都不另判', fn() {
     /* 行为面由 domain/issues 两条用例双向钉住;这一条钉源级:判据抄回第二份时行为可以完全一致,
@@ -9210,7 +9359,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 561, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 566, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 143, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {

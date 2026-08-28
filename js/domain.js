@@ -267,6 +267,36 @@
       ? '(可重跑 ' + rerun + ' 镜;另 ' + locked + ' 镜已定稿,批量重生成不覆盖定稿产物,需先解锁终稿)'
       : '(全部已定稿,批量重生成不覆盖定稿产物,一镜也重跑不到,需先解锁终稿)';
   };
+  /* 批量生成一镜也没跑时,回执上「为什么是 0 镜」那句话(单源:命令层与 CLI 同读这一份)。
+   * 「一镜也没跑」与「跑完了」在两端都是 ok/total:0——不带这句话,回执上两者一模一样。
+   * picked 是调用方点过名的镜集(空=整集批量),分档逐条对着两端待跑镜的筛法来:
+   *   点名这一路不跑 = 不在本集 / 已定稿(!s.final 锁) / 已出片且不过期(!ready || stale 的反面);
+   *   整集这一路不跑 = 已定稿 / 已出片(!s.final && !ready 的反面)。
+   * 判旧判就绪全取本模块既有派生(shotVideoReady/shotVideoStale),不另写第三份。 */
+  D.emptyBatchNote = function (p, ep, picked, online) {
+    const shots = (ep && ep.shots) || [];
+    if (!shots.length) return '本集还没有分镜,一镜也没跑';
+    const parts = [];
+    const say = (n, t) => { if (n) parts.push(n + ' 镜' + t); };
+    if (picked && picked.length) {
+      const ids = [...new Set(picked)]; // 点名清单按镜去重:重复的 id 指的是同一镜,不该被数成两镜
+      const hit = shots.filter(s => ids.includes(s.id));
+      const locked = hit.filter(s => s.final).length;
+      const fresh = hit.filter(s => !s.final && D.shotVideoReady(s, online) && !D.shotVideoStale(p, s, online)).length;
+      const gone = ids.length - hit.length;
+      say(locked, '已定稿(批量重生成不覆盖定稿产物,需先解锁终稿)');
+      say(fresh, '产物已是最新');
+      say(gone, '不在本集');
+      say(ids.length - locked - fresh - gone, '没能说清原因'); // 各堆之和恒等于点名数:说不清的镜也得露头,不许被抹平
+      return '点名的 ' + ids.length + ' 镜一镜也没跑:' + parts.join('、');
+    }
+    const locked = shots.filter(s => s.final).length;
+    const done = shots.filter(s => !s.final && D.shotVideoReady(s, online)).length;
+    say(done, '已出片');
+    say(locked, '已定稿');
+    say(shots.length - locked - done, '没能说清原因');
+    return '本集没有待生成的镜头,一镜也没跑:' + parts.join('、');
+  };
   /* ================= 镜头配音(TTS 渲染清单) =================
    * 配音的唯一解释:哪套音色配置生效、已渲染音轨用的是什么参数、能否混入成片。
    * 浏览器(storyboard/sb-gen/sb-batch)渲染后写回 s.audioMeta,合成侧(sb-io.js / cli.js)据此取音轨并落清单凭据;
