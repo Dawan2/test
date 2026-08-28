@@ -108,19 +108,58 @@ W197 的口径「不要改读 `emptyBatchNote`」**反向也钉着**:contract �
 
 ## 七、变异抽查
 
-合完的产品码上现跑,每手改完即还原:
+合完的产品码上现跑,每手改完即还原;每手都先确认**变异真落在被测那一段上**(改完文件确有 diff),
+再读红数——变异表里的红数只有在这一步确认过之后才算读数。
 
 | # | 变异 | 红 | 报在哪 |
 |---|---|---|---|
-| M1 | SK-25 的 `steps` 里插一条 `expert.evolve` | 见下节 | — |
-| M2 | SK-30 的 `steps` 里插一条 `expert.evolve` | 见下节 | — |
-| M3 | 摘掉 `js/cmd-registry.js` 的 `manual: true` | 见下节 | — |
-| M4 | `Skills.validate` 的递归扫只扫顶层 | 见下节 | — |
-| M5 | 主体空跑改读 `Domain.emptyBatchNote`(混用镜头那份) | 见下节 | — |
-| M6 | 主体空跑不写 `result.note` | 见下节 | — |
-| M7 | 摘掉 `Domain.emptyBatchNote`(证明它没被本槽带走) | 见下节 | — |
-| M8 | 主体空跑由 `ok` 改判 `blocked` | 见下节 | — |
+| M1 | SK-25(`review.reviseLoop`)的 `steps` 里插一条 `expert.evolve` | **2** | 新判据点名「人手命令出现在编排步序里」+ 既有那条 `validate` 非空 |
+| M2 | SK-30(`film.produceProjection`)的 `steps` 里插一条 `expert.evolve` | **2** | 同上两条 |
+| M3 | 摘掉 `js/cmd-registry.js` 的 `manual: true` | **1** | 新判据点名「人手命令清单取自注册表 `manual` 字段」——摘掉那一位会让判据变空扫,这一条正是接住这条退化路的 |
+| M4 | `Skills.validate` 的递归摘掉(只扫顶层) | **1** | 新判据点名嵌一层 `steps` 那一路 |
+| M4b | `Skills.validate` 改成只扫编排型条目 | **1** | 新判据点名非编排条目 `core.memoryDual` 那一路 |
+| M5 | 主体空跑改读 `Domain.emptyBatchNote`(混用镜头那份) | **3** | `commands` / `release` / `contract` 各一条,其中源级那条正是 W197 反向禁止混用的判据 |
+| M6 | 主体空跑不写 `result.note` | **3** | `commands` / `release`(点名「用户须读到恰一条回音,基线这里是 0 条」)/ `contract` |
+| M7 | **镜头侧**空跑退回不写 `note` | **4** | `commands` ×2 / `release` G4 / `contract`——本手是拿来证明 `emptyBatchNote` 没被"整份取对侧"那一手带走的:它今天仍被四条判据接着 |
+| M8 | 主体空跑由 `ok` 改判 `blocked` | **2** | `commands` 与 `release` 各点名一次「改判 blocked 会让计划步与 G9 处置记上假拦截」 |
 
-## 八、残留
+M3 / M4 / M4b 三手值得单列:它们红的都是**判据自己的退化路**(空扫、不递归、只扫 live 投影面),
+即这道新闸不会哪天静静退化成恒真句。
 
-（合完后补）
+### 两手反事实:证明本槽真的闭了环,不是判据本来就在
+
+- **W198 的停工位**:同一手 M1(SK-25 插 `expert.evolve`)在 W193 基线 `d55cd7d` 上现跑是
+  **586/586 全绿、一条不红**;在本槽 tip 上红 2。停工位属实,闸是本槽装上的。
+- **W199 残留「`subject.generateImage` 空跑回音仍欠」**:在基线 `825705a` 上现读,
+  那一档就是一句 `ok({ total: 0, ok: 0, failed: [] })`、**回执上没有任何 note**,
+  `cli.js` 那一端连这条空跑分支都没有;而基线 `unit` 是 602/602 全绿——
+  没有任何判据接得住,这正是它当时被记成残留的原因。本槽合入 W197 后,
+  M6 / M5 / M8 三手各红 3 / 3 / 2,残留就此闭环。
+
+## 八、口径复核(合完现取,不靠推断)
+
+- `gaps()` **20 键**未拆、`GUARD_TOPICS` / `TOPIC_FLOOR` **19 / 19**、销号台账 1 条、
+  花名册 `w178-topic-floor-unlist.md` **零 diff**(两支都没登记新主题,故一个字没动)。
+- `expert.evolve` **仍在 `cmds` 上**(`CmdRegistry.names()` 命中)且**逐条目递归扫下来 `steps` 里 0 处**;
+  `Skills.validate()` 现跑 0 条报错。W198 的口径是"加闸不删出口",两头都现验过。
+- 产品面相对基线只有五个文件:`cli.js`(+7 −1)、`js/cmd-registry.js`(+7 −2)、`js/commands.js`(+8 −1)、
+  `js/domain.js`(+24)、`js/skills.js`(+14)。`js/plans.js` **零 diff**、`js/api.js` / `js/issues.js` /
+  `js/pipeline.js` / `js/release.js` 均未进 diff,故 listModels 无失败回落、issues 分报、pipeline 印 rerun、
+  `epFixOf`、`staleShotSplit`、`project.release`、`reviseRetryLimit`、`reviewGate`、`recommendedAction` 让位
+  等既有面结构性保持;`Commands.digest` 一行未改。
+- 在飞的 **W200**(`!s.image` 三处)与 **W201**(`Plans.runAll` 拦 evolve)按任务口径**一条没碰**:
+  `js/plans.js` 零 diff,`!s.image` 那几处调用点逐处仍是各自散着的原样。
+
+## 九、残留
+
+1. **`js/cmd-registry.js` 与 `js/domain.js` 这两次"整份取对侧"没有留下任何冲突痕迹**。
+   本槽是靠四棵树机检把它们分出来的,而不是靠冲突块。下一槽若这两个文件两侧同时有改动,
+   `P1 == B` 这个便宜就没有了,得按真三方逐段核——这一格记在这里提醒。
+2. **`js/plans.js` 的 `generate` 仍拆得出 `expert.evolve` 且 `runAll` 会执行它**(W198 自己已如实登记为射程外)。
+   本槽的闸只封住 `Skills` 那一路的 `steps`,计划层那一路仍开着——正是在飞的 W201 要收的面,本槽一条没碰。
+3. **W198 那道新判据没有进 `GUARD_TOPICS`**(W198 自己登记过,本槽照抄这一格如实留着):
+   它今天只靠用例名活着,改名 / 挪套件不红、真删掉也只报"少了一条用例"。
+   要不要给它立主题编号,留给后续槽判。
+4. **`emptySubjectImageNote` 末一堆「N 位没能说清原因」是安全阀,真实调用点上恒为 0**。
+   它今天没有任何用例能让它非零(W197 造了四位全有图的主体去逼第二份等价写法出错,但那一堆仍是 0),
+   即这一支的行为面无人覆盖,只有源级读得出来。
