@@ -1,5 +1,5 @@
 /* ============ cmd-registry.js 统一领域命令元数据注册表(双端 UMD,二十二轮) ============
- * 全部领域命令的共享元数据(name/label/risk/needs/desc/args)单一来源:
+ * 全部领域命令的共享元数据(name/label/risk/needs/manual/desc/args)单一来源:
  *   浏览器 js/commands.js 的 REG 注册默认值与 Commands.list() 自省、CLI `exec` 用法/help 文案、
  *   mcp.js 工具描述全部由此生成;两端各自只注册 handler(commands.js REG / cli.js EXEC)。
  * meter 为各端执行侧差异(浏览器 produce 由子命令计量,CLI 按整体钱包差值),不进共享元数据。 */
@@ -80,8 +80,11 @@
     },
     {
       /* 专家自进化:作用在「专家」这个对象上而不在某个项目上,故 needs 为空(不吃 pid/epid)——
-       * 四端唯一一条项目外的领域命令。它是**人手**动作:不挂在任何主线闭环收尾上,也不进 SK-26 的 playbook 步序。 */
-      name: 'expert.evolve', label: '专家自进化', risk: 'exec', needs: [],
+       * 四端唯一一条项目外的领域命令。它是**人手**动作:不挂在任何主线闭环收尾上,也不进 SK-26 的 playbook 步序。
+       * manual:「人手动作」在元数据里的落点——蒸馏把条款写死进 persona 且无撤回口,故不许由自动编排代跑。
+       * 四端的人手入口(浏览器「🧠 进化」按钮 / CLI exec / MCP 工具 / 服务端端点)一条不减,
+       * 这个位只钳制「用户没有逐次点它、由程序替他发起」的那些路径。 */
+      name: 'expert.evolve', label: '专家自进化', risk: 'exec', needs: [], manual: true,
       desc: '把导演助手记忆里该专家生效板块的沉淀蒸馏为 ≤4 条进化条款追加进其 persona(1 积分,失败退费);预置专家的条款落自定义副本(同一预置只派生一份)。未在任何板块生效或该板块无沉淀一律在扣费前如实 blocked',
       args: [{ name: 'expert', type: 'string', required: true, desc: '专家 id 或名称(预置 ex_* 或自定义 cx_*)' }, UI],
     },
