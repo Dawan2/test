@@ -893,7 +893,7 @@
         'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem', 'agent.selfFixSystem', 'agent.compactSystem',
         'narration.system', 'reading.system', 'concept.system', 'light.system',
         'voice.recommendSystem', 'voice.recommendBatchSystem', 'comic.bubbleSystem', 'dirset.system', 'dist.copySystem',
-        'rip.system', 'gen.editSystem', 'persona.editSystem'],
+        'rip.system', 'gen.editSystem', 'persona.editSystem', 'plan.system'],
       cmds: ['episode.understanding', 'episode.generateStoryboard', 'episode.smartReview'], gaps: ['G-01'],
       note: 'G-01 已落地:服务端 /api/wf/* 各端点经唯一装配口 wfPersonaNote 注入生效人设(板块雇佣 > 全局雇佣),'
         + '浏览器同装配口;infra 面的 pending 已按实况清空(gaps() 只投影 gaps 字段、不看 pending,清账动不到投影),'
@@ -943,6 +943,9 @@
         + 'js/agent-ops.js 的内联人设至此归零。'
         + '主体编辑页「按指令改」那步的人设句同形收编为独立键 persona.editSystem(取值口在 js/role-editor.js 就地经 '
         + 'Prompts.fill 填主体类别变量 {kind};分镜那侧同形入口的角色与产物落点都不同,不合成一条)。'
+        + '制作计划 LLM 规划步(js/plans.js generate)的人设句同形收编为独立键 plan.system——角色是"制作计划器",'
+        + '出的是按序可执行的步骤表而不是对话回复,故不与对话四条(单轮/分集面板/全局抽屉/预排)合成一个键;'
+        + '取值口就在该步经 Prompts.get,同为只有浏览器一个消费点的键。'
         + '仍欠:四处的 ops 协议/字段面/命令白名单/返回 JSON 约定仍由各自装配口拼、不开放覆盖'
         + '(那半是 ops 解析契约,用户改坏即整轮无 ops);'
         + '音色推荐两条同理只收人设句——音色库取值范围与返回 JSON 约定仍写在各自调用点、不开放覆盖'
@@ -951,6 +954,8 @@
         + '该步也不过本条的 ctx 通道(编辑器工具步不注入生效人设与协作记忆,只是人设句进了注册表);'
         + '主体按指令改那条同理只收人设句——主体名/项目风格/当前设定提示词的摘取与返回 JSON 约定仍写在调用点、'
         + '不开放覆盖(用户改坏即改写结果落不回设定提示词);'
+        + '制作计划那条同理只收人设句——可用领域命令白名单与返回 JSON 的 title/steps 契约仍就地拼、不开放覆盖'
+        + '(用户改坏即整轮拆不出有效步骤,该步 1 积分失败退费);'
         + '多轮那三份与音色推荐两份都没有 Node 第二消费点,两端只落在取值口'
         + '(同一注册表键 + Prompts.get 读覆盖),不是两个消费点',
     },
@@ -995,6 +1000,9 @@
         + '故本条不再手写全量 cmds,全部领域命令仍被索引覆盖由契约断言反查。'
         + '制作计划的步骤已改由本投影生成(js/plans.js fromWorkflow:命令名与步序现取本条 steps,'
         + '每步只在计划层登记"当下待不待办"的状态取材器,需要授权或人工挑选的状态出导航步不代授权);'
+        + '计划层另一条生成路径(js/plans.js generate:1 积分按用户目标 LLM 拆步)有意不切本投影——'
+        + '它拆的是用户自己那个目标而不是主线全链,故只受命令注册表钳制(cmd 必须已注册),'
+        + '人设句收在注册表键 plan.system 名下(登记在 SK-03);'
         + 'MCP 中段流程模板也由本投影切片(js/flow-tpl.js 按主体/分集/分镜/生成四段取本条 steps 的有序切片,'
         + '每步补"参数从哪取"与"断点在哪一码",经 cli flow-template 与 MCP 工具/提示模板出口,只读零计费不代授权)。'
         + 'G-12 的第三个落点也已接上:发布留痕收进命令注册表成 project.release(浏览器按钮/CLI/服务端端点/MCP 同名同结构),'
@@ -1052,8 +1060,9 @@
         + 'js/agent-ops.js 的执行核验器与会话纪要整理器同形收编为 agent.selfFixSystem/agent.compactSystem 两条独立键,'
         + '该文件的内联人设也随之归零。'
         + 'js/experts.js 专家工坊那两处(锻造器与进化器)同形收编为 forge.system/forge.evolveSystem,该文件也随之归零。'
+        + 'js/plans.js 制作计划 LLM 规划步的人设句同形收编为 plan.system,该文件也随之归零。'
         + '仍欠 G-13 的已不在剧本模块自己这两个文件里,而是别处还没收的那几处内联人设:'
-        + 'js/agent-global.js 的意图路由器、js/plans.js 的制作计划器与 js/proj-planner.js 的策划编剧/本土化译制两步仍是内联字面,'
+        + 'js/agent-global.js 的意图路由器与 js/proj-planner.js 的策划编剧/本土化译制两步仍是内联字面,'
         + '那几步既取不到条目正文、用户也覆盖不到',
     },
     /* ---- 主体 ---- */
@@ -1070,7 +1079,7 @@
         + '两处装配口都经 Prompts.get 取值、用户在「全局默认值」页改得到(模板本身也一直改得到),'
         + '故本条自己的登记面已无收编余量;剧本模块那几步、Agent 对话闭环的辅助两步与专家工坊那两步都已收编。'
         + '仍欠 G-13 的不在本条名下:全仓其余模块的内联人设未进注册表'
-        + '(js/agent-global.js 的意图路由器、js/plans.js 的制作计划器与 js/proj-planner.js 那两步仍是内联字面),'
+        + '(js/agent-global.js 的意图路由器与 js/proj-planner.js 那两步仍是内联字面),'
         + '缺口未闭合故按关联索引口径不摘标记。'
         + '生成请求构造点(Domain.buildVideoRequest)不注方法论文本,生成指纹口径不动;'
         + '校验半判定输入就是那份请求的参考图组(人物数上限、被上限挤出、三视图当视频参考),'
