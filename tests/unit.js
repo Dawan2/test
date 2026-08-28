@@ -3388,6 +3388,28 @@ const commandsTests = [
     assertEq(filmed(cb.ep.shots).length, 3, '浏览器那一端三行各得一段:' + vids(cb.ep.shots));
     assertEq(cb.ep.shots.map(s => !!(s.video && s.video.status === 'done')).join(','), rows.map(s => !!(s.video && s.video.status === 'done')).join(','),
       '两端得落到同一个结果上(哪几行出片逐行相同),浏览器:' + vids(cb.ep.shots) + ' / CLI:' + vids(rows));
+    /* ⑤ 并发改表(这一趟跑到一半别处把行删了):序数越界得退回原行为,不许抛 TypeError 把整趟带走;
+     * 同 id 一行都不剩时照旧走 findShot 那个「镜头不存在」出口,如实进 failed 而不是静默丢产物。 */
+    const drop = async (keep) => {
+      const sbX = loadCli();
+      const fxX = cliDisk(sbX, { shots: dupRows() });
+      seqGen(sbX);
+      const origWp = sbX.withProject;
+      let round = 0;
+      sbX.withProject = async (pid, flags, fn) => {
+        if (++round === 3) fxX.epOf().shots = fxX.epOf().shots.filter(keep); // 末轮开跑前别处删了行
+        return origWp(pid, flags, fn);
+      };
+      return { r: await sbX.EXEC['episode.generateVideos'].run({ pid: 'p1', epid: 'ep1', shotIds: ['dup'] }, {}), rows: fxX.epOf().shots };
+    };
+    const gone1 = await drop(s => s.plot !== '第三行'); // 只删末行:序数 3 越界
+    assertEq(gone1.r.result.failed.length, 0,
+      '序数越界得退回首行(原行为),不许让 undefined.image 把这一趟炸成失败:' + JSON.stringify(gone1.r.result.failed));
+    assertEq(filmed(gone1.rows).length, 2, '剩下的两行照旧各有一段片:' + vids(gone1.rows));
+    const gone2 = await drop(s => s.id !== 'dup'); // 同 id 一行不剩
+    assertEq(gone2.r.result.failed.length, 1, '同 id 一行不剩时这一轮如实失败(退费口在 Tasks/服务端),不许静默丢产物');
+    assert(/镜头不存在/.test(gone2.r.result.failed[0].error),
+      '走的仍是 findShot 那个出口,不另造第二个错误说法:' + JSON.stringify(gone2.r.result.failed[0]));
   } },
   { name: 'CLI exec smartReview:单独调用只评一次(重抽循环只在 produce 编排里),故注册表不替它登记 maxRetry', fn: async () => {
     /* 浏览器那一端 episode.smartReview 自己带重抽循环,轮次入参有落点;headless 这一端不是同一形态——
@@ -12902,7 +12924,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 262;
+    const FLOOR = 263;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
