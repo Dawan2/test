@@ -292,6 +292,47 @@ async function main() {
     report('重复 id 落库后只有首行寻得着:shot-set 改的永远是第一行(第二行没有入口够得着)',
       setDup.code === 0 && escShots2[0].plot === '改到首行' && escShots2[1].plot === '同 id 第二行',
       JSON.stringify(escShots2.map(s => s.plot)));
+
+    /* ---- W235 存量重复 id 的显式去重出口:接着上面那张被逃生舱灌成重复的表往下跑 ----
+     * 默认 dry-run 只报计划不写库,--apply 才落(首行留原 id、撞车行改发新 id、回报 renamedIds),
+     * 引用面(lastReview.perShot / uiSel)一个字不动——首行的 id 没变,它们解析到的仍是同一行。 */
+    const refFile = CFG_DIR + '/esc-ref.json';
+    cli('state-get', '--out', refFile);
+    const refSnap = JSON.parse(fs.readFileSync(refFile, 'utf8'));
+    const refEp = refSnap.state.projects.find(p => p.id === escPid).episodes.find(e => e.id === escEpid);
+    refEp.uiSel = 'sh_dup';
+    refEp.lastReview = { avg: 5, time: 'x', perShot: [{ shotId: 'sh_dup', score: 4 }] };
+    fs.writeFileSync(refFile, JSON.stringify(refSnap));
+    cli('state-put', '--file', refFile, '--force');
+    const dry = cli('shots-dedupe', escPid, escEpid);
+    const dryIds = ((cli('shots', escPid, escEpid).out || {}).shots || []).map(s => s.id);
+    report('shots-dedupe 默认 dry-run:报出重复 id 与改名计划,一个字不写库',
+      dry.code === 0 && dry.out && dry.out.applied === false && dry.out.willRename === 1
+      && JSON.stringify(dry.out.duplicates) === JSON.stringify([{ id: 'sh_dup', rows: 2, keepOrder: 0 }])
+      && (dry.out.plan || []).length === 1 && dry.out.plan[0].order === 1 && dry.out.plan[0].from === 'sh_dup'
+      && /^sh_/.test(dry.out.plan[0].to) && dryIds.join(',') === 'sh_dup,sh_dup',
+      JSON.stringify({ applied: dry.out && dry.out.applied, plan: dry.out && dry.out.plan, ids: dryIds }));
+    const app = cli('shots-dedupe', escPid, escEpid, '--apply');
+    const appShots = ((cli('shots', escPid, escEpid).out || {}).shots || []);
+    const appIds = appShots.map(s => s.id);
+    report('shots-dedupe --apply 才写:首行留原 id、撞车行改发新 id,renamedIds 如实回报',
+      app.code === 0 && app.out && app.out.applied === true && app.out.renamedIds === 1
+      && appIds[0] === 'sh_dup' && appIds[1] !== 'sh_dup' && new Set(appIds).size === 2
+      && appShots[1].plot === '同 id 第二行',
+      JSON.stringify({ renamedIds: app.out && app.out.renamedIds, ids: appIds }));
+    const refAfter = CFG_DIR + '/esc-ref2.json';
+    cli('state-get', '--out', refAfter);
+    const ep2 = JSON.parse(fs.readFileSync(refAfter, 'utf8')).state.projects
+      .find(p => p.id === escPid).episodes.find(e => e.id === escEpid);
+    report('shots-dedupe 不动引用:uiSel/lastReview.perShot 原样,且仍解析到去重前那一行(首行)',
+      ep2.uiSel === 'sh_dup' && ((ep2.lastReview || {}).perShot || [])[0].shotId === 'sh_dup'
+      && ep2.shots.findIndex(s => s.id === ep2.uiSel) === 0,
+      JSON.stringify({ uiSel: ep2.uiSel, perShot: (ep2.lastReview || {}).perShot, idx: ep2.shots.findIndex(s => s.id === ep2.uiSel) }));
+    const again = cli('shots-dedupe', escPid, escEpid, '--apply');
+    report('shots-dedupe 幂等:表已干净时如实说没得可去,带 --apply 也不发写入(不拿空提交冒充处理过)',
+      again.code === 0 && again.out && again.out.willRename === 0 && again.out.applied === false
+      && (again.out.duplicates || []).length === 0 && again.out.unique === again.out.total,
+      JSON.stringify(again.out));
   }
 
   // ---- 协作记忆(headless 播种/迁移:零 LLM 零计费,与浏览器同一份种子表) ----

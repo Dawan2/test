@@ -3163,6 +3163,104 @@ const commandsTests = [
         label + ':第 ' + i + ' 字处那句声明的近旁没点名 shots-import——闸在哪条路上、不在哪条路上,得跟着这句话一起说'));
     });
   } },
+  { name: 'CLI shots-dedupe:存量重复镜头 id 的显式去重出口——默认 dry-run 不写库,--apply 只改够不着的后续行', fn: async () => {
+    /* 上面两条是一对:shots-import 那道闸只管导入这条路,state-put 逃生舱有意不设闸。
+     * 于是"灌进去的重复 id 就在库里躺着"这件事一直没有出口——本条钉的就是那条出口。
+     * 它得是**显式**的(用户自己发一条命令,不挂在任何保存路径上偷偷改)且**可撤销口径**的
+     * (默认 dry-run 先报哪些 id 重复、会改成什么,一个字不写库;--apply 才落)。
+     * 落库口径同那道闸:首行留原 id、撞车行改发新 id,并如实回报 renamedIds。
+     * 引用面一个字不动是现跑量出来的结论,不是省事:lastReview.perShot/uiSel/Domain.reviseTargets
+     * 一律按 find 首行语义解析,而首行留的就是原 id——去重前后落到的是同一行;
+     * 改 id 的只有那些任何引用都指不到的后续行(它们此前正是"钱花了什么也没多出来"的那几行)。
+     * 纯改分镜表零上游零 LLM,故不许有人顺手给它套 Tasks.run/扣费(源级钉住)。 */
+    const sb = loadCli();
+    const CMD = vm.runInContext('CMD', sb);
+    const D = require('../js/domain.js');
+    const pending = { confirm: true, image: 'i.png', video: { status: 'none' } }; // 未出片:好让 ④ 那一格数得出引擎实收几行
+    const rows = [
+      makeShot(0, Object.assign({ id: 'dup', plot: '首行' }, pending)),
+      makeShot(1, Object.assign({ id: 'solo', plot: '不重复的那一镜' }, pending)),
+      makeShot(2, Object.assign({ id: 'dup', plot: '第二行' }, pending)),
+      makeShot(3, Object.assign({ id: 'dup', plot: '第三行' }, pending)),
+    ];
+    const review = { avg: 5, time: 'x', perShot: [{ shotId: 'dup', score: 4 }, { shotId: 'solo', score: 9 }] };
+    const { epOf } = cliDisk(sb, { shots: rows, uiSel: 'dup', lastReview: review });
+    // 引用逐条解析成"落到第几行":去重前后拿同一把尺子量(find/findIndex 首行语义)
+    const refs = ep => ({
+      uiSel: (ep.shots || []).findIndex(s => s.id === ep.uiSel),
+      perShot: (ep.lastReview.perShot || []).map(x => (ep.shots || []).findIndex(s => s.id === x.shotId)),
+      revise: D.reviseTargets(ep).map(t => t.order),
+    });
+    const before = refs(epOf());
+    assertEq(JSON.stringify(before), JSON.stringify({ uiSel: 0, perShot: [0, 1], revise: [1] }),
+      '夹具前提:三处引用此刻都落在首行/那一行上,实际:' + JSON.stringify(before));
+    let writes = 0;
+    const commit = sb.withProject;
+    sb.withProject = async (...a) => { writes++; return commit(...a); };
+    // ① 默认 dry-run:报得出重复的是谁、哪一行留原 id、会改成什么,而一次写入都不发
+    const dry = await CMD['shots-dedupe'](['p1', 'ep1'], {});
+    assertEq(writes, 0, 'dry-run 不许发出任何写入(这条命令的"可撤销"就落在这一格上)');
+    assertEq(dry.applied, false, 'dry-run 的回执得自己说清没落库');
+    assertEq(dry.willRename, 2, '三行同 id → 留首行、改后两行,实际:' + dry.willRename);
+    assertEq(JSON.stringify(dry.duplicates), JSON.stringify([{ id: 'dup', rows: 3, keepOrder: 0 }]),
+      '重复的是哪个 id、几行、哪一行留原 id,三样都得报出来,实际:' + JSON.stringify(dry.duplicates));
+    assertEq(dry.plan.map(x => x.order + ':' + x.from).join(','), '2:dup,3:dup',
+      '计划得逐行点名"改哪一行、原来是什么 id",实际:' + JSON.stringify(dry.plan));
+    assert(dry.plan.every(x => /^sh_/.test(x.to) && x.to !== 'dup'), '计划里的新 id 得是真发出来的一个新 id:' + JSON.stringify(dry.plan));
+    assertEq(epOf().shots.map(s => s.id).join(','), 'dup,solo,dup,dup', 'dry-run 之后库里一个 id 都不许变');
+    // ② --apply 才写:首行留原 id、后两行改发新 id,renamedIds 如实回报
+    const done = await CMD['shots-dedupe'](['p1', 'ep1'], { apply: true });
+    assertEq(writes, 1, '--apply 恰好提交一次');
+    assertEq(done.applied, true, '真写了就得说真写了');
+    assertEq(done.renamedIds, 2, '改发新 id 的镜数如实回报(静默改寻址键等于把用户的脚本悄悄弄失配)');
+    const after = epOf();
+    assertEq(after.shots[0].id, 'dup', '首行留原 id(引用全靠它继续解析到同一行)');
+    assertEq(after.shots[1].id, 'solo', '不重复的行一个字都不许动');
+    assert(after.shots[2].id !== 'dup' && after.shots[3].id !== 'dup' && /^sh_/.test(after.shots[2].id),
+      '撞车的后续行须改发新 id,实际:' + JSON.stringify(after.shots.map(s => s.id)));
+    assertEq(new Set(after.shots.map(s => s.id)).size, 4, '落库后四行四个 id,一个不重');
+    assertEq(after.shots.map(s => s.plot).join(','), '首行,不重复的那一镜,第二行,第三行', '只改 id,一行内容都不许动');
+    assertEq(done.renamed.map(x => x.order + '→' + x.to).join(','),
+      after.shots.map((s, i) => i + '→' + s.id).filter((_, i) => i >= 2).join(','),
+      '回执里那份改名映射要与落库实况逐条对得上');
+    // ③ 引用面:三处一个字没改,且去重前后落到的是同一行(这就是"不改引用"的现跑依据)
+    assertEq(after.uiSel, 'dup', 'ep.uiSel 不许被改写');
+    assertEq(JSON.stringify(after.lastReview.perShot), JSON.stringify(review.perShot), 'lastReview.perShot 不许被改写');
+    assertEq(JSON.stringify(refs(after)), JSON.stringify(before),
+      '三处引用去重前后须落到同一行——指错镜才是要迁移的理由,而现跑指的是同一行,实际:' + JSON.stringify(refs(after)));
+    // ④ 收的正是那笔双扣费:点名一个 id,引擎从此只收一行(去重前是三行三笔)
+    const g = await sb.EXEC['episode.generateVideos'].run({ pid: 'p1', epid: 'ep1', shotIds: ['dup'] }, {});
+    assertEq(sb.__genShots.join(','), 'dup', '点名一个 id,引擎只收那一行');
+    assertEq(g.result.total, 1, '回执按真跑的镜数报(去重前这里是 3,三笔视频钱)');
+    // ⑤ 干净的表上跑:如实说没得可去,--apply 也不发写入(不许拿空提交冒充一次"处理过了")
+    const clean = loadCli();
+    const cleanCmd = vm.runInContext('CMD', clean);
+    const c = cliDisk(clean, { shots: [makeShot(0), makeShot(1)] });
+    let cleanWrites = 0;
+    const cleanCommit = clean.withProject;
+    clean.withProject = async (...a) => { cleanWrites++; return cleanCommit(...a); };
+    const noop = await cleanCmd['shots-dedupe'](['p1', 'ep1'], { apply: true });
+    assertEq(cleanWrites, 0, '没有重复 id 时带 --apply 也不许发出写入');
+    assertEq(noop.willRename, 0, '实际:' + JSON.stringify(noop));
+    assertEq(c.epOf().shots.map(s => s.id).join(','), 'sh0,sh1', '干净的表一个 id 不许动');
+    // ⑥ 源级:纯改表不许有人给它套计费;去重口径与 shots-import 那道闸是同一处计算,不许各写一份
+    const cliSrc = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    const body = cliSrc.slice(cliSrc.indexOf("CMD['shots-dedupe']")).split('\n};')[0];
+    assert(body && !/Tasks\.run|billingAction|charge|operationId/.test(body),
+      'shots-dedupe 纯改分镜表、零上游零 LLM,不许走计费路径:' + body);
+    assert(/f\.apply/.test(body), '写不写库只能由 --apply 这一个位决定(默认档得是 dry-run)');
+    assert(/dedupeShotScan/.test(body) && /crypto\.randomBytes/.test(cliSrc.slice(cliSrc.indexOf('const dedupeShotScan'), cliSrc.indexOf("CMD['shots-dedupe']"))),
+      '扫描与改名计划得在一处算(dry-run 报的与 --apply 写的必须是同一份计算)');
+    // 引用面的源级判据只看代码骨架:注释与回执/日志字面里提到那几个名字是说明,不是改写
+    assert(!/lastReview|uiSel|perShot|groupId/.test(blankNonCode(body)),
+      'shots-dedupe 的代码骨架里出现了引用字段:现跑证明首行留原 id 时三处引用落到的是同一行,动它才是新增风险——'
+      + '真要迁移请连着"改哪几处、凭什么"一起判,别顺手塞进来:' + blankNonCode(body));
+    // 对照面:那道导入闸与逃生舱那条不设闸的路都得还在(三条判据是一组,少一条本条不许还绿着)
+    assert(/taken\.has\(s\.id\)[\s\S]*renamedIds/.test(cliSrc.slice(cliSrc.indexOf("CMD['shots-import']")).split('\n};')[0]),
+      '对照面:shots-import 那道写入闸得还在(本命令的落库口径就是照它写的)');
+    assert(/shots-dedupe/.test(cliSrc.slice(cliSrc.indexOf('/* ---- 逃生舱'), cliSrc.indexOf("CMD['state-get']"))),
+      '逃生舱那段注释须把这条收拾办法点出来(不设闸的那条路得说清收拾走哪儿)');
+  } },
   { name: 'CLI exec smartReview:单独调用只评一次(重抽循环只在 produce 编排里),故注册表不替它登记 maxRetry', fn: async () => {
     /* 浏览器那一端 episode.smartReview 自己带重抽循环,轮次入参有落点;headless 这一端不是同一形态——
      * 它是一次 /api/wf/smart-review 往返,重抽循环长在 produce 编排里。故 --args '{"maxRetry":5}'
@@ -11850,9 +11948,9 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 653, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 654, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 148, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
-      ['CLI 冒烟', 113, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
+      ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
       assert(live >= floor, label + '用例数不得少于 ' + floor + '(实测 ' + live + ');确要删测须同轮说明理由,新增用例时把下限抬到当轮实况');
       const docs = [...readme.matchAll(docRe)].map(m => +m[1]);
@@ -12185,7 +12283,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 247;
+    const FLOOR = 248;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
