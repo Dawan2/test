@@ -4388,6 +4388,28 @@ const domainTests = [
     // 两侧措辞不许串成一句(镜头论"镜"、主体论"位")
     assert(!/镜/.test(sb.Domain.emptySubjectImageNote(p, picked)), '主体这一侧不该冒出"镜"字:' + note);
   } },
+  { name: 'emptySubjectImageNote:库里同 id 存着两位时「不在主体库」按点名 id 数(gone 不许为负,更不许把真不在库的那位抵消掉)', fn: () => {
+    /* 主体库里出现同 id 两位(导入/复制主体时并非不可能)时,拿命中的主体条数去减点名数就多减了一次:
+     * 点名那位重复 id 时 gone 变成 -1,回执上明明白白报「-1 位不在主体库」;
+     * 同一笔多减还会把真不在库的那位抵消成 0,让它悄悄落进安全阀那一堆。
+     * 修的是数法(按点名 id 逐个问库里有没有),「同 id 点几次名跑几位」的选人一字未动。 */
+    const sb = loadDomain();
+    const p = makeP([], [
+      { id: 'dup', name: '女主', kind: 'character', image: 'a.png' },
+      { id: 'dup', name: '女主(复制)', kind: 'character' },
+      { id: 'sj1', name: '男主', kind: 'character', image: 'b.png' },
+    ]);
+    const sum = t => (t.match(/(\d+) 位/g) || []).map(x => +x.match(/\d+/)[0]);
+    const note = sb.Domain.emptySubjectImageNote(p, ['dup']);
+    assert(!/-\d+ 位/.test(note), '任何一堆都不许报出负数位:' + note);
+    assert(!/不在主体库/.test(note), '点名的 id 库里有(还有两位),一位也不许算成"不在主体库":' + note);
+    assertEq(sum(note).slice(1).reduce((a, b) => a + b, 0), 1, '各堆之和仍等于点名数:' + note);
+    // 真不在库的那位得自己露头:只把负数钳成 0(max(0, …))在这里红——它把 gone 报成 0 位
+    const mixed = sb.Domain.emptySubjectImageNote(p, ['dup', 'ghost']);
+    assert(/1 位不在主体库/.test(mixed), '同 id 那两位多减掉的一笔不许拿真不在库的那位来抵:' + mixed);
+    assertEq(sum(mixed).slice(1).reduce((a, b) => a + b, 0), 2, '各堆之和仍等于点名数:' + mixed);
+    assertEq(sb.Domain.emptySubjectImageNote(p, ['dup', 'dup', 'ghost']), mixed, '点名清单去重照旧:同一 id 点两次仍是一位');
+  } },
 ];
 
 /* ================= 套件 12:bus.js(管线事件总线,第三阶段) ================= */
