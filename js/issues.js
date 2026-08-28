@@ -189,9 +189,9 @@
       } else if (st.reviewAvg === null || st.reviewAvg === undefined) {
         out.push(Object.assign({}, base, { kind: 'no-review', sev: 'mid', count: 1, label: `「${ep.title}」未审片`, detail: `已有 ${c.total} 镜${c.done ? `、${c.done} 镜已出片` : ''}${ep.composed ? `、成片已合成` : ''},审片步骤未完成——主线卡在审片`, goto: `#/project/${p.id}/episode/${ep.id}` }));
       }
-      if (!st.reviewStale && st.reviewAvg !== null && st.reviewAvg !== undefined && st.reviewAvg < 7) { // 判旧(rev/快照失配)的旧分不再报问题;「需重审」语义由上面 review-stale 那条承接
-        const lows = ((ep.lastReview || {}).perShot || []).filter(x => x.score < 7);
-        out.push(Object.assign({}, base, { kind: 'low-review', sev: 'mid', count: lows.length || 1, label: `「${ep.title}」审片均分 ${st.reviewAvg} 低于达标线`, detail: lows.length ? `低分镜:${lows.map(x => (x.order + 1) + '镜' + x.score + '分').slice(0, 6).join('、')}` : '整体质量待修订(可让助手按问题清单优化提示词)', goto: `#/project/${p.id}/episode/${ep.id}` }));
+      if (!st.reviewStale && st.reviewAvg !== null && st.reviewAvg !== undefined && st.reviewAvg < Domain.REVIEW_MIN) { // 判旧(rev/快照失配)的旧分不再报问题;「需重审」语义由上面 review-stale 那条承接
+        const lows = Domain.reviseTargets(ep); // 低分镜面与修订闭环重抽面同一份派生(达标线/判旧/交集不写第二份)
+        out.push(Object.assign({}, base, { kind: 'low-review', sev: 'mid', count: lows.length || 1, label: `「${ep.title}」审片均分 ${st.reviewAvg} 低于达标线`, detail: lows.length ? `低分镜:${lows.map(x => x.order + '镜' + x.score + '分').slice(0, 6).join('、')}` : '整体质量待修订(可让助手按问题清单优化提示词)', goto: `#/project/${p.id}/episode/${ep.id}` }));
       }
       if (ep.composed && !st.composedReady) out.push(Object.assign({}, base, { kind: 'composed-stale', sev: 'mid', count: 1, label: `「${ep.title}」成片已过期`, detail: '合成输入或剧本已变化,需重新合成', cmd: 'episode.compose' }));
       /* 跨镜主体一致性 / 分镜景别衔接 / 提示词稳定词 / 成片字幕可读性:四条同为投影表里的分集级低危提醒

@@ -707,6 +707,18 @@ ${hasImage ? '附图是该分镜当前生成画面,请结合实际画面与 Prom
   /* 审片报告→修正意见串(自 review.js optimizeShot 下沉):issues 建议优先,否则匹配层建议 */
   W.reviewFixes = r => ((r && r.issues) || []).map(it => it.suggestion).filter(Boolean).join('; ')
     || String((r && r.dimensions && r.dimensions.matching && r.dimensions.matching.suggestion) || '');
+  /* 修订循环重抽面 + 逐镜修正意见(审片修订闭环 SK-25 的编排入参,双端单一来源):
+   * 镜集一律取 Domain.reviseTargets(达标线/判旧/交集/定稿口径不在本层写第二份),
+   * fixes 按 reportId 回取该镜那份报告原文再抽取——报告被挤出最近 5 条时为空串,修订步据此沿用原提示词。
+   * 服务端 /api/wf/smart-review 的 lowShots 与 CLI produce 闭环的 shotIds 同读本函数。 */
+  W.reviseSubset = function (ep) {
+    const shots = (ep && ep.shots) || [];
+    return Domain.reviseTargets(ep).map(t => {
+      const s = shots.find(x => x.id === t.shotId);
+      const rep = t.reportId && s ? ((s.reviews || []).find(r => r.id === t.reportId)) : null;
+      return { shotId: t.shotId, order: t.order, score: t.score, fixes: W.reviewFixes(rep) };
+    });
+  };
   /* 一键优化重写提示词(自 review.js optimizeShot 下沉,双端单一来源:浏览器审片闭环与 CLI produce 修订重抽共用) */
   W.buildOptimizeUser = (styleText, prompt, fixes) => `根据以下审片意见重写分镜提示词,返回 {"prompt":"重写后的中文提示词","changes":"一句话说明改了什么"}。要求:保持原剧情与风格(${styleText}),逐条落实修正意见。
 原提示词:${prompt}

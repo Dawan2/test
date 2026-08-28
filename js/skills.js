@@ -1279,8 +1279,8 @@
       prompts: ['gen.promptSystem'], // 修订步的人设句:浏览器一键优化与 CLI 修订重抽同经 WfCore.optimizeSystem 取
       steps: [
         { cmd: 'episode.smartReview', args: { quiet: true }, note: '整集逐镜评审:低分镜与共性问题落 lastReview' },
-        { cmd: 'episode.generateVideos', args: {}, note: '按审片问题修订提示词后只重跑低分镜(shotIds 传低分镜子集)' },
-        { cmd: 'episode.smartReview', args: {}, note: '复审:仍有待人工镜则回 needs_human' },
+        { cmd: 'episode.generateVideos', args: {}, note: '按审片问题修订提示词后只重跑低分镜(shotIds 子集由编排层现取实况派生,不预设在登记里)' },
+        { cmd: 'episode.smartReview', args: {}, note: '复审:同一份派生出来的子集,仍有待人工镜则回 needs_human' },
         { cmd: 'episode.compose', args: {}, note: '达标后合成成片' },
         { cmd: 'project.release', args: {}, note: '收尾留痕:过发布门后打版本号,未过门如实 blocked 不留痕(force 授权位留空由用户明示)' },
       ],
@@ -1292,8 +1292,14 @@
         + 'force 是授权位(未过门强打),归用户明示,编排层不代授权。'
         + '发布留痕零 LLM、零上游、零计费:它只写 p.releases 与 p.__ver,不进 Tasks.run 也不走 wfLLM,'
         + '门禁判据、fail/warn 计数与 overall 四级口径一个字未动(不抬门也不把 warn 变 fail)。'
-        + '仍欠(G-03):审片虽已是主线一等步骤,本条的修订循环仍靠调用方自己看 lowShots 决定重抽哪几镜——'
-        + 'shotIds 子集不由编排层推导,复审不达标时的收敛次数也没有登记口径',
+        + 'G-03 分两面记:重抽面这一面已落地——「该重抽哪几镜」收进 Domain.reviseTargets 双端单源'
+        + '(达标线取 REVIEW_MIN、报告判旧回空与发布门 G3「视为未审」同口径、与当前分镜表取交集、定稿镜不重抽、'
+        + 'order 取分镜表实位),WfCore.reviseSubset 在其上按 reportId 回取报告补逐镜修正意见;'
+        + 'CLI produce 闭环每轮现取实况派生重抽面再传 shotIds,不再摘回执里那份会与分镜表漂移的 lowShots,'
+        + '服务端 /api/wf/smart-review 的 lowShots、助手工作台摘要与审片完成卡、问题中心 low-review 同读这一份。'
+        + '仍欠(G-03):复审不达标时的收敛次数(maxRetry 的取值依据与"收敛到第几轮算够")仍没有登记口径,'
+        + '两端各按自己的缺省值跑;浏览器闭环 autoSmartReview 是逐镜重试而非整集子集重抽,'
+        + '与 CLI 的分轮口径尚未合成一份',
     },
     {
       id: 'review.memoryFeedback', sk: 'SK-26', name: '审片结论按板块回流专家', stage: 'review',

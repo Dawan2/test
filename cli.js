@@ -1104,6 +1104,17 @@ EXEC['episode.compose'] = { needs: ['p', 'ep'], meter: true, run: async (args, f
   return execOk({ url: c.url, count: c.count });
 } };
 
+/* produce 闭环辅助:修订循环的重抽面由编排层现取实况派生——从服务端最新 state 取该集,
+ * 交 WfCore.reviseSubset 按整集审片报告推导「该重抽哪几镜」+ 逐镜修正意见。
+ * 达标线、报告判旧、与分镜表取交集、定稿不重抽一概判在 Domain.reviseTargets 那一份里,本层不另筛;
+ * 回执里的 lowShots 只作展示,不再当作下一步 shotIds 的名单(它与分镜表漂移时会重抽错镜) */
+async function reviseTargets(args, f) {
+  const { state } = await stateGet(f);
+  const p = (state.projects || []).find(x => x.id === args.pid);
+  const ep = p && (p.episodes || []).find(e => e.id === args.epid);
+  return WfCore.reviseSubset(ep);
+}
+
 /* produce 闭环辅助:按审片意见逐镜修订提示词(重写模板 wf-core 单源,计费 llm.optimize;LLM 失败回退
  * 本地规则,无修正意见沿用原提示词),并重置视频态+确认(供 shotIds 子集重抽)。
  * 单镜异常跳过如实回执;积分不足(402)整轮中止向外抛,不逐镜空烧 */
@@ -1158,8 +1169,10 @@ async function reviseLowShots(args, f, low) {
 }
 
 /* 一键成片(exec,编排):就绪检查 → 批量生成 → 智能审片(质量闸门) → 合成成片,与前端 episode.produce 同步骤同结构;
- * 审片走服务端工作流真实评审,低分镜(<7 分)自动进入 审→改→重抽→复审 闭环(与浏览器 autoSmartReview 同语义):
- * 按审片意见修订提示词 → episode.generateVideos shotIds 子集重抽 → 子集复审合并整集报告,循环 ≤maxRetry(默认 2);
+ * 审片走服务端工作流真实评审,低分镜自动进入 审→改→重抽→复审 闭环(与浏览器 autoSmartReview 同语义):
+ * 每轮的重抽面(哪几镜)由编排层现取实况派生——Domain.reviseTargets 按整集报告判达标线/判旧/与分镜表取交集,
+ * WfCore.reviseSubset 补逐镜修正意见;按审片意见修订提示词 → episode.generateVideos shotIds 子集重抽 →
+ * 子集复审合并整集报告,循环 ≤maxRetry(默认 2);
  * 仍有低分镜则质量闸门阻断合成(needs_human);审片被关闭或评审未产出结论时如实登记 skipped/失败,
  * 后者阻断合成不静默通过,--args riskyCompose 放行 */
 EXEC['episode.produce'] = { needs: ['p', 'ep'], meter: true, run: async (args, f) => { // meter:整体钱包差值(与前端 steps 累加同口径)
@@ -1182,8 +1195,10 @@ EXEC['episode.produce'] = { needs: ['p', 'ep'], meter: true, run: async (args, f
     steps.push({ step: 'smartReview', ok: false, status: 'skipped', result: null, error: { code: 'disabled', message: '审片已按参数关闭(smartReview:false),质量闸门未执行' } });
   } else {
     let rv = await call('smartReview', 'episode.smartReview');
-    let low = (rv.result && rv.result.lowShots) || [];
     const maxRetry = Math.max(1, Math.min(5, +args.maxRetry || 2));
+    // 重抽面由编排层现取实况派生(不摘回执里那份名单);本轮审片没出结论时不派生,
+    // 留给下面的 review-unavailable 分支如实报"质量闸门未执行",不拿上一份报告冒充本轮结论
+    let low = (rv.result && rv.result.reviewed) ? await reviseTargets(args, f) : [];
     for (let attempt = 1; attempt <= maxRetry && low.length; attempt++) {
       log('低分 ' + low.length + ' 镜,按审片意见修订重抽(第 ' + attempt + '/' + maxRetry + ' 轮)…');
       let fix;
@@ -1194,7 +1209,7 @@ EXEC['episode.produce'] = { needs: ['p', 'ep'], meter: true, run: async (args, f
       await call('regen' + attempt, 'episode.generateVideos', { shotIds: fix.revised, confirmAll: false });
       rv = await call('reReview' + attempt, 'episode.smartReview', { shotIds: fix.revised });
       if (!rv.result || !rv.result.reviewed) break; // 复审失败:保守保留低分名单进闸门
-      low = rv.result.lowShots || [];
+      low = await reviseTargets(args, f); // 下一轮同样现取实况派生
     }
     if (low.length && !args.riskyCompose) {
       return { ok: false, status: 'needs_human', error: { code: 'manual-gate', message: '低分 ' + low.length + ' 镜(' + low.map(x => x.order + '镜' + x.score + '分').join('、') + '),修订重抽后仍不达标,质量闸门已阻断合成(riskyCompose 可放行)' }, result: { steps } };

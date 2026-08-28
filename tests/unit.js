@@ -759,6 +759,25 @@ const agentOpsTests = [
     assertEq(d.lowShots[0].n, 1); assertEq(d.lowShots[0].score, 5);
     assertEq(d.running, 1);
   } },
+  { name: 'stateDigest/stateBlock:低分镜面取 Domain.reviseTargets;判旧报告不出低分镜也不冒充"全部达标"', fn() {
+    const sb = loadAgentOps(); const AO = sb.AgentOps;
+    /* 报告写下之后 sh2 定稿了:助手看见的低分镜面与修订闭环真会重抽的那一份必须是同一份 */
+    const ep = makeEp({ lastReview: { avg: 5.5, perShot: [
+      { shotId: 'sh0', order: 0, score: 5 }, { shotId: 'sh2', order: 2, score: 4 },
+    ] } });
+    ep.shots[2].final = true;
+    sb.Review = { episodeReviewStale: () => false };
+    const d = AO.stateDigest({ id: 'p1' }, ep);
+    assertEq(d.lowShots.map(x => x.n).join(','), '1', '已定稿镜不进低分镜面(定稿不重抽)');
+    assert(/低分镜:1镜5分/.test(AO.stateBlock({ id: 'p1' }, ep)), '摘要应列出该重抽的那一镜');
+    // 判旧:旧分不再出重抽面,那就更不能拿"全部达标"回话
+    const stale = makeEp({ lastReview: { avg: 5.5, sourceRev: 9, perShot: [{ shotId: 'sh0', order: 0, score: 5 }] } });
+    sb.Review = { episodeReviewStale: () => true };
+    assertEq(AO.stateDigest({ id: 'p1' }, stale).lowShots.length, 0, '判旧的报告不出低分镜面');
+    const blk = AO.stateBlock({ id: 'p1' }, stale);
+    assert(/均分5.5\(旧版\)/.test(blk), '判旧仍如实报均分与旧版标记');
+    assert(!/全部达标/.test(blk), '判旧时不许冒充"全部达标"');
+  } },
   { name: 'stateBlock:集级只列非零项/项目级各集一行', fn() {
     const sb = loadAgentOps(); const AO = sb.AgentOps;
     const ep = makeEp();
@@ -2869,6 +2888,40 @@ const domainTests = [
     const src = fs.readFileSync(path.join(ROOT, 'js/domain.js'), 'utf8');
     assert(!/reviewAvg < 7/.test(src), 'domain 不应再有硬编码 7 的审片达标线字面量');
   } },
+  { name: 'reviseTargets:重抽面 = 报告低分镜 ∩ 分镜表在列未定稿镜,order 与排序取分镜表实位', fn: () => {
+    const sb = loadDomain();
+    /* 报告写下之后分镜表动过:sh2 被删、sh3 定稿、sh1 调到了第一位。
+     * 编排层要的是"现在还该重抽哪几镜",不是报告里那份可能已经漂移的名单。 */
+    const ep = { content: '剧本', contentRev: 0, graphRev: 0,
+      shots: [{ id: 'sh1', order: 0 }, { id: 'sh3', order: 1, final: true }, { id: 'sh0', order: 2 }],
+      lastReview: { avg: 6, perShot: [
+        { shotId: 'sh0', order: 0, score: 5, reportId: 'rv0' },
+        { shotId: 'sh1', order: 1, score: 6.5, reportId: 'rv1' },
+        { shotId: 'sh2', order: 2, score: 4, reportId: 'rv2' }, // 报告后被删掉的镜
+        { shotId: 'sh3', order: 3, score: 3, reportId: 'rv3' }, // 已定稿:不重抽
+        { shotId: 'sh4', order: 4, score: 7, reportId: 'rv4' }, // 恰好达标:不在重抽面
+      ] } };
+    const t = sb.Domain.reviseTargets(ep);
+    assertEq(t.map(x => x.shotId).join(','), 'sh1,sh0', '只留在列未定稿的低分镜,且按分镜表实位排序');
+    assertEq(t.map(x => x.order).join(','), '1,3', 'order 应取当前分镜表实位(1 起),不用报告里记的旧位');
+    assertEq(t[0].score, 6.5); assertEq(t[0].reportId, 'rv1', '带回 reportId 供调用方取回那份报告原文');
+    assertEq(sb.Domain.reviseShotIds(ep).join(','), 'sh1,sh0', 'reviseShotIds 是重抽面的 shotId 投影');
+    assertEq(sb.Domain.reviseTargets({ shots: [{ id: 'sh0', order: 0 }] }).length, 0, '没有整集报告时重抽面为空');
+  } },
+  { name: 'reviseTargets:报告判旧一律回空(旧分不驱动重抽,与发布门 G3「视为未审」同口径)', fn: () => {
+    const sb = loadDomain();
+    const ep = { content: '剧本', contentRev: 0, graphRev: 0,
+      shots: [{ id: 'sh0', order: 0, video: { status: 'done', url: 'v1', inputHash: 'h1' } }],
+      lastReview: { avg: 5, sourceRev: 0, graphRev: 0, perShot: [{ shotId: 'sh0', order: 0, score: 5 }] } };
+    ep.lastReview.snapshotHash = sb.Domain.reviewSnapshotHashOf(ep);
+    assertEq(sb.Domain.reviseTargets(ep).length, 1, '报告仍对当前镜头集时低分镜在重抽面上');
+    ep.shots[0].video = { status: 'done', url: 'v2', inputHash: 'h2' }; // 镜头已重抽 → 整集报告判旧
+    assertEq(sb.Domain.reviseTargets(ep).length, 0, '判旧的报告不出重抽面:该重审而不是照旧分再抽一遍');
+    assertEq(sb.Domain.reviseShotIds(ep).length, 0);
+    ep.lastReview.snapshotHash = sb.Domain.reviewSnapshotHashOf(ep);
+    ep.contentRev = 1;
+    assertEq(sb.Domain.reviseTargets(ep).length, 0, '剧本修订后同样判旧回空(与 reviewStaleByScript 同一份判定)');
+  } },
   { name: 'understandingStale 挂 graphRev(二十三轮):无字段保持原语义/失配判旧/对齐恢复', fn: () => {
     const sb = loadDomain();
     const ep = { content: 'v1', contentRev: 1, graphRev: 3, understanding: { 剧情脉络: 'x', sourceRev: 1 } };
@@ -4406,6 +4459,54 @@ const contractTests = [
     const txt = String(r.stdout || '') + String(r.stderr || '');
     CR.names().forEach(n => assert(txt.includes(n), 'cli help 应含命令 ' + n));
     CR.META.forEach(m => assert(txt.includes(m.label), 'cli help 应含命令中文名 ' + m.label));
+  } },
+  { name: '修订闭环重抽面:WfCore.reviseSubset 镜集恒等 Domain.reviseTargets,fixes 按 reportId 回取报告原文', fn() {
+    const WfCore = require('../js/wf-core.js');
+    const Domain = require('../js/domain.js');
+    /* 夹具有意让"照 perShot 再筛一遍 score < 7"与真派生分道扬镳:
+     * 分镜表已调序(sh1 在前)、sh3 定稿、sh9 已被删——在 wf-core 另抄一份筛法就对不上了 */
+    const ep = { content: '剧本', contentRev: 0, graphRev: 0,
+      shots: [
+        { id: 'sh1', order: 0, reviews: [] }, // 那份报告已被挤出最近 5 条
+        { id: 'sh3', order: 1, final: true, reviews: [{ id: 'rv3', issues: [{ suggestion: '别动定稿' }] }] },
+        { id: 'sh0', order: 2, reviews: [{ id: 'rv0', issues: [{ suggestion: '补主光' }, { suggestion: 'add rim light' }] }] },
+        { id: 'sh2', order: 3, reviews: [{ id: 'rv2', issues: [] }] },
+      ],
+      lastReview: { avg: 6, perShot: [
+        { shotId: 'sh0', order: 0, score: 5, reportId: 'rv0' },
+        { shotId: 'sh1', order: 1, score: 6, reportId: 'rv1' },
+        { shotId: 'sh2', order: 2, score: 9, reportId: 'rv2' },
+        { shotId: 'sh3', order: 3, score: 4, reportId: 'rv3' },
+        { shotId: 'sh9', order: 4, score: 3, reportId: 'rv9' },
+      ] } };
+    assertEq(JSON.stringify(WfCore.reviseSubset(ep).map(x => [x.shotId, x.order, x.score])),
+      JSON.stringify(Domain.reviseTargets(ep).map(x => [x.shotId, x.order, x.score])),
+      '镜集/实位/分数须与 Domain 那一份逐项相同(在 wf-core 另抄一份筛法即红)');
+    const sub = WfCore.reviseSubset(ep);
+    assertEq(sub.map(x => x.shotId).join(','), 'sh1,sh0', '达标镜/定稿镜/已删镜都不进重抽面');
+    assertEq(sub.map(x => x.order).join(','), '1,3', 'order 与 Domain 同口径:分镜表实位');
+    assertEq(sub[0].fixes, '', '报告取不到时 fixes 为空串(修订步据此沿用原提示词,不是 undefined 冒充)');
+    assertEq(sub[1].fixes, '补主光; add rim light', 'fixes 应按 reportId 取回那份报告再抽建议');
+  } },
+  { name: '修订闭环重抽面单源:server/CLI/助手摘要/问题中心都不自筛低分镜,CLI 不摘回执 lowShots 当 shotIds', fn() {
+    /* G-03 这一面钉的是"该重抽哪几镜由编排层派生":判据(达标线 / 报告判旧 / 与分镜表取交集 / 定稿不重抽)
+     * 只在 Domain.reviseTargets 一份里,四处消费点谁抄回一份 score < 7 或把回执里的 lowShots 当名单用都红在这里。 */
+    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    const cli = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    const ao = fs.readFileSync(path.join(ROOT, 'js', 'agent-ops.js'), 'utf8');
+    const iss = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
+    const wfc = fs.readFileSync(path.join(ROOT, 'js', 'wf-core.js'), 'utf8');
+    assert(srv.includes('lowShots: WfCore.reviseSubset(ep)'), '/api/wf/smart-review 的 lowShots 应由 WfCore.reviseSubset 派生');
+    assert(cli.includes('WfCore.reviseSubset(ep)'), 'cli.js produce 闭环应经 WfCore.reviseSubset 现取重抽面');
+    assert(ao.includes('Domain.reviseTargets(ep)'), 'agent-ops 状态摘要的低分镜面应取 Domain.reviseTargets');
+    assert(iss.includes('Domain.reviseTargets(ep)'), '问题中心 low-review 的低分镜面应取 Domain.reviseTargets');
+    assert(wfc.includes('return Domain.reviseTargets(ep).map('), 'WfCore.reviseSubset 应在 Domain 那一份之上补 fixes,不自己筛镜集');
+    [['server.js', srv], ['cli.js', cli], ['js/agent-ops.js', ao], ['js/issues.js', iss], ['js/wf-core.js', wfc]].forEach(([rel, src]) => {
+      assertEq((src.match(/\.score\s*<\s*7\b/g) || []).length, 0, rel + ' 不应再自己按 score < 7 筛一遍低分镜(达标线只在 Domain.REVIEW_MIN 一处)');
+    });
+    assert(!/=\s*(?:\(?rv\.result[^\n]*\.lowShots|rv\.result\.lowShots)/.test(cli),
+      'cli.js produce 不许把回执里的 lowShots 直接当作下一步 shotIds 的名单(它与分镜表漂移时会重抽错镜)');
+    assert(/shotIds: fix\.revised/.test(cli) && /reviseTargets\(args, f\)/.test(cli), 'produce 的重抽/复审子集应源自派生出来的重抽面');
   } },
   { name: '命令元数据单源:mcp.js 工具描述由注册表生成(hujing_exec 词表不再手抄)', fn() {
     const CR = require('../js/cmd-registry.js');
@@ -7034,7 +7135,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 486, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 491, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 130, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {

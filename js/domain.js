@@ -495,6 +495,25 @@
    * 那是交付前的更严门禁;本常量只管主线推导,双端同值不读 Store) */
   D.REVIEW_MIN = 7;
 
+  /* 修订循环重抽面(审片修订闭环 SK-25 的编排入参,双端单源):
+   * 从整集审片报告推导"下一轮该修订重抽哪几镜"——判据 = 最近一份报告里低于达标线 REVIEW_MIN 的镜,
+   * 与当前分镜表取交集(报告写下之后被删掉的镜不出面),已定稿镜不出面(定稿不重抽,与可审镜口径一致)。
+   * 报告判旧(reviewStaleByScript)一律回空:旧分不驱动重抽,与发布门 G3「视为未审」同口径。
+   * order 取当前分镜表实位(1 起)而非报告里记的旧位,顺序按实位;编排层与展示层都读这一份,
+   * 调用方不再各自攒一份会与分镜表漂移的名单。 */
+  D.reviseTargets = function (ep) {
+    if (!ep || !ep.lastReview || D.reviewStaleByScript(ep)) return [];
+    const shots = ep.shots || [];
+    return (ep.lastReview.perShot || [])
+      .filter(x => x && typeof x.score === 'number' && x.score < D.REVIEW_MIN)
+      .map(x => ({ x, i: shots.findIndex(s => s.id === x.shotId) }))
+      .filter(t => t.i >= 0 && !shots[t.i].final)
+      .sort((a, b) => a.i - b.i)
+      .map(t => ({ shotId: t.x.shotId, order: t.i + 1, score: t.x.score, reportId: t.x.reportId || '' }));
+  };
+  /* 修订循环重抽子集参数:episode.generateVideos / episode.smartReview 的 shotIds 由本函数派生 */
+  D.reviseShotIds = ep => D.reviseTargets(ep).map(t => t.shotId);
+
   /* 分集级业务状态:counts + status + blockers + 推荐动作 */
   D.episodeState = function (p, ep, online) {
     const shots = (ep && ep.shots) || [];
