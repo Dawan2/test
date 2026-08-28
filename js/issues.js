@@ -213,17 +213,18 @@
         out.push(Object.assign({}, base, { kind: 'stale-shots', sev: EPB['stale-shots'], count: c.stale, label: `「${ep.title}」${c.stale} 镜素材已更新(过期)`, detail: `镜头 ${ss.map(s => s.order + 1).slice(0, 8).join('、')}${ss.length > 8 ? '…' : ''} 生成后输入有变化,建议重生成`, goto: `#/project/${p.id}/episode/${ep.id}` }));
       }
       if (c.unconfirmed && !c.generating) out.push(Object.assign({}, base, { kind: 'unconfirmed', sev: EPB['unconfirmed'], count: c.unconfirmed, label: `「${ep.title}」${c.unconfirmed} 镜待确认`, detail: '未确认镜头不参与批量生成,先过确认闸', goto: `#/project/${p.id}/episode/${ep.id}` }));
-      /* 审片步骤未完成:与 Domain 主线审片步(no-review/review-stale)同一口径,判据不写第二份。
-       * 挂载位置在此处即"该集已有镜头"——未拆镜/分镜判旧在上面已早退,故有镜头(或已出片/已合成)
-       * 而审片没过,主线断点就落在审片这一步,以前问题中心只报低分、这两态一条都看不见。
-       * 判旧那条与发布门 G3「视为未审」同口径(reviewStale 时 reviewAvg 恒为 null,三态互斥不重复报);
+      /* 审片步骤未完成:kind 就是 Domain 分集级审片门槛 episodeState().reviewGate 归好的那个码,
+       * 三态(no-review/review-stale/low-review)与主线 review 步逐集同判,本层不再自己比达标线、判旧,
+       * 也不靠挂载位置隐式设第二道门——"这一集当下能不能审"由 reviewGate 一处说了算(unready 即不出条目,
+       * 上面那几个早退分支正是它的三个不可审条件,报的是上游那一步的断点)。
+       * 判旧那条与发布门 G3「视为未审」同口径,三态互斥不重复报;
        * 处置走导航到分集页自己发起整集审片,不挂命令(审片是计费动作,问题中心不代按)。 */
-      if (st.reviewStale) {
+      if (st.reviewGate === 'review-stale') {
         out.push(Object.assign({}, base, { kind: 'review-stale', sev: 'mid', count: 1, label: `「${ep.title}」审片记录已过期(视为未审)`, detail: `剧本/图谱修订或镜头重抽后旧结论不再算数,${c.total} 镜需重新整集审片`, goto: `#/project/${p.id}/episode/${ep.id}` }));
-      } else if (st.reviewAvg === null || st.reviewAvg === undefined) {
+      } else if (st.reviewGate === 'no-review') {
         out.push(Object.assign({}, base, { kind: 'no-review', sev: 'mid', count: 1, label: `「${ep.title}」未审片`, detail: `已有 ${c.total} 镜${c.done ? `、${c.done} 镜已出片` : ''}${ep.composed ? `、成片已合成` : ''},审片步骤未完成——主线卡在审片`, goto: `#/project/${p.id}/episode/${ep.id}` }));
       }
-      if (!st.reviewStale && st.reviewAvg !== null && st.reviewAvg !== undefined && st.reviewAvg < Domain.REVIEW_MIN) { // 判旧(rev/快照失配)的旧分不再报问题;「需重审」语义由上面 review-stale 那条承接
+      if (st.reviewGate === 'low-review') { // 判旧(rev/快照失配)的旧分不再报问题;「需重审」语义由上面 review-stale 那条承接
         const lows = Domain.reviseTargets(ep); // 低分镜面与修订闭环重抽面同一份派生(达标线/判旧/交集不写第二份)
         /* 重抽面非空时把它的 shotId 投影一并带出:该修哪几镜这一份已经算出来了,只给人看的 detail 文案
          * 等于让编排层(CLI issues / MCP / 助手)照文案回抠一遍或自筛一遍低分镜——那就是第二份名单。
