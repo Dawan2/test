@@ -3558,6 +3558,53 @@ const commandsTests = [
     assertEq(gc.result.total, 4, 'CLI 整库那一路照旧四位全跑');
     assertEq(gc.result.note, undefined, 'CLI 整库那一路同样不说这句');
   } },
+  { name: 'subject.generateImage 同 id 多位:每一轮的图落到本轮那一位(扣几笔就得有几位到手图,两端同一个结果)', fn: async () => {
+    /* 上一条钉的是这一趟说没说出"多花了几位的钱",这一条钉那几笔钱**买到了什么**:
+     * CLI 每轮拿 s.id 回最新树上重取那一位,取的若是首位,点名 ["dup"] 的三轮就全写在首位身上——
+     * 扣三笔生图钱只有一位到手图,而回执照报 ok:3 failed:[],第二、三位下轮仍判"缺图"再扣一遍。
+     * 浏览器那一端写的是循环里拿到的那个对象,三位各得一张;两端得落到同一个结果上。
+     * 落库面一律读 clone 语义的 disk 夹具:编排层只在自己手里那份快照上改一改也会看起来"落库了"。 */
+    const dupSubs = () => [
+      { id: 'dup', name: 'A-首位', kind: 'character' }, { id: 'solo', name: 'B-不重复', kind: 'character' },
+      { id: 'dup', name: 'C-第二位', kind: 'character' }, { id: 'dup', name: 'D-第三位', kind: 'character' },
+    ];
+    const imgs = subs => subs.map(s => s.name + ':' + (s.image || '无图')).join(' | ');
+    // ① CLI 点名 ["dup"]:三笔钱三位到手图,且三张各不相同(同一张写三遍也是只买到一张)
+    const sb = loadCli();
+    const fx = cliDisk(sb);
+    fx.disk.projects[0].subjects = dupSubs();
+    sb.__imgs = [];
+    sb.genImage = async () => { sb.__imgs.push(1); return { url: '/uploads/img/g' + sb.__imgs.length + '.png' }; };
+    const r = await sb.EXEC['subject.generateImage'].run({ pid: 'p1', subjectIds: ['dup'] }, {});
+    const subs = fx.disk.projects[0].subjects;
+    assertEq(sb.__imgs.length, 3, '前提:选人闸按位筛,三位都真下发(三笔生图钱)');
+    assertEq(r.result.ok, 3, '前提:回执报三位都成了');
+    assertEq(subs.filter(s => s.image).length, 3,
+      '扣了三笔就得有三位到手图,不能三轮全写在首位身上(回执照报 ok:3 failed:[],下一轮那两位仍判缺图再扣一遍),实际:' + imgs(subs));
+    assertEq(subs[1].image, undefined, '没点到的那一位(solo)不许被顺带写图:' + imgs(subs));
+    assertEq(new Set(subs.filter(s => s.image).map(s => s.image)).size, 3,
+      '三位手里得是三张不同的图(同一张写三遍等于只买到一张):' + imgs(subs));
+    // ② CLI 整库那一路同样中招过:四笔钱四位到手图
+    const sb2 = loadCli();
+    const fx2 = cliDisk(sb2);
+    fx2.disk.projects[0].subjects = dupSubs();
+    sb2.__imgs = [];
+    sb2.genImage = async () => { sb2.__imgs.push(1); return { url: '/uploads/img/h' + sb2.__imgs.length + '.png' }; };
+    await sb2.EXEC['subject.generateImage'].run({ pid: 'p1' }, {});
+    const subs2 = fx2.disk.projects[0].subjects;
+    assertEq(sb2.__imgs.length, 4, '前提:整库那一路四位全跑');
+    assertEq(subs2.filter(s => s.image).length, 4, 'CLI 整库那一路同样:四笔钱四位到手图,实际:' + imgs(subs2));
+    // ③ 浏览器那一端:同一份库同一个点名,落库结果与 CLI 对齐(一端写对一端写错就在这里岔开)
+    const sbB = loadCommands();
+    sbB.__engine = [];
+    sbB.EpisodeUtil.genSubjectImage = async (p, s) => { sbB.__engine.push(s.id); s.image = '/uploads/img/b' + sbB.__engine.length + '.png'; };
+    const cb = cmdCtx(sbB);
+    cb.p.subjects = dupSubs();
+    await sbB.Commands.execute('subject.generateImage', { pid: 'p1', ui: true, subjectIds: ['dup'] });
+    assertEq(cb.p.subjects.filter(s => s.image).length, 3, '浏览器那一端三位各得一张:' + imgs(cb.p.subjects));
+    assertEq(cb.p.subjects.map(s => !!s.image).join(','), subs.map(s => !!s.image).join(','),
+      '两端得落到同一个结果上(哪几位到手图逐位相同),浏览器:' + imgs(cb.p.subjects) + ' / CLI:' + imgs(subs));
+  } },
   { name: 'CLI exec produce:点名的轮次钳过即落库,下一轮不带入参跑的就是这个次数(单独调 smartReview 那一端仍不写库)', fn: async () => {
     /* 此前这一端只读不写:`exec episode.produce --args '{"maxRetry":4}'` 当轮真跑 4 轮,
      * 磁盘上那份 sbConfig.maxRetry 却还是旧的 1——用户在浏览器打开该集参数面板看到的仍是 1,
