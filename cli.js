@@ -181,6 +181,13 @@ const findSubject = (proj, sid) => {
   if (!s) throw new CliError('主体不存在:' + sid, 4);
   return s;
 };
+/* 批量的每一轮回最新树上重取「本轮那一位」:同 id 在库里存着多位时 findSubject 取的是首位,
+ * 三位同 id 的一趟会把三份产物全写在首位身上(扣三笔只有一位到手图,而回执报 ok:3 failed:[])。
+ * nth 是这一位在快照全表里排第几位同 id,按同序在最新树上取;同 id 一位都没有时退回按名引用那一路。 */
+const nthSubject = (proj, sid, nth) => {
+  const rows = (proj.subjects || []).filter(x => x.id === sid);
+  return rows.length ? (rows[nth] || rows[0]) : findSubject(proj, sid);
+};
 
 /* ================= 工具:上传 / 下载 / 轮询 / SRT ================= */
 async function uploadFile(file, flags) {
@@ -1383,12 +1390,17 @@ EXEC['subject.generateImage'] = { needs: ['p'], meter: true, run: async (args, f
   const dupNote = Domain.dupSubjectRowsNote(args.subjectIds, todo);
   log('主体生图:' + todo.length + ' 位待处理(串行)…');
   if (dupNote) log(dupNote);
+  /* 各位在快照全表里排第几位同 id:每轮回最新树上重取时按同序定位本轮那一位(见 nthSubject);
+   * 序数得在全表上数,只数待跑清单会在"首位已有图被跳过"时整体错位 */
+  const nthOf = new Map();
+  const seenIds = Object.create(null);
+  (p.subjects || []).forEach(s => { const n = seenIds[s.id] || 0; seenIds[s.id] = n + 1; nthOf.set(s, n); });
   const failed = [];
   let okCnt = 0;
   for (const s of todo) {
     try {
       await withProject(args.pid, f, async projLive => {
-        const sj = findSubject(projLive, s.id);
+        const sj = nthSubject(projLive, s.id, nthOf.get(s) || 0);
         const prompt = sj.prompt || ((projLive.style || '漫剧') + '风格,' + sj.name + ',' + (sj.description || '角色立绘'));
         sj.image = (await genImage(prompt, f, {})).url;
         sj.prompt = sj.prompt || prompt;
