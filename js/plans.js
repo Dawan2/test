@@ -13,7 +13,8 @@
   /* ================= 本地推导:主线全链投影 × 各集状态(零成本,推荐默认) =================
    * 命令名与步序一律现取 Skills 的主线全链 playbook(SK-05 core.playbookProjection),本层不写第二份命令链:
    * 投影的每一步在 TODO_OF 里登记一个取材器,只回答「这一步在本项目/本集当下待不待办、步骤文案怎么写」,
-   * 判定一律现取 Domain.episodeState(状态口径与流程条/CLI workflow 同源)。
+   * 判定一律现取 Domain:集级取 episodeState,项目级前置三步(剧本/主体/分集)取 gateBlockers
+   * (状态口径与流程条/问题中心/CLI workflow 同源)。
    * 排法:项目级步(提取主体/主体生图/剧本拆集)按投影步序排在前,集级步逐集取该集在投影上的首个待办步;上限 12 步。
    * args 照投影原样(主线全链一律留空):授权位(拆集 overwrite、全量生成 confirmAll)与子集位
    * (shotIds/subjectIds)属人工决策,计划层不替用户预授权——需要授权或需要人工挑选的状态一律出导航步
@@ -27,16 +28,29 @@
     return !!(m && (m.needs || []).indexOf('ep') >= 0);
   };
 
-  /* 投影步取材器:cmd → (ctx)=>{key,label,goto?}|null(不待办);ctx 项目级 {p},集级另带 {ep, st, hash}。
+  /* 项目级前置门槛(剧本/主体/分集三步)现取 Domain.gateBlockers,按阻塞码取材:
+   * 「剧本在不在 / 主体库空不空 / 缺几张图 / 有没有分集」的判据只在那一处,本层不写第三份
+   * (从前这里另判一遍「整本原文非空」,与门槛派生的「有原文或提取过主体」不同口径:
+   * 提取过主体但没存整本原文的老项目,流程条与问题中心认它有剧本、计划步认它没有,整份计划推不出来)。
+   * 映射是显式的:计划步要答的是「该跑哪条命令」,与阻塞项形状不同,故码 → 步骤文案在本层落地,
+   * 计数一律取阻塞项自带的 count,不在本层重数一遍。 */
+  const gateMap = p => {
+    const m = {};
+    (Domain.gateBlockers(p) || []).forEach(g => { m[g.code] = g; });
+    return m;
+  };
+
+  /* 投影步取材器:cmd → (ctx)=>{key,label,goto?}|null(不待办);ctx 项目级 {p, gates},集级另带 {ep, st, hash}。
    * 登记为 null = 该投影步不占计划步(理由写在旁注)——投影加了新步而这里漏登记时,Plans.projection() 的契约断言先红。 */
   const TODO_OF = {
-    'project.extractSubjects': ({ p }) => (String(p.script || '').trim() && !(p.subjects || []).length)
+    // 剧本那一步已过(gateBlockers 不报 no-script)而主体库还空着
+    'project.extractSubjects': ({ gates }) => (!gates['no-script'] && gates['no-subjects'])
       ? { key: 'extract', label: '提取主体:剧本已在库,主体库还空着' } : null,
-    'subject.generateImage': ({ p }) => {
-      const noImg = (p.subjects || []).filter(s => !s.image).length;
-      return noImg ? { key: 'subj', label: `补齐主体参考图(${noImg} 个缺图)` } : null;
+    'subject.generateImage': ({ gates }) => {
+      const g = gates['subjects-no-image'];
+      return g ? { key: 'subj', label: `补齐主体参考图(${g.count} 个缺图)` } : null;
     },
-    'project.splitEpisodes': ({ p }) => (String(p.script || '').trim() && !(p.episodes || []).length)
+    'project.splitEpisodes': ({ gates }) => (!gates['no-script'] && gates['no-eps'])
       ? { key: 'split', label: '剧本拆集:整本切成分集' } : null,
     // 本集理解是智能分镜编排的内部第一步(已有理解可复用不重扣),不单独占一个计划步
     'episode.understanding': null,
@@ -96,7 +110,7 @@
         if (wantEp) return;
       }
     };
-    pick({ p }, false);
+    pick({ p, gates: gateMap(p) }, false);
     (p.episodes || []).forEach(ep => pick({
       p, ep, st: Domain.episodeState(p, ep, on), hash: `#/project/${p.id}/episode/${ep.id}`,
     }, true));
