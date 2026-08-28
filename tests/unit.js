@@ -12776,7 +12776,172 @@ const flowTests = [
   } },
 ];
 
-const SUITES = { 'agent-ops': agentOpsTests, experts: expertsTests, produce: produceTests, commands: commandsTests, store: storeTests, 'sb-gen': sbGenTests, pipeline: pipelineTests, 'sb-views': sbViewsTests, 'sb-io': sbIoTests, understanding: understandingTests, billing: billingTests, domain: domainTests, bus: busTests, issues: issuesTests, plans: plansTests, continuity: continuityTests, release: releaseTests, contract: contractTests, skills: skillsTests, tasks: tasksTests, split: splitTests, memory: memoryTests, flow: flowTests };
+/* ---------- api 套件:js/api.js 的回退口径(行为层,非源级 grep) ----------
+ * 关注面只有一个:上游失败时哪些回退会让用户看见"假成功"。
+ * 沙箱按用例注入 fetch/token/缓存,驱动真实 js/api.js。 */
+const MODELS_CACHE_KEY = 'mv_hujing_models_cache';
+function loadApi(opt) {
+  opt = opt || {};
+  const sb = makeSandbox();
+  if (opt.cachedIds) {
+    sb.localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify({
+      time: Date.now() - (opt.cacheAgeMs === undefined ? 60 * 60 * 1000 : opt.cacheAgeMs),
+      ids: opt.cachedIds,
+    }));
+  }
+  sb.__fetches = 0;
+  sb.fetch = (url, init) => { sb.__fetches++; return opt.fetch ? opt.fetch(url, init) : Promise.reject(new Error('no net')); };
+  sb.Store = { getToken: () => (opt.token === undefined ? 'tok' : opt.token) };
+  sb.U = {
+    esc: s => String(s == null ? '' : s),
+    toast: m => sb.__toasts.push(String(m)),
+    authExpired: () => { sb.__authExpired = (sb.__authExpired || 0) + 1; },
+  };
+  sb.__authExpired = 0;
+  sb.Views = {};
+  loadFile(sb, 'api.js');
+  if (opt.cfg) sb.API.setConfig(opt.cfg);
+  return sb;
+}
+const jres = (status, body) => Promise.resolve({ ok: status >= 200 && status < 300, status, json: async () => body });
+const abortErr = () => { const e = new Error('aborted'); e.name = 'AbortError'; return Promise.reject(e); };
+async function grab(fn) { try { return { ok: true, val: await fn() }; } catch (e) { return { ok: false, msg: e.message }; } }
+
+const apiTests = [
+  { name: '模型列表拉取失败一律抛错:陈旧缓存不冒充一次成功的拉取(测试连接照实报红)', async fn() {
+    /* 回退掉的正是这处:失败时 return 陈旧缓存 → testConnection 报 ok → 设置页渲染绿色「✓ 连接成功」。
+     * 后端已坏却报绿,是用户直接看得见的假成功;下面四种线上故障逐一钉死。 */
+    const cases = [
+      ['后端 500', { fetch: () => jres(500, { code: 500, message: '上游 500' }) }, '获取模型列表失败(500)'],
+      ['后端业务错(code!=0)', { fetch: () => jres(200, { code: 1002, message: '上游 key 无效' }) }, '上游 key 无效'],
+      ['未登录后端', { token: null, fetch: () => jres(200, { code: 0, data: { data: [] } }) }, '未登录后端'],
+      ['拉取超时', { fetch: abortErr }, '请求超时'],
+    ];
+    for (const [label, opt, want] of cases) {
+      const sb = loadApi(Object.assign({ cachedIds: ['stale-a', 'stale-b', 'stale-c'] }, opt));
+      const r = await grab(() => sb.API.listModels(true));
+      assert(!r.ok, label + ':有陈旧缓存也必须抛错,不得静默返回缓存(实际返回 ' + JSON.stringify(r.val) + ')');
+      assert(r.msg.includes(want), label + ':错误消息应如实点明故障,实际「' + r.msg + '」');
+      const t = await sb.API.testConnection();
+      assertEq(t.ok, false, label + ':「测试连接」不得报成功(有缓存时尤其不能)');
+      assert(String(t.msg).includes(want), label + ':测试连接应把真实故障带给用户');
+    }
+  } },
+  { name: '登录过期不被缓存吞掉:401 照常触发 U.authExpired,有无缓存行为一致', async fn() {
+    /* 回退掉的那行 if (cachedRaw) return cachedRaw 排在 401 分支之前,
+     * 于是"本地恰好有缓存"的用户 401 后既不掉线也不重登,与无缓存用户行为分叉。 */
+    for (const cached of [['stale-a'], null]) {
+      const sb = loadApi({ cachedIds: cached, fetch: () => jres(401, { code: 401, message: 'token 过期' }) });
+      const r = await grab(() => sb.API.listModels(true));
+      assert(!r.ok, '401 必须抛错(有缓存:' + !!cached + ')');
+      assertEq(r.msg, '登录已过期,请重新登录', '401 应给重登提示(有缓存:' + !!cached + ')');
+      assertEq(sb.__authExpired, 1, '401 应触发一次 U.authExpired(有缓存:' + !!cached + ')');
+    }
+  } },
+  { name: '下拉表的离线兜底不靠 listModels:拉取抛错后仍有表可渲(缓存→内置推荐逐级)', async fn() {
+    // 修掉假成功不能把离线可用性一并修掉:取表这条路自己读缓存,与拉取成败无关
+    const sb = loadApi({ cachedIds: ['stale-a', 'stale-b'], fetch: () => jres(500, { code: 500, message: 'x' }) });
+    await grab(() => sb.API.listModels(true));
+    assertEq(sb.API._modelIds, null, '拉取失败不得把陈旧缓存写进内存态冒充"拉到了"');
+    assertEq(sb.API.getTextModels(10).map(x => x.id).join(','), 'stale-a,stale-b', '下拉表仍应给出缓存表(离线可用性不受影响)');
+    const sb2 = loadApi({ token: null });
+    assertEq(sb2.API.getTextModels(10).map(x => x.id).join(','),
+      'deepseek-v4-flash-260425,glm-5-2-260617,deepseek-v4-pro-260425', '无缓存时下拉表回落内置推荐表');
+  } },
+  { name: '缓存只在 TTL 内命中:未过期不打网,过期即现拉(force 一律现拉)', async fn() {
+    const fresh = { cachedIds: ['c1', 'c2'], cacheAgeMs: 1000, fetch: () => jres(500, { code: 500, message: 'x' }) };
+    const sb = loadApi(fresh);
+    assertEq((await sb.API.listModels()).join(','), 'c1,c2', 'TTL 内应直接命中缓存');
+    assertEq(sb.__fetches, 0, 'TTL 内不应打网');
+    const sb2 = loadApi(fresh);
+    const r2 = await grab(() => sb2.API.listModels(true));
+    assert(!r2.ok, 'force 应绕过缓存现拉,失败即抛');
+    assertEq(sb2.__fetches, 1, 'force 应实际打网一次');
+    const sb3 = loadApi({ cachedIds: ['c1'], cacheAgeMs: 30 * 60 * 1000, fetch: () => jres(500, { code: 500, message: 'x' }) });
+    const r3 = await grab(() => sb3.API.listModels());
+    assert(!r3.ok, '缓存过期后应现拉,失败即抛(不得顺延用过期缓存)');
+  } },
+  { name: '直连模式同口径:未配置/上游错都抛错,不拿缓存顶成功', async fn() {
+    const base = { cachedIds: ['stale-a'], fetch: () => jres(500, {}) };
+    const sb = loadApi(Object.assign({ cfg: { mode: 'direct', directBaseUrl: 'https://x/v1', directApiKey: 'k' } }, base));
+    const r = await grab(() => sb.API.listModels(true));
+    assert(!r.ok && r.msg.includes('获取模型列表失败(500)'), '直连上游 500 应抛错,实际:' + JSON.stringify(r));
+    const sb2 = loadApi(Object.assign({ cfg: { mode: 'direct', directBaseUrl: '', directApiKey: '' } }, base));
+    const r2 = await grab(() => sb2.API.listModels(true));
+    assert(!r2.ok && r2.msg.includes('直连模式未配置'), '直连未配置应抛"未配置",不得用缓存报成功,实际:' + JSON.stringify(r2));
+  } },
+  { name: 'chat 代理:上游各类失败如实报错,不返回占位内容冒充成功', async fn() {
+    const cases = [
+      [500, { code: 500, message: '上游服务错误' }, '上游服务错误'],
+      [401, { code: 401, message: '未授权' }, '登录已过期,请重新登录'],
+      [429, { code: 429, message: '限流' }, '限流'],
+      [502, { code: 502, message: '交付校验失败,已退费' }, '交付校验失败,已退费'],
+      [200, { code: 1003, message: '余额不足' }, '余额不足'],
+    ];
+    for (const [st, body, want] of cases) {
+      const sb = loadApi({ fetch: () => jres(st, body) });
+      const r = await grab(() => sb.API.chat({ messages: [{ role: 'user', content: 'x' }] }));
+      assert(!r.ok, st + ' 必须抛错(返回了 ' + JSON.stringify(r.val) + ' 即为占位冒充)');
+      assertEq(r.msg, want, st + ' 的错误消息应如实透出上游原因');
+    }
+    // 上游返回空 content(推理耗尽/被过滤):同样算失败,不能当成一次成功交付
+    const sbE = loadApi({ fetch: () => jres(200, { code: 0, data: { choices: [{ message: { content: '' }, finish_reason: 'length' }] } }) });
+    const rE = await grab(() => sbE.API.chat({ messages: [] }));
+    assert(!rE.ok && rE.msg.includes('API 返回内容为空'), '空响应应报错并带 finish_reason,实际:' + JSON.stringify(rE));
+    assert(rE.msg.includes('finish_reason=length'), '空响应应带出 finish_reason 便于定位');
+  } },
+  { name: 'chat 超时重放(R15):带 opId 同体重放一次,仍失败如实抛;无 opId 不重放', async fn() {
+    const sb = loadApi({ fetch: abortErr });
+    const r = await grab(() => sb.API.chat({ messages: [], operationId: 'op1' }));
+    assertEq(sb.__fetches, 2, '带 opId 超时应同体重放一次(服务端按 opId 幂等,不重复扣费)');
+    assert(!r.ok && r.msg.includes('请求超时'), '重放仍失败必须抛超时,不得冒充成功');
+    assert(sb.__toasts.some(t => t.includes('正在按原任务尝试恢复结果')), '重放应对用户可见,不做静默重试');
+    const sb2 = loadApi({ fetch: abortErr });
+    const r2 = await grab(() => sb2.API.chat({ messages: [] }));
+    assertEq(sb2.__fetches, 1, '无 opId 无步骤幂等语义,不得重放(会重复扣费)');
+    assert(!r2.ok && r2.msg.includes('请求超时'), '无 opId 超时应如实抛');
+  } },
+  { name: 'chatJSONRobust:服务端已退费的 502 直抛不重试;恒坏 JSON 修复轮吞错后仍抛原错', async fn() {
+    // 502 是服务端已做完内部修复并退费的终态:再重试=再扣费,消息也须避开重试正则
+    const sb = loadApi({ fetch: () => jres(502, { code: 502, message: '交付校验失败,已退费' }) });
+    const r = await grab(() => sb.API.chatJSONRobust({ user: 'x', operationId: 'op2' }));
+    assertEq(sb.__fetches, 1, '502 不得进重试轮或修复轮(每轮都是一次计费)');
+    assert(!r.ok && r.msg.includes('交付校验失败'), '502 应原样抛给调用方走退费,实际:' + JSON.stringify(r));
+    // 恒非 JSON:2 轮重试 + 1 轮修复共 3 次,最终必须抛(修复轮的 catch(_) {} 不得把失败吞成成功)
+    const sb2 = loadApi({ fetch: () => jres(200, { code: 0, data: { choices: [{ message: { content: '这不是 JSON' } }] } }) });
+    const r2 = await grab(() => sb2.API.chatJSONRobust({ user: 'x' }));
+    assertEq(sb2.__fetches, 3, '恒坏 JSON 应为 2 轮重试 + 1 轮修复');
+    assert(!r2.ok && r2.msg.includes('无法解析为 JSON'), '三轮都没拿到 JSON 必须抛,实际:' + JSON.stringify(r2));
+    // 修复轮自身断网:catch(_) {} 吞掉的是修复轮的错,原始解析失败仍须抛出
+    let n = 0;
+    const sb3 = loadApi({ fetch: () => (++n <= 2 ? jres(200, { code: 0, data: { choices: [{ message: { content: '坏 JSON' } }] } }) : Promise.reject(new Error('ECONNREFUSED'))) });
+    const r3 = await grab(() => sb3.API.chatJSONRobust({ user: 'x' }));
+    assert(!r3.ok && r3.msg.includes('无法解析为 JSON'), '修复轮断网不得把整体吞成成功,实际:' + JSON.stringify(r3));
+  } },
+  { name: 'chatJSON:服务端未交付时本地兜底解析,两端都解析不了即抛(无免费窗口)', async fn() {
+    const sb = loadApi({ fetch: () => jres(200, { code: 0, parsed: null, data: { choices: [{ message: { content: '{"a":1}' } }] } }) });
+    assertEq(JSON.stringify(await sb.API.chatJSON({ messages: [{ role: 'user', content: 'x' }] })), '{"a":1}',
+      '服务端 parsed=null 时本地兜底解析同一份文本(两端算法一致)');
+    const sb2 = loadApi({ fetch: () => jres(200, { code: 0, parsed: null, data: { choices: [{ message: { content: '不是 JSON' } }] } }) });
+    const r2 = await grab(() => sb2.API.chatJSON({ messages: [] }));
+    assert(!r2.ok && r2.msg.includes('无法解析为 JSON'), '两端都解析不了必须抛,实际:' + JSON.stringify(r2));
+  } },
+  { name: '设置页回退口径的说明与实况一致:不承诺"连接失败自动回退本地"', async fn() {
+    /* 说明文案是用户判断"失败会怎样"的唯一依据:实况是在线失败如实报错并退费,
+     * 文案若写成"连接失败自动回退本地模拟"就是纸面上的假成功。 */
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'api.js'), 'utf8');
+    assert(!src.includes('未配置或连接失败时,所有 AI 功能自动回退到本地模拟'),
+      '设置页不得再承诺"连接失败自动回退本地模拟"(与在线失败报错并退费的实况相反)');
+    assert(!/失败自动回退本地实现/.test(src), '计费说明不得再写"失败自动回退本地实现"');
+    assert(src.includes('在线调用一旦失败如实报错并自动退费,不拿本地结果冒充成功'), '设置页应写明在线失败的真实口径');
+    assert(src.includes('离线(未登录/未配置)时 AI 功能回退到本地模拟'), '离线回退仍应如实告知(这条是保留行为)');
+    const rd = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+    assert(!rd.includes('全部遵循"LLM 优先、失败回退本地模拟"'), 'README 不得再写"失败回退本地模拟"的笼统口径');
+    assert(rd.includes('全部遵循"离线才回退本地模拟"'), 'README 应与设置页同口径');
+  } },
+];
+
+const SUITES = { 'agent-ops': agentOpsTests, experts: expertsTests, produce: produceTests, commands: commandsTests, store: storeTests, 'sb-gen': sbGenTests, pipeline: pipelineTests, 'sb-views': sbViewsTests, 'sb-io': sbIoTests, understanding: understandingTests, billing: billingTests, domain: domainTests, bus: busTests, issues: issuesTests, plans: plansTests, continuity: continuityTests, release: releaseTests, contract: contractTests, skills: skillsTests, tasks: tasksTests, split: splitTests, memory: memoryTests, flow: flowTests, api: apiTests };
 (async () => {
   const filter = process.argv[2];
   let passed = 0, failed = 0;
