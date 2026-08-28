@@ -30,6 +30,14 @@
   const PREFLIGHT_STOP = ['no-script', 'no-shots', 'shots-stale', 'failed-shots', 'stale-shots']
     .map(code => stop(code, '就绪检查只报不拦:按 blockers 回到对应步处理完再往下,不要带着阻塞项出片'));
 
+  /* 分集级阻塞码里有意不进中段断点的那几档 + 理由(与投影步登记 null 同一纪律:不进是写下来的决定,不是漏掉)。
+   * Domain.epBlockerCodes() 的其余码都得在某一步的 stop 里接住——漏一档就是"跑砸在这一码上却没写怎么处置",
+   * 调用方只能自己猜;哪一档漏了由契约用例按码点名。 */
+  const STOP_SKIP = {
+    'no-episode': '中段每一步都按 epid 寻址已存在的分集,拿不到这一态:分集不存在是调用方 epid 给错,由命令层如实报错,不是流程断点',
+    'composed-stale': '成片不在中段:重新合成的时机与断点由成片那段承接(SK-30),中段不越界替它写处置',
+  };
+
   /* 投影步 → 中段登记:{stage 落在哪一主线步, codes 待办由哪几个阻塞码判, optional 占不占推进位, stop 断点}。
    * 登记为 null = 该投影步**有意不在中段**(审片/成片各由自己那段承接,首尾两条流程模板已覆盖)——
    * 投影哪天多一步而这里没跟上,F.projection() 的契约断言点名报出漏的是哪个命令,不静默漏掉一步。
@@ -111,6 +119,8 @@
   F.stages = midStages;
   F.segments = () => [ALL].concat(midStages());
   F.argSources = () => Object.assign({}, ARG_SOURCE);
+  /* 不进中段断点的分集级阻塞码白名单(契约断言用,每次现生成副本) */
+  F.stopSkips = () => Object.assign({}, STOP_SKIP);
 
   /* 投影自省(契约断言用):主线全链投影每一步 → 中段登记了吗、落在哪一步、占不占推进位 */
   F.projection = function () {

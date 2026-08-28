@@ -4807,7 +4807,7 @@ const contractTests = [
     ['no-subjects', 'no-eps', 'subjects-no-image'].forEach(code =>
       assertEq((dom.match(new RegExp("'" + code + "'", 'g')) || []).length, 1,
         'js/domain.js 里 ' + code + ' 的字面应只此一处(workflow 那三步现取 gateBlockers,不再各写一份)'));
-    assertEq((dom.match(/'no-script'/g) || []).length, 3, 'js/domain.js 里 no-script 恰三处:分集级登记(episodeState 判 ep.content)、按该码取分集状态、项目级登记(gateBlockers 判整本原文)——两级同码不同判定输入,各只一处登记');
+    assertEq((dom.match(/'no-script'/g) || []).length, 2, 'js/domain.js 里 no-script 恰两处:分集级登记(EPB 表,episodeState 判 ep.content)、项目级登记(gateBlockers 判整本原文)——两级同码不同判定输入,各只一处登记');
     assert(iss.includes('Domain.gateBlockers(p)'), '问题中心的前置断点应现取 Domain.gateBlockers');
     assertEq((iss.match(/'subject-no-image'/g) || []).length, 0, '问题中心不得再用分裂出来的旧码 subject-no-image');
     // 流程模板与问题中心是同一份码的两个消费面:模板按码筛待办,两侧对不上会静默筛空
@@ -4835,6 +4835,95 @@ const contractTests = [
     const used = [...src.matchAll(/gates\['([a-z-]+)'\]/g)].map(m => m[1]);
     assertEq(used.length, 5, '项目级三步按码取材共五处(提取步与拆集步各判两码:剧本这一步过了没、本步自己的断点在不在;补图步一处)');
     used.forEach(c => assert(codes.has(c), 'js/plans.js 按码取材的 ' + c + ' 不是 Domain.gateBlockers 会回的码(码名分裂即静默筛空)'));
+  } },
+  /* ================= 分集阻塞码扇出(Domain.episodeState → 问题中心分集条目 / 中段流程模板断点) =================
+   * 上面两条钉的是项目级前置门槛;分集级那组阻塞码另有两个按码分工的消费方:
+   * 问题中心的逐集循环(每一档出一条问题,带各自的明细与处置)、流程模板的断点登记(跑砸在哪一码上、怎么处置)。
+   * 两处都是"表外的码一律不投",而且不投是静默的——派生新加一档时谁没跟上都不会红:
+   * 问题中心收不出条目 = 那一态在问题清单上凭空消失(清单是断点的唯一汇总面,CLI/MCP 同读),
+   * 流程模板缺一档 = 调用方跑砸在这一码上只能自己猜怎么办。
+   * 这里补的就是反向:枚举面取 Domain.epBlockerCodes()(episodeState 按登记表出码、函数体零码字面,
+   * 故加一档必进枚举),再逐码拿一份真会触发该码的分集夹具,看两个消费方各自的实际产出——
+   * 接不住的码要在消费方显式登记不投的理由(Issues.epSkips() / FlowTpl.stopSkips()),白名单之外一律红。 */
+  { name: '分集阻塞码扇出:Domain.epBlockerCodes() 逐码在问题中心与中段模板都有投影(漏投即红)', fn() {
+    const Domain = require('../js/domain.js');
+    const Issues = require('../js/issues.js');
+    const F = require('../js/flow-tpl.js');
+    const dom = fs.readFileSync(path.join(ROOT, 'js/domain.js'), 'utf8');
+    const body = dom.slice(dom.indexOf('D.episodeState = function'), dom.indexOf('/* 项目级前置门槛断点'));
+    const CODES = Domain.epBlockerCodes();
+    assertEq([...body.matchAll(/code: '[^']+'|bl\('/g)].length, 0,
+      'episodeState 不得直接写码字面(绕开登记表的码进不了 epBlockerCodes(),扇出契约就漏检那一码)');
+    assert(CODES.length >= 8, '码全集不能是空表(空表会让下面的逐码点名变成空转),实际 ' + CODES.length + ' 码');
+    const codeList = CODES.join(','); // 回的若是表本身,污染会连 CODES 一起改,只有字面快照比得出来
+    Domain.epBlockerCodes().push('污染');
+    assertEq(Domain.epBlockerCodes().join(','), codeList, 'epBlockerCodes() 每次应现生成新数组');
+    /* 逐码夹具:一份真会让 episodeState 报出该码的分集(下面先验夹具有效,再看消费方投影),
+     * 夹具本身摊不到的码(no-episode:单集查询的空态)由消费侧白名单接住 */
+    const shot = over => Object.assign({ id: 'sh0', order: 0, plot: 'p', prompt: 'q', camera: '固定镜头', duration: 5,
+      characters: [], scene: '', props: [], confirm: true, video: { status: 'done', url: 'http://x/v.mp4' } }, over || {});
+    const epOf = over => Object.assign({ id: 'ep1', title: '一', content: '剧本正文', shots: [shot()] }, over || {});
+    const pOf = ep => ({ id: 'p1', script: '整本剧本', subjects: [{ id: 'sj1', name: '主角', image: 'u' }], episodes: [ep] });
+    const FIX = {
+      'no-script': () => pOf(epOf({ content: '' })),
+      'no-shots': () => pOf(epOf({ shots: [] })),
+      'shots-stale': () => pOf(epOf({ contentRev: 1, shotsSourceRev: 0 })),
+      'failed-shots': () => pOf(epOf({ shots: [shot({ video: { status: 'failed', error: '上游超时' } })] })),
+      'stale-shots': () => pOf(epOf({ shots: [shot({ video: { status: 'done', url: 'http://x/v.mp4', inputHash: 'v3:旧指纹' } })] })),
+      'unconfirmed': () => pOf(epOf({ shots: [shot({ confirm: false })] })),
+      'composed-stale': () => pOf(epOf({ composed: true, composedInputHash: 'v3:合成时的旧指纹' })),
+    };
+    /* 问题中心:接得住的码逐码看真实产出,接不住的要在 epSkips() 写下理由(与前置门槛白名单同一纪律) */
+    const skips = Issues.epSkips();
+    const skipKeys = Object.keys(skips).join(','); // 同上:字面快照才比得出污染
+    const sevOf = {};
+    Issues.epBlockers().forEach(x => { sevOf[x.kind] = x.sev; });
+    CODES.forEach(code => {
+      if (skips[code]) {
+        assert(!sevOf[code], '同一码不能既登记投影又登记不投的理由:' + code);
+        assert(String(skips[code]).length > 12, code + ' 的不投理由要写清楚(白名单不是许愿池),实际:' + skips[code]);
+        return;
+      }
+      const make = FIX[code];
+      assert(make, '分集阻塞码 ' + code + ' 既没有触发夹具、也没在 Issues.epSkips() 登记不投的理由(新增一档时两边都没跟上)');
+      const p = make();
+      const ep = p.episodes[0];
+      const st = Domain.episodeState(p, ep, false);
+      assert(st.blockers.some(b => b.code === code), '夹具没能让 episodeState 报出 ' + code + '(夹具失效,下面的点名就成了空转)');
+      const hit = Issues.collect(p, { online: false }).filter(x => x.epid === ep.id && x.kind === code);
+      assertEq(hit.length, 1, '分集阻塞码 ' + code + ' 在问题中心收不出条目(逐集循环里没有它那一支:那一态在问题清单上一条都看不见)');
+      assertEq(hit[0].sev, sevOf[code], code + ' 的危险级应取 Issues.epBlockers() 登记的那一档(表不能是摆设)');
+    });
+    Issues.epBlockers().forEach(x => assert(CODES.indexOf(x.kind) >= 0,
+      'Issues.epBlockers() 的 ' + x.kind + ' 不是 episodeState 会回的码(码名分裂)'));
+    Object.keys(skips).forEach(c => assert(CODES.indexOf(c) >= 0, 'Issues.epSkips() 的 ' + c + ' 不是 episodeState 会回的码'));
+    Issues.epSkips()['污染'] = 1;
+    Issues.epBlockers().push({ kind: '污染' });
+    assertEq(Object.keys(Issues.epSkips()).join(','), skipKeys, 'epSkips() 每次应现生成副本');
+    assertEq(Issues.epBlockers().map(x => x.kind).join(','), Object.keys(sevOf).join(','), 'epBlockers() 每次应现生成副本');
+    // 真派生回的码一律在枚举面内(夹具跑出来的码若不在表里,上面的逐码点名就漏检了它)
+    assert(Domain.episodeState(pOf(epOf()), null, false).blockers.every(b => CODES.indexOf(b.code) >= 0), '空集兜底回的码应在枚举面内');
+    Object.keys(FIX).forEach(code => {
+      const p = FIX[code]();
+      Domain.episodeState(p, p.episodes[0], false).blockers.forEach(b =>
+        assert(CODES.indexOf(b.code) >= 0, '真派生回了未登记进 epBlockerCodes() 的分集阻塞码:' + b.code));
+    });
+    /* 中段流程模板:每一码要么在某一步的断点登记里接住,要么在 stopSkips() 写下不进中段的理由 */
+    const stopCodes = new Set();
+    F.template('mid', null).steps.forEach(s => s.stop.forEach(x => stopCodes.add(x.code)));
+    const stopSkips = F.stopSkips();
+    const stopSkipKeys = Object.keys(stopSkips).join(',');
+    CODES.forEach(code => {
+      if (stopSkips[code]) {
+        assert(!stopCodes.has(code), '同一码不能既进中段断点又登记不进的理由:' + code);
+        assert(String(stopSkips[code]).length > 12, code + ' 不进中段的理由要写清楚,实际:' + stopSkips[code]);
+        return;
+      }
+      assert(stopCodes.has(code), '分集阻塞码 ' + code + ' 在中段流程模板里既没有断点处置、也没在 FlowTpl.stopSkips() 登记不进的理由(调用方跑砸在这一码上只能自己猜)');
+    });
+    Object.keys(stopSkips).forEach(c => assert(CODES.indexOf(c) >= 0, 'FlowTpl.stopSkips() 的 ' + c + ' 不是 episodeState 会回的码'));
+    F.stopSkips()['污染'] = 1;
+    assertEq(Object.keys(F.stopSkips()).join(','), stopSkipKeys, 'stopSkips() 每次应现生成副本');
   } },
   { name: '命令元数据单源:mcp.js 工具描述由注册表生成(hujing_exec 词表不再手抄)', fn() {
     const CR = require('../js/cmd-registry.js');
@@ -7527,7 +7616,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 509, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 510, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 130, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -7663,7 +7752,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 162;
+    const FLOOR = 163;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接

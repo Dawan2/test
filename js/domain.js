@@ -514,6 +514,16 @@
   /* 修订循环重抽子集参数:episode.generateVideos / episode.smartReview 的 shotIds 由本函数派生 */
   D.reviseShotIds = ep => D.reviseTargets(ep).map(t => t.shotId);
 
+  /* 分集级阻塞码登记表:episodeState 只按本表出码,不写第二处字面(项目级 workflow 里同名的聚合档同读本表)。
+   * 表兼枚举面——分集阻塞码有两个按码分工的消费方(问题中心逐集循环里的条目分支、流程模板 flow-tpl 的断点登记),
+   * 两处都是"表外的码一律不投"而且不投是静默的:新增一档时谁没跟上,那一态就在问题清单/断点说明上凭空消失,
+   * 夹具摊不摊得到都看不出来。故 D.epBlockerCodes() 把码全集报出来,由契约用例逐码点名各消费方的实际投影。 */
+  const EPB = {
+    noEpisode: 'no-episode', script: 'no-script', shots: 'no-shots', shotsStale: 'shots-stale',
+    failed: 'failed-shots', stale: 'stale-shots', unconfirmed: 'unconfirmed', composedStale: 'composed-stale',
+  };
+  D.epBlockerCodes = () => Object.keys(EPB).map(k => EPB[k]);
+
   /* 分集级业务状态:counts + status + blockers + 推荐动作 */
   D.episodeState = function (p, ep, online) {
     const shots = (ep && ep.shots) || [];
@@ -531,21 +541,21 @@
     });
     const blockers = [];
     const bl = (code, label) => blockers.push({ code, label });
-    if (!ep) return { status: 'blocked', counts, blockers: [{ code: 'no-episode', label: '分集不存在' }], action: null };
-    if (!(ep.content || '').trim()) bl('no-script', '缺剧本正文');
-    if (counts.total === 0) bl('no-shots', '未生成分镜');
+    if (!ep) return { status: 'blocked', counts, blockers: [{ code: EPB.noEpisode, label: '分集不存在' }], action: null };
+    if (!(ep.content || '').trim()) bl(EPB.script, '缺剧本正文');
+    if (counts.total === 0) bl(EPB.shots, '未生成分镜');
     const shotsStale = D.shotsStale(ep);
-    if (shotsStale) bl('shots-stale', '分镜表基于旧剧本/图谱');
-    if (counts.failed) bl('failed-shots', counts.failed + ' 镜生成失败');
-    if (counts.stale) bl('stale-shots', counts.stale + ' 镜素材已更新');
-    if (counts.unconfirmed && counts.done === counts.total && counts.total > 0) bl('unconfirmed', counts.unconfirmed + ' 镜待确认');
+    if (shotsStale) bl(EPB.shotsStale, '分镜表基于旧剧本/图谱');
+    if (counts.failed) bl(EPB.failed, counts.failed + ' 镜生成失败');
+    if (counts.stale) bl(EPB.stale, counts.stale + ' 镜素材已更新');
+    if (counts.unconfirmed && counts.done === counts.total && counts.total > 0) bl(EPB.unconfirmed, counts.unconfirmed + ' 镜待确认');
     const reviewStale = D.reviewStaleByScript(ep); // 剧本/图谱修订或镜头重抽后旧审片记录判旧
     const reviewAvg = !reviewStale && ep.lastReview && typeof ep.lastReview.avg === 'number' ? ep.lastReview.avg : null; // 判旧的旧分不再卡 needs_human(旧版语义由展示层承接)
     const composedReady = D.epComposedReady(ep, online);
-    if (ep.composed && !composedReady) bl('composed-stale', '成片已过期(输入或剧本已变化)');
+    if (ep.composed && !composedReady) bl(EPB.composedStale, '成片已过期(输入或剧本已变化)');
 
     let status, action = null;
-    if (blockers.some(b => b.code === 'no-script')) { status = 'blocked'; action = { key: 'script', label: '编写剧本' }; }
+    if (blockers.some(b => b.code === EPB.script)) { status = 'blocked'; action = { key: 'script', label: '编写剧本' }; }
     else if (counts.total === 0) { status = 'ready'; action = { key: 'shots', label: '生成分镜' }; }
     else if (shotsStale) { status = 'stale'; action = { key: 'reshoot', label: '重新拆镜' }; }
     else if (counts.generating > 0) { status = 'running'; action = null; }
@@ -616,8 +626,8 @@
       step('shots', '分镜', eps.length > 0 && epStates.every(st => st.counts.total > 0) && !anyShotsStale, epStates.some(st => st.counts.total > 0),
         (() => {
           const noShot = epStates.find(st => st.counts.total === 0);
-          if (noShot) return [{ code: 'no-shots', label: '有分集未分镜' }];
-          if (anyShotsStale) return [{ code: 'shots-stale', label: '分镜表基于旧剧本/图谱' }];
+          if (noShot) return [{ code: EPB.shots, label: '有分集未分镜' }];
+          if (anyShotsStale) return [{ code: EPB.shotsStale, label: '分镜表基于旧剧本/图谱' }];
           return [];
         })(),
         null),
@@ -625,8 +635,8 @@
         (() => {
           const b = [];
           const failed = epStates.reduce((n, st) => n + st.counts.failed, 0);
-          if (failed) b.push({ code: 'failed-shots', label: failed + ' 镜生成失败' });
-          if (staleShots) b.push({ code: 'stale-shots', label: staleShots + ' 镜素材已更新' });
+          if (failed) b.push({ code: EPB.failed, label: failed + ' 镜生成失败' });
+          if (staleShots) b.push({ code: EPB.stale, label: staleShots + ' 镜素材已更新' });
           return b;
         })(),
         null),
@@ -642,7 +652,7 @@
       step('film', '成片', eps.length > 0 && composedCnt === eps.length, composedCnt > 0,
         (() => {
           const staleFilm = epStates.filter(st => st.status === 'stale' && st.counts.done === st.counts.total && st.counts.total > 0).length;
-          return staleFilm ? [{ code: 'composed-stale', label: staleFilm + ' 集成片已过期' }] : [];
+          return staleFilm ? [{ code: EPB.composedStale, label: staleFilm + ' 集成片已过期' }] : [];
         })(),
         null),
       step('shell', '剧壳', !!(p && p.shell && p.shell.dist && (p.shell.dist.introLong || p.shell.dist.posterV || p.shell.dist.logline)), false, null, null, true),
