@@ -437,6 +437,19 @@ async function main() {
     await sleep(1100);
     const exNone = await req('POST', '/api/wf/extract-subjects', { pid: 'ghost_p' }, token);
     report('wf/extract-subjects 项目不存在 404', exNone.status === 404, 'HTTP ' + exNone.status);
+    /* 提取过一轮却没留下原文、连分集都还没建的老项目:extractDone 只是「剧本这一步走过了」这个进度位,
+     * 端点读的是「有没有可读的原文」(Domain.extractSourceText),两问结论相反时按后者如实拒绝、零调用零计费。 */
+    const exLegacyPid = 'it_p_noscript';
+    const sL = await req('GET', '/api/state', null, token);
+    const putL = await req('PUT', '/api/state', { rev: +(sL.data && sL.data.rev || 0), changes: { projects: { [exLegacyPid]: { id: exLegacyPid, name: '提取过的老项目', extractDone: true, subjects: [], episodes: [] } } } }, token);
+    report('无原文老项目种子 PUT 成功', putL.status === 200, 'HTTP ' + putL.status);
+    const balBeforeEx = (await req('GET', '/api/wallet', null, token)).data.balance;
+    await sleep(1100);
+    const exLegacy = await req('POST', '/api/wf/extract-subjects', { pid: exLegacyPid, operationId: 'it.wf.ex2' }, token);
+    const balAfterEx = (await req('GET', '/api/wallet', null, token)).data.balance;
+    report('wf/extract-subjects 老项目无原文无分集 400 且零计费(extractDone 是进度位,不是可提取的原文)',
+      exLegacy.status === 400 && balAfterEx === balBeforeEx,
+      'HTTP ' + exLegacy.status + ' ' + JSON.stringify(exLegacy.data || exLegacy.msg || '').slice(0, 120) + ' 余额 ' + balBeforeEx + '→' + balAfterEx);
 
     /* 25(W61):理解/分镜两步的闭环结论按板块回流既有 state.agentMemory(与浏览器同一份 WfCore 派生)。
      * 上文 understanding/smart-storyboard 都已成功跑过,此处只查记忆桶实况:各一条、按板块落位、

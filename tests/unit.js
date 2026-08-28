@@ -2114,6 +2114,33 @@ const commandsTests = [
     assertEq(r.status, 'blocked'); assertEq(r.error.code, 'inflight');
     assert(r.error.message.includes('等待完成'), '应透出守卫原因');
   } },
+  /* 提取的输入是「整本原文,没有整本才退回各集正文」,与门槛派生的「剧本这一步走过没有」不是同一问:
+   * extractDone 的老项目上两问结论相反,而这一步要的是前者。判据收在 Domain.extractSourceText 一处,
+   * 三端命令入口与计划层同读——命令层退回内联 p.script,下面那个桩当场看得出来。 */
+  { name: 'extractSubjects:提取输入现取 Domain.extractSourceText(extractDone 老项目无原文无分集仍 blocked no-script)', fn: async () => {
+    const sb = loadCommands();
+    const { p } = cmdCtx(sb);
+    p.episodes = [];
+    p.subjects = [];
+    p.extractDone = true; // 老项目:流程条上剧本步画 ✓,整本原文却没入库,分集也还没建
+    assert(!sb.Domain.gateBlockers(p).some(g => g.code === 'no-script'), '前提:门槛派生认这类项目的剧本步已过');
+    let r = await sb.Commands.execute('project.extractSubjects', { pid: 'p1' });
+    assertEq(r.status, 'blocked'); assertEq(r.error.code, 'no-script', 'extractDone 这个进度位不是原文,提取读不到东西');
+    assertEq(sb.__called.filter(c => /[eE]xtractSubjects/.test(c)).length, 0, '拿不到文本不应进入提取');
+    // 输入取的是派生:项目对象一字不改,把派生打桩成读得到原文,同一次调用就能真跑
+    const real = sb.Domain.extractSourceText;
+    sb.Domain.extractSourceText = () => '女主在宴会厅被当众羞辱。';
+    r = await sb.Commands.execute('project.extractSubjects', { pid: 'p1' });
+    sb.Domain.extractSourceText = real;
+    assertEq(r.ok, true, '实际:' + JSON.stringify(r.error || {}));
+    assert(sb.__called.includes('extractSubjects'), '应把派生回的那份文本交给提取(离线启发式)');
+    assertEq(sb.Domain.extractSourceText(p), '', '桩撤掉后这个项目仍然读不到原文(用例没有偷偷写 p.script)');
+    // 各集正文那条回退没被收掉:整本仍缺,但分集正文在,提取照旧真跑
+    p.episodes = [{ id: 'ep_x', title: '第1集', content: '女主赴宴,当众受辱。', shots: [] }];
+    assertEq(sb.Domain.projectScript(p), '', '前提:整本原文仍然不在库');
+    r = await sb.Commands.execute('project.extractSubjects', { pid: 'p1' });
+    assertEq(r.ok, true, '各集正文是提取的回退输入,不该连坐被拦:' + JSON.stringify(r.error || {}));
+  } },
   { name: 'generateStoryboard:hooks 回执/缺剧本/积分不足 三态', fn: async () => {
     const sb = loadCommands();
     cmdCtx(sb, { shots: [] });
@@ -4076,8 +4103,9 @@ const plansTests = [
       '前提:流程条认这类老项目的剧本步已过');
     const pl = sb.Plans.fromWorkflow(legacy);
     assert(pl, '同一个项目流程条说剧本已在库、计划层说无待推进事项——两个面结论不许相反');
-    /* 拆集那一步在这类项目上是导航步(整本原文不在库,切分没有输入;下一条专钉这个两态) */
-    assertEq(pl.steps.map(s => s.cmd || 'goto:' + s.key).join(','), 'project.extractSubjects,goto:split',
+    /* 两步在这类项目上都是导航步:提取可读的原文一处也没有(整本没入库、分集也还没建),
+     * 拆集的整本原文同样不在库、切分没有输入;两个两态各由下面一条专钉 */
+    assertEq(pl.steps.map(s => s.cmd || 'goto:' + s.key).join(','), 'goto:extract,goto:split',
       '实际:' + pl.steps.map(s => s.label).join(' / '));
     // 反向:剧本这一步真没过时提取/拆集仍不出——本条钉的是同口径,不是把门槛拆掉
     assertEq(sb.Plans.fromWorkflow({ id: 'p2', subjects: [], episodes: [] }), null, '两个字段都空时前置两步仍不出');
@@ -4110,6 +4138,37 @@ const plansTests = [
     sb.Domain.projectScript = () => '桩:整本原文';
     assertEq(sb.Plans.fromWorkflow(legacy).steps[0].cmd, 'project.splitEpisodes', '内联判 p.script 拿不到这个桩');
     sb.Domain.projectScript = real;
+  } },
+  /* 上一条把提取过主体的老项目从"整份计划推不出来"救了回来,可它给的提取步未必跑得动:
+   * 门槛派生答的是「剧本这一步走过没有」(extractDone 也算),提取真正读入的是整本原文、
+   * 没有整本才退回各集正文。两者在"提取过一轮却没留下原文"的项目上结论相反——
+   * 有分集正文时提取确实能真跑(那半照旧出命令步),一个分集都没有时它注定 blocked/no-script,
+   * 点下去只换来一句"请先上传剧本"。这里钉三态分流,且判据取的是命令层同读的那一份派生。 */
+  { name: 'fromWorkflow:提取主体步按可读原文分两态(整本/各集正文都没有时出补原文导航步,不推注定 blocked 的命令步)', fn() {
+    const sb = loadPlans();
+    // ① 整本原文在库:照旧是可执行的命令步
+    const withScript = { id: 'p1', script: '整本剧本', subjects: [], episodes: [] };
+    let steps = sb.Plans.fromWorkflow(withScript).steps;
+    assertEq(steps[0].cmd, 'project.extractSubjects', '实际:' + steps.map(s => s.label).join(' / '));
+    assert(!steps[0].goto, '命令步不带 goto');
+    // ② 老项目:提取过主体(门槛派生认剧本步已过)、整本原文没入库、一个分集也没有 → 提取读不到任何原文
+    const legacy = { id: 'p1', extractDone: true, subjects: [], episodes: [] };
+    assert(!sb.Domain.gateBlockers(legacy).some(g => g.code === 'no-script'), '前提:门槛派生认这类老项目的剧本步已过');
+    assertEq(sb.Domain.extractSourceText(legacy), '', '前提:同一个项目上提取没有可读的输入');
+    steps = sb.Plans.fromWorkflow(legacy).steps;
+    assertEq(steps[0].key, 'extract', '这一步照出不藏,仍占提取那一步的位置');
+    assertEq(steps[0].cmd, undefined, '注定 blocked/no-script 的命令不该挂上去');
+    assertEq(steps[0].goto, '#/project/p1', '应导航到能补原文的项目页');
+    assert(steps[0].label.includes('剧本原文'), '步骤文案应点名缺的是剧本原文;实际:' + steps[0].label);
+    // ③ 同样没有整本原文,但分集正文在:提取按回退读得到文本,这一半照旧出命令步(不许连坐藏成导航步)
+    const byEps = { id: 'p1', extractDone: true, subjects: [], episodes: [{ id: 'ep1', title: '第1集', content: '女主赴宴', shots: [] }] };
+    assertEq(sb.Plans.fromWorkflow(byEps).steps[0].cmd, 'project.extractSubjects', '各集正文就是提取的回退输入,这一步真跑得动');
+    // 分流判据现取派生:项目对象一字不改,只把派生打桩成"读得到原文",②那一步立刻变回命令步
+    const real = sb.Domain.extractSourceText;
+    sb.Domain.extractSourceText = () => '桩:整本原文';
+    assertEq(sb.Plans.fromWorkflow(legacy).steps[0].cmd, 'project.extractSubjects', '内联判 p.script 拿不到这个桩');
+    sb.Domain.extractSourceText = real;
+    assertEq(sb.Domain.extractSourceText(legacy), '', '桩撤掉后这个项目仍然读不到原文(用例没有偷偷写 p.script)');
   } },
   { name: 'fromWorkflow:需授权/需人工挑选的状态一律出导航步(重拆覆盖/过期镜子集/确认闸不代授权)', fn() {
     const sb = loadPlans();
@@ -5824,6 +5883,41 @@ const contractTests = [
     assert(body.includes('Domain.projectScript(p)'), '拆集命令的切分输入应现取 Domain.projectScript');
     assert(fs.readFileSync(path.join(ROOT, 'js', 'plans.js'), 'utf8').includes('Domain.projectScript(p)'),
       '计划层的拆集步应按同一份派生分流(出命令步还是出补原文导航步)');
+  } },
+  { name: '提取主体的输入文本单源:Domain.extractSourceText 一处,三端命令入口与计划层同读', fn() {
+    /* 门槛派生答的是「剧本这一步走过没有」(extractDone 也算走过),提取要的是「有没有可读的原文」——
+     * 提取过一轮却没留下原文、连分集都还没建的老项目上两问结论相反,而这是有意的,不能靠改门槛去抹平。
+     * 要收的是第二问的判据:它此前在三端命令入口各抄了一遍,计划层则据第一问推步,推出来的那一步注定 blocked。
+     * 收进 Domain.extractSourceText 之后四个消费方同读一份;谁退回内联 p.script,入口条件就再次分叉。 */
+    const Domain = require('../js/domain.js');
+    assertEq(typeof Domain.extractSourceText, 'function', 'Domain 应导出提取主体的输入取数口');
+    assertEq(Domain.extractSourceText({ script: '  整本  ' }), '整本', '整本原文优先,取到的是去空白后的正文');
+    assertEq(Domain.extractSourceText({ episodes: [{ content: '第一集正文' }, { content: '' }, { content: '第二集正文' }] }),
+      '第一集正文\n第二集正文', '没有整本时退回各集正文拼接(空集不占行)');
+    assertEq(Domain.extractSourceText({ extractDone: true, subjects: [{ name: '甲' }], scriptMeta: { synopsis: '梗概' } }), '',
+      '提取结论(主体库/卖点梗概)都不是原文:它们是产物,提不出逐字证据');
+    const legacy = { id: 'p', extractDone: true, subjects: [], episodes: [] };
+    assert(!Domain.gateBlockers(legacy).some(g => g.code === 'no-script'), '同一个项目:门槛派生认剧本这一步已过');
+    assertEq(Domain.extractSourceText(legacy), '', '同一个项目:提取读不到原文——两问结论不同是有意的');
+    /* 三端命令入口 + 计划层逐处点名:段落各按自己的入口标记切,切不到就先红在长度上 */
+    const seg = (rel, from, to) => {
+      const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      const i = src.indexOf(from);
+      assert(i > 0, rel + ' 里找不到提取入口标记 ' + from);
+      const j = src.indexOf(to, i + from.length);
+      assert(j > i, rel + ' 里找不到提取入口的收尾标记 ' + to);
+      return src.slice(i, j);
+    };
+    [['js/commands.js', "reg('project.extractSubjects'", "reg('project.release'"],
+      ['cli.js', "EXEC['project.extractSubjects']", "EXEC['"],
+      ['server.js', "pathname === '/api/wf/extract-subjects'", "pathname === '/api/wf/"],
+    ].forEach(([rel, from, to]) => {
+      const body = seg(rel, from, to);
+      assertEq((body.match(/p\.script/g) || []).length, 0, rel + ' 的提取入口不得再自己读 p.script');
+      assert(/Domain\.extractSourceText\(p\)/.test(body), rel + ' 的提取输入应现取 Domain.extractSourceText');
+    });
+    assert(fs.readFileSync(path.join(ROOT, 'js', 'plans.js'), 'utf8').includes('Domain.extractSourceText(p)'),
+      '计划层的提取步应按同一份派生分流(出命令步还是出补原文导航步)');
   } },
   /* ================= 分集阻塞码扇出(Domain.episodeState → 问题中心分集条目 / 中段流程模板断点) =================
    * 上面两条钉的是项目级前置门槛;分集级那组阻塞码另有两个按码分工的消费方:
@@ -8642,8 +8736,8 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 544, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
-      ['集成测试', 141, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
+    [['单元测试', 547, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+      ['集成测试', 143, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
       assert(live >= floor, label + '用例数不得少于 ' + floor + '(实测 ' + live + ');确要删测须同轮说明理由,新增用例时把下限抬到当轮实况');
@@ -8829,7 +8923,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 184;
+    const FLOOR = 185;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接

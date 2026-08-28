@@ -3643,7 +3643,7 @@ const server = http.createServer(async (req, res) => {
         const b = await readJSONBody(req, 1024 * 1024);
         const { tree, p } = wfLoadCtx(user.id, String(b.pid || ''), '');
         if (!p) return fail(res, 404, '项目不存在', 404);
-        const text = String(p.script || '').trim() || (p.episodes || []).map(e => e.content || '').filter(Boolean).join('\n').trim();
+        const text = Domain.extractSourceText(p); // 与浏览器命令层/CLI 同读一份派生
         if (!text) return fail(res, 400, '项目暂无剧本内容,请先上传剧本', 400);
         const t = b.types && typeof b.types === 'object' ? b.types : {};
         const types = b.types ? { character: !!t.character, scene: !!t.scene, prop: !!t.prop } : { character: true, scene: true, prop: true };
