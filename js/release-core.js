@@ -61,17 +61,26 @@
         .concat(lowRev.map(ep => (ep.title || ep.id) + ':' + ep.lastReview.avg.toFixed(2)));
       list.push(gate('g3-review', '审片均分 ≥ ' + minScore, 'fail', parts.join('；'))); fails++;
     } else list.push(gate('g3-review', '审片均分 ≥ ' + minScore, 'pass', eps.length + ' 集'));
-    // G4/G5/G6 counts 聚合
+    // G4/G5/G6 counts 聚合(三门同一次遍历,故判不出来时三门同一个结论,不会出现"G4 说判不出来、G5 说 0 镜")
+    // 这一次遍历失手不许静静吞掉:吞了三门就照常印「0 镜 pass」,等于宣称"查过了,一镜不缺",
+    // 而实际上一镜未查(半途抛出时更坏——拿半截计数当全量报)。缺注入按未过门算、Domain 自身抛错按 warn 记。
     const agg = { stale: 0, unconfirmed: 0, failed: 0 };
-    try {
+    let aggErr = null;
+    if (!Domain || typeof Domain.episodeState !== 'function') aggErr = { status: 'fail', info: '缺 Domain 注入:镜次计数判不出来' };
+    else try {
       eps.forEach(ep => {
         const st = Domain.episodeState(p, ep, online);
         ['stale', 'unconfirmed', 'failed'].forEach(k => { agg[k] += (st.counts && +st.counts[k]) || 0; });
       });
-    } catch (_) {}
-    list.push(gate('g4-stale', '过期镜=0', agg.stale ? 'fail' : 'pass', agg.stale + ' 镜')); if (agg.stale) fails++;
-    list.push(gate('g5-unconfirmed', '未确认镜=0', agg.unconfirmed ? 'fail' : 'pass', agg.unconfirmed + ' 镜')); if (agg.unconfirmed) fails++;
-    list.push(gate('g6-failed', '失败镜=0', agg.failed ? 'fail' : 'pass', agg.failed + ' 镜')); if (agg.failed) fails++;
+    } catch (e) { aggErr = { status: 'warn', info: 'Domain 异常:' + e.message }; }
+    [['g4-stale', '过期镜=0', 'stale'], ['g5-unconfirmed', '未确认镜=0', 'unconfirmed'], ['g6-failed', '失败镜=0', 'failed']].forEach(t => {
+      if (aggErr) {
+        list.push(gate(t[0], t[1], aggErr.status, aggErr.info));
+        if (aggErr.status === 'fail') fails++; else warns++;
+        return;
+      }
+      list.push(gate(t[0], t[1], agg[t[2]] ? 'fail' : 'pass', agg[t[2]] + ' 镜')); if (agg[t[2]]) fails++;
+    });
     // G9 主体缺图
     const noImg = ((p && p.subjects) || []).filter(s => !s.image).length;
     list.push(gate('g9-subjects', '主体图齐全=0缺图', noImg ? 'fail' : 'pass', noImg ? noImg + ' 缺图' : ((p && p.subjects) || []).length + ' 位就位'));
