@@ -3551,7 +3551,7 @@ const server = http.createServer(async (req, res) => {
                 const r = await wfLLM(user.id, {
                   action: 'llm.review', reason: '审片:镜头' + (s.order + 1), opId, step: 'main', wfName: 'smart-review',
                   model, system: Prompts.get('review.system', ov),
-                  messages: [{ role: 'user', content: [{ type: 'text', text: WfCore.buildReviewPrompt(p, ep, s, true, rctx) }, { type: 'image_url', image_url: { url: dataUrl } }] }],
+                  messages: [{ role: 'user', content: [{ type: 'text', text: WfCore.buildReviewPrompt(p, ep, s, true, rctx, ov) }, { type: 'image_url', image_url: { url: dataUrl } }] }],
                   temperature: 0.3, max_tokens: 2500, projectId: p.id, mockKind: 'shotReview',
                 });
                 report = WfCore.normalizeReport(r.parsed, p, ep, s, model, 'vision', { uid, now: nowStr });
@@ -3563,7 +3563,7 @@ const server = http.createServer(async (req, res) => {
               const r = await wfLLM(user.id, {
                 action: 'llm.review', reason: '审片:镜头' + (s.order + 1), opId, step: 'main', wfName: 'smart-review',
                 model: st.defLLM || 'qwen-turbo', system: Prompts.get('review.system', ov),
-                user: WfCore.buildReviewPrompt(p, ep, s, false, rctx),
+                user: WfCore.buildReviewPrompt(p, ep, s, false, rctx, ov),
                 temperature: 0.3, max_tokens: 2500, projectId: p.id, mockKind: 'shotReview',
               });
               report = WfCore.normalizeReport(r.parsed, p, ep, s, r.model || 'text', 'text', { uid, now: nowStr });

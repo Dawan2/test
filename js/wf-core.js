@@ -643,11 +643,12 @@ ${ctx.content}`;
   };
 
   /* ================= 智能审片(自 review.js 下沉) ================= */
-  /* 单镜评审提示词(自 buildReviewPrompt 下沉;ctx={kbReviewText,tplReviewText,directorNote,personaNote,memText,styleText,globalSetting}) */
-  W.buildReviewPrompt = function (p, ep, s, hasImage, ctx) {
+  /* 单镜评审提示词(自 buildReviewPrompt 下沉;ctx={kbReviewText,tplReviewText,directorNote,personaNote,memText,styleText,globalSetting};
+   * ov=用户提示词覆盖表:提示词首句的人设走注册表键 review.userSystem,其后的三维 JSON 契约仍就地拼) */
+  W.buildReviewPrompt = function (p, ep, s, hasImage, ctx, ov) {
     const spec = s.cameraSpec ? Domain.cameraDescribe(s.cameraSpec) + (s.cameraSpec.aperture ? ' · ' + s.cameraSpec.aperture : '') : '未指定';
     const dur = (Domain && Domain.estShotDuration ? Domain.estShotDuration(s) : (s.duration || 5));
-    return `你是专业 AI 视频审片组,从技术层/匹配层/导演层三个维度评审一个短剧分镜视频,只返回 JSON:
+    return `${Prompts.get('review.userSystem', ov)}只返回 JSON:
 {"score":总分(0-10,一位小数),
 "dimensions":{
  "technical":{"score":分数,"comment":"画质质感/纹理还原度/物理结构合理性/穿模 评语","suggestion":"改进建议"},
