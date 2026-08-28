@@ -5405,7 +5405,15 @@ const domainTests = [
       catch (e) { assert(false, '非数组 subjectIds 不许抛(点名判据放宽成真值判断即在这里抛):' + JSON.stringify(bad) + ' → ' + e.message); }
       assertEq(out, '', '点名判据须与两端选人闸 Array.isArray(...) && length 同形:' + JSON.stringify(bad));
     });
-    assertEq(sb.Domain.dupSubjectRowsNote(['dup', 'dup'], subs.filter(s => s.id === 'dup')), n, '点名清单去重:同一 id 点两次仍是一位');
+    /* 「多花几位」按点名清单的**原始条数**算,不按去重后的 id 数:两者只在机器派生的点名清单上分道,
+     * 而那正是发布门 G9 一键处置递来的形状(每个缺图主体各排一条,同 id 两位即 ['dup','dup'])——
+     * 点了两条也真跑两位、一位都没多花,按去重后的 1 去减会凭空报出「多花 1 位的钱」这句假话。
+     * 行为面由 release 套件真跑 G9 那条钉着,这里钉纯函数。 */
+    const rows = k => Array.from({ length: k }, () => ({ id: 'dup' }));
+    assertEq(sb.Domain.dupSubjectRowsNote(['dup', 'dup'], rows(2)), '', 'G9 那种「每位各排一条」的点名清单:点两条跑两位,一位没多花就一句不说');
+    assertEq(sb.Domain.dupSubjectRowsNote(['dup', 'dup', 'dup'], rows(3)), '', '同上,三条对三位照旧一句不说');
+    const two = sb.Domain.dupSubjectRowsNote(['dup', 'dup'], rows(3));
+    assert(/点名的 2 位/.test(two) && /多花了 1 位的钱/.test(two), '点两条真跑三位时多花的是 1 位(不是 2 位):' + two);
     // 多个 id 各自的位数分开数,只点真重复的那几个
     const multi = [{ id: 'x' }, { id: 'y' }, { id: 'y' }, { id: 'z' }, { id: 'z' }, { id: 'z' }];
     const m = sb.Domain.dupSubjectRowsNote(['x', 'y', 'z'], multi);
@@ -7002,6 +7010,31 @@ const releaseTests = [
     await sb2.Release.execFix(p2, g2, null, () => {});
     assertEq(sb2.__genSubjects.join(','), 'sj1', '跑得到的那位照跑');
     assertEq(sb2.__toasts.length, 0, '真跑到主体就不该多这一条(写成恒播的话这里红)');
+  } },
+  { name: 'G9 一键处置遇上同 id 多位的主体库:两位都真跑到,且不许报出"多花了钱"这句假话', fn: async () => {
+    /* G9 的 fix.subjectIds 是**机器派生**的:每个缺图主体各排一条,故同 id 两位时它递来的是 ['dup','dup']。
+     * 「点名的 id 占多位」那句 note 收的是"用户点了 1 个 id 却按多位计费";G9 这一路点了两条、真跑两位,
+     * 一位都没多花,这句话一个字都不该出现——把"多花几位"按去重后的 id 数去减就会在这里凭空报出
+     * 「多花 1 位的钱」,而用户读到的是发布门自己的按钮在诬告自己。故本条正反两面各判一次:
+     * 两位都得真跑到(选人闸按位筛的正面),以及这一按一句假话都不许播。 */
+    const sb = loadReleaseFix();
+    sb.__genSubjects = [];
+    sb.EpisodeUtil.genSubjectImage = async (p, s) => { sb.__genSubjects.push(s.id + '/' + s.name); s.image = '/uploads/img/' + s.id + '-' + sb.__genSubjects.length + '.png'; };
+    const p = { id: 'p1', name: '剧', episodes: [releaseReadyEp()], subjects: [
+      { id: 'dup', name: 'A-首位', kind: 'character' }, { id: 'dup', name: 'C-第二位', kind: 'character' },
+    ] };
+    sb.__proj = p;
+    const g = sb.Release.collect(p, { online: true }).gates.find(x => x.code === 'g9-subjects');
+    assertEq(g.status, 'fail', '夹具前提:G9 因缺图主体 fail');
+    assertEq((g.fix.subjectIds || []).join(','), 'dup,dup', '夹具前提:G9 派生的点名清单每位各排一条(同 id 两位即两条)');
+    let got = null;
+    await sb.Release.execFix(p, g, null, r => { got = r; });
+    assertEq(sb.__genSubjects.join(','), 'dup/A-首位,dup/C-第二位', '两位都得真跑到(按 id 去重只跑一位时第二位永远补不上图,G9 也就永远过不了门)');
+    assertEq(got.result.total, 2, '回执按真跑的位数报');
+    assertEq(got.result.note, undefined, '点两条跑两位,一位都没多花——这句话一个字都不该出现,实际:' + JSON.stringify(got.result.note));
+    assertEq(sb.__toasts.length, 0, '这一按不许播出任何"多花了钱"的假话,实际 toast:' + JSON.stringify(sb.__toasts));
+    assertEq(sb.Release.collect(p, { online: true }).gates.find(x => x.code === 'g9-subjects').status, 'pass',
+      '两位都补上图之后 G9 真的过门(只跑一位的话这里仍是 fail)');
   } },
   { name: 'G1 一键处置:整趟一步都没跑起来时按钮按下去有回音(编排回执只在顶层播,子步那句本来没有出口)', fn: async () => {
     /* G1 派的处置是编排命令 `episode.produce`:低分定稿集(审片均分未过线故 status=needs_human)
@@ -12261,7 +12294,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 662, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 663, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 148, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {

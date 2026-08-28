@@ -364,15 +364,19 @@
    * filter(x => x.id !== s.id)),同 id 那几位会被一并删光,不先说清就等于把用户往误删里指。
    * 点名判据与两端选人闸(Array.isArray(subjectIds) && length)逐字同形:放宽成真值判断时
    * 字符串 id 会被拆成字符点名清单、类数组连 new Set 都过不去,一次 ok 执行当场变异常。
-   * 整库那一路(不点名)不说这句:没点名就没有「点 1 位跑 3 位」的错觉,total 本来就是位数。 */
+   * 整库那一路(不点名)不说这句:没点名就没有「点 1 位跑 3 位」的错觉,total 本来就是位数。
+   * 「多花几位」按**点名清单的原始条数**算而不是去重后的 id 数——两者只在机器派生的点名清单上分道:
+   * 发布门 G9 的一键处置把每个缺图主体各排一条,同 id 两位时它递来的是 ['dup','dup'],
+   * 点了两条也真跑两位、一位都没多花,按去重后的 1 去减会凭空报出「多花 1 位的钱」这句假话。
+   * 逐个 id 报「存着几位」那一段照旧按去重后的 id 走(同一个 id 报两遍才是废话)。 */
   D.dupSubjectRowsNote = function (picked, subs) {
     if (!Array.isArray(picked) || !picked.length) return '';
-    const ids = [...new Set(picked)]; // 点名清单按主体去重:与 emptySubjectImageNote 同口径,重复的 id 指的是同一位
+    const ids = [...new Set(picked)]; // 只用来逐个报「哪个 id 存着几位」:同一个 id 点两次指的还是那一位
     const list = subs || []; // 这一趟真下发的待跑清单,不是整个主体库(没跑的那几位不该算进计费)
     const dup = ids.map(id => ({ id, n: list.filter(s => s && s.id === id).length })).filter(x => x.n > 1);
-    if (!dup.length) return '';
-    const extra = dup.reduce((n, x) => n + x.n - 1, 0);
-    return '点名的 ' + ids.length + ' 位主体在主体库里同 id 存着多位(' + dup.map(x => x.id + ' ' + x.n + ' 位').join('、')
+    const extra = list.length - picked.length; // 真跑的位数 − 点名的条数:这才是「比你要的多花了几位」
+    if (!dup.length || extra <= 0) return '';
+    return '点名的 ' + picked.length + ' 位主体在主体库里同 id 存着多位(' + dup.map(x => x.id + ' ' + x.n + ' 位').join('、')
       + '):这一趟按 ' + list.length + ' 位逐位跑、逐位计费,比点名数多花了 ' + extra + ' 位的钱。'
       + '主体侧没有去重命令,要一个 id 只跑一位,得回主体库把多出来的那几位删掉或改 id'
       + '(删除按 id 匹配、同 id 那几位一并删光,先确认要留哪一位)。';
