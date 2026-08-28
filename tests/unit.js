@@ -13496,6 +13496,93 @@ const memoryTests = [
     assertEq(r.ok, false); assertEq(r.error.code, 'extract');
     assertEq(csb2.Store.state.agentMemory.length, 0, 'LLM 失败不写假成功');
   } },
+  /* ---- 生成三步(批量生成视频 / 主体生图 / 合成成片)的成功收尾**不写记忆桶**。
+   * 这不是欠账,是核实后的结论:这三步没有自己的、会按板块召回记忆的提示词(WF_BOARD 五个键里
+   * 既没有生成也没有合成),回流下去没有读者;而唯一召回它们的旁路(Agent 对话)的同一份提示词里
+   * 已经带着 stateBlock/agentStateText 现算的同一批数字,回流条目只会是紧挨着的那份更旧的副本
+   * (用户重抽修好失败镜后实时行会变,快照不会变,两行并排出现只能让模型二选一)。
+   * 下面两条把「这些函数体不得出现 memWrite」钉成判据,免得下一个读者把零回流当缺陷补上;
+   * 什么条件下才该翻面见 W98 第 7 节:得先长出会按板块召回记忆的提示词步。 ---- */
+  { name: '生成三步不写记忆桶(浏览器真跑):批量生成/主体生图/合成成功收尾后 agentMemory 一字未动', fn: async () => {
+    const sb = loadCommands();
+    sb.EpisodeUtil.genSubjectImage = async (p, s) => { s.image = '/uploads/img/' + s.id + '.png'; };
+    /* 桶先播两条(用户自沉淀 + 审片回流):空桶下「没写」与「写了但被判空」分不开 */
+    sb.Store.state.agentMemory = [
+      { text: '记住:女主台词一句不超过 12 字', time: '2026-08-27 09:00:00', scope: '' },
+      { text: '审片闭环回流·第一集:待返工 0/3 镜;后续拆镜与提示词优先规避这几处', time: '2026-08-27 09:30:00', scope: '成片', fb: 'review:ep1' },
+    ];
+    const before = JSON.stringify(sb.Store.state.agentMemory);
+    const { p, ep } = cmdCtx(sb, { shots: [makeShot(0, { video: { status: 'none' } }), makeShot(1, { video: { status: 'none' } })] });
+    p.subjects = [{ id: 'sj1', name: '女主', kind: 'character' }]; // 缺参考图 → 生图真跑得到引擎
+    // ① 批量生成视频:成功档(confirmAll 授权全量,两镜全出片)
+    const g = await sb.Commands.execute('episode.generateVideos', { pid: 'p1', epid: 'ep1', confirmAll: true });
+    assertEq(g.ok, true, '得先真跑到成功档:' + JSON.stringify(g.error || {}));
+    assertEq(g.result.ok, 2, '两镜都得真出片(没跑到成功收尾,下面那句"没变"就是恒真)');
+    assertEq(JSON.stringify(sb.Store.state.agentMemory), before, '批量生成成功不得写记忆桶');
+    // ② 主体生图:成功档
+    const im = await sb.Commands.execute('subject.generateImage', { pid: 'p1' });
+    assertEq(im.ok, true, '得先真跑到成功档:' + JSON.stringify(im.error || {}));
+    assertEq(im.result.ok, 1, '得真补上一位主体的图');
+    assertEq(JSON.stringify(sb.Store.state.agentMemory), before, '主体生图成功不得写记忆桶');
+    // ③ 合成成片:成功档
+    const c = await sb.Commands.execute('episode.compose', { pid: 'p1', epid: 'ep1' });
+    assertEq(c.ok, true, '得先真跑到成功档:' + JSON.stringify(c.error || {}));
+    assertEq(ep.composed, true, '成片得真落盘');
+    assertEq(JSON.stringify(sb.Store.state.agentMemory), before, '合成成功不得写记忆桶');
+    /* 反面自证:同一沙箱同一只桶上,合法那条路径(审片回流)照写得进去——
+     * 否则上面三句"没变"可能只是这个沙箱根本写不动记忆 */
+    sb.Store.state.agentMemory = sb.WfCore.memWrite(sb.Store.state.agentMemory,
+      sb.WfCore.memFeedback({ ep: { id: 'ep2', title: '第二集', lastReview: { avg: 6, perShot: [{ score: 5 }, { score: 8 }], common: null, cut: null } } },
+        { now: () => '2026-08-27 10:00:00' }));
+    assertEq(sb.Store.state.agentMemory.length, 3, '审片那条合法路径应写得进去(写不进去说明前面三句"没变"是假的)');
+    assertEq(sb.Store.state.agentMemory[2].fb, 'review:ep2');
+  } },
+  { name: '生成三步不写记忆桶(源级双端 + 分支面):六个函数体零 memWrite,自动回流仍只有主线六个闭环', fn() {
+    /* 浏览器那一端的行为由上一条真跑钉住;CLI 这一端单测层没有可真跑的引擎(withProject 的 memFeed
+     * 位在夹具里就被桩掉了,写没写在那边观测不到),故在此源级点名。两端一起判:一端补上了另一端没补也红。 */
+    const SEGS = [
+      ['js/commands.js', path.join(ROOT, 'js', 'commands.js'), "reg('episode.generateVideos'", "\n  reg('", 20],
+      ['js/commands.js', path.join(ROOT, 'js', 'commands.js'), "reg('subject.generateImage'", "\n  reg('", 12],
+      ['js/commands.js', path.join(ROOT, 'js', 'commands.js'), "reg('episode.compose'", "\n  reg('", 8],
+      ['cli.js', path.join(ROOT, 'cli.js'), "EXEC['episode.generateVideos']", '\nEXEC[', 20],
+      ['cli.js', path.join(ROOT, 'cli.js'), "EXEC['subject.generateImage']", '\nEXEC[', 12],
+      ['cli.js', path.join(ROOT, 'cli.js'), "EXEC['episode.compose']", '\nEXEC[', 6],
+      // EXEC['episode.compose'] 只是壳,写回口径在 composeCore 那一份里,一并判
+      ['cli.js', path.join(ROOT, 'cli.js'), 'async function composeCore(', '\nCMD.compose', 15],
+    ];
+    SEGS.forEach(([rel, abs, head, tail, minLines]) => {
+      const src = fs.readFileSync(abs, 'utf8');
+      const i = src.indexOf(head);
+      assert(i >= 0, rel + ' 找不到 ' + head + ' 的实现(挪窝或改名就同轮改这里,别把本条留成恒真)');
+      const rest = src.slice(i + head.length);
+      const body = rest.slice(0, rest.indexOf(tail) >= 0 ? rest.indexOf(tail) : rest.length);
+      // 整段被判成注释时本条会成恒真,故先自证可执行行数
+      const code = body.split('\n').filter(t => !(/^\s*(\/\/|\/?\*)/.test(t) || !t.trim()));
+      assert(code.length >= minLines, rel + ' 的 ' + head + ' 段可执行行取不到(整段被判成注释本条即恒真),实测 ' + code.length + ' 行');
+      const hit = code.filter(t => /memWrite|memFeedback|agentMemory|闭环回流·/.test(t));
+      assertEq(hit.map(t => t.trim()).join(' | '), '',
+        rel + ' 的 ' + head + ' 段不得写记忆桶:这一步没有会按板块召回记忆的提示词,回流下去没有读者,'
+        + '数字要看现取 Domain.episodeState(Agent 提示词里那行实时状态已经在给),要处置走问题中心 failed-shots 与发布门 G4/G5/G6');
+    });
+    /* 分支面:memFeedback 派生得出的自动回流就这六个闭环(审片是其中之一,不是唯一),
+     * 生成与合成两步一支也没有——把六支全给齐仍不出 gen/compose,才说明"零回流"是派生层的事实而非调用方漏接 */
+    const W = require('../js/wf-core.js');
+    const all = W.memFeedback({
+      ep: { id: 'ep1', title: '第一集', lastReview: { avg: 8, perShot: [{ score: 6 }], common: null, cut: null } },
+      p: { id: 'p1', name: '项目' }, gate: { overall: 'pass', fails: 0, warns: 0, gates: [] }, rel: { ver: 1 },
+      und: { ep: { id: 'ep1', understanding: W.UND_DIMS.reduce((a, d) => (a[d] = d, a), {}) } },
+      sb: { ep: { id: 'ep1', shots: [{ prompt: 'x', characters: ['女主'] }] } },
+      split: { p: { id: 'p1', episodes: [{ content: '正文' }] }, mode: 'even' },
+      extract: { p: { id: 'p1', subjects: [{ id: 'sj1' }] }, added: 1, skipped: 0 },
+    }, { now: '2026-08-27 10:00:00' });
+    assertEq(all.map(e => String(e.fb).split(':')[0]).sort().join(','), 'extract,release,review,sb,split,und',
+      '自动回流的合法分支就主线这六个闭环;要加生成/合成一支,先看 W98 第 7 节的翻面判据');
+    /* 结构上的那条理由本身也回实现核对:板块键表里没有生成也没有合成,
+     * 所以"回流下去下一轮同一步召回得到"这条保证在这两步上不成立 */
+    const boards = Object.keys(W.WF_BOARD).concat(Object.values(W.WF_BOARD)).join(',');
+    ['生成', '合成', 'generate', 'compose'].forEach(k => assert(!boards.includes(k),
+      'WF_BOARD 出现 ' + k + ' 键:这两步长出自己的召回面了,回流该不该补得重判一次(见 W98 第 7 节),别让本条静默恒真'));
+  } },
   /* ---- 浏览器剧本解析向导的主体入库路径(W108):向导曾自己提取、自己造条目、整表覆盖 p.subjects,
    * 于是既绕过命令层的合并口径(同名同类不覆盖/别名寻址),也绕过回流那一处写入点。
    * 现收口到 Commands.execute('project.extractSubjects'):向导只留进度、用户选的模型与断点重试。 ---- */
