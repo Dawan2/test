@@ -8259,6 +8259,108 @@ const contractTests = [
     });
     assertEq(Skills.validate({ CmdRegistry }).join(' | '), '', '变异用例应把注册表还原干净');
   } },
+  /* 上面两条闸各封一路(编排层的 steps / 计划层的 execStep),而它们合起来仍不是「全仓禁止程序发起人手命令」的
+   * 完备判据——计划层那道闸只管 execStep 这一个漏斗,另开一条不经它的执行路,蒸馏照旧自动发生。
+   * 按本尖实况普查下来没有第三条自动路,故不加第二道闸,改把那次普查钉成会红的东西:
+   * 命令名交给命令层的每一处、那个名字从哪来、来路会不会冒出人手命令,逐处点名。
+   * 判据落在两头——写死下发的一律不许是人手命令(写死一条就绕开了注册表那一位),
+   * cmd 是变量的那几处逐处登记来路与把关方,多一处或少一处都要当轮交代。 */
+  { name: '人手命令的下发面普查:cmd 是变量的下发口逐处登记来路,两个处置口的投影面出不了人手命令', fn() {
+    const CmdRegistry = require('../js/cmd-registry.js');
+    const manual = CmdRegistry.META.filter(m => m.manual).map(m => m.name);
+    assert(manual.length, '注册表里一条人手命令都没有:本条整条退化成恒真句(清单逐字对账在上一条上)');
+    /* 先在抹掉注释与字符串的骨架上定位真调用点(散文里写到的 Commands.execute 不算数),再回原文取第一个实参 */
+    const files = fs.readdirSync(path.join(ROOT, 'js')).filter(f => /\.js$/.test(f)).map(f => 'js/' + f)
+      .concat(['cli.js', 'mcp.js', 'server.js']);
+    const CALL = 'Commands.execute(';
+    const lit = [], vari = {};
+    files.forEach(rel => {
+      const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      const code = blankNonCode(src);
+      for (let i = code.indexOf(CALL); i >= 0; i = code.indexOf(CALL, i + 1)) {
+        const arg = src.slice(i + CALL.length).split(/[,)]/)[0].trim();
+        if (/^['"]/.test(arg)) lit.push({ rel, cmd: arg.slice(1, -1) });
+        else { const k = rel + ' → ' + arg; vari[k] = (vari[k] || 0) + 1; }
+      }
+    });
+    const variKeys = Object.keys(vari);
+    assert(lit.length >= 15 && variKeys.length >= 3,
+      '下发点扫描口径失准(点不到调用点,本条不可信):字面 ' + lit.length + ' 处、变量 ' + variKeys.length + ' 处');
+    assertEq(lit.filter(x => manual.includes(x.cmd)).map(x => x.rel + ':' + x.cmd).join(' / '), '',
+      '人手命令被写死下发:注册表那一位只管得住按名现取的路径,写死一条就从它旁边过去了');
+    assertEq(lit.filter(x => !CmdRegistry.byName[x.cmd]).map(x => x.rel + ':' + x.cmd).join(' / '), '',
+      '写死下发的命令名须在注册表里(名字打错只会在命令层报未知命令,源级这一条先接住)');
+    /* cmd 是变量的下发口:逐处登记来路与把关方,并按处数点名(同一文件同一写法再开一处照样红——
+     * 漏斗是"那一个函数",不是"那个文件":计划层里另起一个绕开 execStep 的下发点,键不变而处数会变)。
+     * 新开一处即红:它是不是又一条能自己发起人手命令的路,当轮判。 */
+    const SOURCED = {
+      'js/plans.js → st.cmd × 1':
+        '计划步(主线投影 fromWorkflow / LLM 规划 / 直接写 p.agentPlan 落库回读);execStep 按注册表那一位落 blocked 不代跑,单步「▶ 执行」与 runAll 同一个漏斗',
+      'js/issues-ui.js → it.cmd × 1': '问题中心条目自带的处置命令(投影面见下);用户逐条点「▶ 处理」,处置口自己没有人手闸',
+      'js/release.js → fix.cmd × 1': '交付检查门禁项自带的处置命令(投影面见下);用户逐条点一键处置,处置口自己没有人手闸',
+      'js/cmdpalette.js → e.name × 1': '命令面板列出的注册表条目;用户自己搜出来按下,是人手入口不是自动路',
+      'js/agent-ops.js → cmd × 1': '导演助手 run 类 op 的命令名(白名单现取 Commands.list(),人手命令在内);exec 级动作即便开着自动执行也要过 U.confirm 或「应用修改」才落地',
+    };
+    assertEq(variKeys.map(k => k + ' × ' + vari[k]).sort().join(' | '), Object.keys(SOURCED).sort().join(' | '),
+      'cmd 是变量的下发口与登记不符:新开一处就在这里写下它的来路与把关方——「它会不会替用户发起人手命令」这件事不许只靠读代码回答');
+    /* 两个处置口的投影面现取全集:它们喂给命令层的名字里一条人手命令都不许有(投影哪天推出蒸馏步,按钮就成了自动路)。
+     * 计划层那一路有意不在这里判:它的白名单本就现取整张命令表(四端人手入口一个不减),把关在漏斗上,由 plans 套件钉。 */
+    const sb = loadContract();
+    const base = contractDirtyP();
+    const done = { id: 's21', order: 0, name: '', plot: 'p', prompt: 'q', camera: '固定镜头', duration: 5,
+      characters: [], scene: '', props: [], confirm: true, video: { status: 'done', url: 'http://x/v.mp4' } };
+    const fat = Object.assign({}, base, { episodes: base.episodes.concat([
+      { id: 'ep2', title: '第二集', content: '正文', composed: true, shots: [done], lastReview: { avg: 9, perShot: [{ shotId: 's21', order: 0, score: 9 }] } },
+      { id: 'ep3', title: '第三集', content: '', shots: [] },
+      { id: 'ep4', title: '第四集', content: '正文', shots: [] },
+    ]) });
+    const fed = new Set();
+    [true, false].forEach(on => {
+      sb.Media = { isReady: () => on };
+      sb.Issues.collect(fat, { online: on }).forEach(it => { if (it.cmd) fed.add(it.cmd); });
+      (sb.Release.collect(fat, { online: on }).gates || []).forEach(g => { if (g.fix && g.fix.cmd) fed.add(g.fix.cmd); });
+    });
+    /* 夹具摊得全不全先自查:live 取到的集合须恰等于两份投影源码里登记的处置命令全集——
+     * 投影加了一条命令而夹具没摊开时先红在这里,免得下面那句退化成空扫。 */
+    const declared = new Set();
+    ['js/issues.js', 'js/release.js'].forEach(rel =>
+      [...blankNonCode(fs.readFileSync(path.join(ROOT, rel), 'utf8'), true).matchAll(/cmd: '([^']+)'/g)].forEach(m => declared.add(m[1])));
+    assertEq([...fed].sort().join(','), [...declared].sort().join(','),
+      '夹具没把两个处置口的命令面摊全(live 取到的与源码登记的不等):投影新登记一条处置命令时把夹具补到摊得开为止');
+    assertEq([...fed].filter(c => manual.includes(c)).join(' / '), '',
+      '处置口的投影面推出了人手命令:那两处按钮直下命令层、自己没有人手闸,推得出就等于点一下就蒸馏');
+    // 计划层的零成本那条投影同样现取一遍(它推的是主线全链上的步,人手命令本就不在那条链上)
+    assertEq(loadPlans().Plans.fromWorkflow(fat).steps.map(s => s.cmd).filter(c => manual.includes(c)).join(','), '',
+      '主线推进计划推出了人手命令步');
+  } },
+  /* 同一次普查的另一半:计划步的执行路本身。残留⑤设想的第三条路是「服务端替用户跑计划 / CLI 直接下发计划步 /
+   * MCP 起一条」,而 headless 三端今天连计划这个概念都没有——p.agentPlan 是浏览器落库字段,三端零读写、
+   * 无计划端点、无计划子命令、无计划工具;浏览器这一端两处界面(计划弹窗与制作台)的按钮都走同一个漏斗。
+   * 判据钉的就是这几句话:哪天真开一条(例如 /api/wf/plan-run),它得同轮回答「这条路经不经漏斗」。 */
+  { name: '计划步的执行面只有 Plans.execStep 一个漏斗:浏览器两处界面同走它,headless 三端零计划出口', fn() {
+    const jsFiles = fs.readdirSync(path.join(ROOT, 'js')).filter(f => /\.js$/.test(f)).map(f => 'js/' + f);
+    const code = rel => blankNonCode(fs.readFileSync(path.join(ROOT, rel), 'utf8'));
+    // ① 计划这份数据只有计划层读写:别处读到它的 steps 再自己下发,就是又一条不经漏斗的执行路
+    assertEq(jsFiles.concat(['cli.js', 'mcp.js', 'server.js']).filter(rel => code(rel).includes('agentPlan')).join(','),
+      'js/plans.js', 'p.agentPlan 的读写只许在计划层一处(别处拿到 steps 就能自己逐条下发)');
+    // ② 浏览器另一处界面(制作台)走的是漏斗本身,不是自己拿 cmd 去下发
+    const wb = code('js/workbench.js');
+    assert(/Plans\.execStep\(/.test(wb) && /Plans\.runAll\(/.test(wb), '制作台的计划区应经计划层那两个出口执行');
+    assert(!wb.includes('Commands.execute('), '制作台不得自己下发计划步(那就绕开漏斗了)');
+    assertEq(jsFiles.filter(rel => rel !== 'js/plans.js' && /Plans\.(execStep|runAll)\(/.test(code(rel))).join(','),
+      'js/workbench.js', '经计划层出口跑步骤的界面逐处点名:新开一处就在这里登记(它照样得过漏斗才算数)');
+    // ③ headless 三端:无计划端点 / 无计划子命令 / 无计划工具——那条假想的自动路今天根本不存在
+    const routes = [...fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8').matchAll(/pathname === '([^']+)'/g)].map(m => m[1]);
+    assert(routes.length > 30, '服务端路由表取不到(扫描口径失准,本条不可信):' + routes.length + ' 条');
+    assertEq(routes.filter(r => /plan/i.test(r)).join(','), '',
+      '服务端多了一条计划路由:替用户跑计划正是残留⑤点名的那条假想路,开它就得同轮说清它经不经计划层漏斗');
+    const cliCmds = [...fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8').matchAll(/^CMD\.([A-Za-z0-9_]+)\s*=/gm)].map(m => m[1]);
+    assert(cliCmds.length > 10, 'CLI 命令表取不到(同上):' + cliCmds.length + ' 条');
+    assertEq(cliCmds.filter(c => /plan/i.test(c)).join(','), '', 'CLI 多了一条计划子命令(同上)');
+    const tools = [...fs.readFileSync(path.join(ROOT, 'mcp.js'), 'utf8').matchAll(/name: '(hujing_[a-z_]+)'/g)].map(m => m[1]);
+    assert(tools.length > 20, 'MCP 工具表取不到(同上):' + tools.length + ' 条');
+    assertEq(tools.filter(t => /plan(?!ner)/.test(t)).join(','), '', 'MCP 多了一条计划工具(同上)');
+  } },
   { name: 'skill 索引对齐短名单 30 条:SK 编号连续、波次配比 9/5/16、四类单源键全覆盖', fn() {
     const Skills = require('../js/skills.js');
     const list = Skills.list();
@@ -10900,7 +11002,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 625, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 627, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 147, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 109, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -11235,7 +11337,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 222;
+    const FLOOR = 224;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
