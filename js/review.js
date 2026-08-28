@@ -22,7 +22,8 @@
 
   /* ================= 评审调用 ================= */
   /* 二十一轮:单镜评审提示词拼装下沉 wf-core.js(双端单一来源,逐字节一致);
-   * 环境差异经 ctx 注入(知识库口径/评审模板/导演设定/风格串均同原内联表达式) */
+   * 环境差异经 ctx 注入(知识库口径/评审模板/导演设定/风格串均同原内联表达式)。
+   * 提示词首句人设走注册表键 review.userSystem:浏览器不传覆盖表,由 Prompts.get 隐式读 Store(服务端显式传) */
   function buildReviewPrompt(p, ep, s, hasImage) {
     return WfCore.buildReviewPrompt(p, ep, s, hasImage, {
       kbReviewText: (window.KB && KB.reviewBlock) ? KB.reviewBlock() : '',

@@ -889,7 +889,7 @@
     {
       id: 'core.personaCtx', sk: 'SK-03', name: '生效人设经 ctx 过服务端', stage: CROSS, wave: 'W3',
       kinds: ['infra'],
-      prompts: ['split.system', 'extract.system', 'digest.planSystem', 'graph.system', 'sb.boardSceneSystem', 'sb.boardDraftSystem', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem',
+      prompts: ['split.system', 'extract.system', 'digest.planSystem', 'graph.system', 'sb.boardSceneSystem', 'sb.boardDraftSystem', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.userSystem', 'review.sumSystem', 'review.finalSystem',
         'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem', 'agent.selfFixSystem', 'agent.compactSystem',
         'narration.system', 'reading.system', 'concept.system', 'light.system',
         'voice.recommendSystem', 'voice.recommendBatchSystem', 'comic.bubbleSystem', 'dirset.system', 'dist.copySystem',
@@ -956,6 +956,10 @@
         + '策划那步取值口经 Prompts.get、其后的「当前项目信息:」上下文仍由取值口现拼,'
         + '译制那步经 Prompts.fill 按 {market}/{lang} 填目标市场与语言;'
         + 'js/proj-planner.js 至此零内联人设,两键同为纯浏览器链路的一个消费点。'
+        + '单镜审片那一步的提示词首句人设(WfCore.buildReviewPrompt 的 user 半开头)同形收编为 review.userSystem,'
+        + '装配口随之收覆盖表参数(浏览器 js/review.js 不传、由 Prompts.get 隐式读,服务端 /api/wf/smart-review 显式传),'
+        + '该键不与同步发出的 review.system 复用——一条在 system 消息位、一条是提示词首句,措辞与三维交代都不同;'
+        + 'js/wf-core.js 至此零内联人设。'
         + '仍欠:四处的 ops 协议/字段面/命令白名单/返回 JSON 约定仍由各自装配口拼、不开放覆盖'
         + '(那半是 ops 解析契约,用户改坏即整轮无 ops);'
         + '音色推荐两条同理只收人设句——音色库取值范围与返回 JSON 约定仍写在各自调用点、不开放覆盖'
@@ -1076,10 +1080,11 @@
         + 'js/agent-global.js 全局抽屉的意图路由辅助步同形收编为 agent.routeSystem,该文件也随之归零。'
         + 'js/proj-planner.js 项目实验台的 AI 策划对话与剧本译制两步同形收编为 planner.chatSystem/trans.localizeSystem,'
         + '该文件也随之归零——按「system:/content:/= 后紧跟人设句」这一口径全仓余量至此为零。'
-        + '仍欠 G-13 的已不在剧本模块自己这两个文件里,而是别处还没收的那几处内联人设:'
-        + '仍在的是判据更宽那张名单还计着的那一处:单镜视频审片(js/wf-core.js 的 buildReviewPrompt)'
-        + '把人设句写在 user 半开头、仍不在注册表里(system 半的 review.system 早已在表),'
-        + '那几步既取不到条目正文、用户也覆盖不到',
+        + '单镜视频审片(js/wf-core.js 的 buildReviewPrompt)那句写在 user 半开头的人设也已收编为 review.userSystem,'
+        + '判据更宽那张名单最后计着的一处随之归零——主线各步的装配口至此再无内联人设。'
+        + '仍欠 G-13 的已不在任何一步的装配口上,而是 API 层那两处兜底缺省:'
+        + 'js/api.js 的 chatJSON/chatJSONRobust 在调用方不给 system 时垫「你是专业助手。」,'
+        + '它不属于任何一步、不在注册表里,用户既取不到也覆盖不到,故缺口未闭合、标记不摘',
     },
     /* ---- 主体 ---- */
     {
@@ -1094,8 +1099,10 @@
         + '另一登记键 settings.tplImage 的取用点(js/persona.js 八维度重写文生图提示词那步)取 persona.promptSystem,'
         + '两处装配口都经 Prompts.get 取值、用户在「全局默认值」页改得到(模板本身也一直改得到),'
         + '故本条自己的登记面已无收编余量;剧本模块那几步、Agent 对话闭环的辅助两步与专家工坊那两步都已收编。'
-        + '仍欠 G-13 的不在本条名下:全仓其余模块的内联人设未进注册表'
-        + '(单镜视频审片 js/wf-core.js 的 buildReviewPrompt 把人设句写在 user 半开头,仍不在注册表里),'
+        + '单镜视频审片 js/wf-core.js 的 buildReviewPrompt 那句 user 半首句人设也已收编为 review.userSystem,'
+        + '主线各步的装配口至此再无内联人设。'
+        + '仍欠 G-13 的不在本条名下、也不在任何一步的装配口上:剩的是 js/api.js 的 chatJSON/chatJSONRobust '
+        + '在调用方不给 system 时垫的那两处兜底缺省(「你是专业助手。」),它不在注册表里、用户覆盖不到,'
         + '缺口未闭合故按关联索引口径不摘标记。'
         + '生成请求构造点(Domain.buildVideoRequest)不注方法论文本,生成指纹口径不动;'
         + '校验半判定输入就是那份请求的参考图组(人物数上限、被上限挤出、三视图当视频参考),'
