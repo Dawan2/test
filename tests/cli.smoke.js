@@ -160,6 +160,9 @@ async function main() {
   report('exec project.extractSubjects(服务端工作流)→ ok+主体入库', r.code === 0 && r.out && r.out.ok && r.out.result && r.out.result.added >= 1 && r.out.result.total > r.out.result.added, 'exit=' + r.code + ' ' + JSON.stringify((r.out && r.out.result) || r.out));
   r = cli('exec', 'project.extractSubjects', '--pid', pidB); // 无剧本无分集正文 → blocked,零调用零计费
   report('exec project.extractSubjects 无剧本 → blocked no-script', r.code === 2 && r.out && r.out.error && r.out.error.code === 'no-script', 'exit=' + r.code);
+  // 注册表的 local/model 两位只在浏览器语境成立(本地启发式提取与用户选模型),headless 如实拒绝不静默忽略
+  r = cli('exec', 'project.extractSubjects', '--pid', pid, '--local');
+  report('exec project.extractSubjects --local → blocked browser-only(零调用)', r.code === 2 && r.out && r.out.error && r.out.error.code === 'browser-only', 'exit=' + r.code + ' ' + JSON.stringify((r.out && r.out.error) || r.out));
   r = cli('exec', 'episode.bogus', '--pid', pid, '--epid', epid);
   report('exec 未知命令 → exit 2', r.code === 2 && /未注册命令|可用/.test(String(r.out && r.out.error || r.err)), 'exit=' + r.code);
 

@@ -1,6 +1,9 @@
 /* ============ director.js 「AI 导演正在为您理解剧本」全屏进度页 ============
- * 真实驱动:Step1 LLM 主体提取 → Step2 提示词/八维度(随提取合并) → Step3 批量主体图
+ * 真实驱动:Step1 主体提取入库 → Step2 提示词/八维度(随提取合并) → Step3 批量主体图
  * 进度与 ETA 反映真实流程状态;失败步骤可断点重试。
+ * Step1 的提取与入库全部经统一命令层 Commands.execute('project.extractSubjects')——
+ * 提示词/规整/合并口径(同名同类不覆盖、别名进 formerNames、缺字段补齐)与闭环结论回流
+ * 都在命令那一处,与 CLI exec 同一份;本页只负责进度、用户选的文本模型与断点重试。
  */
 (function () {
   /* 步骤权重与预估耗时(秒,ETA 用) */
@@ -26,9 +29,10 @@
 
   /**
    * 开始创作全流程
-   * p 项目; scriptText 剧本; model LLM 模型; extractMode normal|fine; types {character,scene,prop}; main 容器
+   * p 项目; scriptText 剧本; model LLM 模型; extractMode normal|fine; main 容器
+   * (主体类型不再由用户勾选:精细模式一律全量提取角色/场景/道具,由命令层持有该口径)
    */
-  function run(p, scriptText, model, extractMode, types, main) {
+  function run(p, scriptText, model, extractMode, main) {
     p.script = scriptText;
     Store.save();
     const st = {
@@ -39,7 +43,6 @@
       genTotal: 0, genDone: 0, genFailed: 0,
       closed: false,
     };
-    let tk = null; // Tasks 任务(主体提取)
 
     /* ---- 侧边栏(复用 U.bgDock steps 模式:非模态停靠右侧,解析期间页面保持可操作;路由切换不中断) ---- */
     document.querySelectorAll('.dir-dock').forEach(x => x.remove());
@@ -77,13 +80,13 @@
     /* bgDock 的 close 幂等;收尾(st.closed/定时器/__dirActive)统一在 onCancel */
     function closeOverlay() { dock.close(); }
 
-    /* ================= Step 1:主体提取(fromRetry=true 时 LLM 再失败回退本地启发式,避免重试死循环) ================= */
+    /* ================= Step 1:主体提取入库(统一命令层) =================
+     * 提取(在线 LLM / 离线本地启发式)、入库合并口径与闭环结论回流一律由
+     * Commands.execute('project.extractSubjects') 持有;本步只透传用户选的文本模型与进度。
+     * fromRetry=true 时命令再失败即改带 local 位重跑(本地启发式,零 LLM 零计费),避免重试死循环。 */
     async function stepExtract(fromRetry) {
       st.failStep = -1;
       setTarget(0, 0.05);
-      tk = Tasks.start({ type: '剧本解析', model: API.isReady() ? model : '本地启发式', target: p.name, projectId: p.id });
-      const local = EpisodeUtil.extractSubjects(scriptText, extractMode, types);
-      let found = local, llmNote = '';
       if (!API.isReady()) {
         // 离线:本地启发式质量有限,明确告知并引导登录后端用 LLM 精确提取
         U.toast('当前离线:主体为本地粗略提取(可能不准)。启动 node server.js 并登录后端账号后,将用 LLM 精确提取', 'info', 4500);
@@ -91,56 +94,33 @@
       const t0 = Date.now();
       // 缓动推进到 90% 等待真实结果
       const crawl = setInterval(() => { if (st.step === 0 && st.failStep !== 0) setTarget(0, Math.min(0.9, (Date.now() - t0) / (STEPS[0].est * 1000))); }, 300);
-      try {
-        if (API.isReady()) {
-          const llm = await EpisodeUtil.llmExtractSubjects(scriptText, extractMode, types, model, tk.id, p); // 七轮:任务 id 作稳定计费操作键
-          found = {
-            character: llm.character.length ? llm.character : local.character,
-            scene: llm.scene.length ? llm.scene : local.scene,
-            prop: llm.prop.length ? llm.prop : local.prop,
-          };
-          st.llmUsed = true;
-          llmNote = llm.truncated ? '(已截取前 15000 字)' : '';
-        }
-      } catch (e) {
-        clearInterval(crawl);
-        if (fromRetry) {
-          // 重试后 LLM 仍失败:回退已算好的本地启发式结果继续(防重试死循环)
-          found = local;
-          llmNote = '(LLM 重试仍失败,已回退本地启发式)';
-        } else {
-          Tasks.fail(tk, 'LLM 提取失败:' + e.message);
-          st.failStep = 0; st.failReason = 'LLM 提取失败:' + e.message + '(可重试,重试再失败将自动回退本地启发式)';
-          ov.querySelector('[data-errmsg]').textContent = st.failReason;
-          setTarget(0, 0.05);
-          return false;
-        }
+      const call = extra => Commands.execute('project.extractSubjects',
+        Object.assign({ pid: p.id, mode: extractMode, model, main, ui: true }, extra || {}));
+      let r = await call();
+      let llmNote = r.ok && r.result.truncated ? '(已截取前 15000 字)' : '';
+      if (!r.ok && fromRetry) {
+        r = await call({ local: true }); // 重试后仍失败:回退本地启发式继续(防重试死循环)
+        llmNote = '(LLM 重试仍失败,已回退本地启发式)';
       }
       clearInterval(crawl);
+      if (!r.ok) {
+        st.failStep = 0;
+        // 首次失败才提示"重试会回退本地启发式";这一轮本就是回退还失败时不再许诺一次
+        st.failReason = ((r.error && r.error.message) || '主体提取未完成')
+          + (fromRetry ? '' : '(可重试,重试再失败将自动回退本地启发式)');
+        ov.querySelector('[data-errmsg]').textContent = st.failReason;
+        setTarget(0, 0.05);
+        return false;
+      }
       if (st.closed) return false; // 关闭后中断:耗时操作后落库前检查
       st.extractMs = Date.now() - t0;
-      const subjects = [];
-      ['character', 'scene', 'prop'].forEach(kind => {
-        if (!types[kind]) return;
-        found[kind].forEach(s => {
-          if (subjects.some(x => x.kind === kind && x.name === s.name)) return; // 同名同类去重兜底
-          subjects.push({
-            id: Store.uid('sub'), kind, name: s.name, evidence: s.evidence,
-            prompt: s.prompt || EpisodeUtil.genPrompt(kind, s.name, styleOf(p)),
-            persona: s.persona,
-            // 别名入 formerNames:分镜按别名引用时 findSubject 仍能解析到本主体(参考图/音色不失联)
-            formerNames: (s.aliases || []).slice(0, 10),
-            model: (window.getSettings ? getSettings().defImageModel : '') || MODELS.image[0],
-            image: null, status: 'pending',
-          });
-        });
-      });
-      st.subjects = subjects;
-      st.genTotal = subjects.length;
-      p.subjects = subjects;
-      Store.save();
-      if (tk.status === 'running') Tasks.done(tk);
-      const cnt = `已识别 ${found.character.length} 角色 · ${found.scene.length} 场景 · ${found.prop.length} 道具 ${llmNote}(耗时 ${(st.extractMs / 1000).toFixed(1)}s)`;
+      st.llmUsed = !!r.result.llm;
+      // 本轮要备的主体 = 主体库里缺参考图的那些(命令层同名同类合并入库,已有图的主体不重做)
+      st.subjects = (p.subjects || []).filter(s => !s.image);
+      st.genTotal = st.subjects.length;
+      const kindN = k => (p.subjects || []).filter(s => s.kind === k).length;
+      const cnt = `本轮新增 ${r.result.added} 位、已有 ${r.result.skipped} 位;主体库共 ${r.result.total} 位`
+        + `(${kindN('character')} 角色 · ${kindN('scene')} 场景 · ${kindN('prop')} 道具)${llmNote}(耗时 ${(st.extractMs / 1000).toFixed(1)}s)`;
       info(0, `<span style="color:var(--green)">✓ ${cnt}</span>`);
       setTarget(0, 1);
       return true;

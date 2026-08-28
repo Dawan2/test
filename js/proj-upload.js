@@ -9,7 +9,6 @@
     const textModels = API.getTextModels(8);
     let model = (textModels.find(t => t.id === API.getConfig().model) || textModels[0]).id;
     let extractMode = 'normal';
-    const types = { character: true, scene: true, prop: true }; // 主体类型不再让用户勾选:精细模式默认全量提取(角色/场景/道具)
 
     U.openModal({
       title: '上传剧本(支持整部剧本,最大 20 万字)',
@@ -98,8 +97,9 @@
             p.script = scriptText; // 原文进剧本板块(主网页),供导演/分镜等下游使用
             Store.save();
             if (extractMode === 'fine') {
-              // 精细模式:导演风格设定 + 主体主图生成(含分集与文本信息,见 Director.run 流程尾部)
-              Director.run(p, scriptText, model, extractMode, types, main);
+              // 精细模式:导演风格设定 + 主体主图生成(含分集与文本信息,见 Director.run 流程尾部);
+              // 主体提取入库经命令层,类型一律全量(角色/场景/道具),不再由用户勾选
+              Director.run(p, scriptText, model, extractMode, main);
             } else {
               // 普通模式:先分集(原文逐字),再全文提取规范文本信息(梗概/大纲/人物小传/集纲)
               doSplit(p, scriptText, main, () => EpisodeUtil.runDigestDock(p, main));
