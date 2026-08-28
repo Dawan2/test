@@ -31,7 +31,7 @@
           try {
             U.toast('AI 改写提示词中…', 'info');
             const out = await API.chatJSON({
-              system: `你是短剧${kindWord}设定师。按用户指令改写文生图设定提示词:保留与指令无关的外形/风格要素,只落实指令要求的变更;输出中文提示词,不超过120字。`,
+              system: Prompts.fill('persona.editSystem', { kind: kindWord }),
               messages: [{ role: 'user', content: `主体:${s.name}(${kindWord})\n项目风格:${p.style || ''}\n当前设定提示词:${s.prompt || '(空,请据名称与指令撰写)'}\n\n修改指令:${inst}\n\n返回 {"prompt":"改写后的完整设定提示词"}` }],
               temperature: 0.7, max_tokens: 500, billingAction: 'llm.optimize',
             });

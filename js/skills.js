@@ -886,7 +886,7 @@
         'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem', 'agent.selfFixSystem', 'agent.compactSystem',
         'narration.system', 'reading.system', 'concept.system', 'light.system',
         'voice.recommendSystem', 'voice.recommendBatchSystem', 'comic.bubbleSystem', 'dirset.system', 'dist.copySystem',
-        'rip.system', 'gen.editSystem'],
+        'rip.system', 'gen.editSystem', 'persona.editSystem'],
       cmds: ['episode.understanding', 'episode.generateStoryboard', 'episode.smartReview'], gaps: ['G-01'],
       note: 'G-01 已落地:服务端 /api/wf/* 各端点经唯一装配口 wfPersonaNote 注入生效人设(板块雇佣 > 全局雇佣),'
         + '浏览器同装配口;infra 面的 pending 已按实况清空(gaps() 只投影 gaps 字段、不看 pending,清账动不到投影),'
@@ -934,12 +934,16 @@
         + '会话纪要蒸馏 agent.compactSystem——两句 def 逐字节不同、角色也不同,不共用一键),'
         + '取值口都在 js/agent-ops.js 的 selfFixRound/compactChat 就地经 Prompts.get,'
         + 'js/agent-ops.js 的内联人设至此归零。'
+        + '主体编辑页「按指令改」那步的人设句同形收编为独立键 persona.editSystem(取值口在 js/role-editor.js 就地经 '
+        + 'Prompts.fill 填主体类别变量 {kind};分镜那侧同形入口的角色与产物落点都不同,不合成一条)。'
         + '仍欠:四处的 ops 协议/字段面/命令白名单/返回 JSON 约定仍由各自装配口拼、不开放覆盖'
         + '(那半是 ops 解析契约,用户改坏即整轮无 ops);'
         + '音色推荐两条同理只收人设句——音色库取值范围与返回 JSON 约定仍写在各自调用点、不开放覆盖'
         + '(用户改坏即推荐值落不回音色库,只能退随机);'
         + '漫剧气泡那处同口径——返回 JSON 形状与 type 词表是解析判据,同样只收人设句不开放契约半;'
         + '该步也不过本条的 ctx 通道(编辑器工具步不注入生效人设与协作记忆,只是人设句进了注册表);'
+        + '主体按指令改那条同理只收人设句——主体名/项目风格/当前设定提示词的摘取与返回 JSON 约定仍写在调用点、'
+        + '不开放覆盖(用户改坏即改写结果落不回设定提示词);'
         + '多轮那三份与音色推荐两份都没有 Node 第二消费点,两端只落在取值口'
         + '(同一注册表键 + Prompts.get 读覆盖),不是两个消费点',
     },
@@ -1040,9 +1044,9 @@
         + '——剧本模块两个文件的内联人设至此归零;'
         + 'js/agent-ops.js 的执行核验器与会话纪要整理器同形收编为 agent.selfFixSystem/agent.compactSystem 两条独立键,'
         + '该文件的内联人设也随之归零。'
-        + '仍欠 G-13 的已不在剧本模块自己这两个文件里,而是别处还没收的那处内联人设:'
-        + 'js/role-editor.js 的角色设定师仍是内联字面,'
-        + '那一步既取不到条目正文、用户也覆盖不到',
+        + '仍欠 G-13 的已不在剧本模块自己这两个文件里,而是别处还没收的那几处内联人设:'
+        + 'js/experts.js 的专家人设进化器与 js/plans.js 的制作计划器仍是内联字面,'
+        + '那几步既取不到条目正文、用户也覆盖不到',
     },
     /* ---- 主体 ---- */
     {
@@ -1058,7 +1062,7 @@
         + '两处装配口都经 Prompts.get 取值、用户在「全局默认值」页改得到(模板本身也一直改得到),'
         + '故本条自己的登记面已无收编余量;剧本模块那几步与 Agent 对话闭环的辅助两步都已随 SK-03 收编。'
         + '仍欠 G-13 的不在本条名下:全仓其余模块的内联人设未进注册表'
-        + '(js/role-editor.js 的角色设定师仍是内联字面),'
+        + '(js/experts.js 的专家人设进化器与 js/plans.js 的制作计划器仍是内联字面),'
         + '缺口未闭合故按关联索引口径不摘标记。'
         + '生成请求构造点(Domain.buildVideoRequest)不注方法论文本,生成指纹口径不动;'
         + '校验半判定输入就是那份请求的参考图组(人物数上限、被上限挤出、三视图当视频参考),'

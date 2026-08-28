@@ -3955,6 +3955,60 @@ async function sbViewsCommentGen(ov) {
   assertEq(llm.length, 1, '「按指令改」应恰好发一次 LLM');
   return Object.assign({}, llm[0], { applied: m2.querySelector('[data-f=newprompt]').value });
 }
+/* 主体编辑页「按指令改」真跑:该步 handler 只挂在编辑页 body 的按钮上(模块出口只有 openSubjectEdit/openMultiView),
+ * 故用极简选择器桩把编辑页与二级弹窗逐层驱动到 chatJSON——开编辑页 → 点「💬 按指令改」→ 填指令 → 点「改写提示词」,
+ * 截获那一次请求的 system/user 与回填结果;ov 写进 Store 覆盖表(浏览器隐式读)。 */
+async function roleEditorComment(kind, ov) {
+  const sb = makeSandbox();
+  installCommon(sb);
+  if (ov) sb.Store.state.settings.promptOverrides = ov;
+  sb.__apiReady = true;
+  sb.COST = { image: 8, optimize: 1 }; // 弹窗按钮文案用(积分口径由 billing.js 供,本套件不加载)
+  sb.U.thumb = f => f;
+  sb.Voice = { norm: v => ({ voice: '默认音色' }) };
+  const llm = [];
+  sb.API.chatJSON = async req => {
+    llm.push({ system: req.system, user: ((req.messages || [])[0] || {}).content, billingAction: req.billingAction });
+    return { prompt: '改写后的红发设定提示词' };
+  };
+  const genCalls = [];
+  /* roles.js 的共享操作桥(role-editor.js 顶层解构,缺一个成员就加载不起来) */
+  sb.RoleOps = {
+    formWord: k => (k === 'character' ? '子形象' : '形态'),
+    VIEW_MODES: [{ key: 'sheet', label: '三视图', desc: '白底三视图', field: 'imgSheet' }],
+    currentViewMode: s => s.viewMode || 'sheet',
+    viewImg: (s, m) => s.imgSheet || s.image || '',
+    touchImage() {}, setVoice() {}, recommendVoice() {}, bindRefAudio() {}, openForms() {},
+    toggleFinalize() {}, genMainImage: (p, s) => { genCalls.push(s.prompt); }, replaceMainImage() {}, genModeImage() {},
+  };
+  const modals = [];
+  sb.U.openModal = opt => { modals.push(opt); };
+  /* 选择器 → 节点惰性造,同一选择器取到同一个对象(querySelectorAll 的那几组本用例不驱动) */
+  const domStub = () => {
+    const nodes = {};
+    return {
+      innerHTML: '', value: '', disabled: false, style: {}, dataset: {}, onclick: null,
+      querySelector: sel => (nodes[sel] = nodes[sel] || domStub()),
+      querySelectorAll: () => [],
+    };
+  };
+  loadFile(sb, 'prompts.js'); // 与 index.html 同顺序:prompts 在 role-editor 之前
+  loadFile(sb, 'role-editor.js');
+  const p = { id: 'p1', style: '漫剧', subjects: [{ id: 'sj1', name: '林晚晴', kind, prompt: '漫剧风格,黑发少女' }] };
+  sb.RoleEditor.openSubjectEdit(p, 'sj1', {});
+  const m1 = domStub();
+  modals[0].onMount(m1, () => {});
+  m1.querySelector('[data-ebody]').querySelector('[data-x=commentimg]').onclick();
+  const m2 = domStub();
+  modals[1].onMount(m2, () => {});
+  m2.querySelector('[data-f=inst]').value = '换成红色长发';
+  await m2.querySelector('[data-x=rewrite]').onclick();
+  assertEq(llm.length, 1, '「按指令改」应恰好发一次 LLM');
+  m2.querySelector('[data-x=apply]').onclick(); // 确认应用:改写结果回落 s.prompt 并复用生图链路
+  return Object.assign({}, llm[0], {
+    applied: m2.querySelector('[data-f=newprompt]').value, prompt: p.subjects[0].prompt, genCalls,
+  });
+}
 /* 全脏项目夹具:过期镜(done+旧指纹)/失败镜/未确认镜各一 + 低分审片 + 主体缺图 → G1-G6/G9 同时触发 */
 function contractDirtyP() {
   const mk = (id, order, over) => Object.assign({
@@ -4827,7 +4881,7 @@ const contractTests = [
     /* 仍欠段只认「仍欠」之后那段(锚点写在"已落地"那半里不算交账),且点名的余量逐处对照源码还在:
      * 剧本模块那几步已随 SK-03 收编,故这里点名的换成别处仍内联的那几步,收编时同样转红 */
     const owed = sk11.note.split('仍欠').slice(1).join('仍欠');
-    assert(owed.includes('js/role-editor.js'),
+    assert(owed.includes('js/experts.js') && owed.includes('js/plans.js'),
       'SK-11 的仍欠段须点名 G-13 余量落在哪几处(不在本条自己的登记面里)');
     const eps = fs.readFileSync(path.join(ROOT, 'js', 'episodes.js'), 'utf8');
     assert(!eps.includes("system: '你是短剧剧本结构分析师。'"),
@@ -4840,7 +4894,12 @@ const contractTests = [
       'Agent 辅助两步已收编,SK-11 的仍欠段不得再把 js/agent-ops.js 记成欠账');
     assertEq((fs.readFileSync(path.join(ROOT, 'js', 'agent-ops.js'), 'utf8').match(/system: ['`]你是/g) || []).length, 0,
       'js/agent-ops.js 不得退回内联人设(两处已收进 agent.selfFixSystem/agent.compactSystem)');
-    ['js/role-editor.js'].forEach(rel =>
+    /* 主体「按指令改」那处已随 SK-03 收编:同形的反向断言按实况翻面 */
+    assert(!owed.includes('js/role-editor.js'),
+      '主体按指令改已收编,SK-11 的仍欠段不得再把 js/role-editor.js 记成欠账');
+    assertEq((fs.readFileSync(path.join(ROOT, 'js', 'role-editor.js'), 'utf8').match(/system: ['`]你是/g) || []).length, 0,
+      'js/role-editor.js 不得退回内联人设(已收进 persona.editSystem)');
+    ['js/experts.js', 'js/plans.js'].forEach(rel =>
       assert(/system: ['`]你是/.test(fs.readFileSync(path.join(ROOT, rel), 'utf8')),
         '仍欠段点名的 ' + rel + ' 此刻确实还有内联人设(收编后须同步改 SK-11 的仍欠段)'));
     // 缺口未闭合(全仓内联人设仍在):标记不摘,G-13 的关联索引逐字节不变
@@ -4849,6 +4908,85 @@ const contractTests = [
       'script.hookType,script.aiToneBan,subjects.refDiscipline,eps.structureStage,gen.videoTpl,film.rhythmInject',
       'G-13 的关联索引应逐字节不变(本槽只收一处取值口,不预支摘标记)');
     assertEq(Skills.validate({ Prompts }).join(';'), '', '引用键自检应通过(新登记的键须在注册表内)');
+  } },
+  { name: '主体「按指令改」人设:沙箱真跑截获 system,缺省逐字节等于收编前的内联字面、{kind} 三类各自成句', fn: async () => {
+    const Prompts = require('../js/prompts.js');
+    /* 收编前写死在 js/role-editor.js 那步 chatJSON 里的模板串(${kindWord} 就地插值):缺省逐字节不得变 */
+    const sysOf = kindWord => '你是短剧' + kindWord + '设定师。按用户指令改写文生图设定提示词:'
+      + '保留与指令无关的外形/风格要素,只落实指令要求的变更;输出中文提示词,不超过120字。';
+    assertEq(Prompts.get('persona.editSystem'), sysOf('{kind}'), '注册表 def 应是把类别换成 {kind} 变量的那一句');
+    const it = Prompts.list().find(x => x.key === 'persona.editSystem');
+    assert(it && it.name.startsWith('主体按指令改') && it.name.includes('系统人设'), '注册表应登记该步条目(可在全局默认值页在线改写)');
+    assertEq(it.vars.join(','), '{kind}', '该条登记 {kind} 一个变量(主体类别由取值口填)');
+    assertEq(Prompts.list().filter(x => x.def === it.def).length, 1, '该人设句应恰好命中注册表一条(同 def 开两个键即红)');
+    /* 三类主体各真跑一遍:填出来的三句与收编前 ${kindWord} 插值的结果逐字节相同 */
+    const KINDS = [['character', '角色'], ['scene', '场景'], ['prop', '道具']];
+    const runs = await Promise.all(KINDS.map(([k]) => roleEditorComment(k)));
+    runs.forEach((r, i) => assertEq(r.system, sysOf(KINDS[i][1]), KINDS[i][0] + ' 真跑截获的 system 应与收编前逐字节相同'));
+    assertEq(new Set(runs.map(r => r.system)).size, 3, '三类主体各成一句(变量没填进去即红)');
+    assertEq(Prompts.fill('persona.editSystem', { kind: '角色' }), runs[0].system, '取值口填的就是注册表这一条');
+    // 覆盖只换人设句:user 半(主体名/项目风格/当前设定提示词 + 返回 JSON 约定)逐字节不变
+    const ovd = await roleEditorComment('character', { 'persona.editSystem': '你是覆盖生效的{kind}设定师。' });
+    assertEq(ovd.system, '你是覆盖生效的角色设定师。', '覆盖 persona.editSystem 时该步取值跟随,变量照旧由取值口填');
+    assertEq(ovd.user, runs[0].user, '覆盖只换人设句:user 半逐字节不变');
+    assertEq(runs[0].billingAction, 'llm.optimize', '计费标签一字不动(收编不碰计费口径)');
+    assert(runs[0].user.includes('返回 {"prompt":"改写后的完整设定提示词"}'), '返回 JSON 契约应仍在该步 user 半');
+    assertEq(runs[0].applied, '改写后的红发设定提示词', 'JSON 契约未开放:{"prompt":…} 仍按原口径解析并回填');
+    assertEq(runs[0].prompt, '改写后的红发设定提示词', '确认应用后改写结果回落 s.prompt');
+    assertEq(runs[0].genCalls.join(','), '改写后的红发设定提示词', '应用后仍复用 genMainImage 全计费链路重新生图');
+    /* 与同属主体域的八维度重写不复用:那一步的角色是文生图提示词专家、产物是整条立绘提示词 */
+    assert(Prompts.get('persona.promptSystem') !== Prompts.get('persona.editSystem'), '两步人设措辞不同(同字面才谈得上复用)');
+    // 只收人设句:返回 JSON 字段名一个不进注册表
+    assertEq(Prompts.list().filter(x => x.def.includes('"prompt":"改写后的完整设定提示词"')).length, 0, '返回 JSON 契约不进注册表');
+  } },
+  { name: '主体「按指令改」人设(源级):js/role-editor.js 零内联、与该步 user 半配对,SK-03 记账随实况', fn() {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const re = fs.readFileSync(path.join(ROOT, 'js', 'role-editor.js'), 'utf8');
+    /* 取值口与该步 user 半锚点配对:键挪到别的步骤上、或这一步被改走别的键都当场红 */
+    assert(/system: Prompts\.fill\('persona\.editSystem', \{ kind: kindWord \}\),[\s\S]{0,600}返回 \{"prompt":"改写后的完整设定提示词"\}/.test(re),
+      'persona.editSystem 应就在「按指令改」那一步的取值口上,且与该步 user 半锚点配对');
+    assertEq((re.match(/system: ['`]你是/g) || []).length, 0, 'js/role-editor.js 应零内联人设(全文件计数归零)');
+    /* 纯浏览器链路:这一步没有服务端/CLI 对端,那两处不得长出第二份 user 半 */
+    ['server.js', 'cli.js'].forEach(rel => assert(!fs.readFileSync(path.join(ROOT, rel), 'utf8').includes('改写后的完整设定提示词'),
+      rel + ' 不应出现该步的 user 半(主体按指令改只在浏览器主体页)'));
+    /* 全仓持有者:def 带变量,故按变量之后那段不变量扫——谁把填好的整句抄回源码里同样红 */
+    const TAIL = '设定师。按用户指令改写文生图设定提示词:保留与指令无关的外形/风格要素,只落实指令要求的变更;输出中文提示词,不超过120字。';
+    const files = ['server.js', 'cli.js', 'mcp.js', 'index.html']
+      .concat(fs.readdirSync(path.join(ROOT, 'js')).filter(n => n.endsWith('.js')).map(n => 'js/' + n)).sort();
+    assertEq(files.filter(rel => fs.readFileSync(path.join(ROOT, rel), 'utf8').includes(TAIL)).join(','), 'js/prompts.js',
+      '该人设句的不变量段应全仓只剩注册表一份(别处抄第二份即红)');
+    assert(Skills.byId('core.personaCtx').prompts.includes('persona.editSystem'), 'SK-03 应登记 persona.editSystem');
+    assert(Skills.byId('core.personaCtx').note.includes('persona.editSystem'), 'SK-03 的 note 须点名新收编的键');
+    /* G-13 没闭合:全仓内联人设少一处,标记与关联索引投影一个不动 */
+    const inlined = files.reduce((n, rel) => n + (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/system: ['`]你是/g) || []).length, 0);
+    assertEq(inlined, 2, "全仓内联人设(system: '你是… 字面计数)应为 2 处(收编一处即减一,记账数字跟着改)");
+    const g = Skills.gaps();
+    assertEq(Object.keys(g).length, 20, '缺口投影键数应不变');
+    assertEq(g['G-13'].join(','), 'script.hookType,script.aiToneBan,subjects.refDiscipline,eps.structureStage,gen.videoTpl,film.rhythmInject',
+      'G-13 的六条关联索引逐字节不变(只收一处不摘标记)');
+    assertEq(Skills.validate({ Prompts }).join(' | '), '', '新键须被 skill 索引引用且引用键都存在');
+  } },
+  { name: '注册表全仓持有者名单:每条 def 的字面持有者恰好只有 js/prompts.js(谁在别处抄第二份即红)', fn() {
+    const Prompts = require('../js/prompts.js');
+    /* 逐槽各写一份"这一句只剩注册表一份"的名单已难以逐条维护:改成按注册表现取——
+     * 每条 def 全仓扫一遍,持有者名单必须恰好是注册表自己那一份。
+     * 既盖住已收编的全部键,也让下一槽新收的键自动进名单(不必再新写一条同形断言);
+     * 既有那几条逐槽写的名单一条不删——它们钉的是"那一步的取值口",与本条的覆盖面互补。 */
+    const files = ['server.js', 'cli.js', 'mcp.js', 'index.html']
+      .concat(fs.readdirSync(path.join(ROOT, 'js')).filter(n => n.endsWith('.js')).map(n => 'js/' + n)).sort();
+    const src = {};
+    files.forEach(rel => { src[rel] = fs.readFileSync(path.join(ROOT, rel), 'utf8'); });
+    const list = Prompts.list();
+    assert(list.length >= 26, '注册表条数不应回退(名单按注册表现取,条数掉了说明有键被撤)');
+    list.forEach(it => assertEq(files.filter(rel => src[rel].includes(it.def)).join(','), 'js/prompts.js',
+      it.key + ' 的 def 字面持有者应恰好只有 js/prompts.js(别处抄第二份即红)'));
+    /* 反查另一向只做到"同 def 的键必须是有意为之":音色推荐两条 def 逐字节相同是明写的口径(键位是持久化面),
+     * 故这里钉住同字面的键集合恰好是那两条——再多一对同字面就是合并漏了或抄错了 def。 */
+    const dup = {};
+    list.forEach(it => { (dup[it.def] = dup[it.def] || []).push(it.key); });
+    assertEq(Object.keys(dup).filter(d => dup[d].length > 1).map(d => dup[d].join('+')).join(','),
+      'voice.recommendSystem+voice.recommendBatchSystem', '注册表里同 def 的键只许是明写不合并的音色推荐那一对');
   } },
   { name: '剧本板块四步人设:四个独立键各自取值,缺省逐字节等于收编前的内联字面、覆盖只换对应那一键', fn() {
     const Prompts = require('../js/prompts.js');
@@ -4919,12 +5057,16 @@ const contractTests = [
     // 点名断言只认「仍欠」之后那段:锚点写在"已落地"那半里不算交账
     const owed = sk10.note.split('仍欠').slice(1).join('仍欠');
     assert(owed, 'SK-10 的 note 须写明仍欠什么(G-13 没闭合)');
-    assert(owed.includes('js/role-editor.js'),
+    assert(owed.includes('js/experts.js') && owed.includes('js/plans.js'),
       'SK-10 的仍欠段须点名 G-13 余量真正还落在哪几处');
     /* 反向:仍欠段点名的那几处此刻确实还在内联(收编了不改记账当场红) */
-    ['js/role-editor.js'].forEach(rel =>
+    ['js/experts.js', 'js/plans.js'].forEach(rel =>
       assert(/system: ['`]你是/.test(fs.readFileSync(path.join(ROOT, rel), 'utf8')),
         rel + ' 此刻确实还有内联人设(收编后须同步改 SK-10 的仍欠段)'));
+    /* 主体「按指令改」那处已收编:同形的反向断言按实况翻面 */
+    assert(!owed.includes('js/role-editor.js'), '主体按指令改已收编,SK-10 的仍欠段不得再把 js/role-editor.js 记成欠账');
+    assertEq((fs.readFileSync(path.join(ROOT, 'js', 'role-editor.js'), 'utf8').match(/system: ['`]你是/g) || []).length, 0,
+      'js/role-editor.js 不得退回内联人设(已收进 persona.editSystem)');
     /* Agent 对话闭环那两处已收编:同形的反向断言按实况翻面 */
     assert(!owed.includes('js/agent-ops.js'), 'Agent 辅助两步已收编,SK-10 的仍欠段不得再把 js/agent-ops.js 记成欠账');
     assertEq((fs.readFileSync(path.join(ROOT, 'js', 'agent-ops.js'), 'utf8').match(/system: ['`]你是/g) || []).length, 0,
@@ -5161,10 +5303,9 @@ const contractTests = [
       .map(rel => [rel, (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(RE) || []).length])
       .filter(([, n]) => n).map(([rel, n]) => rel + ':' + n);
     assertEq(inlinePersonaHolders.join(', '),
-      'js/agent-global.js:1, js/experts.js:2, js/plans.js:1, '
-      + 'js/role-editor.js:1, js/wf-core.js:1',
+      'js/agent-global.js:1, js/experts.js:2, js/plans.js:1, js/wf-core.js:1',
       '全仓内联人设持有者名单应精确到文件:处数(G-13 余量清单,收编一处即须同步减)');
-    assertEq(inlinePersonaHolders.reduce((a, x) => a + Number(x.split(':')[1]), 0), 6, 'G-13 余量总处数');
+    assertEq(inlinePersonaHolders.reduce((a, x) => a + Number(x.split(':')[1]), 0), 5, 'G-13 余量总处数');
     // 本槽的落点:js/gsettings.js 整条从名单上消失(该文件此后零内联人设)
     assert(!inlinePersonaHolders.some(x => x.startsWith('js/gsettings.js')),
       'js/gsettings.js 应已零内联人设(工坊那份人设字面在 js/experts.js,不记在本文件名下)');
@@ -5336,12 +5477,14 @@ const contractTests = [
       rel + ' 不应出现该步的 user 半(按指令改只在浏览器工作区)'));
     assert(Skills.byId('core.personaCtx').prompts.includes('gen.editSystem'), 'SK-03 应登记 gen.editSystem');
     assert(Skills.byId('core.personaCtx').note.includes('gen.editSystem'), 'SK-03 的 note 须点名新收编的键');
-    /* 反向:同形的主体「按指令改」在 js/role-editor.js 仍内联(角色与产物落点都不同,本槽有意不收);
-     * 那一处被收编而记账没跟上时,这条当场红 */
+    /* 反向按实况翻面:同形的主体「按指令改」已随 W87 收进 persona.editSystem(角色与产物落点都不同,两条键不合并);
+     * 那一处退回内联、或两条键被合成一条时,这条当场红 */
     const re = fs.readFileSync(path.join(ROOT, 'js', 'role-editor.js'), 'utf8');
-    assert(/system: `你是短剧\$\{kindWord\}设定师。/.test(re), 'js/role-editor.js 主体按指令改应仍是内联人设(收编时须同步改记账)');
-    assertEq(Prompts.list().filter(x => x.def.includes('设定师。按用户指令改写文生图设定提示词')).length, 0,
-      '主体那处的人设句不该已在注册表里(在了就是记账没跟上)');
+    assert(!/system: `你是短剧\$\{kindWord\}设定师。/.test(re), 'js/role-editor.js 主体按指令改不得退回内联(已收进 persona.editSystem)');
+    assertEq(Prompts.list().filter(x => x.def.includes('设定师。按用户指令改写文生图设定提示词')).length, 1,
+      '主体那处的人设句应恰好在注册表里一条(persona.editSystem)');
+    assert(Prompts.get('gen.editSystem') !== Prompts.list().find(x => x.key === 'persona.editSystem').def,
+      '镜头改图师与主体设定师是两条不同的键,不得被合成一条');
     /* G-13 没闭合:全仓内联人设(system: '你是… 字面计数)按合并后 live 现取,标记与投影一个不动 */
     const files = ['server.js', 'cli.js', 'mcp.js'].concat(fs.readdirSync(path.join(ROOT, 'js')).filter(n => n.endsWith('.js')).map(n => 'js/' + n));
     const inlined = files.reduce((n, rel) => n + (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/system: '你是/g) || []).length, 0);
@@ -5668,12 +5811,11 @@ action 二选一:
      * G-13 的余量到此有了唯一判据——不再只是散文里的一个数字(口径与例外见 inlinePersonaHolders 注释) */
     const holders = inlinePersonaHolders();
     assertEq(holders.join(' '),
-      'js/agent-global.js:1 js/experts.js:2 js/plans.js:1 js/proj-planner.js:2 '
-      + 'js/role-editor.js:1',
+      'js/agent-global.js:1 js/experts.js:2 js/plans.js:1 js/proj-planner.js:2',
       '全仓内联人设持有者名单(文件:处数)');
     assert(!holders.some(x => x.startsWith('js/beatboard.js:')), 'js/beatboard.js 应已退出持有者名单(本处已收编)');
-    assertEq(holders.length, 5, '持有者文件数');
-    assertEq(holders.reduce((n, x) => n + Number(x.split(':')[1]), 0), 7, '全仓内联人设处数');
+    assertEq(holders.length, 4, '持有者文件数');
+    assertEq(holders.reduce((n, x) => n + Number(x.split(':')[1]), 0), 6, '全仓内联人设处数');
   } },
   { name: '漫剧气泡对白人设:经 Prompts.get(comic.bubbleSystem) 取值,缺省逐字节等于收编前的内联字面', fn() {
     const Prompts = require('../js/prompts.js');
@@ -5719,11 +5861,11 @@ action 二选一:
     assertEq(census.join(' '), [
       'js/agent-global.js:1', 'js/api.js:2', 'js/experts-data.js:16', 'js/experts.js:2',
       'js/gsettings.js:1', 'js/plans.js:1', 'js/proj-planner.js:2',
-      'js/prompts.js:32', 'js/role-editor.js:1', 'js/wf-core.js:1',
+      'js/prompts.js:33', 'js/wf-core.js:1',
     ].join(' '), '全仓人设字面持有者名单(逐文件计数)');
     assert(!census.some(x => x.startsWith('js/editors.js:')), 'js/editors.js 收编后应已不在持有者名单上');
-    assertEq(Prompts.list().filter(x => x.def.startsWith('你是')).length, 32,
-      '名单里 js/prompts.js 那 32 处就是注册表 def 本身(注册表条数变了这张名单也要跟着改)');
+    assertEq(Prompts.list().filter(x => x.def.startsWith('你是')).length, 33,
+      '名单里 js/prompts.js 那 33 处就是注册表 def 本身(注册表条数变了这张名单也要跟着改)');
   } },
   { name: 'Agent 辅助两步人设:回执核验修复/会话纪要蒸馏各一独立键,缺省逐字节等于收编前的内联字面', fn() {
     const Prompts = require('../js/prompts.js');
