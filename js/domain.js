@@ -561,6 +561,13 @@
     return { status, counts, blockers, action, reviewAvg, reviewStale, composedReady, shotsStale };
   };
 
+  /* 前置门槛的阻塞码登记表:gateBlockers 只按本表出码,不写第二处字面。
+   * 表兼枚举面——门槛派生有三个消费方(流程条 workflow 按 step 取,问题中心 Issues.gates() 与
+   * 计划层 TODO_OF 按码取),三处都是"表外的码一律不投"而且不投是静默的,新增一档时谁没跟上
+   * 没有夹具摊得到;故 D.gateCodes() 把码全集报出来,由契约用例逐码点名各消费方的实际投影。 */
+  const GATE = { script: 'no-script', subjects: 'no-subjects', noImage: 'subjects-no-image', eps: 'no-eps' };
+  D.gateCodes = () => Object.keys(GATE).map(k => GATE[k]);
+
   /* 项目级前置门槛断点(剧本/主体/分集三步的阻塞项,双端单源):
    * 这三步的判定输入全是项目对象本身(整本剧本 / 主体库 / 分集表),与逐集推导无关——
    * 故单独收成一函数,workflow 的这三步与问题中心同读本份,码名与文案不在两处各写一遍。
@@ -570,10 +577,10 @@
     const subjects = (p && p.subjects) || [];
     const noImg = subjects.filter(s => !s.image).length;
     const out = [];
-    if (!(p && (p.script || p.extractDone))) out.push({ step: 'script', code: 'no-script', label: '未上传剧本' });
-    if (!subjects.length) out.push({ step: 'subjects', code: 'no-subjects', label: '未提取主体' });
-    else if (noImg) out.push({ step: 'subjects', code: 'subjects-no-image', label: noImg + ' 个主体缺权威图', count: noImg });
-    if (!eps.length) out.push({ step: 'eps', code: 'no-eps', label: '未建分集' });
+    if (!(p && (p.script || p.extractDone))) out.push({ step: 'script', code: GATE.script, label: '未上传剧本' });
+    if (!subjects.length) out.push({ step: 'subjects', code: GATE.subjects, label: '未提取主体' });
+    else if (noImg) out.push({ step: 'subjects', code: GATE.noImage, label: noImg + ' 个主体缺权威图', count: noImg });
+    if (!eps.length) out.push({ step: 'eps', code: GATE.eps, label: '未建分集' });
     return out;
   };
 

@@ -4637,6 +4637,75 @@ const contractTests = [
     assertEq((fi.shotIds || []).join(','), 'sh2', '失败镜条目应带失败 shotIds 子集');
     assert(!list.find(x => x.kind === 'stale-shots').cmd, '过期镜条目是导航类,不应串上失败镜的 cmd');
   } },
+  /* ================= 门槛码扇出(Domain.gateBlockers → 流程条 / 问题中心 / 计划层) =================
+   * 前置门槛派生有三个消费方:流程条 workflow 按 step 取(gateOf),问题中心 GATES 投影表与
+   * 计划层 TODO_OF 取材器按码取——三处都是"表外的码一律不投",而且不投是静默的。
+   * 既有判据只钉了「消费方用的码必须是派生会回的码」这一向(码名分裂当场红);
+   * 反向那格向零:派生新加一档阻塞码时,谁没跟上都不会红,那一态就在该面上凭空消失
+   * (问题中心收不出条目 = 清单上看不见断点,计划层推不出步 = 点「按主线生成」只说无待推进事项)。
+   * 这里补的就是反向:枚举面取 Domain.gateCodes()(派生按登记表出码、函数体零码字面,故加一档必进枚举),
+   * 再逐码把派生打桩成只回该码,看两个消费方各自的实际产出——夹具摊不摊得到那一态都不影响。
+   * 接不住的码要在消费方显式登记不投的理由(计划层 Plans.gateSkips()),白名单之外一律红。 */
+  { name: '门槛码扇出:Domain.gateCodes() 逐码在问题中心与计划层都有投影(漏投即红)', fn() {
+    const dom = fs.readFileSync(path.join(ROOT, 'js/domain.js'), 'utf8');
+    const body = dom.slice(dom.indexOf('D.gateBlockers = function'), dom.indexOf('D.workflow = function'));
+    const sbD = loadDomain();
+    const CODES = sbD.Domain.gateCodes();
+    assertEq([...body.matchAll(/code: '([^']+)'/g)].length, 0,
+      'gateBlockers 不得直接写码字面(绕开登记表的码进不了 gateCodes(),扇出契约就漏检那一码)');
+    assert(CODES.length >= 4, '码全集不能是空表(空表会让下面的逐码点名变成空转),实际 ' + CODES.length + ' 码');
+    sbD.Domain.gateCodes().push('污染');
+    assertEq(sbD.Domain.gateCodes().length, CODES.length, 'gateCodes() 每次应现生成新数组');
+    [
+      { id: 'f0', subjects: [], episodes: [] },
+      { id: 'f1', script: '整本', subjects: [], episodes: [] },
+      { id: 'f2', script: '整本', subjects: [{ id: 's1', name: '甲', image: '' }], episodes: [] },
+      { id: 'f3', extractDone: true, subjects: [{ id: 's1', name: '甲', image: 'u' }], episodes: [{ id: 'ep1', title: '一', content: '正文', shots: [] }] },
+    ].forEach(p => sbD.Domain.gateBlockers(p).forEach(g =>
+      assert(CODES.indexOf(g.code) >= 0, '真派生回了未登记进 gateCodes() 的门槛码:' + g.code)));
+    // 流程条那一份按 step 取:派生给得出的 step 与 workflow 里 gateOf 取的那几步必须同集(新 step 一样会静默落地无声)
+    const wf = dom.slice(dom.indexOf('D.workflow = function'));
+    assertEq([...new Set([...body.matchAll(/step: '([^']+)'/g)].map(m => m[1]))].sort().join(','),
+      [...new Set([...wf.matchAll(/gateOf\('([^']+)'\)/g)].map(m => m[1]))].sort().join(','),
+      '门槛派生的 step 与流程条 gateOf 取的步应同集(多出来的那一步的阻塞项流程条一条都画不出来)');
+    /* 问题中心:每一码都得投得出一条项目级条目——它是断点的唯一清单面(CLI/MCP 同读这份投影),不设免投白名单 */
+    const iss = loadIssues();
+    const realI = iss.Domain.gateBlockers;
+    const bare = { id: 'p1', script: '整本剧本', subjects: [], episodes: [] };
+    CODES.forEach(code => {
+      iss.Domain.gateBlockers = () => [{ step: 'script', code, label: '桩阻塞项:' + code, count: 3 }];
+      const hit = iss.Issues.collect(bare).filter(x => !x.epid && x.kind === code);
+      assertEq(hit.length, 1, '门槛码 ' + code + ' 没登记进问题中心的门槛投影表,collect 静默丢弃它(那一态在问题清单上一条都看不见)');
+      assertEq(hit[0].label, '桩阻塞项:' + code, code + ' 的标题应原样取派生');
+      assert(iss.Issues.gates().some(g => g.kind === code), 'Issues.gates() 应把 ' + code + ' 报成登记在册');
+    });
+    iss.Domain.gateBlockers = realI;
+    iss.Issues.gates().forEach(g => assert(CODES.indexOf(g.kind) >= 0,
+      'Issues.gates() 的 ' + g.kind + ' 不是门槛派生会回的码(码名分裂)'));
+    /* 计划层:接得住就出计划步,接不住就得在 gateSkips() 写下理由(与 TODO_OF 登记 null 同一纪律) */
+    const pl = loadPlans();
+    const realP = pl.Domain.gateBlockers;
+    const skips = pl.Plans.gateSkips();
+    const proj = { id: 'p1', script: '整本剧本', subjects: [{ id: 'sj1', name: '主角', image: '' }], episodes: [] };
+    CODES.forEach(code => {
+      pl.Domain.gateBlockers = () => [{ step: 'script', code, label: '桩阻塞项:' + code, count: 3 }];
+      const out = pl.Plans.fromWorkflow(proj);
+      const n = out ? out.steps.length : 0;
+      if (skips[code]) assertEq(n, 0, '登记了不投理由的 ' + code + ' 反而推出了计划步(白名单过期,该把理由删掉)');
+      else assert(n > 0, '门槛码 ' + code + ' 在计划层既没有取材器接住、也没在 Plans.gateSkips() 登记不投的理由(那一态点「按主线生成」只会说无待推进事项)');
+    });
+    pl.Domain.gateBlockers = realP;
+    Object.keys(skips).forEach(c => {
+      assert(CODES.indexOf(c) >= 0, 'Plans.gateSkips() 的 ' + c + ' 不是门槛派生会回的码');
+      assert(String(skips[c]).length > 12, c + ' 的不投理由要写清楚(白名单不是许愿池),实际:' + skips[c]);
+    });
+    pl.Plans.gateSkips()['污染'] = 1;
+    assertEq(Object.keys(pl.Plans.gateSkips()).length, Object.keys(skips).length, 'gateSkips() 每次应现生成副本');
+    const plSrc = fs.readFileSync(path.join(ROOT, 'js/plans.js'), 'utf8');
+    const read = [...plSrc.matchAll(/gates\['([^']+)'\]/g)].map(m => m[1]);
+    assert(read.length >= 4, '计划层应按码取材,实际取材点 ' + read.length + ' 处');
+    read.forEach(c => assert(CODES.indexOf(c) >= 0, '计划层取材器读的门槛码 ' + c + ' 不在派生的码全集里(码名分裂)'));
+  } },
   { name: 'Release fix.hash 命中 app.js 路由表', fn() {
     const sb = loadContract();
     const { okRoute } = appRoutes();
@@ -7527,7 +7596,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 509, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 510, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 130, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
