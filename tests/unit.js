@@ -8087,8 +8087,20 @@ function blankNonCode(src, keepText) {
   /* 除号还是正则开头:看前一个有意义字符/关键词 */
   const reStart = () => !prevCh || /[({[,;:=!&|?+\-*%~^<>]/.test(prevCh)
     || /(?:^|[^\w$])(?:return|typeof|case|in|of|new|delete|do|else|void|instanceof|yield|await)$/.test(prevWord);
+  /* 模板串上下文栈:'tpl' = 模板正文,数字 = 该层 ${} 插值里未闭合的花括号数。
+   * 插值里是真代码(注释/引号串/正则/嵌套模板串都可能出现),故不另写一份内嵌扫描,
+   * 一律回到本循环同一套判据上——只数 ${ 深度的写法会把对象字面量与箭头函数体的 }
+   * 当成插值收尾,从那以后整段真代码都被当成模板正文抹掉、扫描面无声少掉一大片。 */
+  const st = [];
+  let tplAt = -1;
   while (i < src.length) {
     const c = src[i];
+    if (st.length && st[st.length - 1] === 'tpl') { // 模板串正文:只认转义、${ 与收尾反引号
+      if (c === '\\') { i += 2; continue; }
+      if (c === '$' && src[i + 1] === '{') { st.push(0); i += 2; continue; }
+      if (c === '`') { st.pop(); i++; if (!st.length) { wipeText(tplAt, i); prevCh = 'x'; prevWord = 'x'; } continue; }
+      i++; continue;
+    }
     if (c === '/' && src[i + 1] === '/') { const j = src.indexOf('\n', i); wipe(i, j < 0 ? src.length : j); i = j < 0 ? src.length : j; continue; }
     if (c === '/' && src[i + 1] === '*') { const j = src.indexOf('*/', i + 2); const e = j < 0 ? src.length : j + 2; wipe(i, e); i = e; continue; }
     if (c === '\'' || c === '"') {
@@ -8096,17 +8108,7 @@ function blankNonCode(src, keepText) {
       while (j < src.length && src[j] !== c) j += src[j] === '\\' ? 2 : 1;
       wipeText(i, j + 1); i = j + 1; prevCh = 'x'; prevWord = 'x'; continue;
     }
-    if (c === '`') { // 模板串:${} 里可能再嵌反引号,按插值深度找收尾
-      let j = i + 1, depth = 0;
-      while (j < src.length) {
-        if (src[j] === '\\') { j += 2; continue; }
-        if (src[j] === '$' && src[j + 1] === '{') { depth++; j += 2; continue; }
-        if (depth && src[j] === '}') { depth--; j++; continue; }
-        if (!depth && src[j] === '`') break;
-        j++;
-      }
-      wipeText(i, j + 1); i = j + 1; prevCh = 'x'; prevWord = 'x'; continue;
-    }
+    if (c === '`') { if (!st.length) tplAt = i; st.push('tpl'); i++; continue; }
     if (c === '/' && reStart()) {
       let j = i + 1, inClass = false, closed = false;
       while (j < src.length && src[j] !== '\n') {
@@ -8120,6 +8122,10 @@ function blankNonCode(src, keepText) {
         while (/[dgimsuvy]/.test(src[j + 1] || '')) j++;
         wipeText(i, j + 1); i = j + 1; prevCh = 'x'; prevWord = 'x'; continue;
       }
+    }
+    if (st.length) { // ${} 插值里:花括号配对,配平那一下就回到模板正文
+      if (c === '{') st[st.length - 1]++;
+      else if (c === '}') { if (st[st.length - 1]) st[st.length - 1]--; else { st.pop(); i++; continue; } }
     }
     if (/\S/.test(c)) { prevCh = c; prevWord = /[\w$]/.test(c) ? prevWord + c : ''; }
     i++;
@@ -9396,7 +9402,10 @@ const contractTests = [
       }
     });
     const variKeys = Object.keys(vari);
-    assert(lit.length >= 15 && variKeys.length >= 3,
+    /* 下限按当轮实况钉,不许停在旧水位:早先这里蹲的是 15/3,而抹码器跟丢 js/storyboard.js
+     * 之后那 6 处写死下发扫不到、字面数恰好也是 15,于是"口径失准"这道自检自己先失准了。
+     * 扫描面完不完整改由下一条(抹码骨架逐文件净配平)判,本条只管"点不点得到调用点"。 */
+    assert(lit.length >= 21 && variKeys.length >= 5,
       '下发点扫描口径失准(点不到调用点,本条不可信):字面 ' + lit.length + ' 处、变量 ' + variKeys.length + ' 处');
     assertEq(lit.filter(x => manual.includes(x.cmd)).map(x => x.rel + ':' + x.cmd).join(' / '), '',
       '人手命令被写死下发:注册表那一位只管得住按名现取的路径,写死一条就从它旁边过去了');
@@ -9444,6 +9453,34 @@ const contractTests = [
     // 计划层的零成本那条投影同样现取一遍(它推的是主线全链上的步,人手命令本就不在那条链上)
     assertEq(loadPlans().Plans.fromWorkflow(fat).steps.map(s => s.cmd).filter(c => manual.includes(c)).join(','), '',
       '主线推进计划推出了人手命令步');
+  } },
+  /* 上面那类普查全都建立在 blankNonCode 抹出来的代码骨架上(下发面普查、处置口登记面、计划层出口、
+   * 拆集写入闸、护栏主题锚点……),而抹码器一旦在某个文件上跟丢,跟丢处之后的源码就整段变成空白:
+   * 扫描面无声少掉一大片,普查数跟着变小,而各条自己的下限恰好蹲在被抹低的水位上,一条都不红。
+   * 这正是它此前的实况——模板串收尾只数 ${ 的插值深度,箭头函数体的 } 被当成插值收尾,
+   * js/storyboard.js 从渲染函数起 500 行连同 6 处写死下发一起看不见。
+   * 判据不去数"应该扫到几处"(那又是一个要人工同步的数),改让抹码器自报有没有跟丢:
+   * 抹完只剩代码骨架,括号必须逐文件净配平且中途不转负——跟丢字符串/模板串/正则的那一刻,
+   * 被吞掉或多吐出来的括号当场破坏配平。 */
+  { name: '抹码器扫描面自报:blankNonCode 抹出的代码骨架逐文件净配平(跟丢即整段源码无声退出扫描面)', fn() {
+    const scanned = fs.readdirSync(path.join(ROOT, 'js')).filter(f => /\.js$/.test(f)).map(f => 'js/' + f)
+      .concat(['server.js', 'cli.js', 'mcp.js', 'billing.js', 'tests/unit.js', 'tests/integration.js', 'tests/cli.smoke.js']);
+    const bad = [];
+    scanned.forEach(rel => {
+      const skel = blankNonCode(fs.readFileSync(path.join(ROOT, rel), 'utf8'));
+      let depth = 0, wentNegative = false;
+      for (const ch of skel) {
+        if (ch === '(' || ch === '{' || ch === '[') depth++;
+        else if (ch === ')' || ch === '}' || ch === ']') { depth--; if (depth < 0) wentNegative = true; }
+      }
+      if (depth !== 0 || wentNegative) bad.push(rel + '(净差 ' + depth + (wentNegative ? '、中途转负' : '') + ')');
+    });
+    assertEq(bad.join(' / '), '',
+      '抹码骨架括号不配平:抹码器在这些文件上跟丢了,跟丢处之后的源码整段退出扫描面——所有同读它的普查/源级判据一起失准');
+    // 自检:判据不许退化成空扫(扫描面取空、或抹码器把整棵树抹光都会让上面那句恒真)
+    assert(scanned.length > 60, '抹码器扫描面取不到(本条不可信):' + scanned.length + ' 个文件');
+    assert(blankNonCode(fs.readFileSync(path.join(ROOT, 'js', 'storyboard.js'), 'utf8')).includes('Commands.execute('),
+      'js/storyboard.js 的写死下发点应留在骨架上(它正是抹码器此前跟丢后整段消失的那一片)');
   } },
   /* 同一次普查的另一半:计划步的执行路本身。残留⑤设想的第三条路是「服务端替用户跑计划 / CLI 直接下发计划步 /
    * MCP 起一条」,而 headless 三端今天连计划这个概念都没有——p.agentPlan 是浏览器落库字段,三端零读写、
@@ -12114,7 +12151,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 659, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 660, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 148, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
