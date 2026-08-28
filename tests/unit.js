@@ -9424,7 +9424,9 @@ const memoryTests = [
     /* 预置专家那一面:入口挂在专家雇佣页的预置卡上,走同一个 evolveExpert(没有第二套蒸馏与第二份计费),
      * 副本在两道闸之后、扣费之前才落库——闸没过不给用户的专家库留一条什么也没蒸出来的副本 */
     const gs = fs.readFileSync(path.join(ROOT, 'js', 'gsettings.js'), 'utf8');
-    assert(/data-pevolve="\$\{e\.id\}"/.test(gs) && /\[data-pevolve\]/.test(gs), '预置卡须挂进化入口并接上点击');
+    assertEq((gs.match(/data-pevolve="\$\{e\.id\}"/g) || []).length, 2,
+      '预置卡两处(风格导演卡与功能专家卡)都要挂进化入口——只补一处等于另一类预置专家仍无出口');
+    assert(/\[data-pevolve\]/.test(gs), '预置卡的进化入口须接上点击');
     assertEq((gs.match(/evolveExpert\(/g) || []).length, 4,
       '四个人手触发点(编辑区/工坊卡/自定义卡/预置卡)都调同一个 evolveExpert,不许另起一套蒸馏');
     const iMem = ex.indexOf('memForBoards(Store.state.agentMemory');
