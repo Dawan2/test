@@ -303,13 +303,17 @@
    *   点名这一路跑不到只剩一种理由:那个 id 不在主体库;
    *   整集这一路跑不到 = 全都有参考图(两端待补图主体筛法 !s.image 的反面)。
    * 各堆之和恒等于点名数(整集那一路恒等于主体数),最后一堆「N 位没能说清原因」是安全阀,
-   * 真实调用点上恒为 0,措辞有意不说成"不缺图"——那在"缺图却没跑"时是假话。 */
+   * 真实调用点上恒为 0,措辞有意不说成"不缺图"——那在"缺图却没跑"时是假话。
+   * 走不走点名那一路的判据与两端选人闸逐字同形(Array.isArray(subjectIds) && length):
+   * 非数组的 subjectIds 两端都当"没点名"整集跑,这里只看 picked.length 就会把字符串 id 按字符拆成点名清单,
+   * 报出「点名的 5 位主体」这种用户没点过的数(库里恰有单字符 id 时还会把它们算进安全阀),
+   * 类数组对象更是让 new Set(picked) 当场抛,把一次 ok 空跑变成 fail。 */
   D.emptySubjectImageNote = function (p, picked) {
     const subs = (p && p.subjects) || [];
     if (!subs.length) return '项目还没有主体,一位也没跑';
     const parts = [];
     const say = (n, t) => { if (n) parts.push(n + ' 位' + t); };
-    if (picked && picked.length) {
+    if (Array.isArray(picked) && picked.length) {
       const ids = [...new Set(picked)]; // 点名清单按主体去重:重复的 id 指的是同一位,不该被数成两位
       const gone = ids.length - subs.filter(s => ids.includes(s.id)).length;
       say(gone, '不在主体库');

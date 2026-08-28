@@ -3018,6 +3018,66 @@ const commandsTests = [
     sb.Commands.digest(r3);
     assertEq(sb.__toasts.length, before, '跑完了仍归引擎自己播报,命令层不重复');
   } },
+  { name: 'subject.generateImage 空跑回执的末堆安全阀:纯函数造得出非零,两端真实入口一律 0(含非数组 subjectIds)', fn: async () => {
+    /* 「N 位没能说清原因」是 emptySubjectImageNote 兜底的那一堆:各堆之和要恒等于点名数/主体数,
+     * 归不了堆的主体就得从这里露头,不许被抹平。此前它只有源级一句"真实调用点上恒为 0"作数,
+     * 行为面一条也没有——阀门被人顺手删掉、或选人闸与回执分档跑偏,单测都不红。
+     * 本条两头都钉:纯函数上造得出非零且逐字对句;两端命令真实跑一遍,末堆一律 0。 */
+    const D = require('../js/domain.js');
+    const valveOf = n => { const m = String(n || '').match(/(\d+) 位没能说清原因/); return m ? +m[1] : 0; };
+    const P = subs => ({ id: 'p1', subjects: subs });
+    // ① 纯函数面:安全阀非零的两种形状,逐字钉在期望句上(措辞改了/堆被抹了都在这里红)
+    const missing = [{ id: 'sj1', name: '女主', kind: 'character', image: 'a.png' }, { id: 'sj2', name: '配角', kind: 'character' }];
+    assertEq(D.emptySubjectImageNote(P(missing)), '没有待补图的主体,一位也没跑:1 位已有参考图、1 位没能说清原因',
+      '整集那一路:库里还有缺图主体却说没得跑,安全阀须原样报出这一位');
+    assertEq(D.emptySubjectImageNote(P([{ id: 'sj1', image: 'a.png' }]), ['sj1']), '点名的 1 位主体一位也没跑:1 位没能说清原因',
+      '点名那一路:点名的主体就在库里却说没跑,安全阀须原样报出这一位');
+    /* ② 上面两份夹具正是"真实入口够不着"的原因:同一份状态交给命令,主体是真跑得到的,压根不到空跑早退。
+     *    这一步不成立(命令层真在这两份夹具上空跑了)就说明选人闸漏了人,回执再对也是替漏跑打掩护。 */
+    for (const [subs, args] of [[missing, {}], [[{ id: 'sj1', name: '女主', kind: 'character', image: 'a.png' }], { subjectIds: ['sj1'] }]]) {
+      const sbR = loadCommands();
+      sbR.EpisodeUtil.genSubjectImage = async (p, s) => { s.image = '/uploads/img/' + s.id + '.png'; };
+      cmdCtx(sbR).p.subjects = JSON.parse(JSON.stringify(subs));
+      const rr = await sbR.Commands.execute('subject.generateImage', Object.assign({ pid: 'p1', ui: true }, args));
+      assertEq(rr.result.total, 1, '安全阀那两份夹具在命令层是真跑得到的一位,不是空跑:' + JSON.stringify(rr.result));
+      assertEq(rr.result.note, undefined, '真跑到主体就没有"为什么没跑"可说');
+    }
+    /* ③ 两端真实入口逐档:末堆一律 0,且回执报的那一路要与命令实际的选人对得上。
+     *    非数组 subjectIds 是真能进来的形状(CLI --args / MCP hujing_exec 的 args 都是原样 JSON,不按类型整形):
+     *    两端选人闸都是 Array.isArray(...) && length,字符串一律当"没点名"整集跑;
+     *    回执那一份判据若只看 picked.length,一个字符串 id 会被按字符拆成点名清单——
+     *    库里恰有单字符 id 时末堆当场非零,类数组对象更是让 new Set(picked) 抛出去把 ok 空跑变成 fail。 */
+    const oddSubs = [
+      { id: 's', name: '女主', kind: 'character', image: 'a.png' },
+      { id: 'j', name: '男主', kind: 'character', image: 'b.png' },
+      { id: '1', name: '客栈', kind: 'scene', image: 'c.png' },
+    ];
+    const cases = [
+      { label: '无主体', subs: [], args: {}, want: '项目还没有主体,一位也没跑' },
+      { label: '全有图', subs: oddSubs, args: {}, want: '没有待补图的主体,一位也没跑:3 位已有参考图' },
+      { label: '点名不在库', subs: oddSubs, args: { subjectIds: ['gone1', 'gone2'] }, want: '点名的 2 位主体一位也没跑:2 位不在主体库' },
+      { label: '点名给了字符串', subs: oddSubs, args: { subjectIds: 'sj1' }, want: '没有待补图的主体,一位也没跑:3 位已有参考图' },
+      { label: '点名给了类数组', subs: oddSubs, args: { subjectIds: { 0: 'sj1', length: 1 } }, want: '没有待补图的主体,一位也没跑:3 位已有参考图' },
+    ];
+    for (const c of cases) {
+      const sbB = loadCommands();
+      sbB.EpisodeUtil.genSubjectImage = async (p, s) => { sbB.__called.push('gen:' + s.id); s.image = 'x.png'; };
+      cmdCtx(sbB).p.subjects = JSON.parse(JSON.stringify(c.subs));
+      const rb = await sbB.Commands.execute('subject.generateImage', Object.assign({ pid: 'p1', ui: true }, c.args));
+      assertEq(rb.ok, true, '浏览器 ' + c.label + ':空跑仍是 ok(回执拼句抛异常会在这里塌成 fail),实际:' + JSON.stringify(rb.error || {}));
+      assertEq(rb.result.total, 0, '浏览器 ' + c.label + ':前提是一位也没跑');
+      assertEq(sbB.__called.filter(x => /^gen:/.test(x)).length, 0, '浏览器 ' + c.label + ':引擎一次都不该起来');
+      assertEq(rb.result.note, c.want, '浏览器 ' + c.label + ':回执报的那一路须与命令实际的选人对得上');
+      assertEq(valveOf(rb.result.note), 0, '浏览器 ' + c.label + ':真实入口上末堆必须是 0,实际:' + rb.result.note);
+      const sbC = loadCli();
+      cliCtx(sbC, []).p.subjects = JSON.parse(JSON.stringify(c.subs));
+      const rc = await sbC.EXEC['subject.generateImage'].run(Object.assign({ pid: 'p1' }, c.args), {});
+      assertEq(rc.ok, true, 'CLI ' + c.label + ':空跑仍是 ok,实际:' + JSON.stringify(rc.error || {}));
+      assertEq(rc.result.total, 0, 'CLI ' + c.label + ':前提是一位也没跑');
+      assertEq(rc.result.note, c.want, 'CLI ' + c.label + ':两端同读一份派生,回执须逐字相同');
+      assertEq(valveOf(rc.result.note), 0, 'CLI ' + c.label + ':真实入口上末堆必须是 0,实际:' + rc.result.note);
+    }
+  } },
   { name: 'CLI exec produce:点名的轮次钳过即落库,下一轮不带入参跑的就是这个次数(单独调 smartReview 那一端仍不写库)', fn: async () => {
     /* 此前这一端只读不写:`exec episode.produce --args '{"maxRetry":4}'` 当轮真跑 4 轮,
      * 磁盘上那份 sbConfig.maxRetry 却还是旧的 1——用户在浏览器打开该集参数面板看到的仍是 1,
