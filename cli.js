@@ -1042,7 +1042,10 @@ EXEC['episode.generateVideos'] = { needs: ['p', 'ep'], meter: true, run: async (
   const todo = pend.filter(s => args.confirmAll || s.confirm);
   if (!todo.length) {
     if (skipped.length) return execBlocked('unconfirmed', skipped.length + ' 镜未确认已跳过(--confirm-all 可授权全量生成)', { total: 0, ok: 0, failed: [], skipped });
-    return execOk({ total: 0, ok: 0, failed: [], skipped: [] });
+    // 待跑镜本来就是空:仍是 ok,但得说清为什么是 0 镜(与前端 digest 同读 Domain.emptyBatchNote 一份)
+    const note = Domain.emptyBatchNote(p, ep, args.shotIds, true);
+    log(note);
+    return execOk({ total: 0, ok: 0, failed: [], skipped: [], note });
   }
   log('批量生成:' + todo.length + ' 镜待处理(串行,服务端限流)…');
   const failed = [];

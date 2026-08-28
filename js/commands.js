@@ -108,7 +108,13 @@
       pend = (ep.shots || []).filter(s => !s.final && ids.has(s.id)
         && (!Store.shotVideoReady(s) || Domain.shotVideoStale(p, s, online())));
     }
-    if (!pend.length) { const r = ok({ total: 0, ok: 0, failed: [], skipped: [] }); r.next = nextOf(p, ep); return r; }
+    /* 一镜也没跑仍是 ok(整集已出片时点「一键成片」不该报拦截),但回执得说清为什么是 0 镜:
+     * 这句话经 result.note 交给 digest 播报,与 CLI 同读 Domain.emptyBatchNote 一份。 */
+    if (!pend.length) {
+      const r = ok({ total: 0, ok: 0, failed: [], skipped: [], note: Domain.emptyBatchNote(p, ep, args.shotIds, online()) });
+      r.next = nextOf(p, ep);
+      return r;
+    }
     let skipped = [];
     if (args.ui) {
       if (window.HumanReview && HumanReview.guardAsync) { // 真人素材预审:驳回/取消如实 blocked(与 runBatchOp 原预审闸同口径)
@@ -421,11 +427,18 @@
   /* ---- UI 调用方统一消化命令回执(第三阶段) ----
    * 命令级拦截(blocked/inflight/failed/needs_human)统一 toast 口径,引擎执行过程提示不重复播报;
    * 用户主动取消(cancelled/compliance-declined/human-review 等决策类 blocked)默认静默(opts.silentCancel=false 可开);
-   * 成功默认静默(引擎自身已 toast/弹窗),opts.okToast 可强制播报。返回 r 便于调用方链式读 result/next。 */
+   * 成功默认静默(引擎自身已 toast/弹窗),opts.okToast 可强制播报。返回 r 便于调用方链式读 result/next。
+   * 例外:成功回执自带 result.note 时照样播报——引擎一次都没跑起来(如批量生成 0 镜)时没有引擎提示可依赖,
+   * 静默会让「一镜也没跑」与「跑完了」在用户眼里一模一样;note 是命令层给出的那一句解释,不是错误。 */
   function digest(r, opts) {
     opts = opts || {};
     if (!r) return r;
-    if (r.ok) { if (opts.okToast) U.toast(opts.okToast === true ? '执行完成' : opts.okToast, 'success'); return r; }
+    if (r.ok) {
+      const note = r.result && r.result.note;
+      if (note) U.toast(note, 'info', 4200);
+      else if (opts.okToast) U.toast(opts.okToast === true ? '执行完成' : opts.okToast, 'success');
+      return r;
+    }
     const code = r.error && r.error.code, msg = (r.error && r.error.message) || '执行未完成';
     if (r.status === 'running' || code === 'inflight') { U.toast(msg, 'info', 2500); return r; }
     if (r.status === 'blocked') {

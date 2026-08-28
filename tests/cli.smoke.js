@@ -147,6 +147,8 @@ async function main() {
   report('exec preflight 缺剧本 → blocked exit 2', r.code === 2 && r.out.ok === false && r.out.status === 'blocked' && r.out.result.blockers.some(b => b.code === 'no-script'), 'exit=' + r.code);
   r = cli('exec', 'episode.generateVideos', '--pid', pid, '--epid', ep2); // 未确认镜 → blocked,零生成零计费
   report('exec generateVideos 未确认 → blocked unconfirmed+skipped', r.code === 2 && r.out.error && r.out.error.code === 'unconfirmed' && r.out.result.skipped.length === 1, 'exit=' + r.code);
+  r = cli('exec', 'episode.generateVideos', '--pid', pid, '--epid', ep2, '--args', '{"shotIds":["sh_not_here"]}'); // 点名的镜不在本集 → 一镜也没跑,仍 ok 但回执得说清为什么是 0 镜
+  report('exec generateVideos 一镜也没跑 → ok+回执说清原因(note 与前端 digest 同一份)', r.code === 0 && r.out.ok === true && r.out.result.total === 0 && /一镜也没跑/.test(r.out.result.note || '') && /1 镜不在本集/.test(r.out.result.note || ''), 'exit=' + r.code + ' ' + JSON.stringify((r.out && r.out.result && r.out.result.note) || r.out));
   r = cli('exec', 'shot.generateVideo', '--pid', pid, '--epid', epid, '--sid', '2'); // 镜头号寻址;镜2 未确认
   report('exec shot.generateVideo 未确认 → blocked(镜头号寻址)', r.code === 2 && r.out.error && r.out.error.code === 'unconfirmed', 'exit=' + r.code);
   r = cli('exec', 'episode.produce', '--pid', pid, '--epid', ep2); // 就绪检查不过(缺剧本)
