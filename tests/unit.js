@@ -4508,6 +4508,55 @@ const contractTests = [
       'cli.js produce 不许把回执里的 lowShots 直接当作下一步 shotIds 的名单(它与分镜表漂移时会重抽错镜)');
     assert(/shotIds: fix\.revised/.test(cli) && /reviseTargets\(args, f\)/.test(cli), 'produce 的重抽/复审子集应源自派生出来的重抽面');
   } },
+  { name: 'SK-25 仍欠段护栏(G-03 余面):段在不在与段里点名的两处余量对照源码,抹段或写成已清都红', fn() {
+    /* 注册表八条「仍欠」段里,此前只有 SK-25 这条无人护:整段抹掉、或改写成「收敛口径已合成一份」,
+     * 全套一条不红——G-03 只落了重抽面那一面(W131),余下两面被静默记成已清也没有判据接得住。
+     * 与 SK-26 那条同形立两向:段与段里的锚点钉住"少写"(抹段/谎称已清),
+     * 反向逐处对照源码钉住"多欠"(哪天余面真收编了,不同步改记账当场红)。 */
+    const Skills = require('../js/skills.js');
+    const sk25 = Skills.byId('review.reviseLoop');
+    assert(sk25, 'SK-25 review.reviseLoop 应在注册表里');
+    assert(sk25.gaps.includes('G-03'), 'SK-25 应仍挂 G-03 标记(落地一面不摘键)');
+    assert((Skills.gaps()['G-03'] || []).includes('review.reviseLoop'), 'G-03 的关联索引应仍点着 SK-25');
+    assert(sk25.note.includes('仍欠(G-03)'), 'SK-25 的 note 须仍有「仍欠(G-03)」段:G-03 只落了重抽面那一面');
+    const owed = sk25.note.split('仍欠(G-03)').slice(1).join('仍欠(G-03)');
+    // 余面一:复审收敛次数至今没有登记口径
+    assert(owed.includes('收敛次数') && owed.includes('maxRetry'),
+      'SK-25 的仍欠段须点名收敛次数(maxRetry)这一面仍无登记口径');
+    // 余面二:两端闭环形态不同构(浏览器逐镜循环 vs CLI 整集轮次)
+    assert(owed.includes('autoSmartReview') && owed.includes('逐镜'),
+      'SK-25 的仍欠段须点名浏览器逐镜重试与 CLI 整集分轮不同构这一面');
+    // 已交账那半不许挤进仍欠段(与谎称已清同属记账失真,只是方向相反)
+    ['Domain.reviseTargets', 'WfCore.reviseSubset'].forEach(k =>
+      assert(!owed.includes(k), '重抽面已落地,不许挤进仍欠段:' + k));
+    assert(!/G-03[^。;]{0,24}(清账|已闭合|两面到此|全部落地)/.test(sk25.note),
+      'G-03 只落了重抽面一面,note 不许写成已清账');
+    /* 反向一:收敛次数此刻确实是两端各按自己的缺省值就地钳,双端单源层里没有它的登记口径。
+     * 同一份 domain.js 里达标线有 REVIEW_MIN 单源、收敛次数一个字都没有,正是这一面还欠着的实据。 */
+    const cli25 = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    const prod = fs.readFileSync(path.join(ROOT, 'js', 'produce.js'), 'utf8');
+    const dom = fs.readFileSync(path.join(ROOT, 'js', 'domain.js'), 'utf8');
+    assert(/Math\.max\(1, Math\.min\(5, \+args\.maxRetry \|\| 2\)\)/.test(cli25),
+      'CLI produce 此刻仍就地钳自己那份 maxRetry 缺省(收敛口径下沉双端单源后须同步改 SK-25 的仍欠段)');
+    assert(/Math\.max\(1, Math\.min\(5, ep\.sbConfig\.maxRetry \|\| 2\)\)/.test(prod),
+      '浏览器闭环此刻仍就地钳自己那份 maxRetry 缺省(同上)');
+    assert(dom.includes('D.REVIEW_MIN = 7;'), '达标线仍在 Domain 单源(对照项:收敛次数没有这样一份登记)');
+    ['domain.js', 'wf-core.js'].forEach(f => assertEq(
+      (fs.readFileSync(path.join(ROOT, 'js', f), 'utf8').match(/maxRetry/g) || []).length, 0,
+      'js/' + f + ' 此刻还没有收敛次数的登记口径(收进双端单源后须同步改 SK-25 的仍欠段)'));
+    /* 反向二:两端闭环形态此刻确实不同构——浏览器把重试循环嵌在逐镜循环里、整集重抽面派生一处不引,
+     * CLI 是整集轮次循环且每轮现取实况派生子集。哪天浏览器改走整集子集重抽,这三句先红。 */
+    const iShotLoop = prod.indexOf('for (const s of targets)');
+    const iRetryLoop = prod.indexOf('for (let attempt = 0; attempt <= maxRetry');
+    assert(iShotLoop >= 0 && iRetryLoop > iShotLoop,
+      '浏览器闭环此刻仍是逐镜循环里套重试(改成整集子集重抽后须同步改 SK-25 的仍欠段)');
+    assert(!/revise(?:Targets|Subset)/.test(prod),
+      '浏览器闭环此刻仍不走整集重抽面派生(接上即两端同构,须同步改仍欠段)');
+    const iCliLoop = cli25.indexOf('for (let attempt = 1; attempt <= maxRetry && low.length; attempt++)');
+    assert(iCliLoop >= 0, 'CLI produce 此刻仍是整集分轮的轮次循环');
+    assert(cli25.slice(iCliLoop, iCliLoop + 1400).includes('low = await reviseTargets(args, f)'),
+      'CLI 那一轮循环体内应现取整集重抽面(两端形态由此不同构)');
+  } },
   { name: '命令元数据单源:mcp.js 工具描述由注册表生成(hujing_exec 词表不再手抄)', fn() {
     const CR = require('../js/cmd-registry.js');
     const mcpSrc = fs.readFileSync(path.join(ROOT, 'mcp.js'), 'utf8');
@@ -7135,7 +7184,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 492, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 493, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 130, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -7271,7 +7320,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 147;
+    const FLOOR = 148;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
