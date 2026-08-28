@@ -93,7 +93,7 @@ $ git ls-remote --heads origin 'refs/heads/cursor/w113*'      → 无输出
 $ git branch -r | grep -i w113                                 → 无输出
 ```
 
-`fetch --prune` 之后远端 `origin/cursor/*` 共 133 条,`w11x` 段只有
+`fetch --prune` 之后远端 `origin/cursor/*` 共 132 条(本槽自己那条推上去之后是 133,见 6.2),`w11x` 段只有
 `w110-split-only-script-a91c` / `w112-integration-5d79` / `w114-…` / `w115-…` 四条,
 **不存在 `w113` 前缀的任何分支**,故没有"报告完不完整"这一问的余地。
 这与 `w115-g13-next-prompt.md` 第 8 节记的核实结论一致(它在自己那条线上也查过一次,当时连 `w114` 都还没有)。
@@ -341,7 +341,7 @@ tests/integration.js | 2 +-   tests/unit.js | 19 +-
 
 ### 6.2 远端槽分支:合并那一刻 133 / 133
 
-逐条现取,合并提交推上去之后跑的第一遍:
+逐条现取,合并提交推上去之后跑的第一遍(这 133 条含本槽自己那条 `origin/cursor/w117-integration-8b2d`,与前几槽同口径):
 
 ```
 $ for b in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin/cursor); do
