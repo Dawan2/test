@@ -813,7 +813,9 @@ const agentOpsTests = [
     const ep6 = makeEp({ lastReview: { avg: 7.5, perShot: [{ shotId: 'sh0', order: 0, score: 5 }] } });
     ep6.shots.forEach(s => s.confirm = true); ep6.shots[1].video = { status: 'failed' };
     chips = AO.dynamicChips(p, ep6);
-    assert(chips.some(c => c.text && /低于 7 分/.test(c.text)), '低分镜应推 text chip(发助手)');
+    // 达标线文案现取 Domain.REVIEW_MIN,判据跟着取(写死 7 会让常量挪动时这一条假红)
+    const lowLine = new RegExp('低于 ' + require('../js/domain.js').REVIEW_MIN + ' 分');
+    assert(chips.some(c => c.text && lowLine.test(c.text)), '低分镜应推 text chip(发助手)');
     assert(chips.length <= 3, '至多 3 条');
   } },
   { name: 'dynamicChips:项目级(缺主体形象/未拆镜集/可合成集)与空项目', fn() {
