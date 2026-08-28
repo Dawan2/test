@@ -36,8 +36,8 @@
     if (vstat === 'done') {
       const rv = (s.reviews || [])[0];
       if (rv && !(window.Review && Review.reportStale(s))) {
-        const low = rv.score < 7;
-        return `<span style="${base}background:${low ? '#f87171' : 'var(--green)'}" title="最近审片 ${rv.score.toFixed(1)} 分${low ? ',低于达标线 7.0,建议重抽' : ''}">✓ 已出片 · 审 ${rv.score.toFixed(1)}</span>`;
+        const low = rv.score < Domain.REVIEW_MIN;
+        return `<span style="${base}background:${low ? '#f87171' : 'var(--green)'}" title="最近审片 ${rv.score.toFixed(1)} 分${low ? ',低于达标线 ' + Domain.REVIEW_MIN.toFixed(1) + ',建议重抽' : ''}">✓ 已出片 · 审 ${rv.score.toFixed(1)}</span>`;
       }
       return `<span style="${base}background:var(--green)" title="已出片${rv ? '(审片报告已过期,建议重审)' : ''}">✓ 已出片</span>`;
     }
@@ -127,7 +127,7 @@
     return `
       <div class="card" style="padding:12px;margin-bottom:10px">
         <div class="row" style="justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:6px">
-          <b class="small">🗂 版本与审片${lastReview ? ` <span class="tag ${reviewStale ? 'yellow' : lastReview.score >= 7 ? 'green' : 'red'}" title="${reviewStale ? '该报告审的是重新生成前的旧版视频,建议重新审片' : ''}">最近审片 ${lastReview.score.toFixed(1)}${reviewStale ? ' · 旧版' : ''}</span>` : ''}</b>
+          <b class="small">🗂 版本与审片${lastReview ? ` <span class="tag ${reviewStale ? 'yellow' : lastReview.score >= Domain.REVIEW_MIN ? 'green' : 'red'}" title="${reviewStale ? '该报告审的是重新生成前的旧版视频,建议重新审片' : ''}">最近审片 ${lastReview.score.toFixed(1)}${reviewStale ? ' · 旧版' : ''}</span>` : ''}</b>
           <div class="row" style="gap:6px;flex-wrap:wrap">
             <button class="btn sm" data-ract="review" title="对本镜进行 AI 审片评分">⊙ 一键审片</button>
             ${vers.length ? `<button class="btn sm" data-ract="vers" title="查看/对比/回滚本镜历史版本">🗂 全部版本(${vers.length})</button>` : ''}

@@ -258,7 +258,8 @@ ${(Array.isArray(mem) ? mem : []).map((x, i) => (i + 1) + '. ' + x).join('\n')}`
    * 把上一轮的分数喂回评分方等于给下一轮的打分设锚点;要规避什么(问题类型/最弱维)才是回流的用处。 */
   W.MEM_MAX = 50;       // 记忆桶条数上限(与浏览器 memRemember、CLI memory add 同口径)
   W.MEM_TEXT_MAX = 120; // 单条截断字数(同上)
-  W.MEM_LOW_SCORE = 7;  // 待返工镜的分数线:与审片报告重抽入口、发布门 G3 默认阈值同数,本层只读不改门禁口径
+  /* 待返工镜的分数线不在本层另立一份:一律现取 Domain.REVIEW_MIN(与审片报告重抽入口、
+   * 智能审片闭环的确认闸、分集状态与主线审片步骤同一个常量),本层只读不改门禁口径 */
   W.MEM_EP_LONG = 2000; // 单集建议字数上限:与分集列表「超 2000 字」标签、分集完成提示同数,本层只读不改建议口径
   /* o 各分支互不影响,给哪支就回哪条(可同时给多支);ctx={now:取时间戳(函数或字符串)}:
    *   {ep(带 lastReview)}           审片闭环
@@ -280,7 +281,7 @@ ${(Array.isArray(mem) ? mem : []).map((x, i) => (i + 1) + '. ' + x).join('\n')}`
     const ep = o.ep, lr = ep && ep.lastReview;
     if (lr && typeof lr.avg === 'number') {
       const per = Array.isArray(lr.perShot) ? lr.perShot : [];
-      const low = per.filter(x => x && +x.score < W.MEM_LOW_SCORE).length;
+      const low = per.filter(x => x && +x.score < Domain.REVIEW_MIN).length;
       const types = (((lr.common || {}).issues) || []).map(i => i && i.type).filter(Boolean).slice(0, 3);
       /* 四维最弱维:维度名现取 normalizeCut 的产出形状(维度名的唯一定义在本文件的四维规整处,
        * 与 SK-24 校验面同口径),四维缺失或该步 LLM 失败标 null 时这一段不出现 */

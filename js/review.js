@@ -312,7 +312,7 @@
         if (main) renderShotsRef(main, p, ep);
       }
       r = normReview(r);
-      const canRevise = r.issues.length && r.score < 7; // 达标(≥7)或无问题时不给重抽入口
+      const canRevise = r.issues.length && r.score < Domain.REVIEW_MIN; // 达标(≥ 达标线)或无问题时不给重抽入口;达标线取 Domain.REVIEW_MIN 单源
       U.openModal({
         title: '一键审片报告预览',
         xl: true,
@@ -639,8 +639,8 @@
         </div>
         <div class="rv-chips">
           <span class="rv-chip">优秀 ${reports.filter(x => x.report.score >= 8.5).length} 镜</span>
-          <span class="rv-chip mid">良好 ${reports.filter(x => x.report.score >= 7 && x.report.score < 8.5).length} 镜</span>
-          <span class="rv-chip low">待返工 ${reports.filter(x => x.report.score < 7).length} 镜</span>
+          <span class="rv-chip mid">良好 ${reports.filter(x => x.report.score >= Domain.REVIEW_MIN && x.report.score < 8.5).length} 镜</span>
+          <span class="rv-chip low">待返工 ${reports.filter(x => x.report.score < Domain.REVIEW_MIN).length} 镜</span>
         </div>
       </div>
       <div class="card" style="margin-top:14px;padding:14px">
@@ -648,8 +648,8 @@
         ${reports.map(x => `
         <div class="rv-bar-row" data-jump="${x.shot.id}" data-rid="${x.report.id}">
           <span class="small" style="width:52px;flex:none">镜头 ${x.shot.order + 1}</span>
-          <div class="rv-bar-track"><div class="rv-bar-fill ${x.report.score < 7 ? 'low' : ''}" style="width:${x.report.score * 10}%"></div></div>
-          <b style="width:34px;text-align:right;color:${x.report.score >= 8 ? 'var(--green)' : x.report.score >= 7 ? 'var(--yellow)' : 'var(--red)'}">${x.report.score.toFixed(1)}</b>
+          <div class="rv-bar-track"><div class="rv-bar-fill ${x.report.score < Domain.REVIEW_MIN ? 'low' : ''}" style="width:${x.report.score * 10}%"></div></div>
+          <b style="width:34px;text-align:right;color:${x.report.score >= 8 ? 'var(--green)' : x.report.score >= Domain.REVIEW_MIN ? 'var(--yellow)' : 'var(--red)'}">${x.report.score.toFixed(1)}</b>
         </div>`).join('')}
         ${missing.map(ps => `
         <div class="rv-bar-row" style="opacity:.55" title="原报告已被后续审片挤出最近记录,得分按当时快照展示">
