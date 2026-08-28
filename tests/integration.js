@@ -349,6 +349,24 @@ async function main() {
   const cmp4 = await req('GET', '/api/projects/not_exist_pid/compare?ver=0', null, token);
   report('compare 不存在项目 → 404', cmp4.status === 404, 'HTTP ' + cmp4.status);
 
+  /* ============ 测试 16.5(W231):state 写入端点不做领域校验 —— 同 id 多镜原样落库 ============
+   * 浏览器整树/分桶推送、CLI `state-put` 逃生舱走的都是这条端点,契约是"除服务端权威键外原样落库"。
+   * 镜头 id 唯一闸只在 `shots-import` 那条导入路上,这里一个字都不校验:递同 id 两镜就落两行同 id。
+   * 本条钉的是那份契约本身(README API 表与 CLI 帮助都明写归调用方保证);要给它设闸,先红在这里,
+   * 那时请连着"存量重复不迁移"与"灌进去会长回来"两面一起判,别只收一处。 */
+  {
+    const dupPid = 'it_p_dupshots';
+    const sD = await req('GET', '/api/state', null, token);
+    const dupProject = { id: dupPid, name: '重复 id 项目', __ver: 1, episodes: [{ id: 'ep_d1', title: 'E1', shots: [
+      { id: 'sh_dup', order: 0, plot: 'A 行' }, { id: 'sh_dup', order: 1, plot: 'B 行' }, { id: 'sh_solo', order: 2, plot: 'C 行' },
+    ] }] };
+    const putD = await req('PUT', '/api/state', { rev: +(sD.data && sD.data.rev || 0), changes: { projects: { [dupPid]: dupProject } } }, token);
+    const backD = (((await req('GET', '/api/state', null, token)).data.state.projects.find(x => x.id === dupPid) || {}).episodes || [{}])[0].shots || [];
+    report('state 写入端点不做领域校验:同 id 两镜原样落库(唯一闸只在 shots-import 那条导入路上)',
+      putD.status === 200 && backD.length === 3 && backD.map(s => s.id).join(',') === 'sh_dup,sh_dup,sh_solo' && backD[1].plot === 'B 行',
+      'HTTP ' + putD.status + ' 落库 ' + JSON.stringify(backD.map(s => s.id)));
+  }
+
   /* ============ 测试 17(P4 A2):跨设备协作增量更新 /updates —— since 过滤 + 空未来查询 ============ */
   const nowTs = Date.now();
   const upd1 = await req('GET', '/api/projects/updates?since=0&limit=50', null, token);

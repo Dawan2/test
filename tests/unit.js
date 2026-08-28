@@ -3038,6 +3038,61 @@ const commandsTests = [
       assertEq(g.result.total, 1, '回执按真跑的镜数报(重复 id 时这里是 3,三笔视频钱)');
     } finally { try { fs.unlinkSync(file); } catch (_) {} }
   } },
+  { name: 'CLI state-put 逃生舱:整树原样落库(同 id 两镜照落两行),三处契约明写唯一性归调用方', fn: async () => {
+    /* 上一条钉的是 shots-import 那道写入闸,这一条钉它旁边这条**有意不设闸**的路,两条要一起读:
+     * 闸只管导入那一条路,而 state-put 是整树全量覆盖——同一份重复 id 从这里灌进去照旧落两行,
+     * 闸刚修好的表也能被它一把打回(「不迁存量」与「灌进去会长回来」是同一件事的两面,要收就得一起判)。
+     * 有意不在此设闸的两条理由写在 cli.js 那段注释里:改 id 得连带改 lastReview.perShot/uiSel/groupId
+     * 这些引用它的地方——那是迁移不是闸;拒收则让"照原样恢复一份备份"这件逃生舱唯一的活干不成。
+     * 于是判据分两层:①行为——递出去的整树与文件逐字节相同,一个 id 没被改、一行没被拒,唯一的闸是 --force;
+     * ②声明——三处面向调用方的文字都得把这件事说出来,不许只留在源码注释里。
+     * 哪天真给它设闸,本条当场红:那时请连着 shots-import 那道闸与存量重复一并判,别只收一处。 */
+    const sb = loadCli();
+    const CMD = vm.runInContext('CMD', sb);
+    let sent = null;
+    sb.api = async (method, url, body) => { sent = { method, url, body }; return { rev: 4 }; };
+    const file = path.join(require('os').tmpdir(), 'w231-state-' + process.pid + '.json');
+    const disk = { rev: 3, state: { projects: [{ id: 'p1', episodes: [{
+      id: 'ep1', title: '第一集',
+      shots: [{ id: 'dup', order: 0, plot: '同 id 第一行', prompt: 'p1' }, { id: 'dup', order: 1, plot: '同 id 第二行', prompt: 'p2' }],
+      lastReview: { perShot: [{ shotId: 'dup', score: 7 }] },
+    }] }] } };
+    fs.writeFileSync(file, JSON.stringify(disk));
+    try {
+      const r = await CMD['state-put'](['x'], { file, force: true });
+      assertEq(r.rev, 4, '回执就是服务端那一句 rev,逃生舱自己不加工');
+      assertEq(sent.method + ' ' + sent.url, 'PUT /api/state', '走的就是全量覆盖那条端点');
+      assertEq(sent.body.rev, 3, '文件里的 rev 原样递出去(乐观锁归服务端判)');
+      assertEq(JSON.stringify(sent.body.state), JSON.stringify(disk.state),
+        '整树须与文件逐字节相同:一个 id 都不许改、一行都不许删——这是逃生舱的契约');
+      const shots = sent.body.state.projects[0].episodes[0].shots;
+      assertEq(shots.map(s => s.id).join(','), 'dup,dup', '同 id 两镜照落两行(shots-import 那道闸不在这条路上)');
+      assertEq(shots[1].plot, '同 id 第二行', '第二行的内容也原样落库(闸若改 id,这行的引用就得跟着改,那是迁移不是闸)');
+      assertEq(sent.body.state.projects[0].episodes[0].lastReview.perShot[0].shotId, 'dup',
+        '引用镜头 id 的地方一律原样(它们正是"改发新 id"在整树语境下改不干净的那些点)');
+      // 唯一的闸是 --force:少了它一个字节都不递出去
+      sent = null;
+      let err = null;
+      try { await CMD['state-put'](['x'], { file }); } catch (e) { err = e; }
+      assert(err && err.exit === 2 && /--force/.test(err.message), '缺 --force 须按参数错拒绝,实际:' + (err && err.message));
+      assertEq(sent, null, '缺 --force 时一次往返都不许发');
+    } finally { try { fs.unlinkSync(file); } catch (_) {} }
+    // 实现面:这条路上确实一处唯一性处理都没有(设闸即红,提醒同轮改下面三处声明并一并判存量那一面)
+    const cliSrc = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    const body = cliSrc.slice(cliSrc.indexOf("CMD['state-put']")).split('\n};')[0];
+    assert(body && !/renamedIds|taken|new Set/.test(body), 'state-put 的实现体里出现了唯一性处理:' + body);
+    assert(/renamedIds/.test(cliSrc.slice(cliSrc.indexOf("CMD['shots-import']")).split('\n};')[0]),
+      '对照面:shots-import 那道闸得还在——两条路的判据是一对,只剩一条时本条不许还绿着');
+    // 声明面:三处面向调用方的文字各自明写(源码注释不算,调用方读不到)
+    [['cli.js', cliSrc], ['README.md', fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8')],
+      ['docs/AI助手接入指南.md', fs.readFileSync(path.join(ROOT, 'docs', 'AI助手接入指南.md'), 'utf8')],
+    ].forEach(([label, src]) => {
+      assert(/镜头 id 唯一性[^。;\n]{0,8}由调用方自己保证/.test(src),
+        label + ' 须明写「镜头 id 唯一性由调用方自己保证」(契约只写在代码注释里,调用方读不到)');
+      assert(/state-put[\s\S]{0,600}shots-import|shots-import[\s\S]{0,600}state-put/.test(src),
+        label + ' 的这段声明须同时点名 shots-import:闸在哪条路上、不在哪条路上,得让调用方一眼看见');
+    });
+  } },
   { name: 'CLI exec smartReview:单独调用只评一次(重抽循环只在 produce 编排里),故注册表不替它登记 maxRetry', fn: async () => {
     /* 浏览器那一端 episode.smartReview 自己带重抽循环,轮次入参有落点;headless 这一端不是同一形态——
      * 它是一次 /api/wf/smart-review 往返,重抽循环长在 produce 编排里。故 --args '{"maxRetry":5}'
@@ -11691,9 +11746,9 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 649, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
-      ['集成测试', 147, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
-      ['CLI 冒烟', 109, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
+    [['单元测试', 650, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+      ['集成测试', 148, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
+      ['CLI 冒烟', 113, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
       assert(live >= floor, label + '用例数不得少于 ' + floor + '(实测 ' + live + ');确要删测须同轮说明理由,新增用例时把下限抬到当轮实况');
       const docs = [...readme.matchAll(docRe)].map(m => +m[1]);
