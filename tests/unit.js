@@ -3906,7 +3906,8 @@ function routeSystemOf(ov, list) {
 /* 全仓「系统人设位上的内联人设」持有者名单:文件 → 处数(按路径升序)。
  * 判据是 system: / (role=system 的) content: / 赋给模板变量 之后紧跟的 你是… 字面。
  * 有意不在此口径内:js/prompts.js 的注册表 def、js/experts-data.js 的专家人设数据(走生效人设通道)、
- * js/api.js 调用方不给 system 时的层内兜底、js/wf-core.js 单镜审片的 user 半。 */
+ * js/api.js 调用方不给 system 时的层内兜底、单镜审片提示词的 user 半首句
+ * (那一处已收编为 review.userSystem,判据本就不数它,故这张名单不因那次收编改动)。 */
 function inlinePersonaHolders() {
   const files = fs.readdirSync(path.join(ROOT, 'js')).filter(f => f.endsWith('.js')).map(f => 'js/' + f)
     .concat(['server.js', 'cli.js', 'mcp.js', 'billing.js']).sort();
