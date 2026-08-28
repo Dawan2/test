@@ -1211,6 +1211,17 @@ EXEC['episode.produce'] = { needs: ['p', 'ep'], meter: true, run: async (args, f
     // 而是同一集在两端解析出两个上限——用户在参数配置面板调过的次数在 headless 这一侧读不到,
     // 调低时这边多烧几轮真钱,调高时这边先到顶(浏览器还能再跑)。
     const maxRetry = Domain.reviseRetryLimit(args.maxRetry, ep.sbConfig && ep.sbConfig.maxRetry);
+    // 钳过的轮次随即落库,与浏览器命令层 episode.produce 同一份写回:两端点名一次 maxRetry 之后,
+    // 参数配置面板与下一轮不带入参的 produce 读到的都是这一次真跑的次数,不是被入参绕过去的旧值
+    // (只写这一处编排——单独调 episode.smartReview 那一端没有重抽循环,不许替它假写一个没跑过的次数)。
+    // 钳位仍归 Domain,本层只负责落库;值没变时不空发一次 PUT。
+    if (!ep.sbConfig || ep.sbConfig.maxRetry !== maxRetry) {
+      await withProject(args.pid, f, projLive => {
+        const epLive = findEp(projLive, args.epid);
+        epLive.sbConfig = epLive.sbConfig || {};
+        epLive.sbConfig.maxRetry = maxRetry;
+      });
+    }
     // 重抽面由编排层现取实况派生(不摘回执里那份名单);本轮审片没出结论时不派生,
     // 留给下面的 review-unavailable 分支如实报"质量闸门未执行",不拿上一份报告冒充本轮结论
     let low = (rv.result && rv.result.reviewed) ? await reviseTargets(args, f) : [];
@@ -1477,8 +1488,10 @@ CMD.ff = async (a, f) => {
 };
 
 /* ---- Agent 单轮对话(服务端管线 /api/wf/agent):KB/专家 persona/协作记忆/状态摘要注入由服务端拼装,
- * 返回 {reply,thinking,ops,receipts}(计费 llm.agent,失败退费)。默认只解析不执行;
- * --apply 时 run 类 ops 逐条走 EXEC 同链路执行(pid/epid 上下文注入,各命令按自身规则计费,单条失败不中断) ---- */
+ * 返回 {reply,thinking,ops,manual,receipts}(计费 llm.agent,失败退费)。默认只解析不执行;
+ * --apply 时 run 类 ops 逐条走 EXEC 同链路执行(pid/epid 上下文注入,各命令按自身规则计费,单条失败不中断)。
+ * 人手动作命令(注册表 manual 位)服务端就不放进 ops,只在 manual 里点名——这一路是逐条直跑没有确认闸,
+ * 那类命令原样回给调用方转告用户自己发 exec,本层不替它补一条执行 ---- */
 CMD.agent = async (a, f) => {
   const text = (a.join(' ') || f.text || '').trim();
   need(text, '用法:hujing agent "自然语言指令" --pid X [--epid Y] [--scope 导演|分镜|成片…] [--apply]');
