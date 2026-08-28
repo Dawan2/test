@@ -6749,6 +6749,27 @@ action 二选一:
       assertDocNum('README.md', docRe, lines, label + '用例数');
     });
   } },
+  { name: '三套件用例数只增不减:unit/integration/cli.smoke 各自不低于下限(真删测且把 README 一并改小即红)', fn() {
+    /* 上面两条对账钉的是"实测与文档相等",而相等这件事两边一起改小照样成立:真删掉一行 report(...)
+     * 再把 README 那个数字改小,那两条一条不红。这里另立一层与相等无关的判据——三个套件各有一个下限,
+     * 下限是本槽合入时的实况,只许往上抬:少一条用例红在实测那一句,只把文档改小红在文档那一句,
+     * 两处分开钉,单看报错就知道是哪一侧被改小的。
+     * 与「每条用例须是独立一行的 report(...)」有意分成两条:那条报的是"静态点数代表不了实跑条数"
+     * (登记形态被破坏),这条报的是"用例被删了",失败含义不许混成一句。
+     * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
+    const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+    const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
+    [['单元测试', 476, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+      ['集成测试', 130, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
+      ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
+    ].forEach(([label, floor, live, docRe]) => {
+      assert(live >= floor, label + '用例数不得少于 ' + floor + '(实测 ' + live + ');确要删测须同轮说明理由,新增用例时把下限抬到当轮实况');
+      const docs = [...readme.matchAll(docRe)].map(m => +m[1]);
+      assert(docs.length, label + '用例数:README.md 找不到该数字表述(下限这一层不许靠删掉那句话绕过)');
+      docs.forEach(n => assert(n >= floor,
+        label + '用例数:README.md 写的 ' + n + ' 低于下限 ' + floor + '(把文档数字改小来迁就删测即红)'));
+    });
+  } },
   { name: '集成/冒烟用例名各自唯一:名集大小恰等于 report(...) 登记行数(与单元那条同形)', fn() {
     /* 上一条钉的是"条数",这一条钉的是"不同名字数":两个数分开钉才拦得住重名。
      * 这两个套件跑不进单测,取证一直靠"把两侧用例名成集双向比对证明没删测",而一对重名会让集合口径
@@ -6845,7 +6866,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 132;
+    const FLOOR = 133;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
