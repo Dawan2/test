@@ -131,21 +131,25 @@ steps = [ { generateVideos, ok:true, note:'本集没有待生成的镜头,一镜
 
 ## 4. 变异
 
-五手,每手改完跑 `node tests/unit.js contract`,验完还原(还原后 `git status` 干净)。
+六手,每手改完跑 `node tests/unit.js contract`,验完 `git checkout` 还原(还原后 `git status` 干净)。
 
 | # | 变异 | 结果 |
 |---|---|---|
-| 1 | `cli.js` 摘掉 `need(items.length, …)`(时间轴空也照发上游) | 红 **1**(`cli.js composeCore 须在时间轴一段都没有时如实拦下`) |
-| 2 | `cli.js` 把缺素材点名那句改成 `--skip-incomplete` 恒开(拦截整条去掉) | 红 **1**(`须点名报出无素材的镜`) |
-| 3 | `js/sb-io.js` 把在线零素材那道退费拦截整段删掉 | 红 **1**(`在线零素材须退费并如实提示`) |
-| 4 | `js/commands.js` 把 `fail('intercepted', …)` 改成 `ok({ total: 0, note: Domain.emptyBatchNote(p, ep, null, online()) })`(即"照抄隔壁那份 note 把它办成静默成功") | 红 **2**(`须如实 failed` + `不许改读镜头/主体那两份 note`) |
-| 5 | `js/cmd-registry.js` 给 `episode.compose` 加一位 `shotIds` | 红 **1**(参数面那句,点名"加了点名子集就得同轮重判空跑分档") |
+| 1 | `cli.js` 摘掉 `need(items.length, …)`(时间轴空也照发上游) | 红 **1**:`cli.js composeCore 须在时间轴一段都没有时如实拦下` |
+| 2 | `cli.js` 去掉缺素材点名那道拦截(等于 `--skip-incomplete` 恒开) | 红 **1**:`须点名报出无素材的镜` |
+| 3 | `js/sb-io.js` 把在线零素材那道退费拦截整段删掉 | 红 **1**:`在线零素材须退费并如实提示` |
+| 4 | `js/commands.js` 把 `fail('intercepted', …)` 改成 `ok({ total: 0, note: Domain.emptyBatchNote(p, ep, null, online()) })`(即"照抄隔壁那份 note 把它办成静默成功") | 红 **1**:`须如实 failed`(见下面那格读数) |
+| 4b | 只误用不改判:`fail('intercepted')` 原样留着,段内另加一行读 `Domain.emptyBatchNote(` | 红 **1**:`不许改读镜头/主体那两份 note`(报错里把那一行原样印出来) |
+| 5 | `js/cmd-registry.js` 给 `episode.compose` 加一位 `shotIds` | 红 **1**:参数面那句,印出 `期望 "pid,epid,ui",实际 "pid,epid,shotIds,ui"` |
 
-变异 4 正是本槽最该拦住的那一手:它同时踩了"改判静默 `ok`"与"误用镜头那份 note"两条,
-两句报错各说各的,单看报错就知道踩的是哪一条。
+**变异 4 的读数先如实记下来**:它同时踩了"改判静默 `ok`"与"误用镜头那份 note"两条,
+而两句判据在**同一条用例里**,`assert` 先撞先抛——实测只报出前一句,红的是 **1** 不是 2。
+第二句是不是真的接得住,得另起一手单独量,那就是 4b(把改判那半撤掉只留误用),
+它红在后一句上。**同一条用例里的多句判据,红数是"先撞上哪句"而不是"踩了几条"**;
+要各自取证就得把变异拆成互不重叠的两手(W197 记过同形的假变异读数,那次是替换没落到被测段上)。
 
-`js/sb-io.js` 的 `if (!items.length) throw` 那一句没单独列变异手:它与变异 3 同段,
-删任一句都落在同一条用例上,分开列只是同一格的两次读数。
+`js/sb-io.js` 的 `if (!items.length) throw` 那一句没单独列一手:它与变异 3 同段同句判据,
+删任一句都撞在同一条断言上,分开列只是同一格的两次读数。
 
 ## 5. 回归数字(live)
 
