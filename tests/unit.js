@@ -1986,6 +1986,43 @@ const commandsTests = [
     assert(r.error.message.includes('缺剧本'), '应列出阻塞项');
     assert(!sb.__called.length, '就绪检查不过不应发起任何生成');
   } },
+  /* 回执上那颗按钮与它按下去真跑的那条命令,判据得是同一份实况:
+   * 一键成片的就绪闸(缺正文/失败镜/分镜判旧走 preflight,零分镜走 no-shots)在这四态上一律原样退回,
+   * 零调用零计费、该集状态一动不动——回执把它挂上去等于告诉用户"点这里能过",而点了什么都不会发生。
+   * 本条两边都真跑:先让 produce 自己退回,再问 Domain.epFixOf 挂的是不是它。 */
+  { name: 'produce 的就绪闸与受阻集处置口同一份实况:当场退回的四态,epFixOf 一律不再挂一键成片', fn: async () => {
+    const failed = makeShot(0, { confirm: true, video: { status: 'failed', error: '上游超时' } });
+    const CASES = [
+      ['缺正文', { content: '', shots: [] }, 'preflight'],
+      ['有正文零分镜(「仅进行分集」留下的那一态)', { content: '正文', shots: [] }, 'no-shots'],
+      ['失败镜', { content: '正文', shots: [failed] }, 'preflight'],
+      ['分镜判旧', { content: '正文', shotsSourceRev: 0, contentRev: 3, shots: [makeShot(0, { confirm: true })] }, 'preflight'],
+    ];
+    for (const [why, over, code] of CASES) {
+      const sb = loadCommands();
+      const { p, ep } = cmdCtx(sb, over);
+      const before = JSON.stringify(sb.Domain.episodeState(p, ep, false).counts);
+      const r = await sb.Commands.execute('episode.produce', { pid: 'p1', epid: 'ep1' });
+      assertEq(r.status, 'blocked', why + ':一键成片应当场退回');
+      assertEq(r.error.code, code, why + ' 的拦截码');
+      assertEq(sb.__called.length, 0, why + ':退回时零调用零计费');
+      assertEq(JSON.stringify(sb.Domain.episodeState(p, ep, false).counts), before, why + ':该集状态一动不动(门禁结论一字不变)');
+      assert(sb.Domain.epFixOf(p, ep).cmd !== 'episode.produce',
+        why + ':一键成片在这一态跑不动,处置口不许还挂它(实际 ' + JSON.stringify(sb.Domain.epFixOf(p, ep)) + ')');
+    }
+    // 未拆镜那一态派出去的命令得真跑得动(否则只是换了一颗跑不动的按钮)
+    const sb2 = loadCommands();
+    const { p: p2, ep: ep2 } = cmdCtx(sb2, { content: '正文', shots: [] });
+    const fix = sb2.Domain.epFixOf(p2, ep2);
+    assertEq(fix.cmd, 'episode.generateStoryboard');
+    const r2 = await sb2.Commands.execute(fix.cmd, { pid: 'p1', epid: fix.epid });
+    assertEq(r2.ok, true, '处置口派的命令应真跑得动:' + JSON.stringify(r2.error || {}));
+    assert(ep2.shots.length > 0, '跑完这一集应真的有分镜了(G1 那条阻塞项随之消失)');
+    // 就绪闸放行的态不受牵连:处置口仍是一键成片
+    const sb3 = loadCommands();
+    const { p: p3, ep: ep3 } = cmdCtx(sb3, { shots: [makeShot(0, { video: { status: 'none' }, confirm: true })] });
+    assertEq(sb3.Domain.epFixOf(p3, ep3).cmd, 'episode.produce', '待出片集仍走一键成片');
+  } },
   { name: 'produce:全链路编排 steps 序 生成→审片→合成,cost 为子步累加', fn: async () => {
     const sb = loadCommands();
     cmdCtx(sb, { shots: [makeShot(0, { video: { status: 'none' }, confirm: true }), makeShot(1, { confirm: true })] });
@@ -3493,6 +3530,36 @@ const domainTests = [
     assert(/解锁终稿/.test(sb.Domain.staleSplitNote(2, 1)) && /解锁终稿/.test(sb.Domain.staleSplitNote(0, 2)),
       '两种形状都得给出人工出路');
   } },
+  /* 受阻集的处置口:回执/单屏上那颗按钮按下去究竟跑什么。判据只按 episodeState 已归好的推荐动作分档,
+   * 本条逐态点名——分档写错(比如把未拆镜也归回一键成片)当场红。 */
+  { name: 'epFixOf:受阻集的处置口按推荐动作分档(未拆镜派智能分镜/人工决策三态出导航/其余仍一键成片)', fn: () => {
+    const sb = loadDomain();
+    const fixOf = ep => {
+      const p = makeP([ep], [{ id: 'sj1', name: '主', kind: 'character', image: 'u' }]);
+      return sb.Domain.epFixOf(p, ep, sb.Domain.episodeState(p, ep, false));
+    };
+    const shot = over => Object.assign({ id: 'sh0', order: 0, name: '', plot: 'p', prompt: 'q', camera: '固定镜头',
+      duration: 5, characters: [], scene: '', props: [], confirm: true, video: { status: 'done', url: 'http://x/v.mp4' } }, over || {});
+    // ① 有正文零分镜(「仅进行分集」留下的就是这一态):派真能把这一集推到下一步的那条命令
+    const sbFix = fixOf({ id: 'ep1', title: '一', content: '正文', shots: [] });
+    assertEq(sbFix.type, 'command');
+    assertEq(sbFix.cmd, 'episode.generateStoryboard', '未拆镜集的处置是智能分镜,不是一键成片');
+    assertEq(sbFix.epid, 'ep1', '集级命令须带真实 epid');
+    // ② 缺正文 / 失败镜 / 分镜判旧:一键成片的就绪闸会原样退回,且覆盖与逐镜挑选属人工决策 → 出导航口
+    [['缺正文', { id: 'ep1', title: '一', content: '', shots: [] }],
+      ['失败镜', { id: 'ep1', title: '一', content: '正文', shots: [shot({ video: { status: 'failed', error: 'x' } })] }],
+      ['分镜判旧', { id: 'ep1', title: '一', content: '正文', shotsSourceRev: 0, contentRev: 3, shots: [shot()] }],
+    ].forEach(([why, ep]) => {
+      const f = fixOf(ep);
+      assertEq(f.type, 'nav', why + ' 应出导航口,实际:' + JSON.stringify(f));
+      assertEq(f.hash, '#/project/p1/episode/ep1', why + ' 的导航口应落到该集工作区');
+      assertEq(f.cmd, undefined, why + ' 不挂命令(不代授权,也不触发计费动作)');
+    });
+    // ③ 分镜表已就位、剩下的是生成/确认/合成:一键成片原样,不因本档改动被牵连
+    assertEq(fixOf({ id: 'ep1', title: '一', content: '正文', shots: [shot({ video: null })] }).cmd, 'episode.produce', '待出片集仍走一键成片');
+    assertEq(fixOf({ id: 'ep1', title: '一', content: '正文', shots: [shot({ confirm: false })] }).cmd, 'episode.produce', '待确认集仍走一键成片');
+    assertEq(sb.Domain.epFixOf(null, null), null, '缺项目/分集时不编一个处置口出来');
+  } },
 ];
 
 /* ================= 套件 12:bus.js(管线事件总线,第三阶段) ================= */
@@ -4552,6 +4619,36 @@ const releaseTests = [
     assertEq(g9.fix.type, 'command', '主体缺图应挂主体生图命令一键处置');
     assertEq(g9.fix.cmd, 'subject.generateImage');
     assertEq((g9.fix.subjectIds || []).join(','), 'sj1', 'G9 只带缺图主体子集');
+  } },
+  /* 「仅进行分集」留下的项目形状:整本原文不在库、各集有正文、一集都还没拆镜。
+   * G1 在这形状上判的仍是各集状态(fail:ready:生成分镜),这一点 W110 已两面钉过;
+   * 本条钉的是另一半——回执 info 点名"生成分镜",处置却曾恒挂一键成片,按下去只换来一句「未分镜」,
+   * 门禁结论一字不变。回执说的和按钮做的得是同一件事。 */
+  { name: 'G1 处置口按首个受阻集的状态派:未拆镜集挂智能分镜,不挂按下去只回一句拦截语的一键成片', fn() {
+    const sb = loadRelease();
+    const splitOnly = () => ({
+      id: 'p1', name: '剧', script: '', // 整本原文不在库:G1 一个字不读它,这里只是把「仅分集」的形状摆全
+      subjects: [{ id: 'sj1', name: '主', kind: 'character', image: 'u' }],
+      episodes: [{ id: 'ep1', title: '第一集', content: '第一集正文', shots: [] },
+        { id: 'ep2', title: '第二集', content: '第二集正文', shots: [] }],
+    });
+    const g1 = r => r.gates.find(g => g.code === 'g1-workflow');
+    const bare = g1(sb.Release.collect(splitOnly(), { online: false }));
+    assertEq(bare.status, 'fail', 'G1 逐集判状态:两集都还没拆镜');
+    assert(bare.info.includes('生成分镜'), '回执 info 应点名该做的事,实际:' + bare.info);
+    assertEq(bare.fix.type, 'command');
+    assertEq(bare.fix.cmd, 'episode.generateStoryboard', '处置应与 info 点名的那件事一致(此前恒挂 episode.produce,当场 blocked no-shots)');
+    assertEq(bare.fix.epid, 'ep1', '落到首个受阻集');
+    // 补上整本原文不改 G1 任何一面(门槛判据没动,W110 那条的另一面在这里再钉一次)
+    const written = g1(sb.Release.collect(Object.assign(splitOnly(), { script: '整本剧本原文' }), { online: false }));
+    assertEq(written.status, bare.status); assertEq(written.info, bare.info);
+    assertEq(written.fix.cmd, bare.fix.cmd, 'G1 的门槛与处置都不读 p.script');
+    // 第一集拆完镜:受阻集顺延到第二集,处置口跟着走(不写死首集)
+    const half = splitOnly();
+    half.episodes[0] = releaseReadyEp({ composed: true,
+      composedInputHash: sb.Domain.composedInputHash(releaseReadyEp(), false), composedSourceRev: 0, composedGraphRev: 0 });
+    assertEq(sb.Domain.episodeState(half, half.episodes[0], false).status, 'done', '前提:第一集已走完整条主线');
+    assertEq(g1(sb.Release.collect(half, { online: false })).fix.epid, 'ep2', '处置口应落到此刻真正卡住的那一集');
   } },
   { name: '浏览器 collect · G4/G5/G6 聚合缺 Domain:三门如实 warn,不许照常印「0 镜 → 通过」', fn() {
     /* 三门的镜次计数出自同一次遍历,那次遍历此前被一个空 catch 兜着:Domain 没加载时 agg 停在初值 0,
@@ -5808,6 +5905,8 @@ const GUARD_TOPICS = [
     why: '交付包不许再落占位空壳:两处承载各钉一面——源级那条钉可执行行零占位字面与落地口名单,运行期那条把桩打在函数对象上(别名持有者源级够不着,只有运行期那面接得住)' },
   { id: 'topic-unlist-ledger', anchors: ['topicLedgerVerdict', 'topicRoster()'], hosts: 2,
     why: '销号必须显式落笔:花名册上的编号要么在册、要么在销号台账里带闭合理由,下限只增不减(两处承载:一处拿实况对花名册、一处拿造出来的清单钉判词自己)' },
+  { id: 'epfix-produce-gate', anchors: ['Domain.epFixOf', 'episode.produce'], hosts: 2,
+    why: '受阻集的处置口与一键成片的就绪闸同一份实况:produce 当场退回的四态不许还挂它(两处承载:命令层那条让 produce 真跑一遍再问处置口,Domain 那条逐态点名分档)' },
 ];
 /* ---- 下限、销号台账与花名册:让「撤掉一条登记」这件事非留痕不可 ----
  * 上面那张表只登记"此刻在册"的主题,而撤登记此前只有一个下限数字守着,两种改法都一条不红:
@@ -5821,7 +5920,7 @@ const GUARD_TOPICS = [
  *   3. 销号必须显式落笔——编号搬进 GUARD_TOPICS_CLOSED 并写下闭合理由,锚点原样搬过来,
  *      好让"这道护栏是真没了,还是被别的主题接手了"事后仍判得出来。
  * 有意不禁新登记主题:在册多出花名册没有的号一条不红,加主题照旧只改上面那张表。 */
-const TOPIC_FLOOR = 18;
+const TOPIC_FLOOR = 19;
 const GUARD_TOPICS_CLOSED = [
   /* 形状:{ id: '主题编号', anchors: [原样搬过来], why: '这道护栏原本守什么',
    *        closed: '为什么可以不守了(被守的那一面已不存在 / 判据并进了哪一条)',
@@ -5929,12 +6028,18 @@ const contractTests = [
     const cmds = sb.Commands.list();
     const names = cmds.map(c => c.name);
     const withCmd = r.gates.filter(g => g.fix && g.fix.cmd);
-    assert(withCmd.length >= 5, '脏项目应至少挂出 G1/G3/G4/G6/G9 五个命令类处置,实际 ' + withCmd.length);
+    assert(withCmd.length >= 4, '脏项目应至少挂出 G3/G4/G6/G9 四个命令类处置,实际 ' + withCmd.length);
+    /* 未过门却没有处置出口 = 用户在回执上无路可走:逐门点名,不许有门静默地不挂 fix
+     * (G1 在本夹具上按首个受阻集的状态出的是导航口——那一集有失败镜,一键成片的就绪闸会原样退回) */
+    r.gates.filter(g => g.status === 'fail').forEach(g => assert(g.fix, g.code + ' 未过门却没有处置出口'));
+    const routes = appRoutes();
     withCmd.forEach(g => {
       assert(names.includes(g.fix.cmd), g.code + ' 的 fix.cmd 未注册:' + g.fix.cmd);
       const meta = cmds.find(c => c.name === g.fix.cmd);
       if (meta.needs.includes('ep')) assertEq(g.fix.epid, 'ep1', g.code + ' 集级命令须带真实 epid');
     });
+    // 导航类处置同样得落到真路由(命令类查注册表,导航类查路由表,两类都不许指向不存在的去处)
+    r.gates.filter(g => g.fix && g.fix.hash).forEach(g => assert(routes.okRoute(g.fix.hash), g.code + ' 的 fix.hash 不在 app.js 路由表内:' + g.fix.hash));
     assertEq(r.gates.find(g => g.code === 'g4-stale').fix.shotIds.join(','), 'sh1', 'G4 只带过期镜子集');
     assertEq(r.gates.find(g => g.code === 'g6-failed').fix.shotIds.join(','), 'sh2', 'G6 只带失败镜子集');
     assertEq(r.gates.find(g => g.code === 'g9-subjects').fix.subjectIds.join(','), 'sj1', 'G9 只带缺图主体子集');
@@ -9210,7 +9315,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 561, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 564, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 143, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -9426,7 +9531,7 @@ action 二选一:
      * 于是撤登记这件事只剩两条路:写下闭合理由(留痕、放行),或者当场红。
      * 判词本身另有一条用例拿造出来的清单钉着,本条只负责把实况喂进去。 */
     const roster = topicRoster();
-    assert(roster.length >= 18, '花名册只取到 ' + roster.length + ' 个编号(记账件里那一节被挪走、改了表格形状或整份被删时,' +
+    assert(roster.length >= 19, '花名册只取到 ' + roster.length + ' 个编号(记账件里那一节被挪走、改了表格形状或整份被删时,' +
       '本条会静默退化成恒真句,故先红在这里)');
     const dupRoster = roster.filter((id, i) => roster.indexOf(id) !== i);
     assertEq(dupRoster.join(' / '), '', '花名册里有重号(重号会让其中一条的缺席被另一条盖住)');
@@ -9545,7 +9650,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 195;
+    const FLOOR = 196;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接

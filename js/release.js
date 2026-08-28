@@ -58,14 +58,20 @@
     /* G1 主线就绪 */
     try {
       if (typeof Domain !== 'undefined' && Domain.episodeState) {
-        let blockers = [];
+        let blockers = [], first = null;
         eps.forEach(ep => {
           const st = Domain.episodeState(p, ep, online);
-          if (st.status !== 'done') blockers.push({ epid: ep.id, ep: ep.title || ep.id, status: st.status, label: (st.action && st.action.label) || '' });
+          if (st.status !== 'done') {
+            blockers.push({ epid: ep.id, ep: ep.title || ep.id, status: st.status, label: (st.action && st.action.label) || '' });
+            if (!first) first = { ep, st };
+          }
         });
         if (blockers.length) {
+          /* 处置按首个受阻集的实际状态派(Domain.epFixOf 单源):回执 info 已按「集名(状态:推荐动作)」点名,
+           * 处置若恒挂一键成片,未拆镜/缺正文/失败镜/分镜判旧四态按下去只换来一句就绪检查拦截语——
+           * 回执说的和按钮做的对不上。门的 pass 条件一字未动。 */
           gates.push(gate('g1-workflow', '主线步骤全完成', 'fail', blockers.map(b => `· ${b.ep}(${b.status}${b.label ? ':' + b.label : ''})`).join('；'),
-            { severity: 'high', fix: { type: 'command', cmd: 'episode.produce', epid: blockers[0].epid } }));
+            { severity: 'high', fix: Domain.epFixOf(p, first.ep, first.st) }));
         } else gates.push(gate('g1-workflow', '主线步骤全完成', 'pass', eps.length + ' 集全部 done'));
       } else gates.push(gate('g1-workflow', '主线步骤全完成', 'warn', 'Domain 模块未加载,无法校验'));
     } catch (e) { gates.push(gate('g1-workflow', '主线步骤全完成', 'warn', '校验异常:' + e.message)); }
