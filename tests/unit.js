@@ -3081,16 +3081,18 @@ const commandsTests = [
     const cliSrc = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
     const body = cliSrc.slice(cliSrc.indexOf("CMD['state-put']")).split('\n};')[0];
     assert(body && !/renamedIds|taken|new Set/.test(body), 'state-put 的实现体里出现了唯一性处理:' + body);
-    assert(/renamedIds/.test(cliSrc.slice(cliSrc.indexOf("CMD['shots-import']")).split('\n};')[0]),
+    assert(/taken\.has\(s\.id\)[\s\S]*renamedIds/.test(cliSrc.slice(cliSrc.indexOf("CMD['shots-import']")).split('\n};')[0]),
       '对照面:shots-import 那道闸得还在——两条路的判据是一对,只剩一条时本条不许还绿着');
     // 声明面:三处面向调用方的文字各自明写(源码注释不算,调用方读不到)
+    const SAY = /镜头 id 唯一性[^。;\n]{0,8}由调用方自己保证/g;
     [['cli.js', cliSrc], ['README.md', fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8')],
       ['docs/AI助手接入指南.md', fs.readFileSync(path.join(ROOT, 'docs', 'AI助手接入指南.md'), 'utf8')],
     ].forEach(([label, src]) => {
-      assert(/镜头 id 唯一性[^。;\n]{0,8}由调用方自己保证/.test(src),
-        label + ' 须明写「镜头 id 唯一性由调用方自己保证」(契约只写在代码注释里,调用方读不到)');
-      assert(/state-put[\s\S]{0,600}shots-import|shots-import[\s\S]{0,600}state-put/.test(src),
-        label + ' 的这段声明须同时点名 shots-import:闸在哪条路上、不在哪条路上,得让调用方一眼看见');
+      const at = [...src.matchAll(SAY)].map(m => m.index);
+      assert(at.length, label + ' 须明写「镜头 id 唯一性由调用方自己保证」(契约只写在代码注释里,调用方读不到)');
+      // 点名 shots-import 得挨着那句话本身:别处段落顺带提过两个词不算数
+      at.forEach(i => assert(/shots-import/.test(src.slice(Math.max(0, i - 300), i + 300)),
+        label + ':第 ' + i + ' 字处那句声明的近旁没点名 shots-import——闸在哪条路上、不在哪条路上,得跟着这句话一起说'));
     });
   } },
   { name: 'CLI exec smartReview:单独调用只评一次(重抽循环只在 produce 编排里),故注册表不替它登记 maxRetry', fn: async () => {
