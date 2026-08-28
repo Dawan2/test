@@ -3594,7 +3594,20 @@ const commandsTests = [
     const subs2 = fx2.disk.projects[0].subjects;
     assertEq(sb2.__imgs.length, 4, '前提:整库那一路四位全跑');
     assertEq(subs2.filter(s => s.image).length, 4, 'CLI 整库那一路同样:四笔钱四位到手图,实际:' + imgs(subs2));
-    // ③ 浏览器那一端:同一份库同一个点名,落库结果与 CLI 对齐(一端写对一端写错就在这里岔开)
+    // ③ 首位已有图的整库那一路:序数得在全表上数,只数待跑清单会整体错位(首位被覆盖、末位补不上)
+    const sb3 = loadCli();
+    const fx3 = cliDisk(sb3);
+    const pre = dupSubs();
+    pre[0].image = '/uploads/img/old.png';
+    fx3.disk.projects[0].subjects = pre;
+    sb3.__imgs = [];
+    sb3.genImage = async () => { sb3.__imgs.push(1); return { url: '/uploads/img/k' + sb3.__imgs.length + '.png' }; };
+    await sb3.EXEC['subject.generateImage'].run({ pid: 'p1' }, {});
+    const subs3 = fx3.disk.projects[0].subjects;
+    assertEq(sb3.__imgs.length, 3, '前提:整库那一路只补缺图的三位(首位已有图被跳过)');
+    assertEq(subs3[0].image, '/uploads/img/old.png', '已有图的首位这一趟一个字不许被改写:' + imgs(subs3));
+    assertEq(subs3.filter(s => s.image).length, 4, '三笔钱补上三位,连同原有那位共四位有图:' + imgs(subs3));
+    // ④ 浏览器那一端:同一份库同一个点名,落库结果与 CLI 对齐(一端写对一端写错就在这里岔开)
     const sbB = loadCommands();
     sbB.__engine = [];
     sbB.EpisodeUtil.genSubjectImage = async (p, s) => { sbB.__engine.push(s.id); s.image = '/uploads/img/b' + sbB.__engine.length + '.png'; };
