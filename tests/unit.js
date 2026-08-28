@@ -5496,6 +5496,10 @@ const GUARD_TOPICS = [
     why: '单元用例名全局唯一:重名会让按名成集比对把一条吃掉,删测与重名互相抵消' },
   { id: 'ledger-count-3way', anchors: ['索引表共 ', 'FLOOR'],
     why: '记账件份数由 README 明写并与目录/索引表三方对齐,且只增不减' },
+  { id: 'extract-source-single', anchors: ['Domain.extractSourceText', '/api/wf/extract-subjects'],
+    why: '提取主体读入的那份文本只在 Domain.extractSourceText 一处:三端命令入口(浏览器 / CLI / 服务端)与计划层同读,谁退回内联 p.script 即分叉' },
+  { id: 'g456-count-source', anchors: ['aggCode', 'G4–G6 计数仍取'],
+    why: 'G4–G6 三门的镜次计数仍取 Domain.episodeState 那一次遍历:钉的是那段可执行行(注释整段排除),不许退回"整份文件里出现过 counts"这种恒真写法' },
 ];
 /* 全部套件的用例源码(抹掉注释、字面量留着)+ 打印用标签:护栏主题按锚点在这上面找落点。
  * 取 fn 的运行时源码而不是按文件切段:用例挪到别的套件、换个写法都不影响取数,判的是"这段判据还在不在跑"。 */
@@ -8842,7 +8846,7 @@ action 二选一:
      * 承载用例不许是空壳(锚点还在而断言被掏空,等于护栏名存实亡)。
      * 抹注释那一口另有自检:锚点只写在注释里不算落点——W136 记过"变异体里那句注释替被测断言把活干了"的假红,
      * 同一形状放到这里就是"删掉断言、把锚点留在注释里"照旧全绿。 */
-    const TOPIC_FLOOR = 10;
+    const TOPIC_FLOOR = 12;
     assert(GUARD_TOPICS.length >= TOPIC_FLOOR, '护栏主题不得少于 ' + TOPIC_FLOOR + ' 条(实测 ' + GUARD_TOPICS.length +
       ');新登记主题时把下限抬到当轮实况,销号须同轮说明理由');
     const ids = GUARD_TOPICS.map(t => t.id);
