@@ -514,6 +514,31 @@
   /* 修订循环重抽子集参数:episode.generateVideos / episode.smartReview 的 shotIds 由本函数派生 */
   D.reviseShotIds = ep => D.reviseTargets(ep).map(t => t.shotId);
 
+  /* 修订循环收敛次数(审片修订闭环 SK-25 的另一个编排入参,双端单源):
+   * "复审不达标还能重来几次"的取值口径 —— 整数轮次,取值域 1..5,缺省 2。
+   * 上限存在的理由是每一轮都真花钱(重生成 COST.video + 复审 COST.review),不设限即无限扣费;
+   * 下限 1 是"至少给一次改正机会",0 轮等于关掉修订闭环,那由 smartReview 开关表达,不用次数表达。
+   * 参数配置面板(1..5)与命令注册表 maxRetry 的登记区间同读这三个常量,不另写一份。 */
+  D.REVISE_RETRY_MIN = 1;
+  D.REVISE_RETRY_MAX = 5;
+  D.REVISE_RETRY_DEFAULT = 2;
+  /* 候选值按优先级依次传入(如 命令入参 → 分集 sbConfig),第一个能读成非零数的胜出,
+   * 都读不出来(缺省/空串/null/非数字/0)时回 REVISE_RETRY_DEFAULT;越界向内钳,小数截整。 */
+  D.reviseRetryLimit = function () {
+    for (let i = 0; i < arguments.length; i++) {
+      const n = +arguments[i];
+      if (!Number.isFinite(n) || n === 0) continue;
+      return Math.max(D.REVISE_RETRY_MIN, Math.min(D.REVISE_RETRY_MAX, Math.floor(n)));
+    }
+    return D.REVISE_RETRY_DEFAULT;
+  };
+  /* 可选轮次(参数配置面板的次数选项由此派生,不在 UI 侧另写一遍区间) */
+  D.reviseRetryOptions = function () {
+    const out = [];
+    for (let n = D.REVISE_RETRY_MIN; n <= D.REVISE_RETRY_MAX; n++) out.push(n);
+    return out;
+  };
+
   /* 分集级业务状态:counts + status + blockers + 推荐动作 */
   D.episodeState = function (p, ep, online) {
     const shots = (ep && ep.shots) || [];

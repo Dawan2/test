@@ -11,8 +11,9 @@
     const p = Store.getProject(pid);
     if (!p) { location.hash = '#/projects'; return; }
     const sink = document.createElement('div'); // 渲染汇流排(不上屏)
-    // 跑批配置模板(页内存量,跑批时写入各集 sbConfig)
-    const cfg = { smartReview: true, maxRetry: 2, skipComposed: true, riskyCompose: false };
+    // 跑批配置模板(页内存量,跑批时写入各集 sbConfig);重抽次数的区间与缺省归 Domain.REVISE_RETRY_*,
+    // 本页的次数标签只放低三档(全部档位在分集「参数配置」面板给),不在这里另立一份取值口径
+    const cfg = { smartReview: true, maxRetry: Domain.REVISE_RETRY_DEFAULT, skipComposed: true, riskyCompose: false };
     let running = false;
     const runState = {}; // epId -> {status:'idle'|'running'|'done'|'failed'|'skipped', note}
 
@@ -245,9 +246,10 @@
 
   /* ================= 智能审片闭环(自 storyboard.js 迁入量产域) ================= */
   /* 生成后逐镜评审,不达标自动重生成,最多 maxRetry 次(审片 COST.review/镜,重生成 COST.video/次)
+   * 次数口径取 Domain.reviseRetryLimit 双端单源(1-5,默认 2),与命令层/CLI produce 同一份,不在本处另钳;
    * 非模态:进度走右侧后台侧边栏(可最小化/可中止),页面全程可操作 */
   async function autoSmartReview(p, ep, main, shots, quiet) {
-    const maxRetry = Math.max(1, Math.min(5, ep.sbConfig.maxRetry || 2));
+    const maxRetry = Domain.reviseRetryLimit(ep.sbConfig.maxRetry);
     const targets = (shots || ep.shots).filter(s => s.video && Store.shotVideoReady(s) && !s.final);
     if (!targets.length) return { pass: 0, retry: 0, manual: 0 };
     const dock = quiet ? null : U.bgDock({ title: `🧠 智能审片 · ${ep.title}(${targets.length} 镜)` });

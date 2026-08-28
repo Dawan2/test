@@ -325,7 +325,7 @@
       if (!args.riskyCompose) return Object.assign({ ok: false, status: 'blocked', error: { code: 'review-unavailable', message: '审片模块未加载,质量闸门无法执行(riskyCompose 可放行)' }, result: { steps } }, { cost: cost(), next: nextOf(p, ep) });
     } else {
       onStep('智能审片');
-      ep.sbConfig.maxRetry = Math.max(1, Math.min(5, args.maxRetry || ep.sbConfig.maxRetry || 2));
+      ep.sbConfig.maxRetry = Domain.reviseRetryLimit(args.maxRetry, ep.sbConfig.maxRetry);
       const rv = push('smartReview', await execute('episode.smartReview', args));
       // 质量闸门:存在待人工镜头默认阻断合成(防止带病成片),仅显式 riskyCompose 放行
       if (rv.result && rv.result.manual > 0 && !args.riskyCompose) {

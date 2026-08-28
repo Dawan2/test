@@ -426,7 +426,7 @@
     const st = window.getSettings ? getSettings() : {};
     return {
       style: p.style, syncVoice: true, videoSyncAudio: false, subtitle: true,
-      sbMode: 'create', autoOptimize: true, shotCount: 8, smartReview: false, maxRetry: 2, inheritPrevEp: false, sbAutoFix: true,
+      sbMode: 'create', autoOptimize: true, shotCount: 8, smartReview: false, maxRetry: Domain.REVISE_RETRY_DEFAULT, inheritPrevEp: false, sbAutoFix: true,
       narratorVoice: st.defVoice || VOICES[0],
       batchVideoModel: st.defVideoModel || MODELS.video[0], batchCamera: '固定镜头',
       batchStrategy: 'ref',
@@ -613,7 +613,7 @@
       </label>
       <label class="field"><span>智能审片最大重生成次数(不达标自动重抽)</span>
         <div class="model-row">
-          ${[1, 2, 3, 4, 5].map(n => `<div class="model-opt ${(c.maxRetry || 2) === n ? 'sel' : ''}" data-mr="${n}">${n} 次</div>`).join('')}
+          ${Domain.reviseRetryOptions().map(n => `<div class="model-opt ${Domain.reviseRetryLimit(c.maxRetry) === n ? 'sel' : ''}" data-mr="${n}">${n} 次</div>`).join('')}
         </div>
         <div class="hint">仅「智能审片」开启时生效;每镜评审 ${COST.review} 积分,重生成 ${COST.video} 积分/次</div>
       </label>
