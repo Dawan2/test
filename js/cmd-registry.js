@@ -41,8 +41,8 @@
     },
     {
       name: 'episode.compose', label: '合成成片', risk: 'exec', needs: ['p', 'ep'],
-      desc: '拼接成片+写回 SRT 软字幕;无分镜/失败镜前置 blocked,合成超时如实报错',
-      args: [PID, EPID, UI],
+      desc: '拼接成片+写回 SRT 软字幕;无分镜/失败镜前置 blocked,合成超时如实报错;已合成且合成输入未变时原地返回旧成片(零调用零计费,回执 fresh:true),force 点名重来',
+      args: [PID, EPID, { name: 'force', type: 'boolean', desc: '授权位:成片已是最新也照旧重新合成(真扣 ff.compose;缺省不重跑)' }, UI],
     },
     {
       name: 'episode.produce', label: '一键成片', risk: 'exec', needs: ['p', 'ep'],

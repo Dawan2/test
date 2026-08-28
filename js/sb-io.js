@@ -380,7 +380,7 @@
           show(0); playing = true; playBtn.textContent = '⏸ 暂停';
           if (!curVideo()) tick(); // 静帧起步;视频在 show() 里已自动播
         };
-        m.querySelector('[data-x=compose2]').onclick = () => { close(); Commands.execute('episode.compose', { pid: p.id, epid: ep.id, main: document.getElementById('main'), ui: true }).then(r => Commands.digest(r)); }; // 统一命令层(ui 模式)
+        m.querySelector('[data-x=compose2]').onclick = () => { close(); Commands.execute('episode.compose', { pid: p.id, epid: ep.id, main: document.getElementById('main'), ui: true, force: true }).then(r => Commands.digest(r)); }; // 统一命令层(ui 模式;用户点名重来 → force)
         show(0);
         if (autoplay) { playing = true; playBtn.textContent = '⏸ 暂停'; if (!curVideo()) tick(); }
       },

@@ -667,7 +667,7 @@
         const usable = ep.shots.filter(s => (Store.shotVideoReady(s) && s.video.url) || s.image); // 统一就绪判定
         if (usable.length) return Timeline.openCompose(p, ep, main);
       }
-      Commands.execute('episode.compose', { pid: p.id, epid: ep.id, main, ui: true }).then(r => Commands.digest(r)); // 统一命令层(ui 模式)
+      Commands.execute('episode.compose', { pid: p.id, epid: ep.id, main, ui: true, force: true }).then(r => Commands.digest(r)); // 统一命令层(ui 模式;用户点名重来 → force)
     };
   }
 

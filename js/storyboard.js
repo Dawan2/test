@@ -226,7 +226,7 @@
         if (nx.key === 'shots') { const t = main.querySelector('[data-x=dd-sb]'); if (t) t.click(); }
         else if (nx.key === 'gen') SB.runBatchOp(p, ep, main, 'video');
         else if (nx.key === 'review') Commands.execute('episode.smartReview', { pid: p.id, epid: ep.id, main, ui: true }).then(r => Commands.digest(r)); // 审片修订闭环(评审→修订→重抽→复审)
-        else if (nx.key === 'film') Commands.execute('episode.compose', { pid: p.id, epid: ep.id, main, ui: true }).then(r => Commands.digest(r)); // 统一命令层(ui 模式)
+        else if (nx.key === 'film') Commands.execute('episode.compose', { pid: p.id, epid: ep.id, main, ui: true, force: true }).then(r => Commands.digest(r)); // 统一命令层(ui 模式;用户点名重来 → force)
         else if (nx.key === 'export') window.SB.openPlayer(p, ep, false); // 顶栏导出已并入预览:预览长视频内导出
         else if (nx.run) nx.run(main); // 带执行动作的下一步(如 regen-stale 批量重生成过期镜)
       };
@@ -237,7 +237,7 @@
         else if (pv.key === 'shots') { const t = main.querySelector('[data-x=dd-sb]'); if (t) t.click(); }
         else if (pv.key === 'gen') SB.runBatchOp(p, ep, main, 'video');
         else if (pv.key === 'review') Review.openEpisodeReview(p, ep, main);
-        else if (pv.key === 'film') Commands.execute('episode.compose', { pid: p.id, epid: ep.id, main, ui: true }).then(r => Commands.digest(r)); // 统一命令层(ui 模式)
+        else if (pv.key === 'film') Commands.execute('episode.compose', { pid: p.id, epid: ep.id, main, ui: true, force: true }).then(r => Commands.digest(r)); // 统一命令层(ui 模式;用户点名重来 → force)
       };
     }
     main.querySelector('[data-x=sb-config]').onclick = () => openSBConfig(p, ep, main);
@@ -275,7 +275,7 @@
         const usable = ep.shots.filter(s => (s.video && Store.shotVideoReady(s) && s.video.url) || s.image);
         if (usable.length) return Timeline.openCompose(p, ep, main);
       }
-      Commands.execute('episode.compose', { pid: p.id, epid: ep.id, main, ui: true }).then(r => Commands.digest(r));
+      Commands.execute('episode.compose', { pid: p.id, epid: ep.id, main, ui: true, force: true }).then(r => Commands.digest(r)); // 用户点名的合成 → force(成片已是最新也照旧重来)
     };
     // 显示方式▾:时间轴(默认)/数列式,偏好记忆在 settings.centerLayout
     bindDropdown(main, '[data-x=dd-layout]', '[data-ddm=layout]', item => {

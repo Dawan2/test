@@ -12,10 +12,17 @@
   const count = p => Core.count(p, { online: online() });
 
   /* ================= 处置动作 ================= */
+  /* 逐条点名的处置要带 force 的命令:合成那条(「▶ 重新合成」)——命令层的「已是最新就不重跑」
+   * 只该挡自动/主线步,不该把用户点名的重来也一并挡掉。按命令名逐条登记而不是一律带上:
+   * force 在各命令里含义不同(如 project.release 的 force 是「未过发布门也强打版本」),不能通用授权。 */
+  const FORCE_FIX = ['episode.compose'];
+
   async function fixIssue(p, it, main, onDone) {
     if (it.cmd) {
       if (!window.Commands) { U.toast('命令层未加载,请稍后重试', 'error'); return; }
-      const r = await Commands.execute(it.cmd, { pid: p.id, epid: it.epid, shotIds: it.shotIds, main: main || document.getElementById('main'), ui: true });
+      const a = { pid: p.id, epid: it.epid, shotIds: it.shotIds, main: main || document.getElementById('main'), ui: true };
+      if (FORCE_FIX.includes(it.cmd)) a.force = true;
+      const r = await Commands.execute(it.cmd, a);
       Commands.digest(r);
       if (onDone) onDone(r);
       return r;
