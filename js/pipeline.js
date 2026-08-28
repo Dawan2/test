@@ -19,8 +19,9 @@
     const firstEp = eps[0];
     const undoneEp = eps.find(e => (e.shots || []).some(s => !Store.shotVideoReady(s)));
     const noShotEp = eps.find(e => !(e.shots || []).length);
-    /* 待审集(未审 / 记录判旧 / 低于达标线,与 Domain 主线审片步骤同口径) */
-    const unRvEp = () => eps.find(e => { const st = Domain.episodeState(p, e, _online()); return st.reviewAvg === null || st.reviewAvg < Domain.REVIEW_MIN; });
+    /* 待审集(未审 / 记录判旧 / 低于达标线):门槛读 Domain.episodeState().reviewGate 那一份,本层不另设一道——
+     * 缺正文 / 未拆镜 / 分镜表判旧的集当下审不了(unready),点「审片」不把用户送去一个开口就说"该去拆镜"的集 */
+    const unRvEp = () => eps.find(e => { const g = Domain.episodeState(p, e, _online()).reviewGate; return g !== 'pass' && g !== 'unready'; });
     switch (key) {
       case 'prod': case 'script': case 'eps': case 'director': case 'shell': case 'clips': return '#/project/' + p.id;
       case 'subjects': return '#/project/' + p.id + '/roles';

@@ -577,7 +577,7 @@
     if (counts.unconfirmed && counts.done === counts.total && counts.total > 0) bl(EPB.unconfirmed, counts.unconfirmed + ' 镜待确认');
     const reviewStale = D.reviewStaleByScript(ep); // 剧本/图谱修订或镜头重抽后旧审片记录判旧
     const reviewAvg = !reviewStale && ep.lastReview && typeof ep.lastReview.avg === 'number' ? ep.lastReview.avg : null; // 判旧的旧分不再卡 needs_human(旧版语义由展示层承接)
-    /* 分集级审片门槛(单源:主线 review 步与问题中心的分集审片条目同读这一份,两处不各设一道门)。
+    /* 分集级审片门槛(单源:凡是"这一集该不该去审"的判断都读这一份,消费方不各设一道门)。
      * 先判这一集当下能不能审:缺正文 / 未拆镜 / 分镜判旧时整集审片无从谈起——哪怕手上还留着一份报告,
      * 那份审的也不是当前分镜表,主线断点落在上游那几步,审片这一步不对它出结论(档位记 unready)。
      * 门槛与本函数 status 的可达性同一条:needs_human 只在这三关都过了之后才可能命中。
