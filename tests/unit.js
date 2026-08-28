@@ -5197,6 +5197,101 @@ const contractTests = [
     list.forEach(it => assertEq(bodies.filter(([, s]) => s.includes(it.def)).map(([rel]) => rel).join(','), 'js/prompts.js',
       it.key + ' 的提示词字面应只剩注册表一份(全仓持有者名单逐字节比对)'));
   } },
+  { name: '项目实验台两步人设:两条独立键 planner.chatSystem / trans.localizeSystem,缺省逐字节等于收编前的内联字面', fn() {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'proj-planner.js'), 'utf8');
+    // 收编前写死在 AI 策划对话那步 system 前半的字面:缺省逐字节不得变
+    const CHAT = '你是资深短剧策划/编剧,擅长短剧节奏、悬念设计与人物塑造,回答务实具体、中文输出。';
+    assertEq(Prompts.get('planner.chatSystem'), CHAT, '策划对话的缺省人设句应与收编前的内联字面逐字节相同');
+    const chatItem = Prompts.list().find(x => x.key === 'planner.chatSystem');
+    assert(chatItem && !chatItem.vars.length && chatItem.name.startsWith('AI 策划对话') && chatItem.name.includes('系统人设'),
+      '注册表应登记策划对话人设条目(无变量,可在全局默认值页在线改写)');
+    // 项目实况那一段仍由取值口现拼:人设句 + 「当前项目信息:」+ ctxOf(),覆盖只换前一段
+    assertEq(Prompts.get('planner.chatSystem', { 'planner.chatSystem': '你是策划顾问(覆盖生效)。' }) + '当前项目信息:\n',
+      '你是策划顾问(覆盖生效)。当前项目信息:\n', '覆盖只换人设句:其后的项目信息段头逐字节不变');
+    /* 译制那步:契约半(第 5 条分集标记)留成取值口常量,从源码现取拼回去应与收编前那一整条逐字节相同 */
+    const m = src.match(/const TRANS_CONTRACT = '([^']*)';/);
+    assert(m, 'js/proj-planner.js 应把译制契约半留成取值口常量 TRANS_CONTRACT');
+    const CONTRACT = m[1].replace(/\\n/g, '\n');
+    const TGT = { name: '欧美(英语)', lang: '口语化美式英语' };
+    assertEq(Prompts.fill('trans.localizeSystem', { market: TGT.name, lang: TGT.lang }) + CONTRACT,
+      `你是资深短剧出海本土化译制专家,目标市场:${TGT.name}。这不是直译而是本土化译制,要求:
+1. 人名本地化:把中文人名替换为目标市场本土人名(如 陈默→Ethan 式),全文保持一致
+2. 台词口语化、俚语化,符合目标市场受众表达习惯,使用${TGT.lang}
+3. 文化梗替换:本土文化梗替换为目标市场受众能共鸣的梗
+4. 保留分集结构与爽点节奏(钩子/反转/打脸点位置不变)
+5. 保留「第X集」分集标记,每集开头必须有,供程序按标记拆分`,
+      '译制缺省整条(人设与四条本土化要求 + 契约半)应与收编前逐字节相同');
+    const trItem = Prompts.list().find(x => x.key === 'trans.localizeSystem');
+    assert(trItem && trItem.name.startsWith('剧本译制') && trItem.name.includes('系统人设'),
+      '注册表应登记剧本译制人设条目(可在全局默认值页在线改写)');
+    assertEq(trItem.vars.join(','), '{market},{lang}', '目标市场与语言两处现拼值应登记成变量(Prompts.fill 填)');
+    trItem.vars.forEach(v => assert(trItem.def.includes(v), 'def 里应有登记的占位符 ' + v + '(登记了却填不到即红)'));
+    /* 两键而不共用一个键:两条 def 字面不同(def 相同才谈得上共用),且各自恰好命中注册表一条 */
+    assert(Prompts.get('planner.chatSystem') !== Prompts.get('trans.localizeSystem'),
+      '两步 def 字面不同,故两条独立键(字面相同才谈得上共用一个键)');
+    [CHAT, trItem.def].forEach(d => assertEq(Prompts.list().filter(x => x.def === d).length, 1, '该人设句应恰好命中注册表一条'));
+    Prompts.list().forEach(x => assert(x.key === 'planner.chatSystem' || x.def !== CHAT, '策划人设不得与既有键 ' + x.key + ' 同字面'));
+    // 注册表里同 def 的键仍只许是音色推荐那一组:本槽两键合成一键、或与既有键撞字面都当场红
+    const byDef = {};
+    Prompts.list().forEach(x => { (byDef[x.def] = byDef[x.def] || []).push(x.key); });
+    assertEq(Object.values(byDef).filter(v => v.length > 1).map(v => v.join('+')).join(','),
+      'voice.recommendSystem+voice.recommendBatchSystem', '注册表里同 def 的键只许是音色推荐那一组');
+    /* 契约半不开放:分集标记那一条仍留在取值口,注册表里不该出现它(改坏即整轮译制一集都写不回) */
+    ['第X集', '供程序按标记拆分'].forEach(f =>
+      assertEq(Prompts.list().filter(x => x.def.includes(f)).length, 0, '分集标记契约不进注册表:' + f));
+    // 覆盖不串台:写这两条时同板块相邻键与既有人设逐字节不动
+    const OV = { 'planner.chatSystem': '你是策划顾问(覆盖生效)。', 'trans.localizeSystem': '你是译制专家(覆盖生效),市场 {market}。' };
+    assertEq(Prompts.fill('trans.localizeSystem', { market: TGT.name, lang: TGT.lang }, OV),
+      '你是译制专家(覆盖生效),市场 欧美(英语)。', '覆盖后变量仍照登记的占位符填');
+    ['light.system', 'dirset.system', 'dist.copySystem', 'agent.system'].forEach(k =>
+      assertEq(Prompts.get(k, OV), Prompts.get(k), '覆盖本槽两键时 ' + k + ' 应逐字节不动'));
+    /* 展示顺序按产品流程:两步都在项目实验台围着剧本正文做(诊断改写/出海译制),排在剧本板块四步之后、导演设定之前 */
+    const keys = Prompts.list().map(x => x.key);
+    assertEq(keys[keys.indexOf('light.system') + 1], 'planner.chatSystem', '策划对话应紧接剧本板块四步之后登记');
+    assertEq(keys[keys.indexOf('planner.chatSystem') + 1], 'trans.localizeSystem', '剧本译制应紧接策划对话之后登记');
+    assert(keys.indexOf('trans.localizeSystem') < keys.indexOf('dirset.system'), '两键应排在导演设定生成之前');
+    ['planner.chatSystem', 'trans.localizeSystem'].forEach(k =>
+      assert(Skills.byId('core.personaCtx').prompts.includes(k), 'SK-03 应登记 ' + k));
+  } },
+  { name: '项目实验台两步人设(源级):js/proj-planner.js 零内联、两处取值口与各自 user 半锚点配对,SK-03 记账点名落点', fn() {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'proj-planner.js'), 'utf8');
+    /* 取值口与各步锚点配对:键挪到另一步上即红。两处都是就地 Prompts.get/fill(浏览器隐式读 Store 覆盖表),
+     * 有意不提到模块顶层——顶层求值会把覆盖表冻在加载那一刻,用户改完当轮不生效。 */
+    assert(/content: Prompts\.get\('planner\.chatSystem'\) \+ '当前项目信息:\\n' \+ ctxOf\(\)[\s\S]{0,400}billingAction: 'llm\.agent'/.test(src),
+      '策划对话步应就地经 Prompts.get 取人设、其后现拼项目信息段,且与该步计费动作配对');
+    assert(/content: Prompts\.fill\('trans\.localizeSystem', \{ market: tgt\.name, lang: tgt\.lang \}\) \+ TRANS_CONTRACT[\s\S]{0,600}请对以下剧本进行本土化译制/.test(src),
+      '译制步应就地经 Prompts.fill 按目标市场/语言填值、其后拼契约半,且与该步 user 半锚点配对');
+    // 全文恰好两处取值口,且都在弹窗函数体内:模块顶层预取会把覆盖表冻在加载那一刻,用户改完当轮不生效
+    assertEq((src.match(/Prompts\.(get|fill)\(/g) || []).length, 2, 'js/proj-planner.js 应恰好两处取值口(多一处即有人预取或抄了第二份)');
+    assert(src.indexOf('Prompts.') > src.indexOf('function openPlanner'), '模块顶层不得预取提示词(覆盖表会被冻在加载那一刻)');
+    /* 契约半为什么不开放:「第X集」标记就是「应用译制结果」那步拆分的判据,两侧必须同集(改一侧即红) */
+    const contract = (src.match(/const TRANS_CONTRACT = '([^']*)';/) || [])[1] || '';
+    assert(contract.includes('第X集') && contract.includes('供程序按标记拆分'), '契约半应写明分集标记与它的用途');
+    const splitRe = src.match(/result\.split\((\/.+\/i)\)/);
+    assert(splitRe, 'js/proj-planner.js 应有「应用译制结果」按分集标记拆分的正则');
+    const parts = '第1集 开场\n正文\n第2集 反转\n正文'.split(vm.runInThisContext(splitRe[1])).filter(Boolean);
+    assertEq(parts.length, 2, '契约半要求的「第X集」标记应正是解析侧那条正则认得的(两侧同集)');
+    // 本槽收这两处,收完这个文件就零内联人设了:退回内联当场红
+    assertEq((src.match(/你是/g) || []).length, 0, 'js/proj-planner.js 不应再有内联人设字面(覆盖不会跟过去)');
+    // 纯浏览器链路:两步都没有服务端/CLI 对端,那两处不得长出第二份 user 半
+    ['server.js', 'cli.js'].forEach(rel => {
+      const s = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      assert(!s.includes('请对以下剧本进行本土化译制') && !s.includes('当前项目信息:'),
+        rel + ' 不应出现这两步的 user 半(项目实验台只在浏览器)');
+    });
+    const sk3 = Skills.byId('core.personaCtx');
+    ['planner.chatSystem', 'trans.localizeSystem', 'js/proj-planner.js'].forEach(k =>
+      assert(sk3.note.includes(k), 'SK-03 的 note 须写明这两步的收编落点:' + k));
+    assert(sk3.note.includes('零内联人设'), 'SK-03 的 note 须写明该文件至此零内联');
+    // 契约半有意不收:写在「仍欠」段里才算交账(写在"已落地"那半不算)
+    const owed = (sk3.note || '').split('仍欠').slice(1).join('仍欠');
+    ['TRANS_CONTRACT', '第X集'].forEach(k => assert(owed.includes(k), 'SK-03 的仍欠段须点名译制契约半:' + k));
+    assertEq(Skills.validate({ Prompts }).join(' | '), '', '新键须被 skill 索引引用且引用键都存在');
+  } },
   { name: 'Agent 单轮人设:经 WfCore.buildAgentSystem(agent.system) 取值,缺省逐字节等于收编前的模板串', fn() {
     const Prompts = require('../js/prompts.js');
     const Skills = require('../js/skills.js');
@@ -5492,12 +5587,12 @@ action 二选一:
      * G-13 的余量到此有了唯一判据——不再只是散文里的一个数字(口径与例外见 inlinePersonaHolders 注释) */
     const holders = inlinePersonaHolders();
     assertEq(holders.join(' '),
-      'js/agent-global.js:1 js/agent-ops.js:2 js/experts.js:2 js/plans.js:1 js/proj-planner.js:2 '
+      'js/agent-global.js:1 js/agent-ops.js:2 js/experts.js:2 js/plans.js:1 '
       + 'js/proj-upload.js:1 js/role-editor.js:1 js/sb-views.js:1',
       '全仓内联人设持有者名单(文件:处数)');
     assert(!holders.some(x => x.startsWith('js/beatboard.js:')), 'js/beatboard.js 应已退出持有者名单(本处已收编)');
-    assertEq(holders.length, 8, '持有者文件数');
-    assertEq(holders.reduce((n, x) => n + Number(x.split(':')[1]), 0), 11, '全仓内联人设处数');
+    assertEq(holders.length, 7, '持有者文件数');
+    assertEq(holders.reduce((n, x) => n + Number(x.split(':')[1]), 0), 9, '全仓内联人设处数');
   } },
   { name: '漫剧气泡对白人设:经 Prompts.get(comic.bubbleSystem) 取值,缺省逐字节等于收编前的内联字面', fn() {
     const Prompts = require('../js/prompts.js');
@@ -5542,12 +5637,12 @@ action 二选一:
       .filter(x => x[1]).map(x => x[0] + ':' + x[1]);
     assertEq(census.join(' '), [
       'js/agent-global.js:1', 'js/agent-ops.js:2', 'js/api.js:2', 'js/experts-data.js:16', 'js/experts.js:2',
-      'js/gsettings.js:1', 'js/plans.js:1', 'js/proj-planner.js:2', 'js/proj-upload.js:1',
-      'js/prompts.js:28', 'js/role-editor.js:1', 'js/sb-views.js:1', 'js/wf-core.js:1',
+      'js/gsettings.js:1', 'js/plans.js:1', 'js/proj-upload.js:1',
+      'js/prompts.js:30', 'js/role-editor.js:1', 'js/sb-views.js:1', 'js/wf-core.js:1',
     ].join(' '), '全仓人设字面持有者名单(逐文件计数)');
     assert(!census.some(x => x.startsWith('js/editors.js:')), 'js/editors.js 收编后应已不在持有者名单上');
-    assertEq(Prompts.list().filter(x => x.def.startsWith('你是')).length, 28,
-      '名单里 js/prompts.js 那 28 处就是注册表 def 本身(注册表条数变了这张名单也要跟着改)');
+    assertEq(Prompts.list().filter(x => x.def.startsWith('你是')).length, 30,
+      '名单里 js/prompts.js 那 30 处就是注册表 def 本身(注册表条数变了这张名单也要跟着改)');
   } },
   { name: '审片升为主线一等步骤(G-03):板块 Agent 有审片席;plans/工作区/CLI 都映射 episode.smartReview', fn() {
     const D = require(path.join(ROOT, 'js/domain.js'));

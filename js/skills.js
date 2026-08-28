@@ -885,7 +885,8 @@
       prompts: ['split.system', 'extract.system', 'digest.planSystem', 'graph.system', 'sb.boardSceneSystem', 'sb.boardDraftSystem', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem',
         'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem',
         'narration.system', 'reading.system', 'concept.system', 'light.system',
-        'voice.recommendSystem', 'voice.recommendBatchSystem', 'comic.bubbleSystem', 'dirset.system', 'dist.copySystem'],
+        'voice.recommendSystem', 'voice.recommendBatchSystem', 'comic.bubbleSystem', 'dirset.system', 'dist.copySystem',
+        'planner.chatSystem', 'trans.localizeSystem'],
       cmds: ['episode.understanding', 'episode.generateStoryboard', 'episode.smartReview'], gaps: ['G-01'],
       note: 'G-01 已落地:服务端 /api/wf/* 各端点经唯一装配口 wfPersonaNote 注入生效人设(板块雇佣 > 全局雇佣),'
         + '浏览器同装配口;infra 面的 pending 已按实况清空(gaps() 只投影 gaps 字段、不看 pending,清账动不到投影),'
@@ -925,11 +926,18 @@
         + '剧壳发行文案包那步(js/proj-shell.js 的 AI 文案包)的人设句同形收编为 dist.copySystem,'
         + '取值口经 Prompts.get,其后按键接的 KB 钩子六型+付费卡点仍由取值口现拼(方法论正文不随覆盖变动),'
         + '同为纯浏览器链路的一个消费点。'
+        + '项目实验台两步(js/proj-planner.js 的 AI 策划对话/剧本译制)的人设句同形收编为两条独立键'
+        + '(planner.chatSystem/trans.localizeSystem——两处 def 字面不同,故不共用一个键),'
+        + '策划那步取值口经 Prompts.get、其后的「当前项目信息:」上下文仍由取值口现拼,'
+        + '译制那步经 Prompts.fill 按 {market}/{lang} 填目标市场与语言;'
+        + 'js/proj-planner.js 至此零内联人设,两键同为纯浏览器链路的一个消费点。'
         + '仍欠:四处的 ops 协议/字段面/命令白名单/返回 JSON 约定仍由各自装配口拼、不开放覆盖'
         + '(那半是 ops 解析契约,用户改坏即整轮无 ops);'
         + '音色推荐两条同理只收人设句——音色库取值范围与返回 JSON 约定仍写在各自调用点、不开放覆盖'
         + '(用户改坏即推荐值落不回音色库,只能退随机);'
         + '漫剧气泡那处同口径——返回 JSON 形状与 type 词表是解析判据,同样只收人设句不开放契约半;'
+        + '剧本译制那处同口径——「第X集」分集标记是「应用译制结果」按标记拆分的判据,'
+        + '那一条留在取值口常量 TRANS_CONTRACT、不开放覆盖(用户改坏即整轮译制一集都写不回);'
         + '该步也不过本条的 ctx 通道(编辑器工具步不注入生效人设与协作记忆,只是人设句进了注册表);'
         + '多轮那三份与音色推荐两份都没有 Node 第二消费点,两端只落在取值口'
         + '(同一注册表键 + Prompts.get 读覆盖),不是两个消费点',

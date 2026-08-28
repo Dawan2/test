@@ -64,7 +64,7 @@
             const out = await API.chat({
               model,
               messages: [
-                { role: 'system', content: '你是资深短剧策划/编剧,擅长短剧节奏、悬念设计与人物塑造,回答务实具体、中文输出。当前项目信息:\n' + ctxOf() },
+                { role: 'system', content: Prompts.get('planner.chatSystem') + '当前项目信息:\n' + ctxOf() },
               ].concat(p.plannerChat.slice(-20).map(x => ({ role: x.role, content: x.text }))),
               temperature: 0.7, max_tokens: 2500,
               billingAction: 'llm.agent', operationId: plOpId,
@@ -117,6 +117,9 @@
       { id: 'sea', name: '东南亚(英语)', lang: '简单地道的英语口语(东南亚受众)' },
       { id: 'jp', name: '日韩(日语)', lang: '日语' },
     ];
+    /* 译制人设的契约半:「第X集」分集标记就是下面「应用译制结果」按标记拆分的判据,故留在取值口不开放覆盖
+     * (改坏即整轮译制结果一集都写不回);措辞与四条本土化要求走注册表键 trans.localizeSystem,用户在「全局默认值 → 核心提示词 skill」改得到 */
+    const TRANS_CONTRACT = '\n5. 保留「第X集」分集标记,每集开头必须有,供程序按标记拆分';
     let target = 'en', result = '';
     U.openModal({
       title: '🌐 剧本译制 · ' + p.name,
@@ -144,15 +147,7 @@
             const out = await API.chat({
               model,
               messages: [
-                {
-                  role: 'system',
-                  content: `你是资深短剧出海本土化译制专家,目标市场:${tgt.name}。这不是直译而是本土化译制,要求:
-1. 人名本地化:把中文人名替换为目标市场本土人名(如 陈默→Ethan 式),全文保持一致
-2. 台词口语化、俚语化,符合目标市场受众表达习惯,使用${tgt.lang}
-3. 文化梗替换:本土文化梗替换为目标市场受众能共鸣的梗
-4. 保留分集结构与爽点节奏(钩子/反转/打脸点位置不变)
-5. 保留「第X集」分集标记,每集开头必须有,供程序按标记拆分`,
-                },
+                { role: 'system', content: Prompts.fill('trans.localizeSystem', { market: tgt.name, lang: tgt.lang }) + TRANS_CONTRACT },
                 { role: 'user', content: '请对以下剧本进行本土化译制,直接输出译制后的完整剧本,不要输出解释:\n\n' + src.slice(0, 12000) },
               ],
               temperature: 0.7, max_tokens: 8000,
