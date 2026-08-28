@@ -4031,6 +4031,42 @@ function releaseReadyEp(over) {
   return Object.assign({ id: 'ep1', title: '第一集', content: '剧本正文', shots: [s],
     lastReview: { avg: 8, perShot: [{ shotId: 'sh0', order: 0, score: 8 }] } }, over || {});
 }
+/* 交付包落地面:装真 js/ziputil.js 与最小下载桩,数得清"用户到手几个文件、每个文件里装的是什么"。
+ * urlFail 让第 N 次 URL.createObjectURL 抛错(N 从 1 起),用来走 downloadReleaseZip 的兜底那条路。 */
+function loadReleaseZip(urlFail) {
+  const sb = loadRelease();
+  sb.TextEncoder = TextEncoder;
+  sb.Blob = function (parts, opt) { this.parts = parts; this.type = opt && opt.type; };
+  sb.__clicks = [];
+  const blobs = new Map();
+  let n = 0;
+  sb.URL = {
+    createObjectURL(b) {
+      if (++n === urlFail) throw new Error('createObjectURL 不可用');
+      const u = 'blob:' + n; blobs.set(u, b); return u;
+    },
+    revokeObjectURL() {},
+  };
+  sb.document.createElement = () => {
+    const a = { href: '', download: '', click() { sb.__clicks.push({ name: a.download, blob: blobs.get(a.href) }); } };
+    return a;
+  };
+  loadFile(sb, 'ziputil.js');
+  return sb;
+}
+/* 逐个 local file header 往下走,读出 zip 里的条目名(STORE 无压缩,不必解压) */
+function zipEntries(bytes) {
+  const u16 = i => bytes[i] | (bytes[i + 1] << 8);
+  const u32 = i => (bytes[i] | (bytes[i + 1] << 8) | (bytes[i + 2] << 16) | (bytes[i + 3] << 24)) >>> 0;
+  const out = [];
+  let pos = 0;
+  while (pos + 30 <= bytes.length && u32(pos) === 0x04034b50) {
+    const size = u32(pos + 18), nl = u16(pos + 26), el = u16(pos + 28);
+    out.push(new TextDecoder().decode(bytes.slice(pos + 30, pos + 30 + nl)));
+    pos += 30 + nl + el + size;
+  }
+  return out;
+}
 const releaseTests = [
   { name: 'collect:齐备项目 overall=pass(score 10-1 警告门=9;因为 G10 账目离线只 warn 1 条,cond-pass 或 pass 取决于 warn 数)', fn() {
     const sb = loadRelease();
@@ -4520,6 +4556,37 @@ const releaseTests = [
     assertEq(emitters.join(','), 'release.js', 'release.dirty 只此一个发出点');
     const subs = jsFiles.filter(f => /Bus\.on\(\s*'release\.dirty'/.test(fs.readFileSync(path.join(ROOT, 'js', f), 'utf8')));
     assertEq(subs.join(','), '', 'release.dirty 至今零订阅者;有人开始订阅时重新掂量那处 catch——届时吞掉注册才真有下游丢东西');
+  } },
+  /* 打包交付一次只该给用户一个文件。基线在真下载之前先 ZipUtil.download 了一份只装 PLACEHOLDER 空条目的 zip
+   * ("先占位触发下载"),于是每次打包实得两个 zip、其中一个是空的——同名同后缀,浏览器还会给第二个加 (1)。 */
+  { name: 'downloadReleaseZip:一次打包只落一个文件,内容就是 buildReleaseZip 打好的那一份(不再先落一个空 zip)', fn: async () => {
+    const sb = loadReleaseZip();
+    sb.fetch = async () => ({ ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer });
+    const ep = releaseReadyEp({ composed: '/uploads/v1.mp4', composedSrt: '1\n00:00:00,000 --> 00:00:05,000\n台词\n' });
+    const p = { id: 'p1', name: '剧', __ver: 3, subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [ep] };
+    const r = await sb.Release.downloadReleaseZip(p);
+    assertEq(sb.__clicks.length, 1, '用户到手的文件数(基线先落一个 PLACEHOLDER 空 zip,实得两个)');
+    assertEq(sb.__clicks[0].name, '交付包_剧_v3.zip');
+    const bytes = sb.__clicks[0].blob.parts[0];
+    assertEq(bytes.length, r.bytes.length, '落地的就是 buildReleaseZip 那份 bytes,不是另打的第二个包');
+    const names = zipEntries(bytes);
+    assertEq(names.join(','), ['videos/1_第一集.mp4', 'subtitles/1_第一集.srt', 'storyboard/1_第一集/shot_1_提示词.txt',
+      'storyboard/1_第一集/分镜表.csv', 'storyboard/1_第一集/README.txt', 'project_meta.json', 'README.txt'].join(','),
+    '落地清单应逐条等于打包清单');
+    assertEq(names.length, r.files, 'toast 报的文件数与真落地的条目数同一个口径');
+    assert(sb.__toasts.some(t => t.includes('交付包已下载:7 个文件,1/1 集成片')), '成功提示:' + JSON.stringify(sb.__toasts));
+  } },
+  /* 兜底那条路是"换一种落地方式",不是"再多落一个文件":对象 URL 走不通时只该有那一个兜底包到手。
+   * 基线在这一路上直接抛出去(占位那次下载先撞上失败,而它不在 try 里),打包按钮报"打包失败"而包早就打好了。 */
+  { name: 'downloadReleaseZip:对象 URL 那条路失败时走兜底重打,仍只落一个文件且不冒充交付包', fn: async () => {
+    const sb = loadReleaseZip(1);
+    const ep = releaseReadyEp({ composedSrt: '1\n00:00:00,000 --> 00:00:05,000\n台词\n' });
+    const p = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [ep] };
+    const r = await sb.Release.downloadReleaseZip(p);
+    assertEq(sb.__clicks.length, 1, '兜底不叠加下载');
+    assertEq(sb.__clicks[0].name, '交付包_剧_v0.zip');
+    assertEq(zipEntries(sb.__clicks[0].blob.parts[0]).join(','), 'project_meta.json', '兜底包只放那张"请重新打包"的说明');
+    assertEq(r.files, 6, '返回值仍按真交付包的口径报(兜底只换落地方式,不改打包结果)');
   } },
 ];
 
@@ -7804,7 +7871,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 520, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 522, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 141, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -7940,7 +8007,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 166;
+    const FLOOR = 167;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
