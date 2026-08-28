@@ -6740,6 +6740,27 @@ action 二选一:
     });
     assertEq(missing.join(' / '), '', '目录内相对链接不许悬空');
   } },
+  { name: 'docs/skills-wave 索引完备性:记账件份数由 README 明写并与目录/索引表三方对齐,且只增不减', fn() {
+    /* 上一条按份点名只遍历"目录里还在的文件",文件与索引行一起消失(漏合、或只合到父提交)时它一份都不遍历,
+     * 只剩"别处散文用 markdown 链接点过它"这一层兜着——而记账件里有三十余份只有索引行这一处链接。
+     * 这里立第三份不随目录与索引表一起消失的记录:README 明写的份数与用例里钉住的下限,判据不含任何"别处链过"的条件。 */
+    const dir = path.join(ROOT, 'docs', 'skills-wave');
+    const waves = fs.readdirSync(dir).filter(f => /^w\d+-.+\.md$/.test(f)).sort();
+    const src = fs.readFileSync(path.join(dir, 'README.md'), 'utf8');
+    const rows = [...src.matchAll(/^\| \[[^\]]+\]\(\.\/([^)]+)\)/gm)].map(m => m[1]).filter(f => /^w\d+-/.test(f));
+    const decl = src.match(/索引表共 (\d+) 份记账件/);
+    assert(decl, 'docs/skills-wave/README.md 应明写「索引表共 N 份记账件」(目录实况与索引表之外的第三份记录)');
+    const declared = +decl[1];
+    assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
+    assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
+    // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
+    const FLOOR = 117;
+    assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
+    assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
+    // 逐份点名同样再走一遍:本条自足,不借道散文链接
+    const indexed = new Set(rows);
+    waves.forEach(f => assert(indexed.has(f), '记账件 ' + f + ' 不在目录 README 索引表里(每份各要有自己那一行,与别处是否链过无关)'));
+  } },
 ];
 
 /* ================= 套件 18:tasks.js(任务中心:§3.1 桌面通知/标题角标,§3.2 进度模型) ================= */
