@@ -5209,10 +5209,14 @@ const contractTests = [
     assert(it.shotIds && it.shotIds.length, '夹具须真的摊出非空子集(空面上"恒等"是恒真的)');
     assertEq(JSON.stringify(it.shotIds), JSON.stringify(Domain.reviseShotIds(ep)),
       '问题中心给出的子集须逐项等于那一份派生(达标/定稿/已删镜与实位序都由它判)');
-    /* "空子集等于整集"不是本层自定的口径,是命令层子集过滤的实况:它变了,空面那条纪律要跟着改 */
-    const cmds = fs.readFileSync(path.join(ROOT, 'js', 'commands.js'), 'utf8');
-    assert(/Array\.isArray\(args\.shotIds\) && args\.shotIds\.length/.test(cmds),
-      '命令层的子集位仍是"空数组即整集";问题中心因此在空重抽面上不出 shotIds');
+    /* "空子集等于整集"不是本层自定的口径,是两端子集过滤的实况:逐个取数点点名(只判"某处出现过这个写法"
+     * 拦不住其中一处被改——两处里改掉一处,那一句照旧命中另一处)。它哪天变了,空面那条纪律要跟着改。 */
+    [['js/commands.js', path.join(ROOT, 'js', 'commands.js')], ['cli.js', path.join(ROOT, 'cli.js')]].forEach(([rel, abs]) => {
+      const hits = [...fs.readFileSync(abs, 'utf8').matchAll(/Array\.isArray\(args\.shotIds\)([\s\S]{0,26})/g)];
+      assert(hits.length, rel + ' 找不到 shotIds 子集位的取数点(挪窝或改名就同轮改这里,别把本条留成恒真)');
+      hits.forEach(m => assert(m[1].startsWith(' && args.shotIds.length'),
+        rel + ' 的 shotIds 子集位应仍是"空数组即整集";问题中心因此在空重抽面上不出这个字段,实际:' + JSON.stringify(m[0])));
+    });
   } },
   { name: 'SK-25 记账两向对账(G-03):收敛面已落地要记进已落地那半、形态面仍欠不许抹,两半互串都红', fn() {
     /* W136 给这条立的护栏钉的是"两个余面都还欠着";本槽收敛面落地(Domain.reviseRetryLimit 双端单源),
