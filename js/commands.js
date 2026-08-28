@@ -167,10 +167,21 @@
   reg('episode.smartReview', { label: '智能审片' }, ({ p, ep, args }) => metered(REG['episode.smartReview'], async () => {
     if (!window.Review || !window.SB || !SB.autoSmartReview) return fail('unavailable', '审片模块未加载');
     ensureSBCfg(p, ep);
-    // shotIds 子集复审(与 CLI/服务端同参):修订重抽后只复检指定镜
-    const shots = Array.isArray(args.shotIds) && args.shotIds.length ? (ep.shots || []).filter(s => args.shotIds.includes(s.id)) : ep.shots;
+    // shotIds 子集复审(与 CLI/服务端同参):修订重抽后只复检指定镜(点名清单按镜去重,重复 id 指的是同一镜)
+    const picked = Array.isArray(args.shotIds) && args.shotIds.length ? [...new Set(args.shotIds)] : null;
+    const shots = picked ? (ep.shots || []).filter(s => picked.includes(s.id)) : ep.shots;
     const r = await SB.autoSmartReview(p, ep, sinkOf(args), shots, args.ui ? false : args.quiet !== false, args.maxRetry);
     const out = ok(r);
+    /* 一镜也没审仍是 ok(全定稿/未出片的集点「整集审片」不该报拦截),但回执得说清为什么是 0 镜:
+     * 可审镜为 0 时引擎一次都没起来——既没有后台面板也没有完成提示,静默会让「一镜也没审」与「审完了」
+     * 在用户眼里一模一样(发布门 G3 处置、流程条审片步按下去零反应)。这句话经 result.note 交给 digest 播报。
+     * 判 0 取引擎自己数的 r.targets,本层不另写一遍"可审镜"筛法;headless 那一端同一档由服务端
+     * /api/wf/smart-review 直接 400 点名回绝(回执形态本就不同),故这句话只此一份,不进 Domain。 */
+    if (r && !r.targets) {
+      out.result.note = picked
+        ? '点名的 ' + picked.length + ' 镜一镜也没审:可审的镜需已出片、非终稿且在本集'
+        : '本集没有可审的镜头,一镜也没审:可审的镜需已出片、非终稿';
+    }
     if (r && r.manual > 0) out.status = 'needs_human'; // 待人工镜头:质量闸门语义,produce/跑批据此阻断合成
     out.next = nextOf(p, ep);
     return out;
