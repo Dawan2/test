@@ -248,7 +248,8 @@
         if (r && r.ok) {
           st.status = 'done';
           const z = r.result || {};
-          st.note = (r.cost ? '-' + r.cost + '积分' : '') + ((z.total !== undefined && z.total !== null) ? ` ${z.ok}/${z.total}` : '');
+          // fresh:命令层判定产物已是最新、原地返回没重跑——这一步"完成"了但一分钱没花,得说出来
+          st.note = (r.cost ? '-' + r.cost + '积分' : '') + (z.fresh ? '已是最新,未重跑' : '') + ((z.total !== undefined && z.total !== null) ? ` ${z.ok}/${z.total}` : '');
         } else if (r && r.status === 'needs_human') { st.status = 'blocked'; st.note = (r.error && r.error.message) || '待人工处理'; }
         else if (r && r.status === 'blocked' && ['cancelled', 'compliance-declined', 'human-review'].includes(code)) { st.status = 'pending'; st.note = '已取消,可重新执行'; }
         else { st.status = 'failed'; st.note = (r && r.error && r.error.message) || '执行失败'; }
