@@ -4994,6 +4994,43 @@ function reportBlockHeads(rel) {
   assert(found.length > 0, rel + ':点不到 report(...) 调用');
   return found;
 }
+/* 还原套件 main() 自己那一层的控制流:在抹码后的骨架上定位 main 的函数体,逐字符走到它的
+ * 收尾花括号,途中把嵌套函数体(箭头体 / `function` 体 / 具名方法体)里的东西一概略过——
+ * 那里面的 return 归它们自己,不是 main 提前收场。返回 main 直属的退出点
+ * (`return` / `throw` / `process.exit(`)与登记点(`report(`),各带行号、字符偏移与原句。
+ * 判"是不是函数体"有意保守:认不出来就当普通块,里头的 return 照算 main 的——
+ * 认错方向落在多报一条(当场红)那一侧,不落在静默放行那一侧。 */
+function mainOwnFlow(rel) {
+  const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+  const code = blankNonCode(src);
+  const CTRL = /^(?:if|for|while|switch|catch|do|else|try|finally|with|await)$/;
+  const isFnBody = h => {
+    const t = h.trim();
+    if (/=>\s*\{$/.test(t) || /(?:^|[^\w$])function(?![\w$])/.test(t)) return true;
+    const m = t.match(/(?:^|[^\w$])([\w$]*)\s*\([^()]*\)\s*\{$/);
+    return !!m && !CTRL.test(m[1]);
+  };
+  const at = code.search(/(?:^|\n)(?:async\s+)?function\s+main\s*\(\s*\)\s*\{/);
+  assert(at >= 0, rel + ':找不到 main() 主流程入口(套件把主流程改名或改了形状就同轮改这条判据,别把它留成恒真)');
+  const start = code.indexOf('{', at);
+  const at2line = i => (code.slice(0, i).match(/\n/g) || []).length + 1;
+  const lineText = i => src.slice(src.lastIndexOf('\n', i) + 1, (src.indexOf('\n', i) + 1 || src.length + 1) - 1).trim();
+  const stack = [], exits = [], reports = [];
+  let closed = false;
+  for (let i = start + 1; i < code.length; i++) {
+    const c = code[i];
+    if (c === '{') { stack.push(isFnBody(src.slice(src.lastIndexOf('\n', i) + 1, i + 1))); continue; }
+    if (c === '}') { if (!stack.length) { closed = true; break; } stack.pop(); continue; }
+    if (stack.some(Boolean) || /[\w$.]/.test(code[i - 1] || '')) continue;
+    const kw = /^(?:return|throw)(?![\w$])/.exec(code.slice(i, i + 7));
+    if (kw) exits.push({ kind: kw[0], at: i, line: at2line(i), text: lineText(i) });
+    else if (code.startsWith('process.exit(', i)) exits.push({ kind: 'process.exit(', at: i, line: at2line(i), text: lineText(i) });
+    else if (code.startsWith('report(', i)) reports.push({ at: i, line: at2line(i) });
+  }
+  assert(closed, rel + ':main() 的函数体没有收尾(抹码扫描失准,本断言不可信)');
+  assert(reports.length > 0, rel + ':main() 里点不到 report(...) 登记点');
+  return { exits, reports };
+}
 const contractTests = [
   { name: 'Issues.collect 返回数组(发布门 G2 的消费契约)', fn() {
     const sb = loadContract();
@@ -8097,6 +8134,34 @@ action 二选一:
         '(登记点坐在条件块里,分支不成立时一条都不跑,静态点数就多于实跑条数——而 README 对的是实跑数)');
     });
   } },
+  { name: '集成/冒烟 main 不许中途收场:直属 return 一律不许,throw/process.exit( 只许在登记点两头', fn() {
+    /* 上一条按块链立白名单,只看得见"登记点自己被什么块包着"。而 静态 > 实跑 还有一路它一层块都不留:
+     *   report('甲', …);
+     *   if (process.env.MV_SKIP) return;   // 或 process.exit(0)
+     *   report('乙', …);                    // 往下几十条一条都不跑
+     * 乙的块链仍然只有 main 函数体,四个静态口径、块链四条判据全绿,而实跑当场少掉后半截。
+     * 故本条换判据类别:不看登记点的块链,改看 main 自己那一层的控制流——嵌套 helper 与回调里的
+     * return 归它们自己(测试里到处都是,一律不碰),只点 main 直属的那些。分两点报:
+     *   1. main 直属的 return 一律不许:它是**静默**收场——后半截不跑,末尾那句总数也不跑,
+     *      退出码照样 0,谁也看不出来。要中断就 throw(走 main().catch → FAIL++ / exit 1,大声)。
+     *   2. throw 不许夹在第一条与最后一条登记点之间,process.exit( 更是只许在最后一条之后:
+     *      两个套件今天的合法形状正是这两处——就绪等待失败时 throw 中止(还没登记过一条,
+     *      不产生"文档多于实跑",且退出码非 0)、冒烟末尾按 FAIL 数 process.exit。
+     *      process.exit( 的位置卡得比 throw 严一格,因为 process.exit(0) 摆在前置里同样是静默归零。
+     * 于是静默截断那一路整条封死,漏在外面的只剩"前置里 throw"这一种——它退出码非 0、当场看得出来。
+     * 本条有意**不禁一切 early return**:判据只认 main 这一层,套件里的 helper/回调照写不误。 */
+    [['tests/integration.js', '集成测试'], ['tests/cli.smoke.js', 'CLI 冒烟']].forEach(([rel, label]) => {
+      const { exits, reports } = mainOwnFlow(rel);
+      const first = reports[0].at, last = reports[reports.length - 1].at;
+      const fmt = e => rel + ':' + e.line + '「' + e.text + '」';
+      const rets = exits.filter(e => e.kind === 'return').map(fmt);
+      const mid = exits.filter(e => e.kind !== 'return' && e.at < last && (e.kind === 'process.exit(' || e.at > first)).map(fmt);
+      assertEq(rets.join(' / '), '', label + ':main 自己那一层不许 return(它一声不吭地把后面的 report 全跳过、末尾总数也不打印而退出码仍是 0;' +
+        '确要中断就 throw,让 main().catch 把它记成失败)');
+      assertEq(mid.join(' / '), '', label + ':main 的 throw 不许夹在第一条与最后一条 report(...) 登记点之间、process.exit( 不许早于最后一条' +
+        '(中途退出后面的登记点一条都不跑,静态点数就多于实跑条数;就绪前置那句 throw 与收尾按 FAIL 数的 process.exit 各在两头,不受此限)');
+    });
+  } },
   { name: '三套件用例数只增不减:unit/integration/cli.smoke 各自不低于下限(真删测且把 README 一并改小即红)', fn() {
     /* 上面两条对账钉的是"实测与文档相等",而相等这件事两边一起改小照样成立:真删掉一行 report(...)
      * 再把 README 那个数字改小,那两条一条不红。这里另立一层与相等无关的判据——三个套件各有一个下限,
@@ -8107,7 +8172,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 527, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 528, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 141, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -8243,7 +8308,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 172;
+    const FLOOR = 173;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
