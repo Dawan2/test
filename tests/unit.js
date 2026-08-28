@@ -7223,7 +7223,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 495, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 496, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 130, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -7359,12 +7359,32 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 152;
+    const FLOOR = 153;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
     const indexed = new Set(rows);
     waves.forEach(f => assert(indexed.has(f), '记账件 ' + f + ' 不在目录 README 索引表里(每份各要有自己那一行,与别处是否链过无关)'));
+  } },
+  { name: 'docs/skills-wave 索引行序:索引表按波次号递增排列(同号内不限先后;整行挪位不再只靠人眼看住)', fn() {
+    /* 上面三条钉的全是"哪些行在场",一行也不管"排在哪":把某一行整行搬到表尾,集合相等、按份点名、
+     * 三方对齐与份数下限一条都不红。而合入新记账件时"插回它那个波次的位置"已经人工排过三次,
+     * 全靠评审记性——次序本身没有判据。这里把它立成判据:波次号沿表往下不许倒退。
+     * 判据有意不取「波次号连续」(W105 §2.2 已否掉:未合的号本就空着,连续性会把如实记录判成红),
+     * 也不取"按 git 时间/文件名字典序"(w9 与 w10 的字典序恰好是反的)。同一号下多份记账件的先后不管。 */
+    const dir = path.join(ROOT, 'docs', 'skills-wave');
+    const src = fs.readFileSync(path.join(dir, 'README.md'), 'utf8');
+    const rows = [...src.matchAll(/^\| \[[^\]]+\]\(\.\/([^)]+)\)/gm)].map(m => m[1]);
+    const numbered = rows.map(f => ({ f, m: f.match(/^w(\d+)-/) })).filter(r => r.m);
+    // 取数口不许静默失效:表被挪走或那条正则被改坏时行数当场对不上,本条不许退化成恒真句
+    assertEq(numbered.length, fs.readdirSync(dir).filter(f => /^w\d+-.+\.md$/.test(f)).length,
+      '索引表里取到的 wNN 行数与目录实况对不上(本条的取数口失效,先红在这里)');
+    const bad = [];
+    numbered.forEach((r, i) => {
+      const prev = numbered[i - 1];
+      if (prev && +r.m[1] < +prev.m[1]) bad.push(prev.f + ' 之后排了 ' + r.f);
+    });
+    assertEq(bad.join(' / '), '', '索引表应按波次号递增排列(新记账件插回它那个波次的位置,别追加到表尾;合并取并集时同样按号归位)');
   } },
 ];
 
