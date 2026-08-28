@@ -118,15 +118,25 @@
         return { key: 'film', txt: '🎞 合成成片' };
       case 'stale':
         if (st.action.key === 'reshoot') return { key: 'shots', txt: '🔄 重新拆镜(剧本/图谱已更新)' };
-        if (st.action.key === 'regen-stale') return {
-          key: 'regen-stale', txt: `🔄 重生成过期镜(${c.stale})`,
-          /* 过期 done 镜被所有批量入口(!shotVideoReady 过滤)排除,唯一出口=命令层 shotIds 子集重生成;
-           * 调用方(分集工作区「下一步」按钮)对带 run 的动作直接执行,不再映射批量入口 */
-          run: main => Commands.execute('episode.generateVideos', {
-            pid: p.id, epid: ep.id, main, ui: true,
-            shotIds: (ep.shots || []).filter(s => Domain.shotVideoStale(p, s, _online())).map(s => s.id),
-          }).then(r => Commands.digest(r)),
-        };
+        if (st.action.key === 'regen-stale') {
+          /* 按钮上那个数字印的是这一按真会落到引擎上的镜数,不是过期镜总数:过期镜里已定稿的那几镜,
+           * 两端批量生成都锁着 !s.final 不碰,印总数就是把用户骗去空跑——全是定稿镜时按下去一镜不跑,
+           * 命令层照回 ok(total:0)、digest 对 ok 不出提示,用户连"什么都没发生"都读不到。
+           * 分堆与那句话现取 Domain(与发布门 G4 回执同一份),本层不另写一份判旧、也不另拼一种说法;
+           * 总数照旧挂在流程条与问题中心的 counts.stale 上,尾巴里两堆之和就是它。 */
+          const sp = Domain.staleShotSplit(p, ep, _online());
+          const note = Domain.staleSplitNote(sp.rerun.length, sp.locked.length);
+          return {
+            key: 'regen-stale', txt: `🔄 重生成过期镜${note || '(' + c.stale + ')'}`,
+            /* 过期 done 镜被所有批量入口(!shotVideoReady 过滤)排除,唯一出口=命令层 shotIds 子集重生成;
+             * 子集照旧是全部过期镜(定稿的那几镜由命令层按 !s.final 挡下),收窄成可重跑那堆有两处代价:
+             * 与发布门 G4 的 fix.shotIds 分家,且全是定稿镜时会收窄成空数组——空数组在两端子集位上等于整集。
+             * 调用方(分集工作区「下一步」按钮)对带 run 的动作直接执行,不再映射批量入口 */
+            run: main => Commands.execute('episode.generateVideos', {
+              pid: p.id, epid: ep.id, main, ui: true, shotIds: sp.all,
+            }).then(r => Commands.digest(r)),
+          };
+        }
         return { key: 'film', txt: '🎞 重新合成(已过期)' };
       case 'running': return { key: 'gen', txt: `⏳ 生成中(${c.generating} 镜在飞)` };
       case 'blocked':
