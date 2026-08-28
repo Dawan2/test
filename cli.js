@@ -1273,7 +1273,12 @@ EXEC['subject.generateImage'] = { needs: ['p'], meter: true, run: async (args, f
   const { p } = await execCtx(args, f);
   const ids = Array.isArray(args.subjectIds) && args.subjectIds.length ? new Set(args.subjectIds) : null;
   const todo = (p.subjects || []).filter(s => ids ? ids.has(s.id) : !s.image);
-  if (!todo.length) return execOk({ total: 0, ok: 0, failed: [] });
+  if (!todo.length) {
+    // 待补图主体本来就是空:仍是 ok,但得说清为什么是 0 位(与前端 digest 同读 Domain.emptySubjectImageNote 一份)
+    const note = Domain.emptySubjectImageNote(p, args.subjectIds);
+    log(note);
+    return execOk({ total: 0, ok: 0, failed: [], note });
+  }
   log('主体生图:' + todo.length + ' 位待处理(串行)…');
   const failed = [];
   let okCnt = 0;

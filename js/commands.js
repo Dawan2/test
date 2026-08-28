@@ -226,7 +226,13 @@
     if (!window.EpisodeUtil || !EpisodeUtil.genSubjectImage) return fail('unavailable', '主体图模块未加载');
     const ids = Array.isArray(args.subjectIds) && args.subjectIds.length ? new Set(args.subjectIds) : null;
     const todo = (p.subjects || []).filter(s => ids ? ids.has(s.id) : !s.image);
-    if (!todo.length) { const r = ok({ total: 0, ok: 0, failed: [] }); r.next = nextOf(p); return r; }
+    /* 一位也没跑仍是 ok(全部主体都有图时点 G9 处置/计划步不该记成拦截),但回执得说清为什么是 0 位:
+     * 这句话经 result.note 交给 digest 播报,与 CLI 同读 Domain.emptySubjectImageNote 一份。 */
+    if (!todo.length) {
+      const r = ok({ total: 0, ok: 0, failed: [], note: Domain.emptySubjectImageNote(p, args.subjectIds) });
+      r.next = nextOf(p);
+      return r;
+    }
     const failed = [];
     let okCnt = 0;
     for (const s of todo) {
