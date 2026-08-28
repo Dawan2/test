@@ -1585,7 +1585,12 @@ CMD.memory = async (a, f) => {
   throw new CliError('用法:hujing memory <list|add|seed|migrate> [--scope 板块] [--recall 输入文本] [--text 内容] [--from 旧板名 --to 新板名]', 2);
 };
 
-/* ---- 逃生舱:裸 state 读写(任意复杂操作) ---- */
+/* ---- 逃生舱:裸 state 读写(任意复杂操作) ----
+ * 契约是"整树原样落库、调用方负责":文件里是什么就写什么,一处领域校验都不做——
+ * shots-import 的镜头 id 唯一闸不在这条路上,递同 id 两镜就落两行同 id(点名一次两行都跑、只有首行寻得着)。
+ * 有意不在此设闸:这条路写的是整棵树,改一个镜头 id 就得连带改 lastReview.perShot/uiSel/groupId 那些引用它的地方,
+ * 那是迁移不是闸;而拒收会让"照原样恢复一份备份"这件逃生舱唯一的活干不成。
+ * 递进来的重复 id 要收拾,整表重导 shots-import(改发新 id 并回报 renamedIds)或自己改完再灌一次都行。 */
 CMD['state-get'] = async (_, f) => {
   const { rev, state } = await stateGet(f);
   if (f.out) { fs.writeFileSync(path.resolve(f.out), JSON.stringify({ rev, state }, null, 2), 'utf8'); return { rev, saved: path.resolve(f.out) }; }
@@ -1675,7 +1680,9 @@ ${CmdRegistry.META.map(m => '  exec ' + (m.name + (CmdRegistry.usageOf(m) ? ' ' 
   memory seed [--scope 板块]                       播种记忆(板块改名迁移 + 标准/知识库沉淀补种,与浏览器同一份种子表;
                                                    幂等,零 LLM 零计费;空板/未知板名如实报错)
   memory migrate --from 旧板名 --to 新板名         板块迁移(条目原地改板块名,不丢不双写;旧板名下无条目即报错)
-  state-get [--out f.json] | state-put --file f.json --force           裸状态读写(逃生舱)
+  state-get [--out f.json] | state-put --file f.json --force           裸状态读写(逃生舱:整树原样落库,
+                                                   不做领域校验也不过 shots-import 那道写入闸——
+                                                   镜头 id 唯一性由调用方自己保证,灌进去的重复 id 就在库里)
 
 exit code:0 成功 | 1 通用 | 2 参数 | 3 未登录 | 4 不存在 | 5 服务端/上游 | 6 积分不足 | 7 冲突`;
 

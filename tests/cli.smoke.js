@@ -251,6 +251,49 @@ async function main() {
   r = cli('state-get', '--out', CFG_DIR + '/snap.json');
   report('state-get 落盘', r.code === 0 && fs.existsSync(CFG_DIR + '/snap.json'), '');
 
+  /* ---- 逃生舱契约(W231):镜头 id 唯一闸只在 shots-import 那条导入路上,state-put 整树原样落库 ----
+   * 两条路在真链路上并排跑一遍:同一份"同 id 两行"走导入被改发新 id,走逃生舱照落两行同 id。
+   * 后者是有意的契约(帮助/README/接入指南三处明写唯一性归调用方),不是漏设闸——
+   * 要给它设闸,先红在这里,那时请连着"存量重复不迁移"与"灌进去会长回来"两面一起判。 */
+  {
+    r = cli('project-create', '--name', '逃生舱剧');
+    const escPid = r.out && r.out.id;
+    r = cli('episode-add', escPid, '--title', '第1集', '--content', '女主转身离开宴会厅。');
+    const escEpid = r.out && r.out.id;
+    const dupFile = CFG_DIR + '/shots-dup.json';
+    fs.writeFileSync(dupFile, JSON.stringify([
+      { id: 'sh_dup', plot: '同 id 第一行', prompt: 'p1', duration: 5 },
+      { id: 'sh_dup', plot: '同 id 第二行', prompt: 'p2', duration: 5 },
+    ]));
+    r = cli('shots-import', escPid, escEpid, '--file', dupFile);
+    const impIds = ((cli('shots', escPid, escEpid).out || {}).shots || []).map(s => s.id);
+    report('shots-import 唯一闸在真链路上也在:撞 id 改发新 id 并回报 renamedIds',
+      r.code === 0 && r.out.renamedIds === 1 && impIds[0] === 'sh_dup' && impIds.length === 2 && new Set(impIds).size === 2,
+      JSON.stringify({ renamedIds: r.out && r.out.renamedIds, ids: impIds }));
+    const escFile = CFG_DIR + '/esc.json';
+    cli('state-get', '--out', escFile);
+    const snap = JSON.parse(fs.readFileSync(escFile, 'utf8'));
+    const escEp = snap.state.projects.find(p => p.id === escPid).episodes.find(e => e.id === escEpid);
+    escEp.shots = [
+      { id: 'sh_dup', order: 0, plot: '同 id 第一行', prompt: 'p1', duration: 5, video: { status: 'none' } },
+      { id: 'sh_dup', order: 1, plot: '同 id 第二行', prompt: 'p2', duration: 5, video: { status: 'none' } },
+    ];
+    fs.writeFileSync(escFile, JSON.stringify(snap));
+    const noForce = cli('state-put', '--file', escFile);
+    report('state-put 缺 --force → exit 2(整树覆盖唯一的那道闸)',
+      noForce.code === 2 && /--force/.test((noForce.out && noForce.out.error) || ''), 'exit=' + noForce.code);
+    r = cli('state-put', '--file', escFile, '--force');
+    const escShots = ((cli('shots', escPid, escEpid).out || {}).shots || []);
+    report('state-put 整树原样落库:同 id 两镜照落两行(闸修好的表被逃生舱一把打回)',
+      r.code === 0 && escShots.length === 2 && escShots.map(s => s.id).join(',') === 'sh_dup,sh_dup' && escShots[1].plot === '同 id 第二行',
+      'exit=' + r.code + ' ' + JSON.stringify(escShots.map(s => s.id)));
+    const setDup = cli('shot-set', escPid, escEpid, 'sh_dup', '--patch', '{"plot":"改到首行"}');
+    const escShots2 = ((cli('shots', escPid, escEpid).out || {}).shots || []);
+    report('重复 id 落库后只有首行寻得着:shot-set 改的永远是第一行(第二行没有入口够得着)',
+      setDup.code === 0 && escShots2[0].plot === '改到首行' && escShots2[1].plot === '同 id 第二行',
+      JSON.stringify(escShots2.map(s => s.plot)));
+  }
+
   // ---- 协作记忆(headless 播种/迁移:零 LLM 零计费,与浏览器同一份种子表) ----
   r = cli('memory', 'list');
   const memBefore = (r.out && r.out.total) || 0;

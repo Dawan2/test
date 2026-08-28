@@ -83,6 +83,9 @@ node cli.js export $PID <epid> --out ./dist                # 下载 mp4+srt
 - 全部生成类调用携带 operationId 幂等键:断网重试/重复提交安全,不会双扣。
 - 状态写走 rev 乐观锁:409 冲突 CLI 自动重取回放补丁重试(≤3 次),不会重做收费调用。
 - 不要绕过 CLI 直接 PUT state 做生成类操作(会丢计费/幂等);`state-get/state-put` 是逃生舱,仅限调试。
+- 逃生舱与 `PUT /api/state` 都是**整树原样落库、不做领域校验**:镜头 id 唯一性由调用方自己保证,
+  灌进去的同 id 两镜就在库里(点名一次两行都跑、各收一笔视频钱,而只有首行寻得着)。要收拾就整表重导
+  `shots-import`(撞 id 改发新 id 并回报 `renamedIds`),别指望这条路上有闸。
 
 ## 排错速查
 
