@@ -74,7 +74,9 @@
     {
       name: 'project.extractSubjects', label: '提取主体', risk: 'exec', needs: ['p'],
       desc: 'LLM 从项目剧本提取角色/场景/道具主体合并入库(同名同类不覆盖,新主体待生图);浏览器离线回退本地启发式',
-      args: [PID, { name: 'mode', type: 'string', desc: 'normal|fine(精细模式提示词/八维度人设更详尽)' }, UI],
+      args: [PID, { name: 'mode', type: 'string', desc: 'normal|fine(精细模式提示词/八维度人设更详尽)' },
+        { name: 'model', type: 'string', desc: '指定文本模型(浏览器:剧本解析向导里用户选的那个;缺省取默认 LLM 设置)' },
+        { name: 'local', type: 'boolean', desc: '强制本地启发式提取(零 LLM 零计费;浏览器离线/重试回退语境)' }, UI],
     },
   ];
 

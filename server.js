@@ -3635,7 +3635,8 @@ const server = http.createServer(async (req, res) => {
     /* 提取主体(项目级工作流):{pid,mode?,types?} → 服务端读项目剧本(无则各集正文)→ LLM 语义提取角色/场景/道具。
      * 与三条分集工作流同一注入口:主体板块生效专家方法论(wfPersonaNote)+ 协作记忆(WF_BOARD['extract-subjects']);
      * 计费 llm.extract 服务端定死,失败退费并如实报错。只出候选不写回 state——入库口径归调用方
-     * (浏览器解析向导按用户勾选合并,CLI headless 全量合并),避免同一端点两套入库语义。 */
+     * (两端都落在命令层:浏览器 Commands 的 project.extractSubjects——剧本解析向导的入库亦经它,
+     * CLI exec headless 全量合并),避免同一端点两套入库语义。 */
     if (pathname === '/api/wf/extract-subjects' && req.method === 'POST') {
       if (!CONFIG.apiKey && !(process.env.MOCK_LLM === '1' || CONFIG.mockLlm)) return fail(res, 503, '服务端未配置 LLM key,请创建 config.json 并填入 apiKey', 503);
       if (!rateLimitOk(user.id)) return fail(res, 429, '请求过于频繁,请稍候', 429);

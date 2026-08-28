@@ -1276,9 +1276,11 @@ EXEC['subject.generateImage'] = { needs: ['p'], meter: true, run: async (args, f
 
 /* 提取主体(exec):服务端工作流 /api/wf/extract-subjects 出候选 → 本地合并入库(同名同类不覆盖,缺提示词/人设的补齐);
  * 走 wf 通道而非 /api/llm/chat:提示词由服务端按主体板块注入生效专家方法论与协作记忆(与浏览器解析向导同源),
- * 计费 llm.extract 服务端定死;headless 无离线回退——LLM 失败如实报错(服务端已退费) */
+ * 计费 llm.extract 服务端定死;headless 无离线回退——LLM 失败如实报错(服务端已退费)。
+ * 注册表的 local/model 两位只在浏览器语境成立(本地启发式与用户选模型),headless 如实拒绝不静默忽略 */
 EXEC['project.extractSubjects'] = { needs: ['p'], meter: true, run: async (args, f) => {
   const { p } = await execCtx(args, f);
+  if (args.local || args.model) return execBlocked('browser-only', 'local/model 是浏览器语境参数(服务端提取一律走 LLM,模型取账号默认 LLM 设置),headless 请去掉后重跑');
   const text = String(p.script || '').trim() || (p.episodes || []).map(e => e.content || '').filter(Boolean).join('\n').trim();
   if (!text) return execBlocked('no-script', '项目暂无剧本内容,请先上传剧本'); // 前置拦截零调用零计费(剧本正文由服务端重读)
   const b = await POST('/api/wf/extract-subjects', {

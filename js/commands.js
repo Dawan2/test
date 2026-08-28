@@ -230,7 +230,9 @@
 
   /* 提取主体(exec):项目剧本(无则各集正文)→ LLM 语义提取角色/场景/道具合并入库——同名同类不覆盖
    * (缺提示词/人设/描述的补齐),新主体待生图;在线 LLM 失败如实报错(服务端已退费),离线回退本地启发式;
-   * 提示词与规整 wf-core 单源(CLI project.extractSubjects 同源) */
+   * 提示词与规整 wf-core 单源(CLI project.extractSubjects 同源)。
+   * args.model:调用方指定文本模型(剧本解析向导里用户选的那个),缺省取默认 LLM 设置;
+   * args.local:强制本地启发式(零 LLM 零计费)——向导离线/重试回退走它,故浏览器不再有第二条入库路径 */
   reg('project.extractSubjects', { label: '提取主体' }, ({ p, args }) => metered(REG['project.extractSubjects'], async () => {
     if (!window.EpisodeUtil || !EpisodeUtil.llmExtractSubjects) return fail('unavailable', '主体提取模块未加载');
     const text = String(p.script || '').trim() || (p.episodes || []).map(e => e.content || '').filter(Boolean).join('\n').trim();
@@ -238,8 +240,8 @@
     const mode = args.mode === 'fine' ? 'fine' : 'normal';
     const types = { character: true, scene: true, prop: true };
     let found, usedLLM = false;
-    if (window.API && API.isReady()) {
-      const model = (Store.state.settings || {}).defLLM || API.getConfig().model;
+    if (!args.local && window.API && API.isReady()) {
+      const model = args.model || (Store.state.settings || {}).defLLM || API.getConfig().model;
       const tk = Tasks.start({ type: '剧本解析', model, target: p.name, projectId: p.id });
       try { found = await EpisodeUtil.llmExtractSubjects(text, mode, types, model, tk.id, p); usedLLM = true; Tasks.done(tk); }
       catch (e) { Tasks.fail(tk, 'LLM 提取失败:' + e.message); return fail('extract', 'LLM 提取失败(已退费):' + e.message); }
@@ -262,6 +264,8 @@
         id: Store.uid('sub'), kind, name: s.name, evidence: s.evidence, description: s.description || '',
         prompt: s.prompt || EpisodeUtil.genPrompt(kind, s.name, Domain.styleOf(p)),
         persona: s.persona,
+        // 生图模型取全局默认值页的偏好(浏览器侧字段默认,不属入库口径;缺省由 genSubjectImage 兜底)
+        model: (window.getSettings ? getSettings().defImageModel : '') || (window.MODELS ? MODELS.image[0] : ''),
         // 别名入 formerNames:分镜按别名引用时 findSubject 仍能解析到本主体(与解析向导入库口径一致)
         formerNames: (s.aliases || []).slice(0, 10),
         image: null, status: 'pending',

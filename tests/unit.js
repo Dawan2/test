@@ -1490,6 +1490,46 @@ function cmdCtx(sb, over) {
   sb.__proj = p;
   return { p, ep };
 }
+/* 剧本解析向导(js/director.js)沙箱:主体提取与入库由 commands.js 真跑(与 CLI exec 同一份口径与回流),
+ * 向导侧只桩掉 DOM 与下游三个入口。加载序与 index.html 同:commands.js 在 director.js 之前。
+ * bgDock/openModal 的桩按真实契约建:close() 触发 onCancel(否则向导的进度定时器不会停),
+ * 提示词审核窗即刻按「确认」放行(勾选全开、提示词不改)。 */
+function loadDirector() {
+  const sb = loadCommands();
+  sb.MODELS = { image: ['seedream-x'], video: ['seedance-x'] };
+  sb.styleOf = p => (p && p.style) || '漫剧';
+  sb.getSettings = () => sb.Store.state.settings;
+  sb.__dirInfo = []; sb.__dirSteps = [];
+  const fakeEl = () => ({ style: {}, textContent: '', innerHTML: '', value: '', checked: true, onclick: null });
+  const nodePool = () => { const n = {}; return sel => (n[sel] = n[sel] || fakeEl()); };
+  sb.U.bgDock = opt => {
+    const pick = nodePool();
+    let closed = false;
+    const dock = {
+      m: { style: {}, querySelector: pick, querySelectorAll: sel => [pick(sel + '#0'), pick(sel + '#1'), pick(sel + '#2')] },
+      setSteps: (step, failStep) => { sb.__dirSteps.push(step + '/' + failStep); },
+      stepInfo: (i, html) => { sb.__dirInfo.push(i + ':' + String(html)); },
+      close: () => { if (closed) return; closed = true; if (opt.onCancel) opt.onCancel(); },
+      say() {}, finish() {}, cancelled: false,
+    };
+    sb.__docks.push(dock);
+    return dock;
+  };
+  sb.U.openModal = o => {
+    const pick = nodePool();
+    const m = { querySelector: pick, querySelectorAll: () => [] };
+    o.onMount(m, () => {});
+    const okBtn = m.querySelector('[data-x=ok]');
+    if (okBtn && okBtn.onclick) okBtn.onclick();
+  };
+  Object.assign(sb.EpisodeUtil, {
+    genSubjectImage: async (p, s, onDone) => { sb.__called.push('genSubjectImage:' + s.name); s.image = '/uploads/' + s.id + '.png'; if (onDone) onDone(); },
+    doSplit: (p, text, main, after) => { sb.__called.push('doSplit'); if (after) after(); },
+    openSubjectConfirm: () => { sb.__called.push('openSubjectConfirm'); },
+  });
+  loadFile(sb, 'director.js');
+  return sb;
+}
 const commandsTests = [
   { name: 'execute:未注册命令返回 unknown-command', fn: async () => {
     const sb = loadCommands();
@@ -8295,8 +8335,9 @@ const skillsTests = [
       // 浏览器多轮三份人设已随 W51 收编进注册表,仍欠的只剩四处协议半有意不开放覆盖
       'core.personaCtx': ['G-01', /function wfPersonaNote\(/.test(srv), ['ops 协议', '不开放覆盖']],
       // SK-04 的补种/迁移余量已由 W53 接上(memSeed 双端单源 + headless 入口),自动沉淀那一半由 W61 接上
-      // (前段四步进回流面,回流面本身仍归 SK-26);「仍欠」段的锚点随实况改指生成/合成两步与浏览器解析向导
-      'core.memoryDual': ['G-02', typeof W.memRecall === 'function' && typeof W.memFeedback === 'function', ['生成与合成', '解析向导']],
+      // (前段四步进回流面,回流面本身仍归 SK-26);解析向导那条绕过回流的入库路径由 W108 收口到命令层,
+      // 「仍欠」段的锚点随实况只剩生成/合成两步(向导那条移进"已落地"半,由下一条用例逐面钉住)
+      'core.memoryDual': ['G-02', typeof W.memRecall === 'function' && typeof W.memFeedback === 'function', ['生成与合成', '素材产出']],
       // 「问题中心只报低分不报未审片」那处余量随 W54 补掉(投影落在 js/issues.js,由 issues 套件钉行为),
       // 仍欠的只剩审片报告的语义面 → 点名锚点随之换成 SK-24 与 G-10
       'review.stage': ['G-03', wfSteps.includes('review'), ['SK-24', 'G-10']],
@@ -8345,7 +8386,11 @@ const skillsTests = [
   { name: '记账对齐:SK-04 仍欠段的素材判定面点名真实门号(G4/G5/G6 + failed-shots,不记到 G3/G7 头上)', fn() {
     const sk4 = Skills.byId('core.memoryDual');
     const owed = (sk4.note || '').split('仍欠').slice(1).join('仍欠');
-    assert(owed.includes('生成与合成') && owed.includes('解析向导'), '原有两处锚点不动(本条只订正门号)');
+    assert(owed.includes('生成与合成'), '生成与合成那处余量仍在(本条只订正门号,不许顺手动它)');
+    /* 解析向导那条余量 W108 已真收掉(向导入库改走命令层):锚点从「仍欠」段挪进「已落地」段,
+     * 不许只删字——余量收了要在 note 里如实交代收到哪去了,实现面另由 director 收口那两条用例钉住 */
+    const landed = (sk4.note || '').split('仍欠')[0];
+    assert(!owed.includes('解析向导') && landed.includes('解析向导'), '解析向导那条入库路径已收口,须在已落地段交代清楚(不得只删字)');
     const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'release.js'), 'utf8');
     [['G4', 'g4-stale'], ['G5', 'g5-unconfirmed'], ['G6', 'g6-failed']].forEach(([g, code]) => {
       assert(rsrc.includes("gate('" + code + "'"), '发布门应仍有该门(门没了就得同步改记账):' + code);
@@ -9177,6 +9222,64 @@ const memoryTests = [
     r = await csb2.Commands.execute('project.extractSubjects', { pid: 'p1' });
     assertEq(r.ok, false); assertEq(r.error.code, 'extract');
     assertEq(csb2.Store.state.agentMemory.length, 0, 'LLM 失败不写假成功');
+  } },
+  /* ---- 浏览器剧本解析向导的主体入库路径(W108):向导曾自己提取、自己造条目、整表覆盖 p.subjects,
+   * 于是既绕过命令层的合并口径(同名同类不覆盖/别名寻址),也绕过回流那一处写入点。
+   * 现收口到 Commands.execute('project.extractSubjects'):向导只留进度、用户选的模型与断点重试。 ---- */
+  { name: '解析向导主体入库收口命令层(源级):director.js 零直写主体库,提取/入库/回流只此一条路径', fn() {
+    const dsrc = fs.readFileSync(path.join(ROOT, 'js', 'director.js'), 'utf8');
+    assert(dsrc.includes("Commands.execute('project.extractSubjects'"), '向导 Step1 应经统一命令层入库');
+    assert(!/p\.subjects\s*=/.test(dsrc), '向导不得直写主体库(入库口径只在命令层那一份)');
+    assert(!/Store\.uid\('sub'\)/.test(dsrc), '向导不得自己造主体条目(别名/描述/提示词的补齐都在命令层)');
+    assert(!/llmExtractSubjects|EpisodeUtil\.extractSubjects/.test(dsrc), '向导不得自己调提取(提示词与规整都在命令层同一份)');
+    assert(!/memFeedback|agentMemory/.test(dsrc), '回流点只在命令层那一处,向导不写第二份');
+    // 向导独有的两件事经注册表登记的参数位透传,不在向导里另开分支
+    const CmdRegistry = require('../js/cmd-registry.js');
+    const argNames = (CmdRegistry.byName['project.extractSubjects'].args || []).map(a => a.name);
+    ['model', 'local'].forEach(k => assert(argNames.includes(k), '命令注册表应登记 ' + k + ' 位,实际:' + argNames.join(',')));
+    assert(/local: true/.test(dsrc), '重试仍失败应带 local 位回退本地启发式(防重试死循环)');
+    // 登记了却不读 = 假参数:命令层两端各自的读取点逐个核对
+    const csrc = fs.readFileSync(path.join(ROOT, 'js', 'commands.js'), 'utf8');
+    assert(/!args\.local && window\.API && API\.isReady\(\)/.test(csrc), '命令层须以 args.local 短路 LLM 分支(零 LLM 零计费)');
+    assert(/const model = args\.model \|\|/.test(csrc), '命令层须优先取调用方指定的模型');
+    const clisrc = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    const iEx = clisrc.indexOf("EXEC['project.extractSubjects']");
+    const exSeg = clisrc.slice(iEx, clisrc.indexOf("EXEC['", iEx + 6));
+    assert(/args\.local \|\| args\.model/.test(exSeg), 'headless 两位都不成立,CLI 须如实拒绝而不是静默忽略');
+    assertEq((exSeg.match(/await (PUT|GET|POST)\(/g) || []).length, 1, '拒绝分支不得多发一次请求(仍是 withProject 那一次 PUT)');
+    // 主体类型不再是向导的入参:全量提取由命令层持有(向导与调用方都不再传第二份类型表)
+    assert(/function run\(p, scriptText, model, extractMode, main\)/.test(dsrc), '向导入参不应再带 types(全量提取口径在命令层)');
+    const usrc = fs.readFileSync(path.join(ROOT, 'js', 'proj-upload.js'), 'utf8');
+    assert(/Director\.run\(p, scriptText, model, extractMode, main\)/.test(usrc), '上传弹窗的调用应与向导入参一致');
+  } },
+  { name: '解析向导行为面(浏览器真跑):入库走命令层——已有主体图不被覆盖,结论按主体板块回流一条', fn: async () => {
+    const sb = loadDirector();
+    const { p } = cmdCtx(sb); // 夹具主体库里已有一位带图主体 sub1
+    p.name = '逆袭'; p.style = '漫剧';
+    sb.__extractFound = { character: [{ name: '主角', evidence: '同名同类:应跳过' }, { name: '女主', evidence: 'e' }], scene: [{ name: '宴会厅', evidence: 'e' }], prop: [] };
+    const calls = [];
+    const real = sb.Commands.execute;
+    sb.Commands.execute = (name, args) => { calls.push({ name, args }); return real(name, args); };
+    sb.Director.run(p, '女主在宴会厅被主角当众羞辱。', 'test-model', 'fine', null);
+    await sleep(80);
+    // 入库只经命令层这一条路径,且把向导独有的两件事(用户选的模型、精细模式)透传下去
+    assertEq(calls.map(c => c.name).join(','), 'project.extractSubjects', '向导只应发这一条命令');
+    assertEq(calls[0].args.model, 'test-model', '用户在上传弹窗选的文本模型应透传');
+    assertEq(calls[0].args.mode, 'fine');
+    assertEq(calls[0].args.ui, true, 'UI 语境位应带上(决策弹窗保留)');
+    // 合并口径:同名同类的老主体原样留着(连带它的参考图),新主体入库待生图
+    assertEq(p.subjects.map(s => s.name).join(','), '主角,女主,宴会厅', '应是合并入库而不是整表覆盖');
+    assertEq(p.subjects[0].image, 'x.png', '已有主体的参考图不得被向导覆盖掉');
+    // 回流:主体板块一条,文案与命令层直跑逐字同源(向导不写第二份)
+    const mem = sb.Store.state.agentMemory;
+    assertEq(mem.length, 1, '向导跑完应有回流条目(收口前这条路径一条也不写)');
+    assertEq(mem[0].fb, 'extract:p1');
+    assertEq(mem[0].scope, '主体');
+    assertEq(mem[0].text, '提取主体闭环回流·逆袭:本轮新增 2 位、已有 1 位;主体库共 3 位,其中 2 位缺参考图');
+    // Step1 结论如实报数;Step3 只补缺图主体(已有图的不重做,不多扣一张的费)
+    assert(sb.__dirInfo.some(x => x.startsWith('0:') && x.includes('本轮新增 2 位、已有 1 位')), 'Step1 应如实报入库回执,实际:' + sb.__dirInfo.join(' | '));
+    assertEq(sb.__called.filter(c => c.startsWith('genSubjectImage:')).join(','),
+      'genSubjectImage:女主,genSubjectImage:宴会厅', 'Step3 只补缺参考图的主体(已有图的不重做,不多扣一张的费)');
   } },
   /* ---- 蒸馏输入的板块面(G-11 的过滤那一半):召回是加权取样给上下文,蒸馏是写死进 persona,
    * 两者不共用取样口——蒸馏侧只认板块归属,硬过滤、无补召、取不到就回空让调用方跳过。 ---- */
