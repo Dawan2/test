@@ -6749,6 +6749,23 @@ action 二选一:
       assertDocNum('README.md', docRe, lines, label + '用例数');
     });
   } },
+  { name: '集成/冒烟用例名各自唯一:名集大小恰等于 report(...) 登记行数(与单元那条同形)', fn() {
+    /* 上一条钉的是"条数",这一条钉的是"不同名字数":两个数分开钉才拦得住重名。
+     * 这两个套件跑不进单测,取证一直靠"把两侧用例名成集双向比对证明没删测",而一对重名会让集合口径
+     * 把其中一条吃掉——删掉一条真用例、同时有一对重名,两者互相抵消就看不出来了;去重口径两侧不一致时
+     * 还会反过来凭空多报一条(基线上 integration 的 130 条只有 129 个名字,那次比对当场假报一条)。
+     * 名字必须是就地写死的字面:拼出来的名字静态取不到,名集口径当场失真,故先把"每行都取得到名字"钉住。 */
+    [['tests/integration.js', '集成测试'], ['tests/cli.smoke.js', 'CLI 冒烟']].forEach(([rel, label]) => {
+      const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      const lines = (src.match(/^[ \t]*report\(/gm) || []).length;
+      const names = [...src.matchAll(/^[ \t]*report\(\s*'((?:[^'\\]|\\.)*)'/gm)].map(m => m[1]);
+      assertEq(names.length, lines, label + ':' + rel + ' 每条 report(...) 的用例名须是就地写死的单引号字面');
+      const seen = new Set(), dup = [];
+      names.forEach(n => { if (seen.has(n)) dup.push(n); else seen.add(n); });
+      assertEq(dup.join(' / '), '', label + ':用例名不许重名(同判据的同形断言要各自写明自己钉的是哪一处)');
+      assertEq(seen.size, lines, label + ':用例名集合大小应恰等于 report(...) 登记行数');
+    });
+  } },
   { name: '单元用例名全局唯一:用例名集合大小恰等于用例条数(重名会让"按名成集比对"漏看删测)', fn() {
     /* 「用例名集合双向比对证明没删测」是本目录一直在用的取证手段:一旦有两条同名,
      * 集合口径会把其中一条吃掉——删掉一条真用例、同时有一对重名,两者互相抵消就看不出来了。
@@ -6828,7 +6845,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 129;
+    const FLOOR = 130;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接

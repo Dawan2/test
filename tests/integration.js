@@ -640,7 +640,7 @@ async function main() {
     const rl4 = await req('POST', '/api/wf/release', { pid: relEmpty }, token);
     report('空项目(无分集)400:没有成片就没有可留痕的交付物', rl4.status === 400 && /暂无分集/.test(rl4.msg || ''), 'HTTP ' + rl4.status + ' ' + rl4.msg);
     const rl5 = await req('POST', '/api/wf/release', { pid: 'ghost_rel' }, token);
-    report('项目不存在 404', rl5.status === 404, 'HTTP ' + rl5.status);
+    report('wf/release 项目不存在 404', rl5.status === 404, 'HTTP ' + rl5.status);
 
     const rl6 = await req('POST', '/api/wf/release', { pid: relOK, note: '第二版' }, token);
     const pRel2 = (await req('GET', '/api/state', null, token)).data.state.projects.find(x => x.id === relOK) || {};
