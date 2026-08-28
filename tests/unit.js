@@ -1301,6 +1301,120 @@ const expertsTests = [
     assert(user.includes('定调偏好'), '全局雇佣者在未被板块专家顶掉的板块上生效');
     assert(!user.includes('这条不该进'), '分镜板块已另雇专家,全局雇佣者在该板块不生效');
   } },
+  /* ---- G-11 预置专家的人手进化入口:与自定义专家同一个 evolveExpert、同一份板块过滤、同一份计费口径。
+   * 落点是自定义副本——预置注册表 experts-data.js 是浏览器与服务端共享的静态数据,原地改既存不住
+   * 也会让两端漂移。以下五条钉的是"落副本、只吃本板块、闸没过不留副本、副本可续进化、副本不丢派生源字段"。 ---- */
+  { name: 'evolveExpert:预置专家可进化——条款落自定义副本,预置注册表一个字不改', fn: async () => {
+    const sb = loadExperts();
+    sb.Store.myProjects = () => [{ id: 'p1', boards: { 分镜: { expert: 'ex_dp' }, 导演: { expert: 'ex_other' } } }];
+    sb.Store.state.agentMemory = [
+      { text: '相邻景别不硬切,切换隔一别', scope: '分镜' },
+      { text: '定调:全片低饱和青橙', scope: '导演' },
+      { text: '没标板块的手工沉淀' },
+    ];
+    sb.__apiReady = true;
+    sb.__llm = [];
+    sb.API.chatJSON = async req => {
+      sb.__llm.push({ system: req.system, user: ((req.messages || [])[0] || {}).content });
+      return { clauses: ['每镜先写摄影意图'] };
+    };
+    const preset = sb.Experts.EXPERTS.find(x => x.id === 'ex_dp');
+    const before = preset.persona;
+    await sb.Experts.evolveExpert(preset);
+    assertEq(preset.persona, before, '预置 persona 不得被原地改写(注册表是双端共享静态数据,改了也存不住)');
+    assertEq(preset.evolutions, undefined, '进化计数不挂到预置对象上');
+    assertEq(sb.Store.state.customExperts.length, 1, '应派生一份自定义副本');
+    const c = sb.Store.state.customExperts[0];
+    assertEq(c.from, 'ex_dp', '副本须记派生源');
+    assert(c.id.startsWith('cx_') && c.custom === true, '副本就是自定义专家(可编辑/可雇佣/可删除)');
+    assert(c.name.startsWith(preset.name), '副本名带派生源名,列表里认得出来自哪个预置专家:' + c.name);
+    assert(c.persona.includes('【进化条款') && c.persona.includes('- 每镜先写摄影意图'), '条款追加进副本 persona');
+    assertEq(c.evolutions, 1);
+    assert(sb.__toasts.some(t => t.includes('副本')), '须告诉用户条款落在副本上:' + sb.__toasts.join('|'));
+    // 板块过滤对预置路径同样生效(判据是派生源的雇佣事实)
+    const { system, user } = sb.__llm[0];
+    assert(user.includes('相邻景别不硬切'), '本板块沉淀应纳入蒸馏输入');
+    assert(!(system + user).includes('低饱和青橙') && !(system + user).includes('没标板块'), '别的板块与无 scope 的沉淀仍不得混进');
+    assert(user.includes('生效板块:分镜'), '与自定义路径同口径地点名板块');
+    // 计费口径与自定义专家一字不差
+    assertEq(sb.__charges.length, 1, '预置路径同样只扣 1 积分');
+    assertEq(sb.__refunds.length, 0, '成功不退费');
+    assertEq(sb.__tasks.length, 1);
+    assertEq(sb.__tasks[0].status, 'done');
+    assertEq(sb.__tasks[0].cost, 1);
+    assertEq(sb.__tasks[0].target, c.name, '任务登记的目标是落点(副本)');
+  } },
+  { name: 'evolveExpert:预置专家再次进化落回同一副本(不重复派生)', fn: async () => {
+    const sb = loadExperts();
+    sb.Store.myProjects = () => [{ id: 'p1', boards: { 分镜: { expert: 'ex_dp' } } }];
+    sb.Store.state.agentMemory = [{ text: '相邻景别不硬切', scope: '分镜' }];
+    sb.__apiReady = true;
+    const preset = sb.Experts.EXPERTS.find(x => x.id === 'ex_dp');
+    sb.__chatJSONResult = { clauses: ['第一轮条款'] };
+    await sb.Experts.evolveExpert(preset);
+    sb.__chatJSONResult = { clauses: ['第二轮条款'] };
+    await sb.Experts.evolveExpert(preset);
+    assertEq(sb.Store.state.customExperts.length, 1, '同一预置专家只派生一份副本');
+    const c = sb.Store.state.customExperts[0];
+    assert(c.persona.includes('- 第一轮条款') && c.persona.includes('- 第二轮条款'), '两轮条款都在同一副本上');
+    assertEq(c.evolutions, 2);
+    assertEq(sb.__charges.length, 2, '两次进化两次计费(不因复用副本少扣或多扣)');
+    assertEq(sb.__toasts.filter(t => t.includes('已建可进化副本')).length, 1, '派生提示只在第一次出现');
+  } },
+  { name: 'evolveExpert:副本自身未被雇佣也能继续进化(生效板块随派生源)', fn: async () => {
+    const sb = loadExperts();
+    sb.Store.myProjects = () => [{ id: 'p1', boards: { 分镜: { expert: 'ex_dp' } } }];
+    sb.Store.state.customExperts.push({ id: 'cx_9', custom: true, from: 'ex_dp', name: '摄影指导·我的', persona: '基础人设' });
+    sb.Store.state.agentMemory = [{ text: '两极镜头不衔接', scope: '分镜' }, { text: '定调偏好', scope: '导演' }];
+    sb.__apiReady = true;
+    sb.__llm = [];
+    sb.API.chatJSON = async req => {
+      sb.__llm.push({ user: ((req.messages || [])[0] || {}).content });
+      return { clauses: ['过渡镜补一颗'] };
+    };
+    await sb.Experts.evolveExpert(sb.Store.state.customExperts[0]);
+    assertEq(sb.Store.state.customExperts.length, 1, '在副本上点进化走自定义路径,不再派生第二份');
+    assert(sb.Store.state.customExperts[0].persona.includes('- 过渡镜补一颗'));
+    assert(sb.__llm[0].user.includes('生效板块:分镜') && sb.__llm[0].user.includes('两极镜头不衔接'),
+      '副本按派生源的雇佣事实取板块与沉淀:' + sb.__llm[0].user);
+    assert(!sb.__llm[0].user.includes('定调偏好'), '派生源没被雇的板块仍挡在外面(from 不是全板块后门)');
+  } },
+  { name: 'evolveExpert:预置专家两道闸没过即跳过,不给专家库留空副本', fn: async () => {
+    const sb = loadExperts();
+    sb.Store.myProjects = () => [{ id: 'p1', boards: { 分镜: { expert: 'cx_other' } } }];
+    sb.Store.state.agentMemory = [{ text: '相邻景别不硬切', scope: '分镜' }];
+    sb.__apiReady = true;
+    sb.__chatJSONResult = { clauses: ['不该出现的条款'] };
+    const preset = sb.Experts.EXPERTS.find(x => x.id === 'ex_dp');
+    await sb.Experts.evolveExpert(preset);
+    assertEq(sb.Store.state.customExperts.length, 0, '未在任何板块生效:不派生副本');
+    assertEq(sb.__tasks.length, 0, '跳过发生在登记之前');
+    assertEq(sb.__charges.length, 0, '跳过不扣费');
+    assert(sb.__toasts.some(t => t.includes('还没在任何板块生效')));
+    // 第二道闸(生效板块无沉淀)同样在派生之前
+    sb.Store.myProjects = () => [{ id: 'p2', boards: { 分镜: { expert: 'ex_dp' } } }];
+    sb.Store.state.agentMemory = [{ text: '定调偏好', scope: '导演' }];
+    await sb.Experts.evolveExpert(preset);
+    assertEq(sb.Store.state.customExperts.length, 0, '本板块无沉淀:同样不派生副本');
+    assertEq(sb.__charges.length, 0);
+    assert(sb.__toasts.some(t => t.includes('分镜') && t.includes('暂无使用记录')));
+  } },
+  { name: '预置副本是深拷贝且沿用派生源判据字段(雇佣副本后解说模式不丢)', fn: async () => {
+    const sb = loadExperts();
+    sb.Store.state.settings.hiredExpert = 'ex_narration'; // 全局雇佣:未被板块专家顶掉的板块都生效
+    sb.Store.state.agentMemory = [{ text: '旁白信息点每三秒一个', scope: '分镜' }];
+    sb.__apiReady = true;
+    sb.__chatJSONResult = { clauses: ['画面服务旁白信息点'] };
+    const preset = sb.Experts.EXPERTS.find(x => x.id === 'ex_narration');
+    await sb.Experts.evolveExpert(preset);
+    const c = sb.Store.state.customExperts[0];
+    assertEq(c.projType, 'narration', '解说模式判据按字段走,副本带着它(projTypeOf 不认预置 id)');
+    assertEq(c.tpl.tplImage, preset.tpl.tplImage, '三件套模板随副本带走,副本可直接雇佣');
+    assert(c.dims !== preset.dims && c.tpl !== preset.tpl, '深拷贝:改副本不会污染预置注册表');
+    sb.Store.state.settings.hiredExpert = c.id;
+    assertEq(sb.projType(), 'narration', '雇佣副本后仍是解说模式');
+    assertEq(sb.allExperts().length, sb.Experts.EXPERTS.length + 1, '副本并入全部专家表');
+  } },
 ];
 
 /* ================= 套件 3:produce.js ================= */
@@ -5891,8 +6005,10 @@ const contractTests = [
       });
     // G-11 的人手触发那一面仍欠,收人设句不等于自进化自动化了(如实写)
     const sk26 = Skills.byId('review.memoryFeedback');
-    assert(sk26.note.includes('仍欠(G-11)') && sk26.note.includes('人手动作') && sk26.note.includes('只对自定义专家开放'),
-      'SK-26 的仍欠段应仍如实写着 G-11 人手点自进化与预置专家两处');
+    const owed26 = sk26.note.split('仍欠(G-11)').slice(1).join('仍欠(G-11)');
+    assert(sk26.note.includes('仍欠(G-11)') && owed26.includes('人手动作'),
+      'SK-26 的仍欠段应仍如实写着 G-11 的人手点自进化');
+    assert(!owed26.includes('只对自定义专家开放'), '预置专家的进化入口已补齐,仍欠段不许再挂它');
     assert(sk26.gaps.includes('G-11'), 'G-11 标记不摘');
     /* SK-02 的仍欠段应写明工坊那份字段面同样没有 skills[](G-09 的另一头)。
      * 锚点取仍欠段内的两个词,不能只查 note 里有没有 skills[] —— 该条第一句本来就有这个字面。 */
@@ -7025,7 +7141,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 142;
+    const FLOOR = 143;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
@@ -9297,7 +9413,7 @@ const memoryTests = [
     assert(sk.note.includes('仍欠(G-11)') && sk.note.includes('evolveExpert'), 'note 须点名仍欠的自进化面(清 pending 不等于这条没有余量)');
     assert(sk.note.includes('project.release') && sk.note.includes('release-core.js'), 'note 须写明发布留痕的命令化出口与双端单源落点');
     assert(sk.note.includes('不新建存储桶') && sk.note.includes('不改发布门'), 'note 须写明沿用既有桶、不动发布门');
-    /* G-11 的两面分别记账:板块过滤这一面已落地,note 须写明判据出处;人手触发与预置专家仍是余量。
+    /* G-11 的三面分别记账:板块过滤与预置专家入口两面已落地,note 须写明判据出处与落点;人手触发仍是余量。
      * 蒸馏输入不得再有第二个取数口——experts.js 里读 agentMemory 的地方只能是经 memForBoards 那一处 */
     const ex = fs.readFileSync(path.join(ROOT, 'js', 'experts.js'), 'utf8');
     assert(sk.note.includes('WfCore.expertBoards') && sk.note.includes('WfCore.memForBoards'), 'note 须写明板块过滤的双端单源判据');
@@ -9305,7 +9421,20 @@ const memoryTests = [
     assertEq((ex.match(/Store\.state\.agentMemory/g) || []).length, 1, '蒸馏输入只此一个取数口(绕开过滤的第二处读全桶即红)');
     assert(/WfCore\.expertBoards\(/.test(ex) && !/AGENT_BOARDS.*filter|role.*===.*'摄像'/.test(ex),
       '生效板块经 WfCore.expertBoards 推出,不在 experts.js 里另写一份板块判据');
-    assert(sk.note.includes('人手动作') && sk.note.includes('只对自定义专家开放'), 'note 须如实写明 G-11 仍欠人手触发与预置专家两处');
+    /* 预置专家那一面:入口挂在专家雇佣页的预置卡上,走同一个 evolveExpert(没有第二套蒸馏与第二份计费),
+     * 副本在两道闸之后、扣费之前才落库——闸没过不给用户的专家库留一条什么也没蒸出来的副本 */
+    const gs = fs.readFileSync(path.join(ROOT, 'js', 'gsettings.js'), 'utf8');
+    assertEq((gs.match(/data-pevolve="\$\{e\.id\}"/g) || []).length, 2,
+      '预置卡两处(风格导演卡与功能专家卡)都要挂进化入口——只补一处等于另一类预置专家仍无出口');
+    assert(/\[data-pevolve\]/.test(gs), '预置卡的进化入口须接上点击');
+    assertEq((gs.match(/evolveExpert\(/g) || []).length, 4,
+      '四个人手触发点(编辑区/工坊卡/自定义卡/预置卡)都调同一个 evolveExpert,不许另起一套蒸馏');
+    const iMem = ex.indexOf('memForBoards(Store.state.agentMemory');
+    const iCopy = ex.indexOf('? presetCopy(e)'); // 取调用点而非函数定义
+    const iChg = ex.indexOf("requireCredits(1, '专家自进化')");
+    assert(iMem > 0 && iMem < iCopy && iCopy < iChg, '副本落库须在两道闸之后、扣费之前');
+    assert(sk.note.includes('自定义副本') && sk.note.includes('from='), 'note 须写明预置专家的进化落点与派生源字段');
+    assert(sk.note.includes('人手动作'), 'note 须如实写明 G-11 仍欠人手触发这一面');
     // SK-04 的第三处余量同步改写:审片/发布两个闭环已回流,其余 wf 步仍不回流
     const sk4 = Skills.byId('core.memoryDual');
     assert(sk4.note.includes('SK-26'), 'SK-04 的 note 须随回流面落地同步改写');
@@ -9597,6 +9726,25 @@ const memoryTests = [
     assertEq(W.expertBoards({ expert: null, boards }).length, 0, '无专家对象回空');
     assertEq(W.expertBoards({ expert: { name: '无 id' }, boards }).length, 0, '专家无 id 回空(不拿 undefined 去匹配)');
     assertEq(call({ expert: e, hiredId: 'cx_1', boards: null }).length, 0, '无板块词表回空');
+  } },
+  /* 预置专家的自定义副本(from=派生源):雇佣事实挂在预置 id 上,副本自己还没被雇过时也得能算出板块,
+   * 否则"预置专家点进化"第一次就会被第一道闸挡下。from 只是多认一个身份,不是"全部板块"的后门。 */
+  { name: 'expertBoards:副本按 from 认派生源的雇佣事实(与自己被雇的板块取并集)', fn() {
+    const W = require('../js/wf-core.js');
+    const boards = ['导演', '剧本', '主体', '分集', '分镜', '生成', '审片', '成片'];
+    const call = o => W.expertBoards(Object.assign({ boards }, o));
+    const copy = { id: 'cx_9', from: 'ex_dp' };
+    assertEq(call({ expert: copy, projects: [{ boards: { 分镜: { expert: 'ex_dp' } } }] }).join(','), '分镜',
+      '副本自身没被雇过,按派生源的生效板块算');
+    assertEq(call({ expert: copy, projects: [{ boards: { 分镜: { expert: 'ex_dp' }, 剧本: { expert: 'cx_9' } } }] }).join(','),
+      '剧本,分镜', '副本自己被雇的板块与派生源的板块取并集');
+    assertEq(call({ expert: copy, hiredId: 'ex_dp' }).length, boards.length, '派生源被全局雇佣时副本按全部板块算');
+    assertEq(call({ expert: copy, projects: [{ boards: { 分镜: { expert: 'ex_other' } } }] }).length, 0,
+      '派生源与副本都没被雇仍回空(from 不是全板块后门)');
+    assertEq(call({ expert: { id: 'cx_9' }, projects: [{ boards: { 分镜: { expert: 'ex_dp' } } }] }).length, 0,
+      '不带 from 的自定义专家不认别人的雇佣事实');
+    assertEq(call({ expert: { from: 'ex_dp' }, projects: [{ boards: { 分镜: { expert: 'ex_dp' } } }] }).length, 0,
+      '只有 from 没有 id 仍回空(id 是必备判据)');
   } },
   { name: 'memForBoards:只收 scope 命中的条目(无 scope 不收/空板块回空/按 text 去重/不改入参)', fn() {
     const W = require('../js/wf-core.js');
