@@ -5150,7 +5150,8 @@ function mainOwnFlow(rel) {
  * 判哪一种至今全靠人工读两边的断言,零机器判据。这里立的判据不去禁改名,改钉「主题还有没有承载它的用例」:
  * 每条主题登记它读的那几个实况取数口(注册表键 / 源码标识符 / 文件路径片段),用例名一个字都不参与判定——
  * 改名与翻面重写只要还在读同一份实况就照旧绿,真删掉且没人接手时那一行当场找不到落点。
- * `hosts` 是此刻承载它的用例条数(缺省 1):锚点写太泛会当场超出、写太窄会当场归零,两头都在登记时就报出来。
+ * `hosts` 是此刻承载它的用例条数(缺省 1):锚点写太泛会当场超出、写太窄会当场归零,两头都在登记时就报出来;
+ * 超出那一头还分两种处置相反的失败(宽锚顺带扫进来 vs 真多一处承载),由 guardSpread 判开、各报各的句子。
  * 收哪些主题:记账/欠账类与单源类护栏——它们钉的是"某份记录与源码实况一致",正是最容易被一句改写抹平、
  * 也最容易在翻面时被顺手删掉的那一类。加护栏时不必都登记进来,但登记过的不许无声消失。 */
 const GUARD_TOPICS = [
@@ -5177,10 +5178,43 @@ const GUARD_TOPICS = [
 ];
 /* 全部套件的用例源码(抹掉注释、字面量留着)+ 打印用标签:护栏主题按锚点在这上面找落点。
  * 取 fn 的运行时源码而不是按文件切段:用例挪到别的套件、换个写法都不影响取数,判的是"这段判据还在不在跑"。 */
-function guardHostsOf(anchors) {
+function guardCases() {
   return Object.entries(SUITES)
-    .reduce((a, [s, t]) => a.concat(t.map(x => ({ label: s + ' · ' + x.name, code: blankNonCode(String(x.fn), true) }))), [])
-    .filter(c => anchors.every(k => c.code.includes(k)));
+    .reduce((a, [s, t]) => a.concat(t.map(x => ({ label: s + ' · ' + x.name, code: blankNonCode(String(x.fn), true) }))), []);
+}
+function guardHostsOf(anchors) {
+  return guardCases().filter(c => anchors.every(k => c.code.includes(k)));
+}
+/* 宽锚上限:一个锚点单独就扫到全套件 5% 以上的用例时,它点的不是这道护栏,是一片用例。 */
+function guardBroadLimit(total) { return Math.ceil(total * 0.05); }
+function guardAnchorSpread(anchors, cases) {
+  return (anchors || []).map(k => ({ k, n: cases.filter(c => c.code.includes(k)).length }));
+}
+/* 落点数与登记不符的几种失败处置方向相反,故判词分开,报错句不许落到同一句上:
+ *   lost  落点归零——没人接手,这道护栏没了;
+ *   short 落点少于登记——登记的几处里有人被删掉,或被改写到不再读这份实况;
+ *   broad 落点多于登记且锚点里有宽锚——多出来的多半是被宽锚顺带扫进来的不相干用例(它们正替这道护栏顶着),
+ *         处置是把锚点收到本护栏独有的取数口,抬 hosts 只会把"有人顶着"这件事登记成正常;
+ *   extra 落点多于登记而锚点条条都窄——这道护栏此刻真由这几处一起承载(一题多承载不禁),
+ *         处置是把 hosts 抬到实况并写清各处各钉哪一面,收窄锚点反而会把真承载判丢。
+ * 判宽锚只看锚点自己的选择性(单锚命中面),不看多出来那几条是谁:哪一处在判同一件事读不出来,
+ * 但"这个锚点点不准"读得出来,故报错里把证据(宽锚是谁、单锚扫到几条、上限几条)一并写出来。 */
+function guardSpread(topic, cases) {
+  const anchors = topic.anchors || [], want = topic.hosts || 1;
+  const hit = cases.filter(c => anchors.every(k => c.code.includes(k)));
+  if (!hit.length) return { kind: 'lost', line: topic.id + '(' + anchors.join(' + ') + ')——' + topic.why };
+  if (hit.length === want) return { kind: 'ok', line: '' };
+  const head = topic.id + ':登记 hosts=' + want + '、实测落点 ' + hit.length + ' 处';
+  const at = ' → ' + hit.map(h => h.label).join(' / ');
+  if (hit.length < want) return { kind: 'short', line: head + ',还在的是' + at };
+  const lim = guardBroadLimit(cases.length);
+  const spread = guardAnchorSpread(anchors, cases), wide = spread.filter(x => x.n > lim);
+  if (wide.length) {
+    return { kind: 'broad', line: head + ',锚点过泛:' +
+      wide.map(w => '「' + w.k + '」单锚就扫到 ' + w.n + ' 条').join('、') + '(上限 ' + lim + ' 条)' + at };
+  }
+  return { kind: 'extra', line: head + ',锚点不泛:单锚最多 ' +
+    Math.max(...spread.map(x => x.n)) + ' 条(上限 ' + lim + ' 条)' + at };
 }
 const contractTests = [
   { name: 'Issues.collect 返回数组(发布门 G2 的消费契约)', fn() {
@@ -8434,16 +8468,19 @@ action 二选一:
      * 本条不禁改名——改名不是问题,失去覆盖才是:判据只问"这条主题读的那几个实况取数口,此刻还有没有
      * 用例在读"。改名、重排、挪套件、按新实况翻面重写,只要还读同一份实况就一条不红;
      * 真把用例删掉而没有继任者接手时,报的是主题编号与它的锚点,不是"少了一条用例"这种数字口径。 */
-    const lost = [], spread = [];
-    GUARD_TOPICS.forEach(t => {
-      const hit = guardHostsOf(t.anchors), want = t.hosts || 1;
-      if (!hit.length) lost.push(t.id + '(' + t.anchors.join(' + ') + ')——' + t.why);
-      else if (hit.length !== want) spread.push(t.id + ':登记 ' + want + ' 处、实测 ' + hit.length + ' 处 → ' + hit.map(h => h.label).join(' / '));
-    });
-    assertEq(lost.join(' / '), '', '护栏主题找不到承载它的用例:同主题翻面重写时把锚点改到新实况(只改用例名不必动这张表);' +
+    /* 落点数不符的几种失败处置方向相反(收窄锚点 / 抬 hosts / 找回被删的那处),此前挤在同一句里
+     * 逐字同形,单看报错分不出该往哪边改;现按 guardSpread 的判词分条报,各带各的证据。 */
+    const by = { lost: [], short: [], broad: [], extra: [] };
+    const cases = guardCases();
+    GUARD_TOPICS.forEach(t => { const v = guardSpread(t, cases); if (v.kind !== 'ok') by[v.kind].push(v.line); });
+    assertEq(by.lost.join(' / '), '', '护栏主题找不到承载它的用例:同主题翻面重写时把锚点改到新实况(只改用例名不必动这张表);' +
       '确要撤掉这道护栏,先在 GUARD_TOPICS 里销号并同轮写明理由——删测与改名从此不再是同一种形态');
-    assertEq(spread.join(' / '), '', '护栏主题的落点数与登记不符:锚点太泛会把别的用例也算成落点(那条真被删掉时就有人替它顶着),' +
-      '一道护栏有意拆成两条用例时把 hosts 抬到实况');
+    assertEq(by.short.join(' / '), '', '护栏主题的落点少于登记:登记的那几处里有人被删掉、或被改写到不再读这份实况;' +
+      '确认是有意收成一处就把 hosts 调回实况并写明理由');
+    assertEq(by.broad.join(' / '), '', '护栏主题的锚点太泛:多出来的落点是宽锚顺带扫进来的,那条真被删掉时就有不相干用例替它顶着;' +
+      '处置是把锚点收到本护栏独有的取数口——不要抬 hosts(抬了等于把"有人顶着"登记成正常)');
+    assertEq(by.extra.join(' / '), '', '护栏主题真有多处承载:锚点条条都不泛而落点多于登记,这道护栏此刻确由这几处一起承载;' +
+      '核对无误就把 hosts 抬到实测条数并在 why 里写清各处各钉哪一面——不要收窄锚点(收了会把真承载判丢)');
   } },
   { name: '护栏主题清单自身不许被架空:锚点须落在断言里、条数只增不减、取数口失效先红在这里', fn() {
     /* 上一条只在"清单里还有这条主题"时才拦得住;把那一行连同用例一起删掉,它一条都不遍历。
@@ -8463,6 +8500,14 @@ action 二选一:
       (t.anchors || []).forEach(k => { if (k.length < 3) weak.push(t.id + ':锚点「' + k + '」太短,点得中的地方太多'); });
     });
     assertEq(weak.join(' / '), '', '护栏主题的登记不许退化成恒真句');
+    /* 锚点点不准的那一路,上一条只在落点数恰好不符时才报;写泛之后落点数照旧对得上时它一条不红,
+     * 故在登记侧另钉一层选择性:单锚就扫到全套件 5% 以上用例的锚点,点的不是这道护栏而是一片用例。 */
+    const allCases = guardCases(), broadLim = guardBroadLimit(allCases.length), wideAnchors = [];
+    GUARD_TOPICS.forEach(t => guardAnchorSpread(t.anchors, allCases).forEach(x => {
+      if (x.n > broadLim) wideAnchors.push(t.id + ':「' + x.k + '」单锚扫到 ' + x.n + ' 条(上限 ' + broadLim + ' 条)');
+    }));
+    assertEq(wideAnchors.join(' / '), '', '护栏主题登记了宽锚:换成这道护栏独有的取数口(注册表键 / 源码标识符 / 文件路径片段);' +
+      '与落点数那条分开报——那条报的是此刻落点多了,这条报的是锚点本身点不准,落点数恰好对上时也拦得住');
     // 承载用例得真在判:锚点还在而断言被掏空,是"名存实亡"那一路
     const hollow = [];
     GUARD_TOPICS.forEach(t => guardHostsOf(t.anchors).forEach(h => {
@@ -8477,6 +8522,41 @@ action 二选一:
       '字面量被一并抹掉:锚点大多写在断言的取值与消息字面里,全抹掉会把所有主题一起报成失联');
     assertEq(Object.entries(SUITES).reduce((a, [, t]) => a.concat(t.map(x => x.fn)), []).length,
       Object.values(SUITES).reduce((n, t) => n + t.length, 0), '取用例源码那一口与套件表求和对不上(遍历口径失准,两条护栏主题断言都不可信)');
+  } },
+  { name: '护栏主题落点不符的四种失败逐个报得出区别:判词与报错句都不许同形(锚点写泛与真多一处承载处置相反)', fn() {
+    /* 上面两条都按 guardSpread 的判词分条报,而"分得开"这件事本身得有判据:落点多于登记有两条来路——
+     * 锚点写泛把不相干用例扫了进来(该收窄锚点),与这道护栏真由多处一起承载(该抬 hosts),
+     * 处置方向相反;此前两者在报错句里逐字同形,单看红字挑不出往哪边改,判反一次就等于把护栏拆了。
+     * 这里拿造出来的用例集直接喂判词:四种失败各自的 kind 与报错句逐个不同形,且证据(是不是宽锚、
+     * 单锚扫到几条、上限几条)必须写进句子里——只把 kind 分开而报错句照旧同形不算分得开。 */
+    const mk = (n, code, tag) => Array.from({ length: n }, (_, i) => ({ label: tag + i, code }));
+    // 造 100 条:宽锚「甲」独占 40 条,窄锚「乙」「丙」各只在两三条里;上限 = 5 条
+    const wideSet = mk(38, '甲', 'w').concat(mk(2, '甲 乙', 'wb'), mk(60, '丁', 'x'));
+    const narrowSet = mk(2, '乙 丙', 'nb').concat(mk(1, '乙', 'n'), mk(97, '丁', 'x'));
+    assertEq(guardBroadLimit(wideSet.length), 5, '宽锚上限应由用例总数现算(100 条的 5% = 5 条),不是写死的数');
+    const T = (over) => Object.assign({ id: 'demo-topic', anchors: ['乙', '丙'], hosts: 1, why: '造出来的主题' }, over);
+    const v = {
+      broad: guardSpread(T({ anchors: ['甲', '乙'] }), wideSet),
+      extra: guardSpread(T(), narrowSet),
+      short: guardSpread(T({ hosts: 3 }), narrowSet),
+      lost: guardSpread(T({ anchors: ['乙', '戊'] }), narrowSet),
+    };
+    assertEq(v.broad.kind, 'broad', '宽锚扫进来的多余落点应判成锚点过泛(单锚 40 条已越过上限)');
+    assertEq(v.extra.kind, 'extra', '锚点条条都窄而落点仍多于登记,应判成真多一处承载');
+    assertEq(v.short.kind, 'short', '落点少于登记应单独成一种失败(处置是找回被删的那处,不是收窄也不是抬 hosts)');
+    assertEq(v.lost.kind, 'lost', '锚点一处都点不中应判成失联');
+    assertEq(guardSpread(T({ hosts: 2 }), narrowSet).kind, 'ok', '落点数与登记相符时不得报错(一题多承载本身不禁)');
+    const lines = Object.values(v).map(x => x.line);
+    assertEq(new Set(lines).size, lines.length, '四种失败的报错句逐条不许同形:' + lines.join(' || '));
+    ['broad', 'extra', 'short'].forEach(k => {
+      assert(v[k].line.includes('demo-topic'), k + ' 的报错句应点名主题编号:' + v[k].line);
+      assert(/登记 hosts=\d+、实测落点 \d+ 处/.test(v[k].line), k + ' 的报错句应写明期望 hosts 与实测落点数:' + v[k].line);
+    });
+    assert(v.broad.line.includes('锚点过泛') && v.broad.line.includes('「甲」单锚就扫到 40 条') && v.broad.line.includes('上限 5 条'),
+      '锚点过泛那句应点名宽锚是谁、单锚扫到几条、上限几条:' + v.broad.line);
+    assert(v.extra.line.includes('锚点不泛') && !v.extra.line.includes('锚点过泛'),
+      '真多一处承载那句应写明锚点并不泛(否则与收窄锚点那条又混成一句):' + v.extra.line);
+    assert(v.lost.line.includes('造出来的主题'), '失联那句应带上 why(销号与否要照它判):' + v.lost.line);
   } },
   { name: 'README 数字对账:注册表口径(能力/KB/提示词/命令/专家)由各注册表实计', fn() {
     const Skills = require('../js/skills.js');
