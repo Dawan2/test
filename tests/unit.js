@@ -7125,6 +7125,37 @@ action 二选一:
       assertEq(bad.join(' / '), '', label + ':report(...) 不得写在 for await 这类 for 与 ( 不相邻的迭代体内(循环禁令那份词表点不到这形状)');
     });
   } },
+  { name: '集成/冒烟 report(...) 不许落在会跳过的条件块里(块链只许 main 函数体与裸 { } 分节块)', fn() {
+    /* 上面三条堵的都是"一处静态登记点跑出多条"(循环/helper/for await),方向清一色是 静态 < 实跑;
+     * 反方向一直空着。把一条 report(...) 原样搬进带花括号的条件块:
+     *   if (process.env.MV_XXX) {
+     *     report('名', …);
+     *   }
+     * 行首点数、调用数、用例名字面、不同名数一个不变,块头既不是循环也不是函数体
+     * (helper 那条的判据按 CTRL 词表把 `if (…) {` 有意排除了——不排除的话控制结构会被当成函数体误报),
+     * 三层全绿;而分支不成立时实跑就少一条,README 对的是套件自报的实跑数,文档于是比实跑多。
+     * 同一条改成同一行前缀写法(`if (cond) report(…);`)反倒三层同时红:只有带花括号这一形状漏在外面。
+     * 判据不列 if/else/switch/try 这类词表(for await 那条已经演过按字面列词表列不全):反过来立白名单——
+     * 登记点的块链上只许出现"进了 main 就一定执行"的块:main 的函数体,与就地开的裸 { } 分节块。
+     * 归口:块头写着 for/while/do/function 或以 `=> {` 收尾的形状是上面三条的辖区,本条不重复报——
+     * 它们报的是"一条登记跑出多条",本条报的是"这条登记可能一条都不跑",失败含义不合并。 */
+    const isMain = h => /^(?:async\s+)?function\s+main\s*\(\s*\)\s*\{$/.test(h.trim());
+    const OWNED = /=>\s*\{$|(?:^|[^\w$])(?:function|for|while|do)(?![\w$])/;
+    [['tests/integration.js', '集成测试'], ['tests/cli.smoke.js', 'CLI 冒烟']].forEach(([rel, label]) => {
+      const bad = [];
+      reportBlockHeads(rel).forEach(({ line, heads }) => {
+        heads.map(h => h.trim()).forEach(h => {
+          // 只判开块的那些层:不以 `{` 收尾的是调用/数组的括号,登记点落进表达式那一路归上面三条与"裸表达式语句"那点管
+          if (!/\{$/.test(h) || h === '{' || isMain(h)) return;
+          // 归口判词只看代码本身:块头里字符串字面量先抹掉,免得 `mode === 'for-real'` 这类文字把它诓过去
+          if (OWNED.test(h.replace(/'[^']*'|"[^"]*"/g, "''"))) return;
+          bad.push(rel + ':' + line + ' 外层「' + h + '」');
+        });
+      });
+      assertEq(bad.join(' / '), '', label + ':report(...) 的块链上只许有 main 函数体与裸 { } 分节块' +
+        '(登记点坐在条件块里,分支不成立时一条都不跑,静态点数就多于实跑条数——而 README 对的是实跑数)');
+    });
+  } },
   { name: '三套件用例数只增不减:unit/integration/cli.smoke 各自不低于下限(真删测且把 README 一并改小即红)', fn() {
     /* 上面两条对账钉的是"实测与文档相等",而相等这件事两边一起改小照样成立:真删掉一行 report(...)
      * 再把 README 那个数字改小,那两条一条不红。这里另立一层与相等无关的判据——三个套件各有一个下限,
@@ -7135,7 +7166,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 492, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 493, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 130, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -7271,7 +7302,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 149;
+    const FLOOR = 150;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
