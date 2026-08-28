@@ -248,6 +248,25 @@
     if (D.shotAssetVer(p, s) > (s.video.assetVer || 0)) return true;
     return !!(s.video.inputHash && s.video.inputHash !== D.shotInputHash(p, s));
   };
+  /* 该集过期镜按「批量重生成够不够得着」分两堆(单源:浏览器发布门 G4 与 headless 七门同读这一份)。
+   * 定稿镜的过期同样是过期:counts.stale 照数、G4 照 fail——这里分堆只管回执怎么报,一个门槛都不动。
+   * 分的理由是两端批量生成都锁着 !s.final(重生成会覆盖用户按下的定稿产物),那几镜处置按下去也跑不到,
+   * 出路是先解锁终稿。回执把两堆混成一个数时,用户按「N 镜过期」去点处置,回来发现门禁照旧 fail。 */
+  D.staleShotSplit = function (p, ep, online) {
+    const stale = ((ep && ep.shots) || []).filter(s => D.shotVideoStale(p, s, online));
+    return {
+      all: stale.map(s => s.id),
+      rerun: stale.filter(s => !s.final).map(s => s.id),
+      locked: stale.filter(s => !!s.final).map(s => s.id),
+    };
+  };
+  /* 分堆在回执上的那句话也只此一份(两端 G4 各拼一句就会长成两种说法);两堆不分家时回空串,原文案一字不变 */
+  D.staleSplitNote = function (rerun, locked) {
+    if (!locked) return '';
+    return rerun
+      ? '(可重跑 ' + rerun + ' 镜;另 ' + locked + ' 镜已定稿,批量重生成不覆盖定稿产物,需先解锁终稿)'
+      : '(全部已定稿,批量重生成不覆盖定稿产物,一镜也重跑不到,需先解锁终稿)';
+  };
   /* ================= 镜头配音(TTS 渲染清单) =================
    * 配音的唯一解释:哪套音色配置生效、已渲染音轨用的是什么参数、能否混入成片。
    * 浏览器(storyboard/sb-gen/sb-batch)渲染后写回 s.audioMeta,合成侧(sb-io.js / cli.js)据此取音轨并落清单凭据;
