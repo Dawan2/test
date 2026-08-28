@@ -2918,6 +2918,33 @@ const commandsTests = [
     assert((R.byName['episode.compose'].args || []).some(x => x.name === 'force' && x.type === 'boolean'),
       '注册表须登记 force(没登记 Agent 侧 sanitizeCmdArgs 会把它抹掉,点名重来传不进去)');
   } },
+  { name: 'generateVideos:人手递来的字符串/类数组 shotIds 两端都当整集跑,回执那句话跟着选人闸走', fn: async () => {
+    /* 选人闸是 Array.isArray(args.shotIds) && length,字符串与类数组都进不去,命令实跑的是整集那一路;
+     * `hujing exec … --args '{"shotIds":"sh0"}'` 的 JSON.parse 原样递进来,没有第二道整形。
+     * 回执那句话另按真值判断,同一次执行就分成两种说法:字符串被按字符去重冒充镜数,
+     * 类数组连去重都做不了——命令层 execute 把它兜成 exception,一次 ok 执行当场变 failed。 */
+    const sb = loadCommands();
+    cmdCtx(sb, { shots: [makeShot(0, { confirm: true }), makeShot(1, { confirm: true })] });
+    const whole = await sb.Commands.execute('episode.generateVideos', { pid: 'p1', epid: 'ep1', ui: true });
+    assertEq(whole.result.total, 0, '夹具前提:整集已出片,一镜也跑不到');
+    const r = await sb.Commands.execute('episode.generateVideos', { pid: 'p1', epid: 'ep1', ui: true, shotIds: 'sh0' });
+    assertEq(r.ok, true, '实际:' + JSON.stringify(r.error || {}));
+    assertEq(r.result.note, whole.result.note,
+      '字符串 shotIds 命令当整集跑,回执就得说整集那句(拆成字符即红),实际:' + r.result.note);
+    const r2 = await sb.Commands.execute('episode.generateVideos', { pid: 'p1', epid: 'ep1', ui: true, shotIds: { 0: 'sh0', length: 1 } });
+    assertEq(r2.ok, true, '类数组 shotIds 不许把一次 ok 执行判成异常,实际:' + JSON.stringify(r2.error || {}));
+    assertEq(r2.result.note, whole.result.note, '类数组 shotIds 同样按整集那一路说,实际:' + r2.result.note);
+    assert(!sb.__called.includes('batchGenVideos'), '三次都没有镜可跑,引擎一次也不该起来');
+    // headless 那一端跑的是 cli.js 自己那份选人闸 + 同一份派生,谁也不替谁作证
+    const sbc = loadCli();
+    cliCtx(sbc, [makeShot(0, { confirm: true, image: 'i0.png' }), makeShot(1, { confirm: true, image: 'i1.png' })]);
+    const c0 = await sbc.EXEC['episode.generateVideos'].run({ pid: 'p1', epid: 'ep1' }, {});
+    const c1 = await sbc.EXEC['episode.generateVideos'].run({ pid: 'p1', epid: 'ep1', shotIds: 'sh0' }, {});
+    assertEq(c1.result.note, c0.result.note, 'CLI 那端同样:字符串 shotIds 跑整集,回执说整集那句,实际:' + c1.result.note);
+    const c2 = await sbc.EXEC['episode.generateVideos'].run({ pid: 'p1', epid: 'ep1', shotIds: { 0: 'sh0', length: 1 } }, {});
+    assertEq(c2.result.note, c0.result.note, 'CLI 那端类数组不许抛(抛出去 exec 直接非零退出),实际:' + c2.result.note);
+    assertEq(sbc.__genShots.join(','), '', '三次都没有镜下发到引擎');
+  } },
   { name: 'CLI exec smartReview:单独调用只评一次(重抽循环只在 produce 编排里),故注册表不替它登记 maxRetry', fn: async () => {
     /* 浏览器那一端 episode.smartReview 自己带重抽循环,轮次入参有落点;headless 这一端不是同一形态——
      * 它是一次 /api/wf/smart-review 往返,重抽循环长在 produce 编排里。故 --args '{"maxRetry":5}'
@@ -4695,6 +4722,27 @@ const domainTests = [
       '整集这一路各堆之和须等于本集镜数:' + n2);
     assert(/还没有分镜/.test(sb.Domain.emptyBatchNote(p, { shots: [] }, null, false)), '空集如实说没分镜');
     assert(/还没有分镜/.test(sb.Domain.emptyBatchNote(p, null, ['sh0'], false)), '缺集不抛');
+  } },
+  { name: 'emptyBatchNote:点名判据与两端选人闸同形(非数组的 shotIds 走整集那一路,不拆成字符也不抛)', fn: () => {
+    /* 两端选人闸都是 Array.isArray(args.shotIds) && length——人手 --args 递来的字符串/类数组进不去,
+     * 命令实跑的是整集那一路。回执这一句要是自己按 picked && picked.length 判,同一次执行就分成两种说法:
+     * 字符串按字符去重冒充镜数,类数组连去重都做不了(new Set(obj) 当场抛)。 */
+    const sb = loadDomain();
+    const mk = (id, order, ex) => Object.assign({ id, order, prompt: 'p', plot: 'plot', characters: [], dialogue: '',
+      narration: '', scene: '', props: [], duration: 5, camera: '固定镜头', confirm: true,
+      video: { status: 'done', url: 'u' } }, ex || {});
+    const ep = { id: 'ep1', content: '正文', shots: [mk('sh0', 0), mk('sh1', 1)] };
+    const p = makeP([ep], []);
+    const whole = sb.Domain.emptyBatchNote(p, ep, null, false);
+    assert(/^本集没有待生成的镜头/.test(whole) && /2 镜已出片/.test(whole), '夹具前提:整集那一路说得出话,实际:' + whole);
+    assertEq(sb.Domain.emptyBatchNote(p, ep, 'sh0', false), whole,
+      '字符串 shotIds 选人闸不收,回执也不许当点名(收了就报成「点名的 3 镜」——那是 s/h/0 三个字符)');
+    assertEq(sb.Domain.emptyBatchNote(p, ep, { 0: 'sh0', length: 1 }, false), whole,
+      '类数组 shotIds 同样按整集那一路说,且不许抛(抛出去就是一次 ok 执行被判成异常)');
+    assertEq(sb.Domain.emptyBatchNote(p, ep, 1, false), whole, '数字 shotIds 同理');
+    // 反面:合法数组这两路一个字没动
+    assertEq(sb.Domain.emptyBatchNote(p, ep, [], false), whole, '合法空数组与选人闸同形:仍是整集那一路');
+    assert(/^点名的 1 镜/.test(sb.Domain.emptyBatchNote(p, ep, ['sh0'], false)), '合法非空数组照旧走点名那一路');
   } },
   { name: 'emptySubjectImageNote:一位也没跑时逐堆说清为什么(分档与镜头那一侧分得开;各堆之和 = 点名数)', fn: () => {
     const sb = loadDomain();
@@ -8062,6 +8110,30 @@ const contractTests = [
     assert(/r\.result && r\.result\.note/.test(dg), 'digest 须读回执上的 note(不读的话浏览器这一端仍是静默)');
     assert(/U\.toast\(note/.test(dg), 'digest 播的须是回执原句,不另拼一句');
   } },
+  { name: '空跑回执的点名判据与选人闸同形:两端选人闸只认数组,emptyBatchNote 的点名分支也只认数组', fn() {
+    /* 真正跑哪些镜由两端各自的选人闸定,回执那句话只是解释它——判据分家就会出现"命令跑整集、回执说点名"。
+     * 人手 `--args '{"shotIds":"sh0"}'` 的 JSON.parse 原样递进来,选人闸认不出它,派生却会按字符去重。
+     * 行为面由 domain/commands 两套件真跑钉住,这一条只钉三处判据的源级写法,免得哪端悄悄改宽。 */
+    const seg = (rel, head, tail) => {
+      const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      const i = src.indexOf(head);
+      assert(i >= 0, rel + ' 找不到「' + head + '」(挪窝或改名就同轮改这里,别把本条留成恒真)');
+      const rest = src.slice(i + head.length);
+      const j = rest.indexOf(tail);
+      return rest.slice(0, j >= 0 ? j : rest.length);
+    };
+    [['js/commands.js', "reg('episode.generateVideos'", "\n  reg('"],
+      ['cli.js', "EXEC['episode.generateVideos']", '\nEXEC[']].forEach(([rel, head, tail]) => {
+      const body = seg(rel, head, tail);
+      assert(/Array\.isArray\(args\.shotIds\) && args\.shotIds\.length/.test(body),
+        rel + ' 的选人闸须只认数组 shotIds(放宽成真值判断,字符串就会被当点名清单)');
+    });
+    const note = seg('js/domain.js', 'D.emptyBatchNote = function', '\n  D.');
+    const code = note.split('\n').filter(t => !(/^\s*(\/\/|\/?\*)/.test(t) || !t.trim()));
+    assert(code.length > 10, 'emptyBatchNote 段可执行行取不到(整段被判成注释本条即恒真),实测 ' + code.length + ' 行');
+    assert(code.some(t => /if \(Array\.isArray\(picked\) && picked\.length\)/.test(t)),
+      'emptyBatchNote 的点名分支须与选人闸逐字同形(退回 picked && picked.length 即两种说法)');
+  } },
   { name: '一位也没跑那句实话双端单源:两端主体补图空跑早退都现取 Domain.emptySubjectImageNote,不与镜头那份混用', fn() {
     /* 与镜头那一侧同形:句子只许有一份,否则浏览器 toast 与 hujing exec 的 JSON 上读到两种说法。
      * 另钉"不许拿 emptyBatchNote 顶":两侧分档不同(主体没有终稿锁与判旧,点名到的一律重生成),
@@ -11369,7 +11441,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 639, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 642, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 147, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 109, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -11704,7 +11776,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 231;
+    const FLOOR = 232;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
