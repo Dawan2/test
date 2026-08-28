@@ -596,6 +596,12 @@
     return { status, counts, blockers, action, reviewAvg, reviewStale, composedReady, shotsStale };
   };
 
+  /* 项目整本原文(下游命令读入的那一份文本,没有即空串):拆集按它切分,提取主体先读它再回退各集正文。
+   * 与门槛派生的「剧本这一步走过没有」不是同一问:gateBlockers 认 extractDone 也算走过
+   * (提取过主体的老项目流程条上剧本步画 ✓),但那类项目里整本原文并不在库——
+   * 「这一步走过了」是进度,「原文读不读得到」是输入,消费方按自己要的那一问取,两问不许互相冒充。 */
+  D.projectScript = p => String((p && p.script) || '').trim();
+
   /* 前置门槛的阻塞码登记表:gateBlockers 只按本表出码,不写第二处字面。
    * 表兼枚举面——门槛派生有三个消费方(流程条 workflow 按 step 取,问题中心 Issues.gates() 与
    * 计划层 TODO_OF 按码取),三处都是"表外的码一律不投"而且不投是静默的,新增一档时谁没跟上

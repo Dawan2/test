@@ -181,7 +181,7 @@
    * 与服务端 /api/wf/split-episodes 同口径);已有分集一律要求 overwrite 显式授权(整表覆盖不可撤销,
    * 旧分集进回收站 7 天可恢复;UI 的「重新分集」按钮仍走 doSplit 的覆盖确认弹窗),在飞生成拒绝覆盖 */
   reg('project.splitEpisodes', { label: '剧本拆集', needs: ['p'] }, ({ p, args }) => metered(REG['project.splitEpisodes'], async () => {
-    const text = String(p.script || '').trim();
+    const text = Domain.projectScript(p); // 整本原文在不在:与计划层同读这一份派生,两边不各写一份入口条件
     if (!text) return blocked('no-script', '项目暂无剧本原文,请先上传剧本');
     if (!window.EpisodeUtil || !EpisodeUtil.splitCore) return fail('unavailable', '分集模块未加载');
     const had = (p.episodes || []).length;
@@ -235,7 +235,7 @@
    * args.local:强制本地启发式(零 LLM 零计费)——向导离线/重试回退走它,故浏览器不再有第二条入库路径 */
   reg('project.extractSubjects', { label: '提取主体' }, ({ p, args }) => metered(REG['project.extractSubjects'], async () => {
     if (!window.EpisodeUtil || !EpisodeUtil.llmExtractSubjects) return fail('unavailable', '主体提取模块未加载');
-    const text = String(p.script || '').trim() || (p.episodes || []).map(e => e.content || '').filter(Boolean).join('\n').trim();
+    const text = Domain.projectScript(p) || (p.episodes || []).map(e => e.content || '').filter(Boolean).join('\n').trim();
     if (!text) return blocked('no-script', '项目暂无剧本内容,请先上传剧本');
     const mode = args.mode === 'fine' ? 'fine' : 'normal';
     const types = { character: true, scene: true, prop: true };

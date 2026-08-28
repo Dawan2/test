@@ -55,8 +55,16 @@
       const g = gates['subjects-no-image'];
       return g ? { key: 'subj', label: `补齐主体参考图(${g.count} 个缺图)` } : null;
     },
-    'project.splitEpisodes': ({ gates }) => (!gates['no-script'] && gates['no-eps'])
-      ? { key: 'split', label: '剧本拆集:整本切成分集' } : null,
+    /* 拆集这一步分两态:门槛派生说剧本已过(extractDone 也算)不等于整本原文在库,而拆集切的就是原文
+     * (Domain.projectScript,与命令层同读这一份)。原文不在时推命令步等于推一条注定 blocked/no-script 的步,
+     * 用户点下去只换来一句"请先上传剧本"——那句话本身才是该做的事,故直接出补原文的导航步。
+     * 这不是把这一步藏掉:步照出、位置照旧,只是把动作换成真能办到的那个。 */
+    'project.splitEpisodes': ({ p, gates }) => {
+      if (gates['no-script'] || !gates['no-eps']) return null;
+      return Domain.projectScript(p)
+        ? { key: 'split', label: '剧本拆集:整本切成分集' }
+        : { key: 'split', label: '补上剧本原文:拆集要按整本原文切分,项目里只留了提取结论', goto: '#/project/' + p.id };
+    },
     // 本集理解是智能分镜编排的内部第一步(已有理解可复用不重扣),不单独占一个计划步
     'episode.understanding': null,
     'episode.generateStoryboard': ({ ep, st, hash }) => {
