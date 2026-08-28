@@ -2077,6 +2077,62 @@ const produceTests = [
     // 反向钉住:两次的花销各报各的,回执不是从项目开张累起来的总账
     assert(!/自动重生成 12 次/.test(second.say.join('|')), '第二次的回执报的是这一次的 6 次,不是累计 12 次');
   } },
+  { name: 'episode.smartReview:一镜也没审时回执得说清原因(引擎一次没起来就没有面板也没有提示可依赖)', fn: async () => {
+    /* 与批量生成 0 镜、主体生图 0 位同一个病:回执 ok、引擎实收 0、拦截点自己不说话。
+     * 用户可见的两个入口(发布门 G3「未审」的一键处置、流程条「整集审片/重新审片」)按下去
+     * 零反应,门禁结论一字不变;服务端 /api/wf/smart-review 同一档是 400 点名回绝,两端判法相反。
+     * 引擎实收数(reviewShot 调用次数)与回执数字分开量:判空跑一律看引擎收到几镜,不看回执上的数。 */
+    const runSR = async (shots, args) => {
+      const sb = loadProduce();
+      const ep = makeEp({ content: '测试剧本正文', composed: false, shots });
+      sb.__proj = { id: 'p1', episodes: [ep], subjects: [] };
+      const r = await sb.Commands.execute('episode.smartReview', Object.assign({ pid: 'p1', epid: 'ep1', ui: true }, args || {}));
+      const before = sb.__toasts.length;
+      sb.Commands.digest(r);
+      return { r, sb, engine: sb.__called.filter(c => c === 'reviewShot').length, docks: sb.__docks.length, played: sb.__toasts.slice(before) };
+    };
+    const ready = i => makeShot(i, { confirm: true });
+    // 档一:整集一镜未出片(G3「未审」那一集的常态)
+    const none = await runSR([makeShot(0, { video: { status: 'none' } }), makeShot(1, { video: { status: 'none' } })]);
+    assertEq(none.r.ok, true, '一镜也没审仍是 ok:全集未出片时点「整集审片」不该报拦截');
+    assertEq(none.engine, 0, '夹具前提:这一档引擎一次都没起来');
+    assertEq(none.docks, 0, '这一档连后台面板都不开——没有引擎提示可依赖');
+    assert(/一镜也没审/.test(none.r.result.note || ''), '回执得说清为什么是 0 镜,实际:' + JSON.stringify(none.r.result.note));
+    assertEq(none.played.length, 1, 'digest 应把这一句播出去(成功档默认静默,note 是例外)');
+    // 档二:全集已定稿(有片但定稿镜不重审)
+    const fin = await runSR([ready(0), ready(1)].map(s => Object.assign(s, { final: true })));
+    assertEq(fin.engine, 0); assertEq(fin.r.ok, true);
+    assert(/一镜也没审/.test(fin.r.result.note || ''), '全定稿集同样得说清,实际:' + JSON.stringify(fin.r.result.note));
+    // 档三:点名的镜不在本集——不许报成"本集没有可审的镜头"(本集明明有可审的镜)
+    const picked = await runSR([ready(0)], { shotIds: ['ghost', 'ghost'] });
+    assertEq(picked.engine, 0);
+    assert(/点名的 1 镜/.test(picked.r.result.note || ''),
+      '点名档按去重后的点名数报(重复 id 指的是同一镜),实际:' + JSON.stringify(picked.r.result.note));
+    assert(!/本集没有可审的镜头/.test(picked.r.result.note || ''), '本集有可审的镜时不许说"本集没有可审的镜头"');
+    // 对照面:真审了一趟就不许再多播一句(引擎自己有后台面板)
+    const real = await runSR([ready(0)]);
+    assertEq(real.engine, 1, '对照面前提:引擎真收了 1 镜');
+    assertEq(real.docks, 1, '真跑那一档由后台面板说话');
+    assertEq(real.r.result.note, undefined, '真审过的回执不许带这句话');
+    assertEq(real.played.length, 0, 'digest 不重复播报引擎已经说过的事');
+  } },
+  { name: 'episode.smartReview:用户中止审片不许冒充「没有可审的镜头」(判 0 取引擎数的可审镜数,不拿三个计数猜)', fn: async () => {
+    /* pass+retry+manual 全 0 有两种成因:可审镜本来就是 0,与用户在后台面板上按✕当场中止。
+     * 拿那三个数猜的话,后者会被报成「本集没有可审的镜头」——那是假话(镜就在那儿,是人喊停的)。
+     * 故引擎把自己数的 targets 随回执报出,命令层只认这一位。 */
+    const sb = loadProduce();
+    sb.U.bgDock = opt => { const d = { say() {}, finish() {}, close() {}, cancelled: true, m: { querySelector: () => null, querySelectorAll: () => [] } }; sb.__docks.push(d); return d; };
+    const ep = makeEp({ content: '测试剧本正文', composed: false, shots: [makeShot(0, { confirm: true }), makeShot(1, { confirm: true })] });
+    sb.__proj = { id: 'p1', episodes: [ep], subjects: [] };
+    const r = await sb.Commands.execute('episode.smartReview', { pid: 'p1', epid: 'ep1', ui: true });
+    assertEq(sb.__called.filter(c => c === 'reviewShot').length, 0, '夹具前提:开场即中止,一镜也没真审');
+    assertEq(r.result.pass + r.result.retry + r.result.manual, 0, '夹具前提:三个计数与"没有可审镜"那一档一模一样');
+    assertEq(r.result.targets, 2, '可审镜数是 2:引擎报的是自己数出来的那一份,不是审完几镜');
+    assertEq(r.result.note, undefined, '中止不是"没有可审的镜头",回执不许替用户编一个理由');
+    const before = sb.__toasts.length;
+    sb.Commands.digest(r);
+    assertEq(sb.__toasts.length - before, 0, '这一档 digest 不播(是人喊的停,他自己知道)');
+  } },
 ];
 
 /* ================= 套件 3.5:commands.js(统一领域命令注册表,第二阶段) ================= */
@@ -2109,7 +2165,12 @@ function loadCommands() {
         ep.composedGraphRev = ep.graphRev || 0;
       }
     },
-    autoSmartReview: async (p, ep, main, shots, quiet) => { sb.__called.push('autoSmartReview'); return sb.__reviewR || { pass: 3, retry: 0, manual: 0 }; },
+    /* 回执形状与真引擎同:targets = 这一趟可审的镜数(命令层据此判"一镜也没审"要不要在回执上说一句)。
+     * 夹具不点名时按收到的镜数报——桩不许替产品报出"可审镜为 0",那会让真审过的回执凭空多出一句话。 */
+    autoSmartReview: async (p, ep, main, shots, quiet) => {
+      sb.__called.push('autoSmartReview');
+      return Object.assign({ targets: (shots || ep.shots || []).length }, sb.__reviewR || { pass: 3, retry: 0, manual: 0 });
+    },
   });
   sb.SBGen = {
     batchGenVideos: async (p, ep, main, shots, opts, done) => {
@@ -11598,7 +11659,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 646, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 648, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 147, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 109, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -11933,7 +11994,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 239;
+    const FLOOR = 240;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接

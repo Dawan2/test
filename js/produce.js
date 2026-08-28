@@ -253,7 +253,10 @@
   async function autoSmartReview(p, ep, main, shots, quiet, maxRetryArg) {
     const maxRetry = Domain.reviseRetryLimit(maxRetryArg, ep.sbConfig.maxRetry);
     const targets = (shots || ep.shots).filter(s => s.video && Store.shotVideoReady(s) && !s.final);
-    if (!targets.length) return { pass: 0, retry: 0, manual: 0 };
+    /* 可审镜数随回执报出去(targets):可审镜为 0 时这一趟连后台面板都不开、一句提示都没有,
+     * 命令层要据此在回执上说清"一镜也没审"。报的是本函数自己数的这一份,不许调用方另写一遍筛法;
+     * 也不许拿 pass+retry+manual 是不是 0 去猜——用户在面板上按✕中止时那三个数同样是 0。 */
+    if (!targets.length) return { pass: 0, retry: 0, manual: 0, targets: 0 };
     const dock = quiet ? null : U.bgDock({ title: `🧠 智能审片 · ${ep.title}(${targets.length} 镜)` });
     if (dock) {
       dock.say(`达标线 ${Domain.REVIEW_MIN.toFixed(1)} 分 · 不达标先按问题修订提示词再重生成(每镜最多 ${maxRetry} 次)· 超限转人工处理 · 评审期间可正常操作页面`);
@@ -317,7 +320,7 @@
     }
     Store.save(); // 达标镜头的 confirm=true 与整集 lastReview 落库
     if (main && main.isConnected) window.SB.renderShots(main, p, ep);
-    return { pass: passCnt, retry: retryCnt, manual: manualCnt };
+    return { pass: passCnt, retry: retryCnt, manual: manualCnt, targets: targets.length };
   }
 
   /* 一键成片(EP 卡片入口):批量生成 → 智能审片 → 合成 */
