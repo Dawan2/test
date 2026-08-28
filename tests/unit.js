@@ -8557,6 +8557,12 @@ action 二选一:
     assert(v.extra.line.includes('锚点不泛') && !v.extra.line.includes('锚点过泛'),
       '真多一处承载那句应写明锚点并不泛(否则与收窄锚点那条又混成一句):' + v.extra.line);
     assert(v.lost.line.includes('造出来的主题'), '失联那句应带上 why(销号与否要照它判):' + v.lost.line);
+    /* 判词分得开还不够:消费侧把它们并回同一条 assertEq,报错句照样同形。故把接线也钉住。 */
+    const host = SUITES.contract.find(x => x.name.startsWith('护栏主题不许失联'));
+    assert(host, '找不到消费这四种判词的那条用例(改了名就同轮改这里,别把本条留成恒真)');
+    const wired = [...blankNonCode(String(host.fn), true).matchAll(/assertEq\(by\.(\w+)\.join/g)].map(m => m[1]).sort();
+    assertEq(wired.join(','), 'broad,extra,lost,short',
+      '四种判词须各占一条 assertEq:并回同一句就等于把处置相反的两种失败又报成同形(改了那段写法同轮改这里)');
   } },
   { name: 'README 数字对账:注册表口径(能力/KB/提示词/命令/专家)由各注册表实计', fn() {
     const Skills = require('../js/skills.js');
