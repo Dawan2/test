@@ -1104,12 +1104,21 @@ EXEC['shot.generateVideo'] = { needs: ['p', 'ep', 's'], meter: true, run: async 
   return execOk({ shotId: s.id, url: (ret.ret.video && ret.ret.video.url) || '' });
 } };
 
-/* 合成成片(exec):失败镜头/无分镜前置 blocked;合成核心与 CMD.compose 同函数字面 */
+/* 合成成片(exec):失败镜头/无分镜前置 blocked;合成核心与 CMD.compose 同函数字面。
+ * 已合成且合成输入未变(Domain.epComposedReady,与浏览器命令层/计划投影/问题中心同读那一份)时不重跑:
+ * 一键成片第 4 步经的正是这条出口,同一份输入只会拼出同一条成片,而 ff.compose 是真钱。
+ * --force 是用户点名重来;--ratio/--subtitle 这两个渲染参数不在成片指纹里(指纹读的是 ep.sbConfig 那份),
+ * 给了就按点名重来处理——否则等于把用户点的画幅/字幕开关静默吞掉,回一句"已是最新"。
+ * `hujing compose` 那条原语不走本闸:它本身就是"按这些参数现渲一条"的人手动作。 */
 EXEC['episode.compose'] = { needs: ['p', 'ep'], meter: true, run: async (args, f) => {
   const { ep } = await execCtx(args, f);
   if (!(ep.shots || []).length) return execBlocked('no-shots', '暂无分镜');
   const failedCnt = ep.shots.filter(s => s.video && s.video.status === 'failed').length;
   if (failedCnt) return execBlocked('failed-shots', failedCnt + ' 个失败镜头阻塞合成,请先处理', { failed: failedCnt });
+  const forced = !!args.force || (f || {}).ratio !== undefined || (f || {}).subtitle !== undefined;
+  if (!forced && Domain.epComposedReady(ep, true)) {
+    return execOk({ url: ep.composedUrl || '', count: (ep.shots || []).length, fresh: true });
+  }
   const c = await composeCore(args.pid, args.epid, f);
   return execOk({ url: c.url, count: c.count });
 } };

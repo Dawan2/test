@@ -177,13 +177,22 @@
   }));
 
   /* 合成成片(exec):composeVideo + onTask 句柄轮询(原跑批等待逻辑下沉);
-   * headless quiet+失败镜头前置 blocked;ui 模式保留素材不齐确认/失败镜阻塞弹窗(用户取消 → blocked cancelled 静默) */
+   * headless quiet+失败镜头前置 blocked;ui 模式保留素材不齐确认/失败镜阻塞弹窗(用户取消 → blocked cancelled 静默)。
+   * 已合成且合成输入未变时不重跑:判据现取 Domain.epComposedReady(计划投影 TODO_OF 与问题中心 composed-stale
+   * 正是按这一份判「没必要重跑」),不另立第三份指纹。同一份输入只会拼出同一条成片,而 ff.compose 是真钱——
+   * 自动/主线步(一键成片编排、计划步、跑批)走到这里一律原地返回旧成片、零调用零计费;
+   * force 是「用户点名重来」的授权位(工作区/剪辑台/预览窗的合成按钮、问题中心处置带它),带它照旧真跑。 */
   reg('episode.compose', { label: '合成成片' }, ({ p, ep, args }) => metered(REG['episode.compose'], async () => {
     ensureSBCfg(p, ep);
     if (!(ep.shots || []).length) return blocked('no-shots', '暂无分镜');
     if (!args.ui) {
       const failedCnt = ep.shots.filter(s => s.video && s.video.status === 'failed').length;
       if (failedCnt) return blocked('failed-shots', failedCnt + ' 个失败镜头阻塞合成,请先处理', { failed: failedCnt });
+    }
+    if (!args.force && Domain.epComposedReady(ep, online())) {
+      const r = ok({ url: ep.composedUrl || '', count: (ep.shots || []).length, fresh: true });
+      r.next = nextOf(p, ep);
+      return r;
     }
     let ct = null;
     window.SB.composeVideo(p, ep, sinkOf(args), { quiet: !args.ui, onTask: tk => { ct = tk; } });
