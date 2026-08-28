@@ -5629,7 +5629,7 @@ const contractTests = [
       'G-13 的六条关联索引逐字节不变(只收一处不摘标记)');
     assertEq(Skills.validate({ Prompts }).join(' | '), '', '新键须被 skill 索引引用且引用键都存在');
   } },
-  { name: '注册表全仓持有者名单:每条 def 的字面持有者恰好只有 js/prompts.js(谁在别处抄第二份即红)', fn() {
+  { name: '注册表全仓持有者名单(镜头「按指令改」段的一份,与主体段那条同判据):每条 def 的字面持有者恰好只有 js/prompts.js(谁在别处抄第二份即红)', fn() {
     const Prompts = require('../js/prompts.js');
     /* 逐槽各写一份"这一句只剩注册表一份"的名单,收编到第 20 条已难以逐条维护:
      * 改成按注册表现取——每条 def 全仓扫一遍,持有者名单必须恰好是注册表自己那一份。
@@ -6687,6 +6687,40 @@ action 二选一:
       assert(m, rel + ' 找不到单套件清单');
       assertEq(m[1].split('|').sort().join(','), names, rel + ' 的单套件清单应与 SUITES 一致');
     });
+  } },
+  { name: 'README 数字对账:集成测试与 CLI 冒烟用例数由各自套件源码实计(逐行 report 登记点数)', fn() {
+    /* 这两个数此前不在对账内:把 126 改成 105、97 改成 64,单测一样全绿。
+     * 两套件都要起真实服务子进程,单测里跑不动,故按套件自己的计数口径静态点数——
+     * 两处的每一条用例都是独立一行的 report(...) 登记,行首点数就是套件末尾那句总数的口径;
+     * 对账的是用例总数(cli.smoke 那 2 项与 master 同名的失败不影响这个数,故不对通过数)。
+     * 静态点数与实跑数的一致性靠下面那条"每条 report 独立成行"的断言守住:
+     * 把 report 塞进循环或回调里,一行会跑出多条,静态数当场小于实跑数而 README 写的是实跑数,先红再说。 */
+    [['tests/integration.js', /服务器级集成测试[^)]*扩至 (\d+) 项断言/g,
+      /\$\{PASS\}\/\$\{PASS \+ FAIL\}/, '集成测试'],
+    ['tests/cli.smoke.js', /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g,
+      /\(results\.length - failed\.length\) \+ '\/' \+ results\.length/, 'CLI 冒烟'],
+    ].forEach(([rel, docRe, totalRe, label]) => {
+      const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      const lines = (src.match(/^[ \t]*report\(/gm) || []).length;
+      assert(lines > 0, label + ':' + rel + ' 里点不到 report(...) 登记行');
+      const calls = (src.match(/(?<![\w.])report\(/g) || []).length - (src.match(/function report\(/g) || []).length;
+      assertEq(calls, lines, label + ':每条用例须是独立一行的 report(...) 调用(嵌进表达式或回调里静态点数就代表不了实跑条数)');
+      assert(totalRe.test(src), label + ':' + rel + ' 收尾那句总数应由套件自己的计数器算出,不许手写数字');
+      assertDocNum('README.md', docRe, lines, label + '用例数');
+    });
+  } },
+  { name: '单元用例名全局唯一:用例名集合大小恰等于用例条数(重名会让"按名成集比对"漏看删测)', fn() {
+    /* 「用例名集合双向比对证明没删测」是本目录一直在用的取证手段:一旦有两条同名,
+     * 集合口径会把其中一条吃掉——删掉一条真用例、同时有一对重名,两者互相抵消就看不出来了。
+     * 故这里把"条数"与"不同名字数"钉成同一个数;新写用例撞了名先红,不许靠改名代替删测。 */
+    const all = Object.values(SUITES).reduce((a, t) => a.concat(t.map(x => x.name)), []);
+    const seen = new Set(), dup = [];
+    all.forEach(n => { if (seen.has(n)) dup.push(n); else seen.add(n); });
+    assertEq(dup.join(' / '), '', '用例名不许重名(同判据的同形断言要各自写明自己钉的是哪一处)');
+    assertEq(seen.size, all.length, '用例名集合大小应恰等于用例条数');
+    /* 打印用的标签是「套件 · 用例名」:跨套件同名也算重名,不许靠套件前缀去重 */
+    const labeled = Object.entries(SUITES).reduce((a, [s, t]) => a.concat(t.map(x => s + ' · ' + x.name)), []);
+    assertEq(new Set(labeled).size, labeled.length, '「套件 · 用例名」标签也须逐条唯一');
   } },
   { name: 'README 数字对账:注册表口径(能力/KB/提示词/命令/专家)由各注册表实计', fn() {
     const Skills = require('../js/skills.js');
