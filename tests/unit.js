@@ -4771,10 +4771,13 @@ function assertDocNum(rel, re, expect, label) {
     label + ':' + rel + ' 与实测不符(实测 ' + expect + ',文档 ' + got.join('/') + ')');
 }
 /* 把注释/字符串/模板串/正则整段抹成等长空白(换行与字符偏移原样保留),
- * 抹完只剩代码骨架,括号配对才点得准;供下面的 report 外层块链还原用。 */
-function blankNonCode(src) {
+ * 抹完只剩代码骨架,括号配对才点得准;供下面的 report 外层块链还原用。
+ * keepText 为真时只抹注释、字面量原样留着:护栏主题的锚点大多写在断言的取值与消息字面里,
+ * 那一路要的是"注释不算数"而不是"只剩骨架"(注释里提一句锚点不该算成这条护栏还在)。 */
+function blankNonCode(src, keepText) {
   const out = src.split('');
   const wipe = (a, b) => { for (let i = a; i < b && i < out.length; i++) if (out[i] !== '\n') out[i] = ' '; };
+  const wipeText = (a, b) => { if (!keepText) wipe(a, b); };
   let i = 0, prevCh = '', prevWord = '';
   /* 除号还是正则开头:看前一个有意义字符/关键词 */
   const reStart = () => !prevCh || /[({[,;:=!&|?+\-*%~^<>]/.test(prevCh)
@@ -4786,7 +4789,7 @@ function blankNonCode(src) {
     if (c === '\'' || c === '"') {
       let j = i + 1;
       while (j < src.length && src[j] !== c) j += src[j] === '\\' ? 2 : 1;
-      wipe(i, j + 1); i = j + 1; prevCh = 'x'; prevWord = 'x'; continue;
+      wipeText(i, j + 1); i = j + 1; prevCh = 'x'; prevWord = 'x'; continue;
     }
     if (c === '`') { // 模板串:${} 里可能再嵌反引号,按插值深度找收尾
       let j = i + 1, depth = 0;
@@ -4797,7 +4800,7 @@ function blankNonCode(src) {
         if (!depth && src[j] === '`') break;
         j++;
       }
-      wipe(i, j + 1); i = j + 1; prevCh = 'x'; prevWord = 'x'; continue;
+      wipeText(i, j + 1); i = j + 1; prevCh = 'x'; prevWord = 'x'; continue;
     }
     if (c === '/' && reStart()) {
       let j = i + 1, inClass = false, closed = false;
@@ -4810,7 +4813,7 @@ function blankNonCode(src) {
       }
       if (closed) {
         while (/[dgimsuvy]/.test(src[j + 1] || '')) j++;
-        wipe(i, j + 1); i = j + 1; prevCh = 'x'; prevWord = 'x'; continue;
+        wipeText(i, j + 1); i = j + 1; prevCh = 'x'; prevWord = 'x'; continue;
       }
     }
     if (/\S/.test(c)) { prevCh = c; prevWord = /[\w$]/.test(c) ? prevWord + c : ''; }
@@ -4850,6 +4853,44 @@ function reportBlockHeads(rel) {
   assertEq(stack.length, 0, rel + ':文件末尾仍有未闭合括号(抹码扫描失准,本断言不可信)');
   assert(found.length > 0, rel + ':点不到 report(...) 调用');
   return found;
+}
+/* ---- 护栏主题清单:给「这道护栏还在不在」一个不随用例名走的落点 ----
+ * 「用例名成集双向比对」是本目录的零吃测手段,而它把两件事报成同一形态(都只是"只在基线里有的 N 条"):
+ * 一条护栏按新实况翻面重写并改了名(该放行——W150 那次改写覆盖面反而变大),与一条护栏被真删掉(该拦)。
+ * 判哪一种至今全靠人工读两边的断言,零机器判据。这里立的判据不去禁改名,改钉「主题还有没有承载它的用例」:
+ * 每条主题登记它读的那几个实况取数口(注册表键 / 源码标识符 / 文件路径片段),用例名一个字都不参与判定——
+ * 改名与翻面重写只要还在读同一份实况就照旧绿,真删掉且没人接手时那一行当场找不到落点。
+ * `hosts` 是此刻承载它的用例条数(缺省 1):锚点写太泛会当场超出、写太窄会当场归零,两头都在登记时就报出来。
+ * 收哪些主题:记账/欠账类与单源类护栏——它们钉的是"某份记录与源码实况一致",正是最容易被一句改写抹平、
+ * 也最容易在翻面时被顺手删掉的那一类。加护栏时不必都登记进来,但登记过的不许无声消失。 */
+const GUARD_TOPICS = [
+  { id: 'sk25-g03-ledger', anchors: ['review.reviseLoop', '仍欠(G-03)'],
+    why: 'SK-25 的 G-03 两向对账:已落地那半与仍欠那半不许互串(W136 立、W150 翻面重写并改名)' },
+  { id: 'sk26-g11-ledger', anchors: ['review.memoryFeedback', '仍欠(G-11)', 'core.memoryDual'],
+    why: 'SK-26 的 G-11 记账与实况同步:回流面清 pending、自进化面仍欠,SK-04 那处余量跟着改' },
+  { id: 'gaps-key-set', anchors: ['Skills.gaps()', 'w1-selected-skills.md'],
+    why: 'gaps() 键集逐字点名并与两份缺口图谱双向对账(摘键与改名都先红在那条)' },
+  { id: 'gate-blockers-single', anchors: ['Domain.gateBlockers', 'subject-no-image'],
+    why: '前置门槛码只在 Domain.gateBlockers 一处,消费侧按码投影不另写(码名分裂过一次)' },
+  { id: 'plans-gate-read', anchors: ['Domain.gateBlockers(p)', 'plans.js'],
+    why: '计划层不许回潮成第三份门槛判据:按码取材且码须是派生真会回的码' },
+  { id: 'revise-subset-single', anchors: ['WfCore.reviseSubset', 'lowShots'],
+    why: '重抽面派生只此一份:四处消费点都不自筛低分镜,CLI 不拿回执 lowShots 当名单' },
+  { id: 'suite-count-floor', anchors: ['单元测试', 'CLI 冒烟', 'README.md'],
+    why: '三套件用例数只增不减:删测并把 README 一并改小时,红在下限这一层' },
+  { id: 'floor-slack', anchors: ['SLACK', '记账件份数'],
+    why: '四条 FLOOR 与 live 的差额有上限:那段差额就是能被静默删掉的条数' },
+  { id: 'unit-name-unique', anchors: ['套件 · 用例名', 'SUITES'],
+    why: '单元用例名全局唯一:重名会让按名成集比对把一条吃掉,删测与重名互相抵消' },
+  { id: 'ledger-count-3way', anchors: ['索引表共 ', 'FLOOR'],
+    why: '记账件份数由 README 明写并与目录/索引表三方对齐,且只增不减' },
+];
+/* 全部套件的用例源码(抹掉注释、字面量留着)+ 打印用标签:护栏主题按锚点在这上面找落点。
+ * 取 fn 的运行时源码而不是按文件切段:用例挪到别的套件、换个写法都不影响取数,判的是"这段判据还在不在跑"。 */
+function guardHostsOf(anchors) {
+  return Object.entries(SUITES)
+    .reduce((a, [s, t]) => a.concat(t.map(x => ({ label: s + ' · ' + x.name, code: blankNonCode(String(x.fn), true) }))), [])
+    .filter(c => anchors.every(k => c.code.includes(k)));
 }
 const contractTests = [
   { name: 'Issues.collect 返回数组(发布门 G2 的消费契约)', fn() {
@@ -7804,7 +7845,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 520, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 522, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 141, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -7873,6 +7914,57 @@ action 二选一:
     /* 打印用的标签是「套件 · 用例名」:跨套件同名也算重名,不许靠套件前缀去重 */
     const labeled = Object.entries(SUITES).reduce((a, [s, t]) => a.concat(t.map(x => s + ' · ' + x.name)), []);
     assertEq(new Set(labeled).size, labeled.length, '「套件 · 用例名」标签也须逐条唯一');
+  } },
+  { name: '护栏主题不许失联:清单里每条主题都还找得到承载它的用例(同主题改名翻面照旧绿,真删掉当场点名)', fn() {
+    /* 上一条把"名集口径不被重名吃掉"钉住了,可名集比对本身还有一面分不出来:一条护栏被翻面重写并改了名
+     * (该放行)与被真删掉(该拦),在比对结果里都只是"只在基线里有的 1 条"。W151 是本线第一次遇到前者,
+     * 靠人工逐条核对新旧断言才判定它没被削弱,那一步至今零机器判据。
+     * 本条不禁改名——改名不是问题,失去覆盖才是:判据只问"这条主题读的那几个实况取数口,此刻还有没有
+     * 用例在读"。改名、重排、挪套件、按新实况翻面重写,只要还读同一份实况就一条不红;
+     * 真把用例删掉而没有继任者接手时,报的是主题编号与它的锚点,不是"少了一条用例"这种数字口径。 */
+    const lost = [], spread = [];
+    GUARD_TOPICS.forEach(t => {
+      const hit = guardHostsOf(t.anchors), want = t.hosts || 1;
+      if (!hit.length) lost.push(t.id + '(' + t.anchors.join(' + ') + ')——' + t.why);
+      else if (hit.length !== want) spread.push(t.id + ':登记 ' + want + ' 处、实测 ' + hit.length + ' 处 → ' + hit.map(h => h.label).join(' / '));
+    });
+    assertEq(lost.join(' / '), '', '护栏主题找不到承载它的用例:同主题翻面重写时把锚点改到新实况(只改用例名不必动这张表);' +
+      '确要撤掉这道护栏,先在 GUARD_TOPICS 里销号并同轮写明理由——删测与改名从此不再是同一种形态');
+    assertEq(spread.join(' / '), '', '护栏主题的落点数与登记不符:锚点太泛会把别的用例也算成落点(那条真被删掉时就有人替它顶着),' +
+      '一道护栏有意拆成两条用例时把 hosts 抬到实况');
+  } },
+  { name: '护栏主题清单自身不许被架空:锚点须落在断言里、条数只增不减、取数口失效先红在这里', fn() {
+    /* 上一条只在"清单里还有这条主题"时才拦得住;把那一行连同用例一起删掉,它一条都不遍历。
+     * 这里立三层:清单条数只增不减(销号得先改这个字面)、每条主题的锚点写法不许退化成恒真、
+     * 承载用例不许是空壳(锚点还在而断言被掏空,等于护栏名存实亡)。
+     * 抹注释那一口另有自检:锚点只写在注释里不算落点——W136 记过"变异体里那句注释替被测断言把活干了"的假红,
+     * 同一形状放到这里就是"删掉断言、把锚点留在注释里"照旧全绿。 */
+    const TOPIC_FLOOR = 10;
+    assert(GUARD_TOPICS.length >= TOPIC_FLOOR, '护栏主题不得少于 ' + TOPIC_FLOOR + ' 条(实测 ' + GUARD_TOPICS.length +
+      ');新登记主题时把下限抬到当轮实况,销号须同轮说明理由');
+    const ids = GUARD_TOPICS.map(t => t.id);
+    assertEq(new Set(ids).size, ids.length, '主题编号须逐条唯一(重号会让其中一条的失联被另一条盖住)');
+    const weak = [];
+    GUARD_TOPICS.forEach(t => {
+      if (!t.why) weak.push(t.id + ':缺 why(这道护栏守的是什么得写下来,否则销号时没人判得出该不该销)');
+      if ((t.anchors || []).length < 2) weak.push(t.id + ':锚点少于 2 个(单锚点太容易被一句改写绕开,也太容易撞上别的用例)');
+      (t.anchors || []).forEach(k => { if (k.length < 3) weak.push(t.id + ':锚点「' + k + '」太短,点得中的地方太多'); });
+    });
+    assertEq(weak.join(' / '), '', '护栏主题的登记不许退化成恒真句');
+    // 承载用例得真在判:锚点还在而断言被掏空,是"名存实亡"那一路
+    const hollow = [];
+    GUARD_TOPICS.forEach(t => guardHostsOf(t.anchors).forEach(h => {
+      const n = (h.code.match(/(?:^|[^\w$.])assert(?:Eq|NoThrow)?\s*\(/g) || []).length;
+      if (n < 2) hollow.push(t.id + ' → ' + h.label + '(断言 ' + n + ' 处)');
+    }));
+    assertEq(hollow.join(' / '), '', '护栏主题的承载用例断言过少:锚点留着而判据被掏空,与直接删掉是同一件事');
+    // 取数口自检:抹注释那一口失效(抹过头或没抹到)时,上一条会整条退化,故在这里先红
+    assert(!blankNonCode('/* 锚点自检样例 */ const a = 1;', true).includes('锚点自检样例'),
+      '注释没被抹掉:锚点写在注释里也会被算成落点,失联那条就此形同虚设');
+    assert(blankNonCode("const s = '锚点自检样例';", true).includes('锚点自检样例'),
+      '字面量被一并抹掉:锚点大多写在断言的取值与消息字面里,全抹掉会把所有主题一起报成失联');
+    assertEq(Object.entries(SUITES).reduce((a, [, t]) => a.concat(t.map(x => x.fn)), []).length,
+      Object.values(SUITES).reduce((n, t) => n + t.length, 0), '取用例源码那一口与套件表求和对不上(遍历口径失准,两条护栏主题断言都不可信)');
   } },
   { name: 'README 数字对账:注册表口径(能力/KB/提示词/命令/专家)由各注册表实计', fn() {
     const Skills = require('../js/skills.js');
