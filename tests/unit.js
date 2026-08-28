@@ -6303,6 +6303,95 @@ function inlinePersonaHolders() {
   });
   return out;
 }
+/* JSON 对话两个入口(API.chatJSON / API.chatJSONRobust)的全仓调用面盘点:{ calls, refs }。
+ * calls 每项 { f, line, name, sys },sys 取实参形态:
+ *   显式       —— 实参对象字面量顶层写了 system:
+ *   基对象 X   —— Object.assign({}, X, {…}) 形态,某个参数对象顶层写了 system:
+ *   透传形参 x —— 实参是单个标识符(整参转发,system 由上游调用点决定)
+ *   缺省       —— 顶层没有 system,该次请求会吃到 js/api.js 的层内兜底「你是专业助手。」
+ * 别名也算调用口:RHS 提到这两个入口的 const/let/var,别名标识符一并纳入扫描(如 agent-ops 的 call)。
+ * refs 收「不带调用括号的成员引用」(.chatJSON 形态),用来兜住新长出来的别名/转发口。
+ * 有意不计:js/api.js 里两个方法自身的定义、注释行里的记账文案。 */
+function jsonEntryCallSites() {
+  const files = fs.readdirSync(path.join(ROOT, 'js')).filter(f => f.endsWith('.js')).map(f => 'js/' + f).sort();
+  const calls = [], refs = [];
+  const balanced = (src, at) => {
+    let depth = 0;
+    for (let i = at; i < src.length; i++) {
+      const c = src[i];
+      if (c === '(' || c === '{' || c === '[') depth++;
+      else if (c === ')' || c === '}' || c === ']') { depth--; if (!depth) return src.slice(at, i + 1); }
+    }
+    return null;
+  };
+  const topLevel = obj => { // 对象字面量的顶层片段(嵌套层一律剔除)
+    let depth = 0, out = '';
+    for (let i = 1; i < obj.length - 1; i++) {
+      const c = obj[i];
+      if (c === '(' || c === '{' || c === '[') { depth++; continue; }
+      if (c === ')' || c === '}' || c === ']') { depth--; continue; }
+      if (!depth) out += c;
+    }
+    return out;
+  };
+  const hasSystem = obj => /(^|[,\s])system\s*:/.test(topLevel(obj));
+  const splitArgs = list => { // Object.assign(…) 的顶层实参切分
+    const out = [];
+    let depth = 0, cur = '';
+    for (let i = 0; i < list.length; i++) {
+      const c = list[i];
+      if (c === '(' || c === '{' || c === '[') depth++;
+      else if (c === ')' || c === '}' || c === ']') depth--;
+      if (!depth && c === ',') { out.push(cur.trim()); cur = ''; continue; }
+      cur += c;
+    }
+    if (cur.trim()) out.push(cur.trim());
+    return out;
+  };
+  files.forEach(f => {
+    const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+    const lineOf = i => src.slice(0, i).split('\n').length;
+    const isComment = i => {
+      const head = src.slice(src.lastIndexOf('\n', i - 1) + 1, i);
+      return /^\s*(\*|\/\/|\/\*)/.test(head) || head.includes('//');
+    };
+    const classify = arg => {
+      if (arg === null) return '解析失败';
+      const inner = arg.replace(/^\(/, '').replace(/\)$/, '').trim();
+      if (/^\{/.test(inner)) return hasSystem(inner) ? '显式' : '缺省';
+      if (/^Object\.assign\(/.test(inner)) {
+        const args = splitArgs(balanced(inner, inner.indexOf('(')).slice(1, -1));
+        for (const a of args) {
+          if (/^\{/.test(a)) { if (hasSystem(a)) return '基对象 ' + a.slice(0, 12); continue; }
+          if (!/^\w+$/.test(a)) continue;
+          const d = src.match(new RegExp('(?:const|let|var)\\s+' + a + '\\s*=\\s*\\{'));
+          const obj = d ? balanced(src, src.indexOf('{', d.index)) : null;
+          if (obj && hasSystem(obj)) return '基对象 ' + a;
+        }
+        return '缺省';
+      }
+      if (/^\w+$/.test(inner)) return '透传形参 ' + inner;
+      return '缺省';
+    };
+    const names = ['chatJSON', 'chatJSONRobust'];
+    let m;
+    const aliasRe = /(?:const|let|var)\s+(\w+)\s*=\s*[^;\n]*chatJSON[^;\n]*;/g;
+    while ((m = aliasRe.exec(src))) if (!isComment(m.index) && names.indexOf(m[1]) < 0) names.push(m[1]);
+    names.forEach((n, ni) => {
+      // 两个入口名允许带 . 前缀(成员调用);别名只认裸标识符(排开 Function.prototype.call)
+      const re = new RegExp((ni < 2 ? '(\\.?)' : '(^|[^.\\w])') + n + '\\s*\\(', 'g');
+      while ((m = re.exec(src))) {
+        const at = m.index + m[1].length;
+        if (isComment(at) || /async\s+$/.test(src.slice(Math.max(0, at - 8), at))) continue;
+        calls.push({ f, line: lineOf(at), name: n, sys: classify(balanced(src, src.indexOf('(', at + n.length))) });
+      }
+      const reRef = new RegExp('\\.' + n + '\\b(?!\\s*\\()', 'g');
+      while ((m = reRef.exec(src))) if (!isComment(m.index)) refs.push(f + ':' + lineOf(m.index));
+    });
+  });
+  calls.sort((a, b) => (a.f + ':' + String(a.line).padStart(5, '0')).localeCompare(b.f + ':' + String(b.line).padStart(5, '0')));
+  return { calls, refs };
+}
 /* 导演设定五维生成(window.genDirectorSetting)沙箱:该步 LLM 请求的 system/user 原样截获,ov 写进 Store 覆盖表
  * (加载序与 index.html 同:prompts → gsettings;gsettings 加载期只强依赖 Voice.NARRATOR_PRESETS) */
 function loadGsettings(ov, fail) {
@@ -9539,6 +9628,51 @@ action 二选一:
       '本判据的已知例外仍在:API 层那两处兜底缺省不匹配本判据、也仍不在注册表里');
     assertEq(Prompts.list().filter(x => x.def === '你是专业助手。').length, 0, '那句兜底缺省确实还没进注册表(进表即须翻面)');
   } },
+  { name: 'API 层 JSON 兜底缺省的可达面:生产调用点一律显式给 system,那句缺省打不到上游', fn: async () => {
+    /* 上一条把「那两处兜底还在、还没进注册表」钉住了,但没说它到底会不会发出去。
+     * 这一条补的就是那一向:缺省确实会原样进 system 位(A),而全仓生产调用点没有一个省略 system(B),
+     * 于是两者合起来 —— 那句话在真实请求里一次都不出现。B 转红的那一刻它才第一次打到上游。 */
+    const Prompts = require('../js/prompts.js');
+    const FALLBACK = '你是专业助手。';
+    const TAIL = ' 只返回纯 JSON,不要输出 markdown 代码围栏或任何解释性文字。';
+    /* A. 上游实况:装真源码 js/api.js,截住底层 chat 看 system 位到底是什么字面。
+     *    不给 system、给空串两种入参都落到同一句缺省上(`||` 判的是真值,空串同样兜底)。 */
+    const sb = makeSandbox();
+    installCommon(sb);
+    loadFile(sb, 'api.js');
+    const sent = [];
+    sb.API.chat = async o => { sent.push(o.messages[0].content); return '{}'; };
+    await sb.API.chatJSON({ messages: [{ role: 'user', content: 'u' }] });
+    await sb.API.chatJSONRobust({ user: 'u' });
+    await sb.API.chatJSON({ system: '', messages: [{ role: 'user', content: 'u' }] });
+    await sb.API.chatJSON({ system: '你是分镜师。', messages: [{ role: 'user', content: 'u' }] });
+    assertEq(sent.slice(0, 3).join('|'), [FALLBACK + TAIL, FALLBACK + TAIL, FALLBACK + TAIL].join('|'),
+      '不给 system / 给空串时,发到上游的 system 位就是那句缺省(两个入口同款)');
+    assertEq(sent[3], '你是分镜师。' + TAIL, '给了 system 就一字不垫(缺省只在缺位时出场)');
+
+    /* B. 调用面:js/ 全量盘点,省略 system 的处数必须是 0——这是「停工位不成立」的唯一判据。
+     *    新加一个不给 system 的调用点即红,那一刻这句缺省才真会发到上游。 */
+    const { calls, refs } = jsonEntryCallSites();
+    assertEq(calls.filter(c => c.sys === '缺省').map(c => c.f + ':' + c.line).join(' '), '',
+      '省略 system 的生产调用点(有一处就说明那句兜底缺省会真发到上游)');
+    assertEq(calls.filter(c => c.sys === '解析失败').length, 0, '每个调用点的实参都要判得动(判不动即夹具跟不上源码了)');
+    assertEq(calls.length, 42, 'JSON 对话两个入口的全仓调用点处数(新增/删除调用点须同步本数)');
+    /* 非「实参对象字面量顶层直给」的三处逐点点名:两处 Object.assign 基对象 + 一处整参转发。
+     * 这三种形态判起来最容易误绿,故不与其余 39 处混在一个计数里。 */
+    assertEq(calls.filter(c => c.sys !== '显式').map(c => c.f + ':' + c.line + '=' + c.sys).join(' '),
+      'js/agent-global.js:397=基对象 llmOptG js/agent.js:498=基对象 llmOpt js/understanding.js:8=透传形参 opt',
+      '间接给法的三处(基对象/整参转发)逐点点名');
+    // 兜住新长出来的别名口:不带调用括号的成员引用只许是 agent-ops 那一行三元(它自己已计入调用面)
+    assertEq(refs.join(' '), 'js/agent-ops.js:125 js/agent-ops.js:125 js/agent-ops.js:125',
+      '两个入口的成员引用(非调用)名单——新开转发口即红,须补进调用面盘点');
+
+    /* C. 覆盖面:用户改不到它,也造不出「system 变空」从而踩中它的路径。
+     *    Prompts.get 对已登记键在覆盖为空白时回落 def,故覆盖表里写不出一个空 system。 */
+    assertEq(Prompts.list().filter(x => x.def === FALLBACK).length, 0, '那句缺省不在注册表里(用户覆盖不到)');
+    assertEq(Prompts.get('sb.system', { 'sb.system': '   ' }), Prompts.get('sb.system'),
+      '把某键覆盖成空白不会让取值变空(回落 def),故覆盖表造不出空 system');
+    assertEq(Prompts.get('api.fallbackSystem'), '', '未登记键取值为空串——收编它需要真加一条注册表条目,不是改个取值口');
+  } },
   { name: '漫剧气泡对白人设:经 Prompts.get(comic.bubbleSystem) 取值,缺省逐字节等于收编前的内联字面', fn() {
     const Prompts = require('../js/prompts.js');
     const Skills = require('../js/skills.js');
@@ -10126,7 +10260,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 601, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 602, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 143, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 108, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -10461,7 +10595,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 210;
+    const FLOOR = 211;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
