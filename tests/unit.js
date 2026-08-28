@@ -9116,6 +9116,18 @@ const contractTests = [
     assertEq(sub.map(x => x.order).join(','), '1,3', 'order 与 Domain 同口径:分镜表实位');
     assertEq(sub[0].fixes, '', '报告取不到时 fixes 为空串(修订步据此沿用原提示词,不是 undefined 冒充)');
     assertEq(sub[1].fixes, '补主光; add rim light', 'fixes 应按 reportId 取回那份报告再抽建议');
+    /* 同 id 多行:整集审片按行出报告,每一条的意见就在它自己那一行的 reviews 里——
+     * 取 find 首行时后几条一律读到首行那份(或压根取不到而成空串,修订步据此沿用原提示词一个字不改) */
+    const dup = { content: '剧本', contentRev: 0, graphRev: 0,
+      shots: [{ id: 'dup', order: 0, reviews: [{ id: 'rA', issues: [{ suggestion: '补主光' }] }] },
+        { id: 'dup', order: 1, reviews: [{ id: 'rB', issues: [{ suggestion: '换机位' }] }] }],
+      lastReview: { avg: 5, perShot: [
+        { shotId: 'dup', order: 0, score: 5, reportId: 'rA' },
+        { shotId: 'dup', order: 1, score: 5, reportId: 'rB' },
+      ] } };
+    assertEq(WfCore.reviseSubset(dup).map(x => x.order + ':' + x.fixes).join(' / '), '1:补主光 / 2:换机位',
+      '同 id 多行时每一条的 fixes 取自己那一行的报告(取首行即红)');
+    assertEq(WfCore.reviseSubset(dup).map(x => x.nth).join(','), '0,1', 'nth 原样带给回写侧,编排层不另数一遍序数');
   } },
   { name: '修订闭环重抽面单源:server/CLI/助手摘要/问题中心都不自筛低分镜,CLI 不摘回执 lowShots 当 shotIds', fn() {
     /* G-03 这一面钉的是"该重抽哪几镜由编排层派生":判据(达标线 / 报告判旧 / 与分镜表取交集 / 定稿不重抽)
@@ -13087,7 +13099,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 265;
+    const FLOOR = 266;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
