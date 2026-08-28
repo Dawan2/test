@@ -22,6 +22,7 @@
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const Module = require('module'); // loadCli:cli.js 的 require('./js/*') 要按仓库根解析,不按 tests/
 
 const ROOT = path.join(__dirname, '..');
 
@@ -1785,6 +1786,39 @@ function cmdCtx(sb, over) {
   sb.__proj = p;
   return { p, ep };
 }
+/* CLI(headless 那一端)沙箱:cli.js 是脚本不是模块,末尾自调 main();这里只掐掉那一行入口,
+ * 其余一字不改地 runInContext——跑的是产品代码本身。EXEC 是 const(不落全局对象),
+ * 故在同一 context 里再求一次值取出来。stateGet / withProject / genShotVideo / genImage 是函数声明,
+ * 挂在全局对象上,夹具按需换成桩:换掉的只有服务端往返与真实生成,子集过滤与判旧仍是 cli.js 自己那一份 + 真 Domain。 */
+function loadCli() {
+  const sb = {
+    console, setTimeout, clearTimeout, setInterval, clearInterval,
+    Buffer, URL, AbortSignal, AbortController,
+    require: Module.createRequire(path.join(ROOT, 'cli.js')),
+    module: { exports: {} },
+    process: { env: {}, argv: ['node', 'cli.js'], stdout: { write() {} }, stderr: { write() {} }, exit() {}, on() {} },
+    fetch: () => Promise.reject(new Error('unit test 无网络')),
+    __genShots: [], // 引擎实收:每次真下发到 genShotVideo 的镜头 id(用例数的是它,不是回执里的数字)
+  };
+  sb.globalThis = sb;
+  vm.createContext(sb);
+  const src = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+  const body = src.replace(/\nmain\(\);\s*$/, '\n');
+  assert(body !== src, 'cli.js 末尾的 main() 入口没找到(入口挪窝就同轮改这里,别让沙箱静默连命令都跑起来)');
+  vm.runInContext(body, sb, { filename: 'cli.js' });
+  sb.EXEC = vm.runInContext('EXEC', sb);
+  return sb;
+}
+/* CLI 夹具:一集 shots,服务端 state 往返与生成引擎换成桩(引擎只记下收到的镜并写回 done) */
+function cliCtx(sb, shots) {
+  const ep = { id: 'ep1', title: '第一集', content: '测试剧本正文', sbConfig: {}, shots };
+  const p = { id: 'p1', episodes: [ep], subjects: [] };
+  sb.stateGet = async () => ({ rev: 0, state: { projects: [p] } });
+  sb.withProject = async (pid, flags, fn) => ({ ret: await fn(p, { projects: [p] }) });
+  sb.genShotVideo = async (proj, epLive, s) => { sb.__genShots.push(s.id); s.video = { status: 'done', url: '/uploads/gen/' + s.id + '.mp4' }; return s; };
+  sb.genImage = async () => ({ url: '/uploads/img/x.png' });
+  return { p, ep };
+}
 /* 剧本解析向导(js/director.js)沙箱:主体提取与入库由 commands.js 真跑(与 CLI exec 同一份口径与回流),
  * 向导侧只桩掉 DOM 与下游三个入口。加载序与 index.html 同:commands.js 在 director.js 之前。
  * bgDock/openModal 的桩按真实契约建:close() 触发 onCancel(否则向导的进度定时器不会停),
@@ -2194,6 +2228,45 @@ const commandsTests = [
     assertEq(r.ok, true, '实际:' + JSON.stringify(r.error || {}));
     assertEq((got || []).join(','), 'sh1', '子集里点名的鲜镜不重跑(每镜都真扣费),过期镜照跑');
     assertEq(ep.shots[0].video.url, '/uploads/gen/v0.mp4', '鲜镜的产物没被覆盖');
+  } },
+  { name: 'CLI exec generateVideos:显式子集里的过期 done 镜真进引擎参数,点名的鲜镜进不来(不带子集的整集批量照旧不碰过期镜)', fn: async () => {
+    /* 同一件事在 headless 那一端:hujing exec episode.generateVideos --args '{"shotIds":[…]}' 与 MCP 同链路。
+     * 上一条钉的是浏览器命令层,这一条跑的是 cli.js 自己那份子集过滤——两端各写了一份,谁也不替谁作证。 */
+    const sb = loadCli();
+    const { p, ep } = cliCtx(sb, [
+      makeShot(0, { confirm: true, image: 'i0.png' }),                                                            // 鲜镜:已出片且输入没动
+      makeShot(1, { confirm: true, image: 'i1.png', video: { status: 'done', url: 'u', inputHash: 'v3:oldstale' } }), // 过期镜
+      makeShot(2, { confirm: true, image: 'i2.png', video: { status: 'none' } }),                                 // 未出片
+    ]);
+    assertEq(require('../js/domain.js').episodeState(p, ep, true).counts.stale, 1, '夹具前提:恰一镜过期');
+    const r = await sb.EXEC['episode.generateVideos'].run({ pid: 'p1', epid: 'ep1', shotIds: ['sh0', 'sh1'] }, {});
+    assertEq(r.ok, true, '实际:' + JSON.stringify(r.error || {}));
+    assertEq(sb.__genShots.join(','), 'sh1', '过期镜须真下发到引擎;点名的鲜镜不重跑(每镜都真扣费)');
+    assertEq(r.result.total, 1, '回执按真跑的镜数报');
+    assertEq(ep.shots[0].video.url, '/uploads/gen/v0.mp4', '鲜镜的产物没被覆盖');
+    // 不带子集的整集批量是另一路:那一路只补没出片的,过期镜照旧不进(开口只开在显式子集这一路)
+    const sb2 = loadCli();
+    cliCtx(sb2, [
+      makeShot(0, { confirm: true, image: 'i0.png' }),
+      makeShot(1, { confirm: true, image: 'i1.png', video: { status: 'done', url: 'u', inputHash: 'v3:oldstale' } }),
+      makeShot(2, { confirm: true, image: 'i2.png', video: { status: 'none' } }),
+    ]);
+    await sb2.EXEC['episode.generateVideos'].run({ pid: 'p1', epid: 'ep1' }, {});
+    assertEq(sb2.__genShots.join(','), 'sh2', '整集批量只补未出片的镜,过期镜不搭车');
+  } },
+  { name: 'CLI exec generateVideos:终稿锁仍拦在子集之外(定稿的过期镜不重跑,定稿产物一个字节没动)', fn: async () => {
+    /* 与浏览器那一端同一个有意缺口:counts.stale 照数定稿的过期镜,子集位不碰它——
+     * 那一镜的出路是先解锁终稿,不是子集位替用户解锁。 */
+    const sb = loadCli();
+    const { p, ep } = cliCtx(sb, [
+      makeShot(0, { confirm: true, image: 'i0.png' }),
+      makeShot(1, { confirm: true, image: 'i1.png', final: true, video: { status: 'done', url: 'u', inputHash: 'v3:oldstale' } }),
+    ]);
+    assertEq(require('../js/domain.js').episodeState(p, ep, true).counts.stale, 1, '夹具前提:定稿镜照旧计过期');
+    const r = await sb.EXEC['episode.generateVideos'].run({ pid: 'p1', epid: 'ep1', shotIds: ['sh0', 'sh1'] }, {});
+    assertEq(sb.__genShots.join(','), '', '终稿镜不重跑(鲜镜也不跑),引擎一镜不收');
+    assertEq(ep.shots[1].video.url, 'u', '定稿产物不许被覆盖');
+    assertEq(r.result.total, 0, '回执按真跑的镜数报,不拿"点了名"冒充"处理过"');
   } },
   { name: 'generateStoryboard:headless hooks.quiet=true,ui 模式 quiet=false(决策弹窗归 UI)', fn: async () => {
     const sb = loadCommands();
@@ -8989,7 +9062,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 554, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 556, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 143, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -9258,7 +9331,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 192;
+    const FLOOR = 193;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
