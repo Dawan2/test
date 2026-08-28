@@ -2,7 +2,8 @@
  * 项目级制作计划 p.agentPlan:跨会话持久(Store 落库,不再随聊天历史上限淘汰),
  * 步骤映射统一领域命令(episode.generateStoryboard/generateVideos/compose…)或导航动作;
  * 执行经 Commands.execute(ui 模式:决策闸保留),回执驱动步骤状态(done/failed/blocked/pending);
- * 注册表标 manual 的人手命令(专家自进化)计划层不代跑,落 blocked 并指回该功能自己的手动入口,
+ * 注册表标 manual 的人手命令(专家自进化)计划层不代跑:generate 不把它写进 steps(挡下哪条如实告知),
+ * 执行口这道总闸把别的来路送进来的这类步落 blocked,两处都指回该功能自己的手动入口,
  * 每步落定 emit Bus 'plan.step'(Agent 对话流/问题中心角标同源感知)。
  * 两种生成路径:本地推导 fromWorkflow(零成本,主线全链 playbook 投影 × Domain 状态)/
  * LLM 规划 generate(1 积分,按用户目标拆步)。
@@ -154,16 +155,34 @@
   /* 不投门槛码的白名单(契约断言用,每次现生成副本:调用方污染不回写本表) */
   function gateSkips() { return Object.assign({}, GATE_SKIP); }
 
+  /* ================= 人手动作(注册表 manual 位)在计划层的两道闸 =================
+   * 「是不是人手动作」是命令自己的属性,判据只现取共享元数据、计划层不写死命令名(写在消费方等于让
+   * 同一件事有两个说法)。标了 manual 的命令(蒸馏那类改了收不回、没有撤回口的动作)计划一律不代跑,
+   * 命令本身与四端人手入口(专家库「🧠 进化」/CLI exec/MCP 工具/服务端端点)一个不减。闸有两道,各挡一段:
+   *   生成侧 generate——不把它写进 steps,提示词的可用命令白名单里也不点名它。只有执行口那道闸时,
+   *     计划里照旧先排出一步蒸馏、点下去才知道要人工:用户看到的是「排了却跑不成」,或是无参误排。
+   *     不静默吞:挡下哪条如实报给用户并指回它自己的入口(与助手自动发令那条路把被拦命令回在 manual 上同口径)。
+   *   执行侧 execStep——总闸。计划步的来路不止 generate 一条(直接写 p.agentPlan、旧计划落库回读都送得进
+   *     带齐 args 的步),而真能改坏数据的正是那些步;单步「▶ 执行」与 runAll 共用它,拦一处两条路都拦住。
+   * 挡下的步不留成"手动勾选"步:那种步 runAll 一路过去就翻成 done 且尾注被清空,等于替用户宣称蒸馏做过了。 */
+  const manualCmd = cmd => {
+    const m = window.CmdRegistry && CmdRegistry.byName[cmd];
+    return m && m.manual ? m : null;
+  };
+
   /* ================= LLM 规划:用户目标 → 步骤清单(1 积分,失败退费) =================
-   * 步骤钳制:cmd 必须在 Commands.list() 注册表内;集级命令必须能按分集标题定位到 epid,否则丢弃该步。
-   * 人设句取自注册表键 plan.system(用户在「全局默认值」页改得到);可用领域命令白名单与返回 JSON 契约
-   * 仍就地拼、不开放覆盖——改坏即整轮拆不出有效步骤。 */
+   * 步骤钳制:cmd 必须在 Commands.list() 注册表内且不是人手动作;集级命令必须能按分集标题定位到 epid,
+   * 否则丢弃该步。人设句取自注册表键 plan.system(用户在「全局默认值」页改得到);可用领域命令白名单与
+   * 返回 JSON 契约仍就地拼、不开放覆盖——改坏即整轮拆不出有效步骤。 */
   async function generate(p, goal) {
     goal = String(goal || '').trim().slice(0, 200);
     if (!goal) { U.toast('请先描述计划目标', 'info'); return null; }
     const model = (Store.state.settings || {}).defLLM || (window.API ? API.getConfig().model : '');
     return Tasks.run({ type: '制作计划', model, target: p.name + '·' + goal.slice(0, 12), cost: 1, actionName: '制作计划生成', projectId: p.id }, async () => {
-      const cmds = window.Commands ? Commands.list().map(c => c.name).join(',') : '';
+      /* 可发令的命令面 = 注册表里非人手动作的那些;人手命令连提示词都不点名——宣称计划能跑一件它
+       * 不会替用户按下的事,换来的只是一步注定要退回人工的步。模型仍点名它时下面的钳制再兜一道。 */
+      const auto = (window.Commands ? Commands.list() : []).filter(c => !manualCmd(c.name));
+      const cmds = auto.map(c => c.name).join(',');
       const epsInfo = (p.episodes || []).map(e => {
         const st = Domain.episodeState(p, e, online());
         return `${e.title}[${st.status}${st.counts.total ? ':' + st.counts.done + '/' + st.counts.total + '出片' : ''}]`;
@@ -175,10 +194,13 @@
         temperature: 0.3, max_tokens: 1500,
         billingAction: 'llm.agent', operationId: 'pl_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
       });
-      const known = new Set(window.Commands ? Commands.list().map(c => c.name) : []);
+      const known = new Set(auto.map(c => c.name));
+      const held = [];
       const steps = (Array.isArray(out && out.steps) ? out.steps : []).map(s0 => {
         const label = String((s0 && s0.label) || '').trim().slice(0, 24);
         if (!label) return null;
+        const man = manualCmd(s0 && s0.cmd);
+        if (man) { held.push(man.label); return null; } // 人手动作:不进 steps,下面如实报给用户
         const cmd = known.has(s0.cmd) ? s0.cmd : null;
         let epid = null;
         if (cmd && /^episode\.(generateStoryboard|generateVideos|smartReview|compose|produce|understanding)$/.test(cmd)) {
@@ -191,6 +213,10 @@
           ? { key: Store.uid('pls'), label, cmd, epid, status: 'pending' }
           : { key: Store.uid('pls'), label, goto: '#/project/' + p.id, status: 'pending' };
       }).filter(Boolean).slice(0, 8);
+      // 挡下的人手动作如实报出来:计划不代跑不等于这件事不用做,用户得知道该自己去哪儿做
+      if (held.length) {
+        U.toast(`📋 ${[...new Set(held)].map(x => `「${x}」`).join('')}是人手动作,未排进计划:请到它自己的手动入口执行`, 'info', 4000);
+      }
       if (!steps.length) throw new Error('未能生成有效步骤');
       return { id: Store.uid('pl'), title: String((out && out.title) || '制作计划').slice(0, 12), goal, steps, createdAt: Store.now(), updatedAt: Store.now() };
     });
@@ -211,16 +237,6 @@
     Store.save();
     return plan;
   }
-
-  /* 注册表标了 manual 的命令,计划层一律不代跑(单步「▶ 执行」与 runAll 走同一个漏斗,故只此一处)。
-   * 为什么在这里而不在生成侧:计划步的来源不止一条(LLM 规划 generate / 直接写 p.agentPlan / 旧计划落库回读),
-   * 生成侧筛掉只覆盖其中一条,而真能改坏数据的是带齐 args 的那些步——挡在执行口才是把整条自动路径挡住。
-   * 命令本身不动:它在四端注册表里照旧,人手入口(专家库「🧠 进化」/CLI exec/MCP 工具)一个不减,
-   * 这一步落 blocked(待人工)并把用户指回那个入口——步照留不藏,只是不由计划替他按下去。 */
-  const manualCmd = cmd => {
-    const m = window.CmdRegistry && CmdRegistry.byName[cmd];
-    return m && m.manual ? m : null;
-  };
 
   /* 执行单步:命令步骤经统一命令层(ui 模式),回执驱动状态;导航步骤到位即 done;无命令步骤为手动勾选。
    * 状态语义:done=完成/failed=失败/blocked=待人工(needs_human 质量闸门/人手动作)/pending=可(重)执行(用户取消回退)。 */
