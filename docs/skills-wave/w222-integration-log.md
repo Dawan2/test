@@ -202,6 +202,10 @@ FAIL | llm --json mock 链路 | undefined
 
 ## 八、交接:本槽留下的残留
 
+> **已收(W225)**:下面这一格由 W223 在 W225 集成线上收掉——四堆一律改数「点名 id」,
+> 同 id 两镜时 `gone` 不再为负、也不再把真不在本集的那镜抵消掉。本节原文照留(它记的是 W222 那一槽的实况),
+> 现取实况以 `w225-integration-log.md` 为准。
+
 **镜头侧 `Domain.emptyBatchNote` 的 `gone` 仍是减法,同 id 时为负。** `js/domain.js:289`:
 
 ```js
