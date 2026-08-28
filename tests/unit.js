@@ -8555,6 +8555,42 @@ const skillsTests = [
 
 /* ================= 套件 20:剧本拆集双端单源(wf-core split* + 服务端/CLI/浏览器接入,G-04) =================
  * 主线前段 headless 起点:模式判定与切分算法只此一份,浏览器/服务端/CLI 全部委托;正文逐字保留。 */
+/* 分集 UI 入口沙箱(js/proj-upload.js 真跑 openUploadScript → doSplit → doSplitRun → splitCore):
+ * 切分算法/回收站/记忆回流全部真跑(加载序与 index.html 同:domain → knowledge → prompts → wf-core → episode-util),
+ * 只桩掉弹窗 DOM、任务条与页面重渲。桩按真实契约建:同一 selector 恒返回同一个假节点(用例据此点按钮),
+ * U.runTask 即刻进 onDone 并把 promise 存 __runTask(拆集是异步的,用例必须 await 才看得到落盘)。 */
+function loadProjUpload() {
+  const sb = makeSandbox();
+  installCommon(sb);
+  sb.MODELS = { image: ['seedream-x'], video: ['seedance-x'] };
+  sb.COST = { image: 2 };
+  sb.PH = { subject: () => 'ph.png' };
+  sb.styleOf = p => (p && p.style) || '漫剧';
+  sb.getSettings = () => sb.Store.state.settings;
+  sb.Media = { isReady: () => false };
+  sb.Views = { projectDetail: (main, pid) => { sb.__called.push('render:' + pid); sb.__scriptAtRender = sb.__proj ? sb.__proj.script : undefined; } };
+  let seq = 0;
+  sb.Store.uid = pre => pre + '_' + (++seq);
+  sb.Store.trashPut = (kind, title) => { sb.__called.push('trash:' + kind + ':' + title); };
+  sb.Tasks.canDeleteScope = async () => sb.__guard || { local: [], remote: [] };
+  sb.U.runTask = opt => { sb.__called.push('runTask:' + opt.title); sb.__runTask = Promise.resolve().then(opt.onDone); return sb.__runTask; };
+  sb.API.getTextModels = () => [{ id: 'test-model', label: '测试模型' }];
+  sb.U.openModal = o => {
+    const pool = {};
+    const el = () => ({ style: {}, classList: { toggle() {} }, textContent: '', innerHTML: '', value: '', onclick: null, oninput: null });
+    const pick = sel => (pool[sel] = pool[sel] || el());
+    const m = { querySelector: pick, querySelectorAll: sel => [pick(sel + '#0')] };
+    sb.__modal = { m, closed: 0 };
+    o.onMount(m, () => { sb.__modal.closed++; });
+  };
+  loadFile(sb, 'domain.js');
+  loadFile(sb, 'knowledge.js');
+  loadFile(sb, 'prompts.js');
+  loadFile(sb, 'wf-core.js');
+  loadFile(sb, 'episode-util.js');
+  loadFile(sb, 'proj-upload.js');
+  return sb;
+}
 const splitTests = [
   { name: 'splitMode:集/章标记 ≥2 走 markers(零 LLM);无标记短文走 llm;长文/离线走 even', fn() {
     const W = require('../js/wf-core.js');
@@ -8650,6 +8686,64 @@ const splitTests = [
     assert(cli.includes("CMD['project-script']"), 'CLI 应能写入项目剧本原文(headless 主线起点)');
     const mcp = fs.readFileSync(path.join(ROOT, 'mcp.js'), 'utf8');
     assert(mcp.includes('hujing_split_episodes') && mcp.includes('hujing_project_script'), 'MCP 应暴露剧本写入与拆集入口');
+  } },
+  { name: '仅进行分集(行为面):拆集成功后原文落进剧本板块,主线剧本步随之 done', fn: async () => {
+    const sb = loadProjUpload();
+    const p = sb.__proj = { id: 'p1', name: '剧', script: '', episodes: [], subjects: [] };
+    const stepOf = () => sb.Domain.workflow(p, false).steps.find(s => s.key === 'script');
+    assertEq(stepOf().done, false);
+    assertEq((stepOf().blockers[0] || {}).code, 'no-script', '拆集前项目级判据就是"未上传剧本"');
+    sb.EpisodeUtil.openUploadScript(p, {});
+    const m = sb.__modal.m;
+    const TEXT = '第一集 开场\n女主被当众羞辱\n第二集 反击\n女主揭穿真相';
+    m.querySelector('[data-f=script]').value = TEXT;
+    m.querySelector('[data-x=splitonly]').onclick();
+    await sb.__runTask;
+    assertEq(p.episodes.length, 2, '仅分集应真的拆出分集');
+    assertEq(p.episodes[0].title, '第一集 开场');
+    assert(p.episodes[1].content.includes('女主揭穿真相'), '正文应按标记逐字切');
+    assertEq(p.script, TEXT, '拆集成功后原文应落进剧本板块(此前「仅进行分集」这一支从不写,项目剧本恒空)');
+    assertEq(stepOf().done, true, '主线剧本步应随之 done');
+    assertEq(stepOf().blockers.length, 0);
+    assertEq(sb.__scriptAtRender, TEXT, '写回应在重渲之前(项目页当场看得到剧本板块,不用等下次进页面)');
+  } },
+  { name: '仅进行分集:空原文与拆集失败都不写假剧本(剧本板块仍判缺剧本)', fn: async () => {
+    const sb = loadProjUpload();
+    const p = { id: 'p1', name: '剧', script: '', episodes: [], subjects: [] };
+    sb.EpisodeUtil.openUploadScript(p, {});
+    const m = sb.__modal.m;
+    // 空原文:按钮当场拒绝,零拆集零写入
+    m.querySelector('[data-x=splitonly]').onclick();
+    assertEq(p.script, '', '空原文不许写进剧本板块');
+    assertEq(p.episodes.length, 0);
+    assert(sb.__toasts.some(t => t.includes('请先粘贴或上传剧本文本')), '空原文应如实提示');
+    assert(!sb.__called.some(c => c.indexOf('runTask') === 0), '空原文不应起分集任务');
+    // 在飞生成:splitCore 守卫抛错,拆集没成 → 剧本板块也不许留下原文
+    sb.__guard = { local: [{ type: '文生视频' }], remote: [] };
+    m.querySelector('[data-f=script]').value = '第一集 开场\n正文一\n第二集 反击\n正文二';
+    m.querySelector('[data-x=splitonly]').onclick();
+    await sb.__runTask;
+    assertEq(p.episodes.length, 0, '守卫不过不应落分集');
+    assertEq(p.script, '', '拆集失败不写假剧本(否则项目看着有剧本却没有分集)');
+    assertEq(sb.Domain.workflow(p, false).steps.find(s => s.key === 'script').blockers[0].code, 'no-script');
+  } },
+  { name: '仅分集补写入不动发布门:G1 逐集判正文,与项目剧本原文有无无关', fn() {
+    /* W108 交接把这处记成"翻转发布门 G1(有剧本)",实况是 G1(g1-workflow)逐集读 Domain.episodeState,
+     * 判的是 ep.content,`p.script` 一个字不读;项目级"未上传剧本"的判据在主线剧本步。本条两面各钉一次,
+     * 免得后来者为了"让 G1 认剧本"去动门禁判据。 */
+    const sb = loadRelease();
+    const ep = releaseReadyEp({ composed: true, composedInputHash: sb.Domain.composedInputHash(releaseReadyEp(), false), composedSourceRev: 0, composedGraphRev: 0 });
+    const base = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', kind: 'character', image: 'u' }], episodes: [ep] };
+    const g1 = r => r.gates.find(g => g.code === 'g1-workflow');
+    const bare = sb.Release.collect(Object.assign({}, base, { script: '' }), { online: false });         // 补写入之前的「仅分集」形状
+    const written = sb.Release.collect(Object.assign({}, base, { script: '剧本正文' }), { online: false }); // 补写入之后
+    assertEq(g1(bare).status, 'pass', 'G1 判的是每集分集状态,项目剧本原文为空一样 pass');
+    assertEq(g1(written).status, g1(bare).status, '补写 p.script 不改 G1 结论');
+    assertEq(written.fails, bare.fails, '门禁 fail 计数一个不动(不抬门也不降门)');
+    assertEq(written.overall, bare.overall);
+    const stepOf = script => sb.Domain.workflow(Object.assign({}, base, { script }), false).steps.find(s => s.key === 'script');
+    assertEq(stepOf('').blockers[0].code, 'no-script', '真正报"未上传剧本"的是主线剧本步');
+    assertEq(stepOf('剧本正文').done, true, '补写入后这一步才 done');
   } },
 ];
 

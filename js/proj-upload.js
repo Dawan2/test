@@ -321,6 +321,9 @@
         try {
           r = await splitCore(p, scriptText, { say: t => U.toast(t, 'info', 3500) });
         } catch (e) { U.toast(e.message, 'error'); return; }
+        /* 拆集成功后原文落进剧本板块:「仅进行分集」此前不写,项目剧本恒空(主线剧本步与命令层 no-script 一直报缺);
+         * 其余入口传的本就是 p.script,此处幂等。失败路径已在上面 return,不写假剧本 */
+        if (scriptText && scriptText.trim() && p.script !== scriptText) { p.script = scriptText; Store.save(); }
         if (r.llmError) U.toast('LLM 分集失败:' + r.llmError + ',已回退本地均分逻辑', 'error', 4000);
         const eps = r.eps;
         const wordInfo = eps.map((e, i) => `第${i + 1}集 ${e.content.length}字`).join('、');
