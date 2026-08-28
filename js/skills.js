@@ -886,7 +886,7 @@
         'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem',
         'narration.system', 'reading.system', 'concept.system', 'light.system',
         'voice.recommendSystem', 'voice.recommendBatchSystem', 'comic.bubbleSystem', 'dirset.system', 'dist.copySystem',
-        'rip.system'],
+        'rip.system', 'gen.editSystem'],
       cmds: ['episode.understanding', 'episode.generateStoryboard', 'episode.smartReview'], gaps: ['G-01'],
       note: 'G-01 已落地:服务端 /api/wf/* 各端点经唯一装配口 wfPersonaNote 注入生效人设(板块雇佣 > 全局雇佣),'
         + '浏览器同装配口;infra 面的 pending 已按实况清空(gaps() 只投影 gaps 字段、不看 pending,清账动不到投影),'
@@ -928,6 +928,8 @@
         + '同为纯浏览器链路的一个消费点。'
         + '拉片建集逐段画面理解那步的人设同形收编为 rip.system,取值口在 js/proj-upload.js 经 Prompts.get,'
         + '与剧本拆集并列为建分集的两条入口(同样只有浏览器一个消费点)。'
+        + '镜头「按指令改」那步的人设同形收编为 gen.editSystem(取值口在 js/sb-views.js 经 Prompts.get),'
+        + '与同层四策略优化的 gen.promptSystem 有意不合并——那条经装配口还要接 KB 抽卡块,复用即改变缺省。'
         + '仍欠:四处的 ops 协议/字段面/命令白名单/返回 JSON 约定仍由各自装配口拼、不开放覆盖'
         + '(那半是 ops 解析契约,用户改坏即整轮无 ops);'
         + '音色推荐两条同理只收人设句——音色库取值范围与返回 JSON 约定仍写在各自调用点、不开放覆盖'
@@ -1033,7 +1035,7 @@
         + '同板块的事件图谱拆解步内联人设已收进注册表(独立键 graph.system,取值口在 js/episodes.js 逐集拆解那步)'
         + '——剧本模块两个文件的内联人设至此归零。'
         + '仍欠 G-13 的已不在剧本模块自己这两个文件里,而是别处还没收的那几处内联人设:'
-        + 'js/agent-ops.js 的执行核验器与会话纪要整理器、js/sb-views.js 的分镜改图专家仍是内联字面,'
+        + 'js/agent-ops.js 的执行核验器与会话纪要整理器、js/role-editor.js 的角色设定师仍是内联字面,'
         + '那几步既取不到条目正文、用户也覆盖不到',
     },
     /* ---- 主体 ---- */
@@ -1050,7 +1052,7 @@
         + '两处装配口都经 Prompts.get 取值、用户在「全局默认值」页改得到(模板本身也一直改得到),'
         + '故本条自己的登记面已无收编余量。'
         + '仍欠 G-13 的不在本条名下:全仓其余模块的内联人设未进注册表(剧本模块那几步已随 SK-03 收编,'
-        + 'js/agent-ops.js 的执行核验器与会话纪要整理器、js/sb-views.js 的分镜改图专家仍是内联字面),'
+        + 'js/agent-ops.js 的执行核验器与会话纪要整理器、js/role-editor.js 的角色设定师仍是内联字面),'
         + '缺口未闭合故按关联索引口径不摘标记。'
         + '生成请求构造点(Domain.buildVideoRequest)不注方法论文本,生成指纹口径不动;'
         + '校验半判定输入就是那份请求的参考图组(人物数上限、被上限挤出、三视图当视频参考),'
