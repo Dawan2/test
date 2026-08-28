@@ -306,6 +306,23 @@
     say(shots.length - locked - done, '没能说清原因');
     return '本集没有待生成的镜头,一镜也没跑:' + parts.join('、');
   };
+  /* 点名子集真跑起来、而点名的 id 在分镜表里占着多行时,回执上那句话(单源:命令层与 CLI 同读这一份)。
+   * 两端选人闸按行筛(ids.has(s.id)):存量重复表上点名一个 id,几行就跑几行、逐行计费,
+   * 而回执只报 total=行数——与「点名几个 id 就跑几个 id」的正常批量逐字一样,这一笔多花在哪用户看不出来。
+   * 闸不动(按行筛是对的:点名两行的正常子集不许被砍成一行,第二行会永远跑不到),
+   * 这里补的是把行数与收拾办法说出来。点名判据与选人闸(Array.isArray(shotIds) && length)逐字同形;
+   * 整集那一路不说这句:没点名就没有「点 1 个跑 3 行」的错觉,total 本来就是行数。 */
+  D.dupRowsNote = function (picked, rows) {
+    if (!Array.isArray(picked) || !picked.length) return '';
+    const ids = [...new Set(picked)];
+    const list = rows || [];
+    const dup = ids.map(id => ({ id, rows: list.filter(s => s && s.id === id).length })).filter(x => x.rows > 1);
+    if (!dup.length) return '';
+    const extra = dup.reduce((n, x) => n + x.rows - 1, 0);
+    return '点名的 ' + ids.length + ' 镜在分镜表里占着多行同 id(' + dup.map(x => x.id + ' ' + x.rows + ' 行').join('、')
+      + '):这一趟按 ' + list.length + ' 行逐行跑、逐行计费,比点名数多花了 ' + extra + ' 行的钱。'
+      + '要一个 id 只跑一行,先用 CLI shots-dedupe 收拾存量重复。';
+  };
   /* 主体批量补图一位也没跑时,回执上「为什么是 0 位」那句话(单源:命令层与 CLI 同读这一份)。
    * 与镜头那一侧同形而分档不同,故另起一份不套用 emptyBatchNote:主体既没有终稿锁也没有判旧,
    * 且点名到的主体一律按「含已有图重生」真跑(有图不跳过)——

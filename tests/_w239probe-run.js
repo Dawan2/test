@@ -3270,63 +3270,6 @@ const commandsTests = [
     assert(/shots-dedupe/.test(cliSrc.slice(cliSrc.indexOf('/* ---- 逃生舱'), cliSrc.indexOf("CMD['state-get']"))),
       '逃生舱那段注释须把这条收拾办法点出来(不设闸的那条路得说清收拾走哪儿)');
   } },
-  { name: 'generateVideos 点名重复 id 真跑那一趟:两端回执都说出行数并点名 shots-dedupe(选人闸仍按行筛,一行都不许少跑)', fn: async () => {
-    /* 上面三条(导入设闸 / 逃生舱不设闸 / shots-dedupe 是存量出口)管的是表本身,这一条管**生成那一拍**:
-     * 存量重复表上点名一个 id,选人闸按行筛出三行,三行都真跑、三笔视频钱,而回执只报 total=3——
-     * 与点名三个不同 id 的正常批量逐字一样,用户在生成那一拍根本不知道自己多付了两行。
-     * 收法是补一句话,不是改选人:按 id 只跑一行会让第二、三行永远跑不到(它们各有各的内容)。
-     * 故本条同时正反两面各判一次:话得说出来、行一行都不许少跑。 */
-    const pending = { confirm: true, image: 'i.png', video: { status: 'none' } };
-    const dupRows = () => [
-      makeShot(0, Object.assign({ id: 'dup', plot: '首行' }, pending)),
-      makeShot(1, Object.assign({ id: 'solo', plot: '不重复的那一镜' }, pending)),
-      makeShot(2, Object.assign({ id: 'dup', plot: '第二行' }, pending)),
-      makeShot(3, Object.assign({ id: 'dup', plot: '第三行' }, pending)),
-    ];
-    // ① 浏览器那一端:引擎实收三行、回执带这句话、digest 真播出去
-    const sb = loadPipelineFix();
-    const ctx = cmdCtx(sb, { shots: dupRows() });
-    const r = await sb.Commands.execute('episode.generateVideos', { pid: ctx.p.id, epid: ctx.ep.id, ui: true, shotIds: ['dup'] });
-    assertEq(r.ok, true, '实际:' + JSON.stringify(r.error || {}));
-    assertEq(sb.__genShots.join(','), 'dup,dup,dup', '选人闸仍按行筛:三行一行都不许少跑(改成按 id 去重即红)');
-    assertEq(r.result.total, 3, '回执照旧按真跑的行数报');
-    const note = r.result.note || '';
-    assert(/dup 3 行/.test(note) && /按 3 行逐行跑/.test(note) && /多花了 2 行的钱/.test(note),
-      '回执得说出"点名 1 个 id 却跑了 3 行、多花 2 行的钱";行数说的是这一趟真下发的行'
-      + '(拿整张分镜表去数会把没跑的行也算进来),实际:' + JSON.stringify(note));
-    assert(/shots-dedupe/.test(note), '得把收拾存量重复那条出口点出来(不点名出口等于只报警不给活路):' + note);
-    sb.Commands.digest(r); // 页面上的调用方(sb-batch 跑批、断点条、问题中心)都是这么消化回执的
-    assertEq(sb.__toasts.filter(t => /shots-dedupe/.test(t)).length, 1,
-      'digest 得把这一句真播出去(成功档默认静默,不播就等于没说),实际 toast:' + JSON.stringify(sb.__toasts));
-    // ② 对照:点名三个不同 id 的正常批量一句不说(这句话不许变成每趟都播的噪音)
-    const sb2 = loadPipelineFix();
-    const c2 = cmdCtx(sb2, { shots: [makeShot(0, pending), makeShot(1, pending), makeShot(2, pending)] });
-    const r2 = await sb2.Commands.execute('episode.generateVideos', { pid: c2.p.id, epid: c2.ep.id, ui: true, shotIds: ['sh0', 'sh1', 'sh2'] });
-    assertEq(r2.result.total, 3, '对照面也是三行(两趟回执只差这一句话)');
-    assertEq(r2.result.note, undefined, '正常批量的成功回执一句不加:' + JSON.stringify(r2.result.note));
-    sb2.Commands.digest(r2);
-    assertEq(sb2.__toasts.length, 0, '正常批量 digest 仍静默,实际:' + JSON.stringify(sb2.__toasts));
-    // ③ 整集批量(没点名)也不说:那一路 total 本来就是行数,没有"点 1 个跑 3 行"的错觉
-    const sb3 = loadPipelineFix();
-    const c3 = cmdCtx(sb3, { shots: dupRows() });
-    const r3 = await sb3.Commands.execute('episode.generateVideos', { pid: c3.p.id, epid: c3.ep.id, ui: true });
-    assertEq(sb3.__genShots.join(','), 'dup,solo,dup,dup', '整集批量照旧四行全跑');
-    assertEq(r3.result.note, undefined, '整集那一路不说这句(点名判据与选人闸同形):' + JSON.stringify(r3.result.note));
-    // ④ CLI 那一端同一句话、同一份派生(两端各拼一份就会长成两种说法)
-    const sbc = loadCli();
-    const disk = cliDisk(sbc, { shots: dupRows() });
-    const g = await sbc.EXEC['episode.generateVideos'].run({ pid: 'p1', epid: 'ep1', shotIds: ['dup'] }, {});
-    assertEq(sbc.__genShots.join(','), 'dup,dup,dup', 'CLI 那端选人闸同样按行筛,三行照跑');
-    assertEq(g.result.total, 3, 'CLI 回执同样按行数报');
-    assertEq(g.result.note, note, '两端得是逐字同一句(各拼一份就会在 toast 与 hujing exec 的 JSON 上读到两种说法)');
-    assertEq(disk.epOf().shots.length, 4, '生成这一趟一行都不许被顺手去重(静默改用户的寻址键是另一回事,得用户自己发命令)');
-    assertEq(disk.epOf().shots.map(s => s.id).join(','), 'dup,solo,dup,dup', '表还是那张表:这一槽补的是话,不是偷偷收拾');
-    const sbc2 = loadCli(); // 对照:CLI 整集那一路
-    cliDisk(sbc2, { shots: dupRows() });
-    const gc = await sbc2.EXEC['episode.generateVideos'].run({ pid: 'p1', epid: 'ep1' }, {});
-    assertEq(sbc2.__genShots.join(','), 'dup,solo,dup,dup', 'CLI 整集那一路照旧四行全跑');
-    assertEq(gc.result.note, undefined, 'CLI 整集那一路同样不说这句');
-  } },
   { name: 'CLI exec smartReview:单独调用只评一次(重抽循环只在 produce 编排里),故注册表不替它登记 maxRetry', fn: async () => {
     /* 浏览器那一端 episode.smartReview 自己带重抽循环,轮次入参有落点;headless 这一端不是同一形态——
      * 它是一次 /api/wf/smart-review 往返,重抽循环长在 produce 编排里。故 --args '{"maxRetry":5}'
@@ -5206,40 +5149,6 @@ const domainTests = [
     assertEq(sb.Domain.emptyBatchNote(pOne, epOne, ['sh0', 'sh1', 'ghost'], false),
       '点名的 3 镜一镜也没跑:1 镜已定稿(批量重生成不覆盖定稿产物,需先解锁终稿)、1 镜产物已是最新、1 镜不在本集',
       '无重复 id 那一路逐字照旧');
-  } },
-  { name: 'dupRowsNote:点名的 id 在表里占着多行时把行数与出口说出来(没点名/不重复一律一句不说)', fn: () => {
-    /* 上一条管的是「一镜也没跑」那一档,这一条管它的反面:真跑起来了,而点名的一个 id 在表里躺着三行。
-     * 选人闸按行筛,于是三行都跑、三笔视频钱,回执却只报 total=3——与点名三个不同 id 的正常批量逐字一样。
-     * 这句话补的就是那点差:行数、多花几行的钱、以及收拾存量重复的那条命令。
-     * 闸一个字不动(按行筛是对的:改成按 id 只跑一行会让第二行永远跑不到),故本条只判措辞不判筛法。
-     * 点名判据与两端选人闸逐字同形:非数组的 shotIds 走整集那一路,那一路本来就没有"点 1 个跑 3 行"的错觉。 */
-    const sb = loadDomain();
-    const row = (id, order) => ({ id, order, prompt: 'p', plot: 'plot' });
-    const three = [row('dup', 0), row('dup', 2), row('dup', 3)];
-    const n = sb.Domain.dupRowsNote(['dup'], three);
-    assert(/^点名的 1 镜/.test(n), '开头报的是点名 id 数(不是行数):' + n);
-    assert(/dup 3 行/.test(n), '得逐个点名"哪个 id、几行":' + n);
-    assert(/按 3 行逐行跑、逐行计费/.test(n), '得说清这一趟真按行跑、按行计费:' + n);
-    assert(/多花了 2 行的钱/.test(n), '多花的那几行得算给用户看(3 行 − 点名 1 镜 = 2):' + n);
-    assert(/shots-dedupe/.test(n), '得点名收拾存量重复的那条出口命令:' + n);
-    // 不重复的正常子集:一句不说(这句话只在真出现同 id 多行时露面,不许变成每趟都播的噪音)
-    assertEq(sb.Domain.dupRowsNote(['sh0', 'sh1'], [row('sh0', 0), row('sh1', 1)]), '', '点名几个 id 就跑几行时一句不说');
-    assertEq(sb.Domain.dupRowsNote(['dup'], [row('dup', 0)]), '', '同 id 只有一行时一句不说(表干净就没这回事)');
-    // 点名判据与选人闸同形:非数组一律当"没点名",整集那一路不说这句
-    [null, undefined, 'dup', { 0: 'dup', length: 1 }, 1, []].forEach(bad => {
-      assertEq(sb.Domain.dupRowsNote(bad, three), '', '非数组/空数组 shotIds 走整集那一路,不许说点名那句:' + JSON.stringify(bad));
-    });
-    // 点名清单按镜去重:同一 id 点两次仍是一镜(与 emptyBatchNote 同口径)
-    assertEq(sb.Domain.dupRowsNote(['dup', 'dup'], three), n, '点名清单去重:同一 id 点两次仍是一镜');
-    // 多个 id 各自多行:逐个点名,多花的行数是各自之和
-    const mixed = [row('a', 0), row('a', 1), row('b', 2), row('b', 3), row('b', 4), row('c', 5)];
-    const m = sb.Domain.dupRowsNote(['a', 'b', 'c'], mixed);
-    assert(/a 2 行、b 3 行/.test(m) && !/c \d+ 行/.test(m), '只点名真重复的那几个 id(c 只有一行,不许跟着露面):' + m);
-    assert(/按 6 行逐行跑/.test(m) && /多花了 3 行的钱/.test(m), '行数与多花的行数按整趟算(2−1 + 3−1 = 3):' + m);
-    // 跑不到的行不算数:这一趟真下发的是哪几行就按哪几行说(rows 传的是待跑清单,不是整张表)
-    assertEq(sb.Domain.dupRowsNote(['dup'], [row('dup', 0)].concat(row('other', 1))), '',
-      '待跑清单里同 id 只剩一行时一句不说(表里另有几行但这一趟没跑,不许拿它们凑数)');
-    assertEq(sb.Domain.dupRowsNote(['dup'], []), '', '一行都没跑时不说这句(那是空跑那一档的地)');
   } },
   { name: 'emptySubjectImageNote:一位也没跑时逐堆说清为什么(分档与镜头那一侧分得开;各堆之和 = 点名数)', fn: () => {
     const sb = loadDomain();
@@ -8764,43 +8673,6 @@ const contractTests = [
     assert(code.some(t => /if \(Array\.isArray\(picked\) && picked\.length\)/.test(t)),
       'emptyBatchNote 的点名分支须与选人闸逐字同形(退回 picked && picked.length 即两种说法)');
   } },
-  { name: '点名的 id 占多行那句实话双端单源:两端真跑回执都现取 Domain.dupRowsNote,选人闸仍按行筛没被改成按 id 去重', fn() {
-    /* 「点名 1 个 id 跑了 3 行」与「点名 3 个 id 跑了 3 行」在两端都是 ok/total:3,分开它们的只有回执上那句话。
-     * 两端各拼一句就会长成两种说法(浏览器 toast 与 hujing exec 的 JSON 对不上),故句子只许有一份。
-     * 另钉住这句话的**前提**:补话是因为不打算改选人闸——闸真被改成按 id 去重时,第二、三行永远跑不到,
-     * 那是另一个产品判断,得连着"重复行里的内容怎么办"一起判,不许拿这句 note 当幌子顺手改掉。 */
-    const D = require('../js/domain.js');
-    assertEq(typeof D.dupRowsNote, 'function', 'Domain 须导出这一句的单源 dupRowsNote');
-    [['js/commands.js', path.join(ROOT, 'js', 'commands.js'), "reg('episode.generateVideos'", "\n  reg('"],
-      ['cli.js', path.join(ROOT, 'cli.js'), "EXEC['episode.generateVideos']", '\nEXEC[']].forEach(([rel, abs, head, tail]) => {
-      const src = fs.readFileSync(abs, 'utf8');
-      const i = src.indexOf(head);
-      assert(i >= 0, rel + ' 找不到 episode.generateVideos 的实现(挪窝或改名就同轮改这里,别把本条留成恒真)');
-      const rest = src.slice(i + head.length);
-      const body = rest.slice(0, rest.indexOf(tail) >= 0 ? rest.indexOf(tail) : rest.length);
-      assert(/Domain\.dupRowsNote\(/.test(body), rel + ' 的真跑回执须现取 Domain.dupRowsNote(不许就地拼第二句)');
-      const code = body.split('\n').filter(t => !(/^\s*(\/\/|\/?\*)/.test(t) || !t.trim()));
-      assert(code.length > 20, rel + ' 的 generateVideos 段可执行行取不到(整段被判成注释本条即恒真),实测 ' + code.length + ' 行');
-      const dup = code.filter(t => /逐行计费|多花了|shots-dedupe/.test(t));
-      assertEq(dup.join(' | '), '', rel + ' 的可执行行里不许出现那句话的字面(出现即说明又抄了一份)');
-      /* 选人闸的躯干:骨架(抹掉注释与字面量)里 ids.has(s.id) 之后不许冒出按 id 收窄的去重 */
-      const skel = blankNonCode(body);
-      assert(/ids\.has\(s\.id\)/.test(skel), rel + ' 的选人闸得还是按行筛 ids.has(s.id)');
-      const narrow = skel.split('\n').filter(t => /\b(pend|todo) = /.test(t) && /(new Set|findIndex|indexOf\()/.test(t));
-      assertEq(narrow.join(' | '), '',
-        rel + ' 的待跑清单被按 id 收窄了——第二行会永远跑不到,这句 note 不是拿来给它开路的');
-    });
-    /* 派生这一侧:点名判据与选人闸逐字同形(非数组的 shotIds 走整集那一路,那一路本来就没有这句话) */
-    const src = fs.readFileSync(path.join(ROOT, 'js', 'domain.js'), 'utf8');
-    const i = src.indexOf('D.dupRowsNote = function');
-    assert(i >= 0, 'js/domain.js 找不到 D.dupRowsNote(挪窝或改名就同轮改这里)');
-    const seg = src.slice(i).split('\n  };')[0];
-    const code = seg.split('\n').filter(t => !(/^\s*(\/\/|\/?\*)/.test(t) || !t.trim()));
-    assert(code.length > 5, 'dupRowsNote 段可执行行取不到(整段被判成注释本条即恒真),实测 ' + code.length + ' 行');
-    assert(code.some(t => /Array\.isArray\(picked\) \|\| !picked\.length/.test(t)),
-      'dupRowsNote 的点名判据须与选人闸同形(放宽成真值判断,字符串 shotIds 就会被当点名清单)');
-    assert(/shots-dedupe/.test(seg), '这句话须点名 shots-dedupe 那条出口(只报警不给活路等于没说)');
-  } },
   { name: '一位也没跑那句实话双端单源:两端主体补图空跑早退都现取 Domain.emptySubjectImageNote,不与镜头那份混用', fn() {
     /* 与镜头那一侧同形:句子只许有一份,否则浏览器 toast 与 hujing exec 的 JSON 上读到两种说法。
      * 另钉"不许拿 emptyBatchNote 顶":两侧分档不同(主体没有终稿锁与判旧,点名到的一律重生成),
@@ -12108,7 +11980,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 658, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 655, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 148, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -15734,23 +15606,48 @@ const apiTests = [
   } },
 ];
 
-const SUITES = { 'agent-ops': agentOpsTests, experts: expertsTests, produce: produceTests, commands: commandsTests, store: storeTests, 'sb-gen': sbGenTests, pipeline: pipelineTests, 'sb-views': sbViewsTests, 'sb-io': sbIoTests, understanding: understandingTests, billing: billingTests, domain: domainTests, bus: busTests, issues: issuesTests, plans: plansTests, continuity: continuityTests, release: releaseTests, contract: contractTests, skills: skillsTests, tasks: tasksTests, split: splitTests, memory: memoryTests, flow: flowTests, api: apiTests };
+
 (async () => {
-  const filter = process.argv[2];
-  let passed = 0, failed = 0;
-  for (const [name, tests] of Object.entries(SUITES)) {
-    if (filter && name !== filter) continue;
-    for (const t of tests) {
-      try {
-        await t.fn();
-        passed++;
-        console.log('PASS | ' + name + ' · ' + t.name);
-      } catch (e) {
-        failed++;
-        console.log('FAIL | ' + name + ' · ' + t.name + ' | ' + (e && e.message));
-      }
-    }
-  }
-  console.log('\n===== ' + passed + '/' + (passed + failed) + ' PASS, ' + failed + ' FAIL =====');
-  process.exit(failed ? 1 : 0);
-})();
+  const pending = { confirm: true, image: 'i.png', video: { status: 'none' } };
+  const rows = () => [
+    makeShot(0, Object.assign({ id: 'dup', plot: '首行' }, pending)),
+    makeShot(1, Object.assign({ id: 'solo', plot: '不重复的那一镜' }, pending)),
+    makeShot(2, Object.assign({ id: 'dup', plot: '第二行' }, pending)),
+    makeShot(3, Object.assign({ id: 'dup', plot: '第三行' }, pending)),
+  ];
+  const show = (tag, sb, r) => {
+    console.log('=== ' + tag + ' ===');
+    console.log('引擎实收:', JSON.stringify(sb.__genShots || sb.__called));
+    console.log('回执:', JSON.stringify(r));
+    console.log('digest toasts:', JSON.stringify(sb.__toasts || []));
+  };
+
+  // 浏览器那一端(js/commands.js),headless 档
+  let sb = loadPipelineFix();
+  let ctx = cmdCtx(sb, { shots: rows() });
+  let r = await sb.Commands.execute('episode.generateVideos', { pid: ctx.p.id, epid: ctx.ep.id, shotIds: ['dup'] });
+  sb.Commands.digest(r);
+  show('浏览器 headless:点名 ["dup"](表里 dup 三行)', sb, r);
+
+  sb = loadPipelineFix();
+  ctx = cmdCtx(sb, { shots: [makeShot(0, pending), makeShot(1, pending), makeShot(2, pending)] });
+  r = await sb.Commands.execute('episode.generateVideos', { pid: ctx.p.id, epid: ctx.ep.id, shotIds: ['sh0', 'sh1', 'sh2'] });
+  sb.Commands.digest(r);
+  show('浏览器 headless 对照:点名三个不同 id', sb, r);
+
+  // ui 档
+  sb = loadPipelineFix();
+  ctx = cmdCtx(sb, { shots: rows() });
+  r = await sb.Commands.execute('episode.generateVideos', { pid: ctx.p.id, epid: ctx.ep.id, ui: true, shotIds: ['dup'] });
+  sb.Commands.digest(r);
+  show('浏览器 ui:点名 ["dup"]', sb, r);
+
+  // 一键成片编排:真跑一趟(点名重复 id),看 W228 那个 idle 冒泡会不会被这句话误触
+  sb = loadPipelineFix();
+  ctx = cmdCtx(sb, { shots: rows() });
+  r = await sb.Commands.execute('episode.produce', { pid: ctx.p.id, epid: ctx.ep.id, shotIds: ['dup'], smartReview: false, riskyCompose: true });
+  console.log('=== 一键成片(点名 ["dup"]) ===');
+  console.log('顶层 note:', JSON.stringify(r.result && r.result.note));
+  console.log('子步:', JSON.stringify((r.result.steps || []).map(x => ({ step: x.step, ok: x.ok, note: x.result && x.result.note, fresh: x.result && x.result.fresh }))));
+  console.log('引擎实收:', JSON.stringify(sb.__genShots), 'toasts:', JSON.stringify(sb.__toasts));
+})().catch(e => { console.error('探针出错:', e); process.exit(1); });
