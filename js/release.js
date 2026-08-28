@@ -374,7 +374,12 @@ ${summary.stale.length ? summary.stale.map(s => ' - ' + s).join('\n') : ' (无)'
       a.download = name;
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 3000);
-    } catch (_) { ZipUtil.download(name, [{ name: 'project_meta.json', data: '空下载兜底:请重新打包' }]); }
+    } catch (e) {
+      /* 落地失败就如实失败:兜底再调 ZipUtil.download 是同一套 Blob/createObjectURL/a.click,
+       * 这条路不通时那条路同样不通;万一通了,落的是个名字仍叫「交付包」、里面只有一句
+       * 「请重新打包」的空壳 zip,用户还会接着收到下面那条「交付包已下载 N 个文件」的成功提示。 */
+      throw new Error('交付包已打好,但浏览器下载没能落地:' + ((e && e.message) || e) + '(请重试打包,或换用其他浏览器)');
+    }
     if (window.U) U.toast(`交付包已下载:${r.files} 个文件,${r.videosOK}/${(p.episodes || []).length} 集成片${r.videosSkipped.length ? '(' + r.videosSkipped.length + ' 跳过)' : ''}`, 'success', 4000);
     // 抓分镜失手在下载回执上如实报出:只印文件数的话,缺分镜的包与齐全的包在用户眼里一模一样
     if (r.storyboardFailed && r.storyboardFailed.length && window.U)
