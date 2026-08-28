@@ -623,7 +623,12 @@ ${ctx.content}`;
   };
 
   /* ================= 智能分镜(自 sb-llm.js 下沉) ================= */
-  /* 新建分镜空白结构(自 storyboard.js blankShot 下沉;uid 注入) */
+  /* 新建分镜空白结构(自 storyboard.js blankShot 下沉;uid 注入)
+   * 镜头 id 是分镜表的唯一寻址键(findShot / shot-set / 审片按 shotId 回写 / 点名子集全按 id 认镜),
+   * 故 id 只认注入的 uid、不接任何外来字段:浏览器各入口(CSV 导入、文本导入、资产库导入、加镜、
+   * 插入、切分、节拍板转分镜、拉片建集、分镜脚本转换、导演助手插入、本地兜底拆镜)与两端 LLM
+   * 拆镜(normalizeLLMShot 走本函数)都经此处发 id。外部给的 id 只有 cli.js shots-import 那一条
+   * 透传路径(整表导出改完导回时按 id 认领原镜),它自带落库前的唯一闸。 */
   W.blankShot = function (order, cfg, uid) {
     return {
       id: uid('sh'), order, characters: [], scene: '', props: [],
