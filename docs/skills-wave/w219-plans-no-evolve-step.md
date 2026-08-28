@@ -24,7 +24,7 @@
 | `unit` | 633/633 | **633/633**(条数不变:`plans` 套件那条旧用例是**改断言**不是新增,17 → 17) |
 | `contract` 子套件 | 138/138 | 138/138(未动) |
 | `integration` | 147/147 | 147/147(未动) |
-| `cli.smoke` | 107/109 | 107/109(**同名同表现的两条**,见 §5.2) |
+| `cli.smoke` | 107/109 | 107/109(**同名同表现的两条**,见 §6.1) |
 | 记账件 | 228 份 | **229 份**(含本文;`FLOOR` 228 → 229、目录 README 明写份数同抬) |
 | 领域命令 | 13 | **13**(`expert.evolve` 仍在册,一条没增没删) |
 | `manual: true` 全仓处数 | 1 | **1**(仍只挂在 `expert.evolve` 上;`manualOnly`/`humanOnly` 产品面 0 处) |
@@ -136,7 +136,7 @@ E3 里命令层确实跑不出,但那是**执行口**替它兜的,不是 `genera
 | `plans` 子套件 | `node tests/unit.js plans` | **17/17 PASS** |
 | `contract` 子套件 | `node tests/unit.js contract` | **138/138 PASS** |
 | `integration` | `node tests/integration.js` | **147/147 PASS** |
-| `cli.smoke` | `node tests/cli.smoke.js` | **107/109**(见 §5.2 口径) |
+| `cli.smoke` | `node tests/cli.smoke.js` | **107/109**(见 §6.1 口径) |
 | 记账件份数 | `ls docs/skills-wave \| grep -cE '^w[0-9]+-.+\.md$'` | **229**(含本文) |
 | 领域命令数 | `require('./js/cmd-registry.js').META.length` | **13** |
 | `gaps()` 键数 | `Object.keys(require('./js/skills.js').gaps()).length` | **20** |
@@ -145,7 +145,7 @@ E3 里命令层确实跑不出,但那是**执行口**替它兜的,不是 `genera
 记账件那格从 **228** 抬到 **229**(`tests/unit.js` 的 `const FLOOR` 与目录 README 的「索引表共 N 份」同抬),
 护栏主题那格 19 / 19 / 19 未动。
 
-### 5.2 `cli.smoke` 的两条失败
+### 6.1 `cli.smoke` 的两条失败
 
 `107/109`,失败的两条与 `master` **同名同表现**,任务口径内允许:
 
