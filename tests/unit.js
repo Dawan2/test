@@ -3487,6 +3487,77 @@ const commandsTests = [
       assertEq(valveOf(rc.result.note), 0, 'CLI ' + c.label + ':真实入口上末堆必须是 0,实际:' + rc.result.note);
     }
   } },
+  { name: 'subject.generateImage 点名同 id 多位真跑那一趟:两端回执都说出位数并给现有修法(选人闸仍按位筛,一位都不许少跑)', fn: async () => {
+    /* 上面两条管的是「一位也没跑」那一档,这一条管**真跑起来了**:主体库里同 id 存着三位时点名一个 id,
+     * 选人闸按位筛出三位、三位都真跑、三笔生图钱,而回执只报 total=3——与干净库上点名三个不同 id 的
+     * 正常批量逐字相同(连 cost 都一样),用户在生图那一拍根本不知道自己多付了两位。
+     * 收法是补一句话,不是改选人:按 id 只跑一位会让第二、三位永远跑不到(它们各有各的名字与设定)。
+     * 与镜头那一侧同形而措辞另起一份——主体侧没有 shots-dedupe 那样的去重命令,末句给的是主体库里的人工修法。 */
+    const dupSubs = () => [
+      { id: 'dup', name: 'A-首位', kind: 'character' }, { id: 'solo', name: 'B-不重复', kind: 'character' },
+      { id: 'dup', name: 'C-第二位', kind: 'character' }, { id: 'dup', name: 'D-第三位', kind: 'character' },
+    ];
+    const mkB = () => {
+      const sb = loadCommands();
+      sb.__engine = [];
+      sb.EpisodeUtil.genSubjectImage = async (p, s) => {
+        sb.__engine.push(s.id);
+        sb.__credits = (sb.__credits == null ? 999 : sb.__credits) - sb.COST.image; // 逐位真扣一笔(与 Tasks.run 五件套同口径)
+        s.image = '/uploads/img/' + s.id + '-' + sb.__engine.length + '.png';
+      };
+      return sb;
+    };
+    // ① 浏览器那一端:引擎实收三位、回执带这句话、digest 真播出去
+    const sb = mkB();
+    const c = cmdCtx(sb);
+    c.p.subjects = dupSubs();
+    const r = await sb.Commands.execute('subject.generateImage', { pid: 'p1', ui: true, subjectIds: ['dup'] });
+    assertEq(r.ok, true, '实际:' + JSON.stringify(r.error || {}));
+    assertEq(sb.__engine.join(','), 'dup,dup,dup', '选人闸仍按位筛:三位一位都不许少跑(改成按 id 去重即红)');
+    assertEq(r.result.total, 3, '回执照旧按真跑的位数报');
+    const note = r.result.note || '';
+    assert(/dup 3 位/.test(note) && /按 3 位逐位跑/.test(note) && /多花了 2 位的钱/.test(note),
+      '回执得说出"点名 1 个 id 却跑了 3 位、多花 2 位的钱";位数说的是这一趟真下发的那几位'
+      + '(拿整个主体库去数会把没跑的位也算进来),实际:' + JSON.stringify(note));
+    assert(/主体库/.test(note) && /删掉或改 id/.test(note), '得把现有修法点出来(只报警不给活路等于没说):' + note);
+    assert(!/shots-dedupe|分镜表/.test(note), '主体侧没有那条去重命令,不许硬塞镜头那份措辞:' + note);
+    sb.Commands.digest(r);
+    assertEq(sb.__toasts.filter(t => /同 id 存着多位/.test(t)).length, 1,
+      'digest 得把这一句真播出去(成功档默认静默,不播就等于没说),实际 toast:' + JSON.stringify(sb.__toasts));
+    // ② 对照:干净库上点名三个不同 id —— 同样 total:3、同样三笔钱,两趟回执只差这一句话
+    const sb2 = mkB();
+    cmdCtx(sb2).p.subjects = [{ id: 'a1', name: 'A' }, { id: 'a2', name: 'B' }, { id: 'a3', name: 'C' }];
+    const r2 = await sb2.Commands.execute('subject.generateImage', { pid: 'p1', ui: true, subjectIds: ['a1', 'a2', 'a3'] });
+    assertEq(r2.result.total, 3, '对照面也是三位');
+    assertEq(r.cost, r2.cost, '两趟扣的钱一样多(这正是"闷声多扣"读不出来的原因),实际:' + r.cost + ' vs ' + r2.cost);
+    assertEq(r2.result.note, undefined, '正常批量的成功回执一句不加:' + JSON.stringify(r2.result.note));
+    sb2.Commands.digest(r2);
+    assertEq(sb2.__toasts.length, 0, '正常批量 digest 仍静默,实际:' + JSON.stringify(sb2.__toasts));
+    // ③ 整库(没点名)也不说:那一路 total 本来就是位数,没有"点 1 位跑 3 位"的错觉
+    const sb3 = mkB();
+    cmdCtx(sb3).p.subjects = dupSubs();
+    const r3 = await sb3.Commands.execute('subject.generateImage', { pid: 'p1', ui: true });
+    assertEq(sb3.__engine.join(','), 'dup,solo,dup,dup', '整库那一路照旧四位全跑');
+    assertEq(r3.result.note, undefined, '整库那一路不说这句(点名判据与选人闸同形):' + JSON.stringify(r3.result.note));
+    // ④ CLI 那一端同一句话、同一份派生(两端各拼一份就会长成两种说法)
+    const sbc = loadCli();
+    const cli = cliCtx(sbc, []);
+    cli.p.subjects = dupSubs();
+    sbc.__imgs = [];
+    sbc.genImage = async () => { sbc.__imgs.push(1); return { url: '/uploads/img/g' + sbc.__imgs.length + '.png' }; };
+    const g = await sbc.EXEC['subject.generateImage'].run({ pid: 'p1', subjectIds: ['dup'] }, {});
+    assertEq(sbc.__imgs.length, 3, 'CLI 那端选人闸同样按位筛,三位照跑(三笔生图钱)');
+    assertEq(g.result.total, 3, 'CLI 回执同样按位数报');
+    assertEq(g.result.note, note, '两端得是逐字同一句(各拼一份就会在 toast 与 hujing exec 的 JSON 上读到两种说法)');
+    assertEq(cli.p.subjects.length, 4, '生图这一趟一位都不许被顺手去重(静默改用户的寻址键是另一回事,得用户自己动手)');
+    assertEq(cli.p.subjects.map(s => s.id).join(','), 'dup,solo,dup,dup', '库还是那个库:这一槽补的是话,不是偷偷收拾');
+    const sbc2 = loadCli(); // 对照:CLI 整库那一路
+    cliCtx(sbc2, []).p.subjects = dupSubs();
+    sbc2.genImage = async () => ({ url: '/uploads/img/x.png' });
+    const gc = await sbc2.EXEC['subject.generateImage'].run({ pid: 'p1' }, {});
+    assertEq(gc.result.total, 4, 'CLI 整库那一路照旧四位全跑');
+    assertEq(gc.result.note, undefined, 'CLI 整库那一路同样不说这句');
+  } },
   { name: 'CLI exec produce:点名的轮次钳过即落库,下一轮不带入参跑的就是这个次数(单独调 smartReview 那一端仍不写库)', fn: async () => {
     /* 此前这一端只读不写:`exec episode.produce --args '{"maxRetry":4}'` 当轮真跑 4 轮,
      * 磁盘上那份 sbConfig.maxRetry 却还是旧的 1——用户在浏览器打开该集参数面板看到的仍是 1,
@@ -5309,6 +5380,46 @@ const domainTests = [
     assertEq(sum(mixed).slice(1).reduce((a, b) => a + b, 0), 2, '各堆之和仍等于点名数:' + mixed);
     assertEq(sb.Domain.emptySubjectImageNote(p, ['dup', 'dup', 'ghost']), mixed, '点名清单去重照旧:同一 id 点两次仍是一位');
   } },
+  { name: 'dupSubjectRowsNote:点名的 id 在主体库里存着多位时把位数说出来(没点名/不重复一律一句不说;不与镜头那份串词)', fn: () => {
+    /* 与上一条成对:那条管的是「一位也没跑」时怎么数,这条管的是**真跑起来了**——
+     * 同 id 存着三位时点名一个 id,选人闸按位筛出三位、三笔生图钱,而 total 与正常批量长得一样。
+     * 收法是补一句话不是改选人(按 id 只跑一位会让第二、三位永远跑不到,它们各有各的名字与设定)。 */
+    const sb = loadDomain();
+    const subs = [{ id: 'dup', name: 'A' }, { id: 'solo', name: 'B' }, { id: 'dup', name: 'C' }, { id: 'dup', name: 'D' }];
+    const n = sb.Domain.dupSubjectRowsNote(['dup'], subs.filter(s => s.id === 'dup'));
+    assert(/点名的 1 位主体/.test(n), '开头报的是点名的 id 数(不是位数),实际:' + n);
+    assert(/dup 3 位/.test(n), '得逐个点名"哪个 id 存着几位":' + n);
+    assert(/按 3 位逐位跑/.test(n) && /逐位计费/.test(n), '得说清这一趟按几位跑、按几位计费:' + n);
+    assert(/多花了 2 位的钱/.test(n), '多花的位数 = 位数 − 点名数:' + n);
+    assert(/主体库/.test(n) && /删掉或改 id/.test(n), '得把现有修法说出来(只报警不给活路等于没说):' + n);
+    assert(/一并删光/.test(n), '现有修法的已知代价得一并说清(删除按 id 匹配),不然是把用户往误删里指:' + n);
+    /* 不许硬塞镜头那一侧的措辞:主体库里没有"行"也没有"分镜表",更没有 shots-dedupe 这条命令 */
+    assert(!/镜|行|分镜表|shots-dedupe/.test(n), '主体这一侧不该冒出镜头那份 note 的字眼:' + n);
+    // 反面:不说话的那几路
+    assertEq(sb.Domain.dupSubjectRowsNote(['dup', 'solo'], [subs[0], subs[1]]), '', '点名几位跑几位(各占一位)时一句不说');
+    assertEq(sb.Domain.dupSubjectRowsNote(['solo'], [subs[1]]), '', '同 id 只存一位时一句不说');
+    assertEq(sb.Domain.dupSubjectRowsNote(['dup'], []), '', '待跑清单为空(空跑早退档)时归 emptySubjectImageNote 说,这份不抢话');
+    [undefined, null, 'dup', { 0: 'dup', length: 1 }, 0, {}].forEach(bad => {
+      let out;
+      try { out = sb.Domain.dupSubjectRowsNote(bad, subs); }
+      catch (e) { assert(false, '非数组 subjectIds 不许抛(点名判据放宽成真值判断即在这里抛):' + JSON.stringify(bad) + ' → ' + e.message); }
+      assertEq(out, '', '点名判据须与两端选人闸 Array.isArray(...) && length 同形:' + JSON.stringify(bad));
+    });
+    /* 「多花几位」按点名清单的**原始条数**算,不按去重后的 id 数:两者只在机器派生的点名清单上分道,
+     * 而那正是发布门 G9 一键处置递来的形状(每个缺图主体各排一条,同 id 两位即 ['dup','dup'])——
+     * 点了两条也真跑两位、一位都没多花,按去重后的 1 去减会凭空报出「多花 1 位的钱」这句假话。
+     * 行为面由 release 套件真跑 G9 那条钉着,这里钉纯函数。 */
+    const rows = k => Array.from({ length: k }, () => ({ id: 'dup' }));
+    assertEq(sb.Domain.dupSubjectRowsNote(['dup', 'dup'], rows(2)), '', 'G9 那种「每位各排一条」的点名清单:点两条跑两位,一位没多花就一句不说');
+    assertEq(sb.Domain.dupSubjectRowsNote(['dup', 'dup', 'dup'], rows(3)), '', '同上,三条对三位照旧一句不说');
+    const two = sb.Domain.dupSubjectRowsNote(['dup', 'dup'], rows(3));
+    assert(/点名的 2 位/.test(two) && /多花了 1 位的钱/.test(two), '点两条真跑三位时多花的是 1 位(不是 2 位):' + two);
+    // 多个 id 各自的位数分开数,只点真重复的那几个
+    const multi = [{ id: 'x' }, { id: 'y' }, { id: 'y' }, { id: 'z' }, { id: 'z' }, { id: 'z' }];
+    const m = sb.Domain.dupSubjectRowsNote(['x', 'y', 'z'], multi);
+    assert(/y 2 位/.test(m) && /z 3 位/.test(m) && !/x \d+ 位/.test(m), '只点真重复的那几个:' + m);
+    assert(/按 6 位逐位跑/.test(m) && /多花了 3 位的钱/.test(m), '多花的位数按各 id 分别累计:' + m);
+  } },
 ];
 
 /* ================= 套件 12:bus.js(管线事件总线,第三阶段) ================= */
@@ -6899,6 +7010,31 @@ const releaseTests = [
     await sb2.Release.execFix(p2, g2, null, () => {});
     assertEq(sb2.__genSubjects.join(','), 'sj1', '跑得到的那位照跑');
     assertEq(sb2.__toasts.length, 0, '真跑到主体就不该多这一条(写成恒播的话这里红)');
+  } },
+  { name: 'G9 一键处置遇上同 id 多位的主体库:两位都真跑到,且不许报出"多花了钱"这句假话', fn: async () => {
+    /* G9 的 fix.subjectIds 是**机器派生**的:每个缺图主体各排一条,故同 id 两位时它递来的是 ['dup','dup']。
+     * 「点名的 id 占多位」那句 note 收的是"用户点了 1 个 id 却按多位计费";G9 这一路点了两条、真跑两位,
+     * 一位都没多花,这句话一个字都不该出现——把"多花几位"按去重后的 id 数去减就会在这里凭空报出
+     * 「多花 1 位的钱」,而用户读到的是发布门自己的按钮在诬告自己。故本条正反两面各判一次:
+     * 两位都得真跑到(选人闸按位筛的正面),以及这一按一句假话都不许播。 */
+    const sb = loadReleaseFix();
+    sb.__genSubjects = [];
+    sb.EpisodeUtil.genSubjectImage = async (p, s) => { sb.__genSubjects.push(s.id + '/' + s.name); s.image = '/uploads/img/' + s.id + '-' + sb.__genSubjects.length + '.png'; };
+    const p = { id: 'p1', name: '剧', episodes: [releaseReadyEp()], subjects: [
+      { id: 'dup', name: 'A-首位', kind: 'character' }, { id: 'dup', name: 'C-第二位', kind: 'character' },
+    ] };
+    sb.__proj = p;
+    const g = sb.Release.collect(p, { online: true }).gates.find(x => x.code === 'g9-subjects');
+    assertEq(g.status, 'fail', '夹具前提:G9 因缺图主体 fail');
+    assertEq((g.fix.subjectIds || []).join(','), 'dup,dup', '夹具前提:G9 派生的点名清单每位各排一条(同 id 两位即两条)');
+    let got = null;
+    await sb.Release.execFix(p, g, null, r => { got = r; });
+    assertEq(sb.__genSubjects.join(','), 'dup/A-首位,dup/C-第二位', '两位都得真跑到(按 id 去重只跑一位时第二位永远补不上图,G9 也就永远过不了门)');
+    assertEq(got.result.total, 2, '回执按真跑的位数报');
+    assertEq(got.result.note, undefined, '点两条跑两位,一位都没多花——这句话一个字都不该出现,实际:' + JSON.stringify(got.result.note));
+    assertEq(sb.__toasts.length, 0, '这一按不许播出任何"多花了钱"的假话,实际 toast:' + JSON.stringify(sb.__toasts));
+    assertEq(sb.Release.collect(p, { online: true }).gates.find(x => x.code === 'g9-subjects').status, 'pass',
+      '两位都补上图之后 G9 真的过门(只跑一位的话这里仍是 fail)');
   } },
   { name: 'G1 一键处置:整趟一步都没跑起来时按钮按下去有回音(编排回执只在顶层播,子步那句本来没有出口)', fn: async () => {
     /* G1 派的处置是编排命令 `episode.produce`:低分定稿集(审片均分未过线故 status=needs_human)
@@ -8835,6 +8971,50 @@ const contractTests = [
       const wrong = code.filter(t => /Domain\.emptyBatchNote\(/.test(t));
       assertEq(wrong.join(' | '), '', rel + ' 的主体补图不许改读镜头那一份派生(分档不同,混用会让回执论起"镜"来)');
     });
+  } },
+  { name: '点名的 id 在主体库存着多位那句实话双端单源:两端真跑回执都现取 Domain.dupSubjectRowsNote,选人闸仍按位筛没被改成按 id 去重', fn() {
+    /* 与镜头那一侧那条(dupRowsNote)成对而分开写:主体侧没有 shots-dedupe 那条去重命令,
+     * 措辞与出口都另起一份,套用镜头那份会让主体回执论起"分镜表"与"行"来。
+     * 另钉住这句 note 的前提没被顺手改掉——选人闸得还是按位筛,拿这句话给"按 id 只跑一位"开路时本条红。 */
+    const D = require('../js/domain.js');
+    assertEq(typeof D.dupSubjectRowsNote, 'function', 'Domain 须导出主体侧这一份 dupSubjectRowsNote');
+    [['js/commands.js', path.join(ROOT, 'js', 'commands.js'), "reg('subject.generateImage'", "\n  reg('"],
+      ['cli.js', path.join(ROOT, 'cli.js'), "EXEC['subject.generateImage']", '\nEXEC[']].forEach(([rel, abs, head, tail]) => {
+      const src = fs.readFileSync(abs, 'utf8');
+      const i = src.indexOf(head);
+      assert(i >= 0, rel + ' 找不到 subject.generateImage 的实现(挪窝或改名就同轮改这里,别把本条留成恒真)');
+      const rest = src.slice(i + head.length);
+      const body = rest.slice(0, rest.indexOf(tail) >= 0 ? rest.indexOf(tail) : rest.length);
+      assert(/Domain\.dupSubjectRowsNote\(/.test(body), rel + ' 的真跑回执须现取 Domain.dupSubjectRowsNote(不许就地拼第二句)');
+      const code = body.split('\n').filter(t => !(/^\s*(\/\/|\/?\*)/.test(t) || !t.trim()));
+      assert(code.length > 12, rel + ' 的 generateImage 段可执行行取不到(整段被判成注释本条即恒真),实测 ' + code.length + ' 行');
+      const dup = code.filter(t => /同 id 存着多位|逐位计费|多花了/.test(t));
+      assertEq(dup.join(' | '), '', rel + ' 的可执行行里不许出现那句话的字面(出现即说明又抄了一份)');
+      const wrong = code.filter(t => /Domain\.dupRowsNote\(/.test(t));
+      assertEq(wrong.join(' | '), '', rel + ' 的主体补图不许改读镜头那一份 note(主体库里没有"行",也没有 shots-dedupe 这条出口)');
+      /* 选人闸的躯干:骨架(抹掉注释与字面量)里 ids.has(s.id) 之后不许冒出按 id 收窄的去重 */
+      const skel = blankNonCode(body);
+      assert(/ids\.has\(s\.id\)/.test(skel), rel + ' 主体侧的选人闸得还是按位筛 ids.has(s.id)');
+      const narrow = skel.split('\n').filter(t => /\btodo = /.test(t) && /(new Set|findIndex|indexOf\()/.test(t));
+      assertEq(narrow.join(' | '), '',
+        rel + ' 的待跑主体清单被按 id 收窄了——第二位会永远跑不到,这句 note 不是拿来给它开路的');
+    });
+    /* 派生这一侧:点名判据与选人闸逐字同形;末句得给现有修法(主体侧没有去重命令,给的是主体库里的人工动作) */
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'domain.js'), 'utf8');
+    const i = src.indexOf('D.dupSubjectRowsNote = function');
+    assert(i >= 0, 'js/domain.js 找不到 D.dupSubjectRowsNote(挪窝或改名就同轮改这里)');
+    const seg = src.slice(i).split('\n  };')[0];
+    const code = seg.split('\n').filter(t => !(/^\s*(\/\/|\/?\*)/.test(t) || !t.trim()));
+    assert(code.length > 5, 'dupSubjectRowsNote 段可执行行取不到(整段被判成注释本条即恒真),实测 ' + code.length + ' 行');
+    assert(code.some(t => /Array\.isArray\(picked\) \|\| !picked\.length/.test(t)),
+      'dupSubjectRowsNote 的点名判据须与选人闸同形(放宽成真值判断,字符串 subjectIds 就会被当点名清单)');
+    assert(code.some(t => /主体库/.test(t)) && code.some(t => /删掉或改 id/.test(t)),
+      '这句话须给出现有修法(主体侧没有去重命令,只报警不给活路等于没说)');
+    assert(!code.some(t => /shots-dedupe/.test(t)), '主体侧不许点名镜头那条去重命令(它只收拾分镜表,收拾不到主体库)');
+    /* 反面:镜头那一份原样在册且仍点着自己的出口——两份并存、各管各的(合并成一份即在这里红) */
+    assertEq(typeof D.dupRowsNote, 'function', '镜头那一份是本条的对照面,没了就同轮改这里');
+    assert(/shots-dedupe/.test(src.slice(src.indexOf('D.dupRowsNote = function')).split('\n  };')[0]),
+      '镜头那一份仍点名 shots-dedupe(被主体侧措辞顶掉即红)');
   } },
   { name: '成片合成没有"ok+静默"那一档:两端零素材拦截点在位,不许改读镜头/主体那两份 note,点名子集这一位不在成片侧', fn() {
     /* 镜头(emptyBatchNote)与主体(emptySubjectImageNote)各补过一句"为什么是 0 条",成片这一路**没有**开第三份。
@@ -12151,7 +12331,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 660, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 664, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 148, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -12559,7 +12739,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 257;
+    const FLOOR = 258;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接

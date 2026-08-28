@@ -1378,7 +1378,11 @@ EXEC['subject.generateImage'] = { needs: ['p'], meter: true, run: async (args, f
     log(note);
     return execOk({ total: 0, ok: 0, failed: [], note });
   }
+  /* 点名的 id 在主体库里存着多位时,这一趟按位跑、按位计费,而 total 与正常批量长得一样:
+   * 先说在跑之前,回执上也留一份(与前端 digest 同读 Domain.dupSubjectRowsNote 一份;选人闸一个字没动) */
+  const dupNote = Domain.dupSubjectRowsNote(args.subjectIds, todo);
   log('主体生图:' + todo.length + ' 位待处理(串行)…');
+  if (dupNote) log(dupNote);
   const failed = [];
   let okCnt = 0;
   for (const s of todo) {
@@ -1399,6 +1403,7 @@ EXEC['subject.generateImage'] = { needs: ['p'], meter: true, run: async (args, f
     }
   }
   const r = { ok: failed.length === 0, status: failed.length ? 'failed' : 'done', result: { total: todo.length, ok: okCnt, failed } };
+  if (dupNote) r.result.note = dupNote;
   if (failed.length) r.error = { code: okCnt ? 'partial' : 'gen-failed', message: failed.length + ' 位主体生图失败(已退费),可重试' };
   return r;
 } };

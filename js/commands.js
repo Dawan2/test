@@ -269,6 +269,10 @@
       else failed.push({ subjectId: s.id, name: s.name, error: '生成失败(已退费)' });
     }
     const r = { ok: failed.length === 0, status: failed.length ? 'failed' : 'done', result: { total: todo.length, ok: okCnt, failed } };
+    /* 点名的 id 在主体库里存着多位时,这一趟按位跑、按位计费,而 total 与正常批量长得一样:
+     * 那句话经 result.note 交给 digest 播报,与 CLI 同读 Domain.dupSubjectRowsNote 一份(选人闸一个字没动)。 */
+    const dupNote = Domain.dupSubjectRowsNote(args.subjectIds, todo);
+    if (dupNote) r.result.note = dupNote;
     if (failed.length) r.error = { code: okCnt ? 'partial' : 'gen-failed', message: failed.length + ' 位主体生图失败,可重试' };
     r.next = nextOf(p);
     return r;
