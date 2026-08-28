@@ -352,8 +352,7 @@ ${summary.stale.length ? summary.stale.map(s => ' - ' + s).join('\n') : ' (无)'
   async function downloadReleaseZip(p, opts) {
     const r = await buildReleaseZip(p, opts);
     const name = '交付包_' + safeName(p.name) + '_v' + (p.__ver || 0) + '.zip';
-    ZipUtil.download(name, [{ name: 'PLACEHOLDER', data: '' }]);  // 先占位触发下载;ZipUtil.download 接受 files,直接重写
-    // 正确写法:用 URL.createObjectURL,避免上一行占位生成额外空 zip
+    // 直接落 buildReleaseZip 已经打好的 bytes:再走一次 ZipUtil.download 等于另打一个包,用户会多收到一个 zip
     try {
       const blob = new Blob([r.bytes], { type: 'application/zip' });
       const a = document.createElement('a');
