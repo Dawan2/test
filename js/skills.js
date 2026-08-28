@@ -882,7 +882,7 @@
     {
       id: 'core.personaCtx', sk: 'SK-03', name: '生效人设经 ctx 过服务端', stage: CROSS, wave: 'W3',
       kinds: ['infra'],
-      prompts: ['split.system', 'extract.system', 'digest.planSystem', 'graph.system', 'sb.boardSceneSystem', 'sb.boardDraftSystem', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.sumSystem', 'review.finalSystem',
+      prompts: ['split.system', 'extract.system', 'digest.planSystem', 'graph.system', 'sb.boardSceneSystem', 'sb.boardDraftSystem', 'sb.system', 'sb.reviewSystem', 'und.system', 'review.system', 'review.userSystem', 'review.sumSystem', 'review.finalSystem',
         'agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem', 'agent.selfFixSystem', 'agent.compactSystem',
         'narration.system', 'reading.system', 'concept.system', 'light.system',
         'voice.recommendSystem', 'voice.recommendBatchSystem', 'comic.bubbleSystem', 'dirset.system', 'dist.copySystem',
@@ -936,6 +936,10 @@
         + 'js/agent-ops.js 的内联人设至此归零。'
         + '主体编辑页「按指令改」那步的人设句同形收编为独立键 persona.editSystem(取值口在 js/role-editor.js 就地经 '
         + 'Prompts.fill 填主体类别变量 {kind};分镜那侧同形入口的角色与产物落点都不同,不合成一条)。'
+        + '单镜审片那一步的提示词首句人设(WfCore.buildReviewPrompt 的 user 半开头)同形收编为 review.userSystem,'
+        + '装配口随之收覆盖表参数(浏览器 js/review.js 不传、由 Prompts.get 隐式读,服务端 /api/wf/smart-review 显式传),'
+        + '该键不与同步发出的 review.system 复用——一条在 system 消息位、一条是提示词首句,措辞与三维交代都不同;'
+        + 'js/wf-core.js 至此零内联人设。'
         + '仍欠:四处的 ops 协议/字段面/命令白名单/返回 JSON 约定仍由各自装配口拼、不开放覆盖'
         + '(那半是 ops 解析契约,用户改坏即整轮无 ops);'
         + '音色推荐两条同理只收人设句——音色库取值范围与返回 JSON 约定仍写在各自调用点、不开放覆盖'

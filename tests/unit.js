@@ -3889,7 +3889,8 @@ function beatSystemOf(ov) {
 /* 全仓「系统人设位上的内联人设」持有者名单:文件 → 处数(按路径升序)。
  * 判据是 system: / (role=system 的) content: / 赋给模板变量 之后紧跟的 你是… 字面。
  * 有意不在此口径内:js/prompts.js 的注册表 def、js/experts-data.js 的专家人设数据(走生效人设通道)、
- * js/api.js 调用方不给 system 时的层内兜底、js/wf-core.js 单镜审片的 user 半。 */
+ * js/api.js 调用方不给 system 时的层内兜底、单镜审片提示词的 user 半首句
+ * (那一处已收编为 review.userSystem,判据本就不数它,故这张名单不因那次收编改动)。 */
 function inlinePersonaHolders() {
   const files = fs.readdirSync(path.join(ROOT, 'js')).filter(f => f.endsWith('.js')).map(f => 'js/' + f)
     .concat(['server.js', 'cli.js', 'mcp.js', 'billing.js']).sort();
@@ -5303,9 +5304,9 @@ const contractTests = [
       .map(rel => [rel, (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(RE) || []).length])
       .filter(([, n]) => n).map(([rel, n]) => rel + ':' + n);
     assertEq(inlinePersonaHolders.join(', '),
-      'js/agent-global.js:1, js/experts.js:2, js/plans.js:1, js/wf-core.js:1',
+      'js/agent-global.js:1, js/experts.js:2, js/plans.js:1',
       '全仓内联人设持有者名单应精确到文件:处数(G-13 余量清单,收编一处即须同步减)');
-    assertEq(inlinePersonaHolders.reduce((a, x) => a + Number(x.split(':')[1]), 0), 5, 'G-13 余量总处数');
+    assertEq(inlinePersonaHolders.reduce((a, x) => a + Number(x.split(':')[1]), 0), 4, 'G-13 余量总处数');
     // 本槽的落点:js/gsettings.js 整条从名单上消失(该文件此后零内联人设)
     assert(!inlinePersonaHolders.some(x => x.startsWith('js/gsettings.js')),
       'js/gsettings.js 应已零内联人设(工坊那份人设字面在 js/experts.js,不记在本文件名下)');
@@ -5373,6 +5374,79 @@ const contractTests = [
     assert(sk3.prompts.includes('dist.copySystem'), 'SK-03 应登记 dist.copySystem');
     assert(sk3.note.includes('dist.copySystem') && sk3.note.includes('js/proj-shell.js'),
       'SK-03 的 note 须写明这一步的收编落点(键与取值口所在文件)');
+    assertEq(Skills.validate({ Prompts }).join(' | '), '', '新键须被 skill 索引引用且引用键都存在');
+  } },
+  { name: '单镜审片提示词首句人设:独立键 review.userSystem,缺省逐字节等于收编前的内联字面、契约半不随覆盖变动', fn() {
+    const Prompts = require('../js/prompts.js');
+    const WfCore = require('../js/wf-core.js');
+    // 收编前写死在 WfCore.buildReviewPrompt 模板串首句的字面(末尾连接逗号在键内):缺省逐字节不得变
+    const SYS = '你是专业 AI 视频审片组,从技术层/匹配层/导演层三个维度评审一个短剧分镜视频,';
+    assertEq(Prompts.get('review.userSystem'), SYS, '缺省人设句应与收编前的内联字面逐字节相同');
+    const item = Prompts.list().find(x => x.key === 'review.userSystem');
+    assert(item && !item.vars.length && item.name.startsWith('单镜审片提示词首句') && item.name.includes('系统人设'),
+      '注册表应登记该条目(无变量,可在全局默认值页在线改写)');
+    /* 独立键而不与同步发出的 review.system 复用:一条在 system 消息位、一条是提示词首句,
+     * 措辞与三维交代都不同(同字面才谈得上复用) */
+    assertEq(Prompts.list().filter(x => x.def === SYS).length, 1, '该人设句应恰好命中注册表一条(同 def 开两个键即红)');
+    assert(Prompts.get('review.system') !== SYS, '不得与 review.system 同字面(两条同步发出,合成一键即失真)');
+    ['review.sumSystem', 'review.finalSystem', 'sb.reviewSystem'].forEach(k =>
+      assert(Prompts.get(k) !== SYS, '不得与既有审片类键 ' + k + ' 同字面'));
+    // 取用点缺省逐字节:装配口不传覆盖表时,整条提示词与收编前完全一致(首句之后紧接契约半)
+    const shot = { id: 'sh1', plot: '对峙', camera: '固定镜头', cameraSpec: { view: '正面', angle: '平视', shotSize: '中景', aperture: 'ƒ/4' }, characters: ['甲'], scene: '街', props: ['刀'], narration: '旁白', dialogue: '台词', prompt: 'p', duration: 5 };
+    const ctx = { kbReviewText: 'KB口径', tplReviewText: '模板{shot}{style}', directorNote: '·导演设定', personaNote: '·方法论', memText: '记忆段', styleText: '漫剧' };
+    const bare = ov => WfCore.buildReviewPrompt({ style: '漫剧', globalSetting: 'GS' }, { shots: [shot] }, shot, false, ctx, ov);
+    assert(bare().startsWith(SYS + '只返回 JSON:\n'), '取用点缺省首句应是人设句 + 契约半开头(逐字节同收编前)');
+    assertEq(bare(undefined), bare({}), '空覆盖表与不传应逐字节一致');
+    // 覆盖只换首句:其后的三维 JSON 契约、评分标准、拆解规则检查与分镜信息段逐字节不变
+    const OV = { 'review.userSystem': '你是短剧视频质检组(覆盖生效)。' };
+    assertEq(bare(OV), '你是短剧视频质检组(覆盖生效)。' + bare().slice(SYS.length),
+      '覆盖只换人设首句,契约半与分镜信息段逐字节不变');
+    assertEq(bare({ 'review.system': '你是别人。' }), bare(), '覆盖别的键不应串到本步');
+    /* 契约半不开放:三维字段名/评分标准/severity 词表仍留在装配口,注册表里不该出现它们
+     * (改坏即 normalizeReport 取不到 dimensions,报告退成零分空评语) */
+    ['"technical"', '"matching"', '"directing"', '"issues"', '"severity"', '需返工'].forEach(f =>
+      assertEq(Prompts.list().filter(x => x.def.includes(f)).length, 0, '返回 JSON 契约不进注册表:' + f));
+    // 展示顺序:与它同一步的 review.system 紧邻,仍排在共性汇总/成片审片之前(审片三步连着读)
+    const keys = Prompts.list().map(x => x.key);
+    assertEq(keys[keys.indexOf('review.system') + 1], 'review.userSystem', '该键应紧接 review.system 登记(同一步的两半)');
+    assertEq(keys[keys.indexOf('review.userSystem') + 1], 'review.sumSystem', '其后仍是整集共性汇总');
+  } },
+  { name: '单镜审片提示词首句人设(源级):js/wf-core.js 零内联,两端取值口一浏览器隐式一服务端显式', fn() {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const SYS = '你是专业 AI 视频审片组,从技术层/匹配层/导演层三个维度评审一个短剧分镜视频,';
+    const wf = fs.readFileSync(path.join(ROOT, 'js', 'wf-core.js'), 'utf8');
+    // 取值口与该步契约半锚点配对:键挪到别的装配口上即红
+    assert(/Prompts\.get\('review\.userSystem', ov\)\}只返回 JSON:/.test(wf),
+      '装配口应就地经注册表取首句人设,且与该步契约半开头配对');
+    assert(!wf.includes(SYS), 'js/wf-core.js 不应再有该人设句的内联字面(注册表 def 为唯一来源)');
+    assertEq((wf.match(/你是/g) || []).length, 0, 'js/wf-core.js 应已零内联人设(本槽收的就是这一处)');
+    // 契约半仍由装配口拼:三维字段与评分标准原样留在源码里,不随人设一起进注册表
+    ['"dimensions"', '"technical"', '评分标准:', '拆解规则检查:'].forEach(a =>
+      assert(wf.includes(a), '该步契约半应仍写在装配口里:' + a));
+    /* 两端取值口:装配口收 ov 参数(与 sbSystem/extractSystem/buildAgentSystem 同形)——
+     * 浏览器不传、由 Prompts.get 隐式读 Store 覆盖表;服务端 /api/wf/smart-review 显式传(headless 侧也能覆盖) */
+    assert(/W\.buildReviewPrompt = function \(p, ep, s, hasImage, ctx, ov\)/.test(wf), '装配口应收覆盖表参数 ov');
+    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    const calls = srv.match(/WfCore\.buildReviewPrompt\([^)]*\)/g) || [];
+    assertEq(calls.length, 2, '服务端应有视觉/纯文本两条审片调用');
+    calls.forEach(c => assert(/, rctx, ov\)$/.test(c), '服务端每处调用都要显式传覆盖表:' + c));
+    const rv = fs.readFileSync(path.join(ROOT, 'js', 'review.js'), 'utf8');
+    assert(rv.includes('return WfCore.buildReviewPrompt(p, ep, s, hasImage, {'),
+      '浏览器侧仍委托同一装配口、不传覆盖表(Prompts.get 隐式读 Store.settings.promptOverrides)');
+    assert(!rv.includes(SYS), 'js/review.js 不应内联该人设句');
+    // 记账:SK-03 登记新键、note 写明落点与不复用 review.system 的理由
+    const sk3 = Skills.byId('core.personaCtx');
+    assert(sk3.prompts.includes('review.userSystem'), 'SK-03 应登记 review.userSystem');
+    assert(sk3.note.includes('review.userSystem') && sk3.note.includes('js/wf-core.js 至此零内联人设'),
+      'SK-03 的 note 须写明这一步的收编落点与该文件已零内联');
+    assert(sk3.note.includes('review.system 复用') && sk3.note.includes('不与'),
+      'SK-03 的 note 须交代为什么不与 review.system 复用');
+    // 缺口未闭合(名单还有余量):G-13 的关联索引与缺口投影逐字节不变,不预支摘标记
+    const g = Skills.gaps();
+    assertEq(Object.keys(g).length, 20, '缺口投影键数应不变');
+    assertEq(g['G-13'].join(','), 'script.hookType,script.aiToneBan,subjects.refDiscipline,eps.structureStage,gen.videoTpl,film.rhythmInject',
+      'G-13 的六条关联索引逐字节不变(只收一处不预支摘标记)');
     assertEq(Skills.validate({ Prompts }).join(' | '), '', '新键须被 skill 索引引用且引用键都存在');
   } },
   { name: '注册表提示词全仓持有者名单:每条 def 的字面持有者逐键点名,恰好只有 js/prompts.js', fn() {
@@ -5861,11 +5935,11 @@ action 二选一:
     assertEq(census.join(' '), [
       'js/agent-global.js:1', 'js/api.js:2', 'js/experts-data.js:16', 'js/experts.js:2',
       'js/gsettings.js:1', 'js/plans.js:1', 'js/proj-planner.js:2',
-      'js/prompts.js:33', 'js/wf-core.js:1',
+      'js/prompts.js:34',
     ].join(' '), '全仓人设字面持有者名单(逐文件计数)');
     assert(!census.some(x => x.startsWith('js/editors.js:')), 'js/editors.js 收编后应已不在持有者名单上');
-    assertEq(Prompts.list().filter(x => x.def.startsWith('你是')).length, 33,
-      '名单里 js/prompts.js 那 33 处就是注册表 def 本身(注册表条数变了这张名单也要跟着改)');
+    assertEq(Prompts.list().filter(x => x.def.startsWith('你是')).length, 34,
+      '名单里 js/prompts.js 那 34 处就是注册表 def 本身(注册表条数变了这张名单也要跟着改)');
   } },
   { name: 'Agent 辅助两步人设:回执核验修复/会话纪要蒸馏各一独立键,缺省逐字节等于收编前的内联字面', fn() {
     const Prompts = require('../js/prompts.js');
