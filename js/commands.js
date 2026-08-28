@@ -136,6 +136,10 @@
     const failed = pend.filter(s => s.video && s.video.status === 'failed').map(s => ({ shotId: s.id, order: s.order + 1, error: String(s.video.error || '').slice(0, 80) }));
     const okCnt = pend.filter(s => Store.shotVideoReady(s)).length;
     const r = { ok: failed.length === 0, status: failed.length ? 'failed' : 'done', result: { total: pend.length, ok: okCnt, failed, skipped } };
+    /* 点名的 id 在表里占着多行时,这一趟按行跑、按行计费,而 total 与正常批量长得一样:
+     * 那句话经 result.note 交给 digest 播报,与 CLI 同读 Domain.dupRowsNote 一份(选人闸一个字没动)。 */
+    const dupNote = Domain.dupRowsNote(args.shotIds, pend);
+    if (dupNote) r.result.note = dupNote;
     if (failed.length) r.error = { code: okCnt ? 'partial' : 'gen-failed', message: failed.length + ' 镜生成失败(已退费),可修复后重试' };
     r.next = nextOf(p, ep);
     return r;

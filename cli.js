@@ -1116,7 +1116,11 @@ EXEC['episode.generateVideos'] = { needs: ['p', 'ep'], meter: true, run: async (
     log(note);
     return execOk({ total: 0, ok: 0, failed: [], skipped: [], note });
   }
+  /* 点名的 id 在表里占着多行时,这一趟按行跑、按行计费,而 total 与正常批量长得一样:
+   * 先说在跑之前,回执上也留一份(与前端 digest 同读 Domain.dupRowsNote 一份;选人闸一个字没动) */
+  const dupNote = Domain.dupRowsNote(args.shotIds, todo);
   log('批量生成:' + todo.length + ' 镜待处理(串行,服务端限流)…');
+  if (dupNote) log(dupNote);
   const failed = [];
   let okCnt = 0;
   for (const s of todo) {
@@ -1144,6 +1148,7 @@ EXEC['episode.generateVideos'] = { needs: ['p', 'ep'], meter: true, run: async (
     }
   }
   const r = { ok: failed.length === 0, status: failed.length ? 'failed' : 'done', result: { total: todo.length, ok: okCnt, failed, skipped } };
+  if (dupNote) r.result.note = dupNote;
   if (failed.length) r.error = { code: okCnt ? 'partial' : 'gen-failed', message: failed.length + ' 镜生成失败(已退费),可修复后重试' };
   return r;
 } };
