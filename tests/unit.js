@@ -8124,8 +8124,9 @@ const GUARD_TOPICS = [
     why: '重抽面派生只此一份:四处消费点都不自筛低分镜,CLI 不拿回执 lowShots 当名单' },
   { id: 'suite-count-floor', anchors: ['单元测试', 'CLI 冒烟', 'README.md'],
     why: '三套件用例数只增不减:删测并把 README 一并改小时,红在下限这一层' },
-  { id: 'floor-slack', anchors: ['SLACK', '记账件份数'],
-    why: '五条 FLOOR 与 live 的差额有上限:那段差额就是能被静默删掉的条数(护栏主题那格判的是在册 + 销号的总数)' },
+  { id: 'floor-slack', anchors: ['SLACK', '记账件份数'], hosts: 2,
+    why: '五条 FLOOR 与 live 的差额有上限:那段差额就是能被静默删掉的条数(护栏主题那格判的是在册 + 销号的总数)' +
+      '(两处承载:一处拿实况现取五个字面喂判词,一处拿造出来的格子钉判词自己——缓冲格内判空是明写的承诺,越界一格必须点名格名与格数)' },
   { id: 'unit-name-unique', anchors: ['套件 · 用例名', 'SUITES'],
     why: '单元用例名全局唯一:重名会让按名成集比对把一条吃掉,删测与重名互相抵消' },
   { id: 'ledger-count-3way', anchors: ['索引表共 ', 'FLOOR'],
@@ -8211,6 +8212,28 @@ function topicLedgerVerdict({ roster, live, closed, floor, hosted }) {
       lines.push(id + ':销号了而锚点此刻仍点得到承载用例——要么这道护栏还在(不该销号),要么写明接手的主题编号');
     }
     if (t.by && !liveIds.includes(t.by)) lines.push(id + ':接手编号「' + t.by + '」不在册(接手方得是清单里真有的主题)');
+  });
+  return lines;
+}
+/* 棘轮差额的判词,逐格给出红句(全绿时回空数组)。抽成纯函数与销号判词同理:
+ * 「抄对侧偏低的 FLOOR、声明份数照合并后的 live 写」这种改法在真仓库里要改文件才做得出来,单测里做不到,
+ * 而这条判据放不放行它,正是它唯一要说清的事——拿造出来的格子喂它是同一件事在判据这一层的等价形态。
+ * 差额落在 1..slack 之间时它有意回空:那一格缓冲是合入期的减压阀(多槽并进时 FLOOR 字面来自某一侧父分支、
+ * 必然看不见别槽新增的条数,差额要等集成记账件那一提交才校回 0),它是判据的承诺而不是疏漏,
+ * 代价与取证记在 `w236-floor-no-silent-lag.md`。 */
+function floorLagVerdict({ live, floors, slack }) {
+  const lines = [];
+  floors.forEach(([label, floor]) => {
+    const l = live[label];
+    if (typeof l !== 'number') {
+      lines.push(label + ':这一格取不到实况(格名与 live 表对不上,判据在这一格上当场失真,故先红在这里)');
+      return;
+    }
+    if (l - floor > slack) {
+      lines.push(label + ':下限 ' + floor + ' 落后实测 ' + l + ' 共 ' + (l - floor) +
+        ' 格(上限 ' + slack + ' 格);加了用例/记账件/护栏主题就把那个 FLOOR 字面抬到当轮实况,' +
+        '把它改小同样红在这里——这个差额就是能被静默删掉的条数');
+    }
   });
   return lines;
 }
@@ -11957,7 +11980,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 654, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 655, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 148, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -11996,11 +12019,52 @@ action 二选一:
     assertEq(ledger.length, 1, '记账件份数那条的 FLOOR 字面取不到(同上)');
     const topic = [...self.matchAll(/^const TOPIC_FLOOR = (\d+);$/gm)];
     assertEq(topic.length, 1, '护栏主题那格的下限字面取不到(同上)');
-    floors.concat([['记账件份数', +ledger[0][1]], ['护栏主题', +topic[0][1]]]).forEach(([label, floor]) => {
-      assert(live[label] - floor <= SLACK, label + ':下限 ' + floor + ' 落后实测 ' + live[label] + ' 共 ' +
-        (live[label] - floor) + ' 格(上限 ' + SLACK + ' 格);加了用例/记账件/护栏主题就把那个 FLOOR 字面抬到当轮实况,' +
-        '把它改小同样红在这里——这个差额就是能被静默删掉的条数');
+    const cells = floors.concat([['记账件份数', +ledger[0][1]], ['护栏主题', +topic[0][1]]]);
+    assertEq(floorLagVerdict({ live, floors: cells, slack: SLACK }).join(' / '), '',
+      '棘轮下限守的水位低于实况:把该抬的 FLOOR 字面抬到当轮实况(判词另有一条用例拿造出来的格子钉着)');
+  } },
+  { name: '棘轮差额判词自身立得住:抄偏低 FLOOR 而声明份数写成 live 时缓冲格内仍全绿(明面的口子),越界一格才点名', fn() {
+    /* 上一条只在"实况正好合规"时全绿,它说不出自己放行了什么。合入槽的真实改法长这样:
+     * 多槽并进时那个 FLOOR 字面从某一侧父分支的冲突块里抄过来(必然偏低——那一侧看不见别槽新增的条数),
+     * 而声明份数照合并后的实况写成 live,于是三方对齐那三句(目录 == 声明 == 索引行)全成立、
+     * `live >= floor` 也成立,上一条在缓冲格内同样回空:整套仍全绿,而落后的那几份从此删起来只剩文档数字一道守卫。
+     * 这一格缓冲是有意留的(合入期的减压阀),本条不改它,只把它钉成明面——
+     * 缓冲格内判空是**判据的承诺**,越界一格必须点名是哪一格、落后几格、上限几格。
+     * 缓冲格数与 FLOOR 字面同口径现取自本文件源码:那个字面挪窝或改名时先红在这里,不许把本条留成恒真。 */
+    const self = fs.readFileSync(__filename, 'utf8');
+    const lit = [...self.matchAll(/^ *const SLACK = (\d+);$/gm)];
+    assertEq(lit.length, 1, '上一条的 SLACK 字面取不到(改名或挪窝就同轮改这里,别把本条留成恒真)');
+    const slack = +lit[0][1];
+    const LIVE = { '记账件份数': 100, '护栏主题': 40 };
+    const lag = (label, d) => floorLagVerdict({ live: LIVE, floors: [[label, LIVE[label] - d]], slack });
+    for (let d = 0; d <= slack; d++) {
+      assertEq(lag('记账件份数', d).join(' / '), '', '差额 ' + d + ' 格判空——这就是"抄偏低 FLOOR + 声明写成 live"' +
+        '在合入槽里一路全绿的全部原因,它是这条判据明写的承诺,不是漏判(要收紧得先答"每加一条就多改一处字面"值不值)');
+    }
+    const over = lag('记账件份数', slack + 1);
+    assertEq(over.length, 1, '越界一格应恰报一条,实际:' + over.join(' / '));
+    assert(over[0].startsWith('记账件份数:'), '报错句须以格名打头(只报"下限落后了"就分不出是哪一格),实际:' + over[0]);
+    assert(over[0].includes('共 ' + (slack + 1) + ' 格') && over[0].includes('上限 ' + slack + ' 格'),
+      '报错句须写出落后格数与上限(读的人得当场判得出该把字面抬到几),实际:' + over[0]);
+    // 抬过头(下限高于实况)不归本条:那一路归 `live >= floor` 那两条,两种失败的处置相反,判词不许混报
+    assertEq(lag('记账件份数', -2).join(' / '), '', '下限高于实况时本判词回空(抬过头归 live >= floor 那一层)');
+    // 逐格独立判:一格越界不许把没越界的那格一并拖红,也不许被它盖住
+    const mixed = floorLagVerdict({
+      live: LIVE,
+      floors: [['记账件份数', LIVE['记账件份数']], ['护栏主题', LIVE['护栏主题'] - slack - 5]],
+      slack,
     });
+    assertEq(mixed.length, 1, '两格同喂、只有一格越界时应只报那一格,实际:' + mixed.join(' / '));
+    assert(mixed[0].startsWith('护栏主题:'), '报的应是越界那格,实际:' + mixed[0]);
+    // 取数口失效不许静默放行:格名与 live 表对不上时(改了格名只改一头)当场红,而不是判成"这一格没问题"
+    const stale = floorLagVerdict({ live: LIVE, floors: [['已改名的格', 1]], slack });
+    assertEq(stale.length, 1, '格名对不上 live 表时应报一条,实际:' + stale.join(' / '));
+    assert(stale[0].includes('取不到实况'), '取数口失效要报成"取不到实况",不许与"下限落后"混成一句,实际:' + stale[0]);
+    // 上一条须经本判词取判据:它自己另写一遍循环,本条抽样证到的就不是它在跑的那份
+    const host = SUITES.contract.find(x => x.name.startsWith('棘轮下限不得静默落后实况'));
+    assert(host, '找不到消费本判词的那条用例(改了名就同轮改这里,别把本条留成恒真)');
+    assert(/floorLagVerdict\(/.test(blankNonCode(String(host.fn), true)),
+      '实况那条须经 floorLagVerdict 取判词(自己另写一遍循环,本条抽样证到的就不是它在跑的判据)');
   } },
   { name: '集成/冒烟用例名各自唯一:名集大小恰等于 report(...) 登记行数(与单元那条同形)', fn() {
     /* 上一条钉的是"条数",这一条钉的是"不同名字数":两个数分开钉才拦得住重名。
@@ -12292,7 +12356,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 251;
+    const FLOOR = 252;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
