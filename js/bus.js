@@ -21,7 +21,9 @@
     if (s) s.delete(fn);
   }
   function emit(name, payload) {
-    const ev = Object.assign({ name }, payload || {});
+    /* name 由 emit 定,payload 顶不掉:payload 里带 name 的话(如转发另一条事件),
+     * 分发出去的事件会顶着别人的名字,通配订阅按名字判来源时会把它当成源事件再转一次——自喂自 */
+    const ev = Object.assign({}, payload || {}, { name });
     if (!ev.time) ev.time = (window.Store && Store.now) ? Store.now() : new Date().toISOString();
     history.push({ name: ev.name, time: ev.time, pid: ev.p && ev.p.id, epid: ev.ep && ev.ep.id, brief: String(ev.brief || '') });
     if (history.length > HIST_MAX) history.splice(0, history.length - HIST_MAX);

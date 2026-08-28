@@ -536,7 +536,7 @@ ${summary.stale.length ? summary.stale.map(s => ' - ' + s).join('\n') : ' (无)'
       if (!ev || !ev.name) return;
       const nm = String(ev.name);
       if (nm.startsWith('shots.') || nm.startsWith('compose.') || nm.startsWith('review.') || nm.startsWith('episode.') || nm === 'plan.step') {
-        Bus.emit('release.dirty', ev); // 触发 tab 角标重算
+        Bus.emit('release.dirty', { src: nm, p: ev.p, ep: ev.ep, brief: ev.brief }); // 触发 tab 角标重算(源事件名走 src,不占 name)
       }
     });
   } catch (_) {}

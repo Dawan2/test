@@ -3118,6 +3118,22 @@ const busTests = [
     B.emit('*', {});
     assertEq(all.join(','), 'a,b,*', '通配订阅应收全部,emit "*" 只触发一次通配');
   } },
+  { name: 'emit:事件名由 emit 定,payload 顶不掉(转发另一条事件时不许顶着别人的名字发出去)', fn() {
+    /* `Object.assign({ name }, payload)` 里 payload 后写,payload 带 name 就把事件名换掉了:
+     * 分发用的是 emit 那个名字、事件对象上写的却是另一个,通配订阅按 ev.name 判来源时
+     * 会把转发件当成源事件再转一次——自喂自到爆栈,而爆栈的异常正好被下面那层隔离 catch 吃掉。 */
+    const sb = loadBus();
+    const B = sb.Bus;
+    const got = [];
+    B.on('release.dirty', ev => got.push(ev));
+    const ev = B.emit('release.dirty', { name: 'shots.batchDone', src: 'shots.batchDone', ok: 3 });
+    assertEq(ev.name, 'release.dirty', 'emit 的回执名是 emit 那个名字');
+    assertEq(got.length, 1);
+    assertEq(got[0].name, 'release.dirty', '分发给订阅者的事件名同样不许被 payload 顶掉');
+    assertEq(got[0].src, 'shots.batchDone', 'payload 其余字段照旧带过去');
+    assertEq(got[0].ok, 3);
+    assertEq(B.recent(1)[0].name, 'release.dirty', '事件留痕记的也是 emit 那个名字');
+  } },
   { name: 'recent:新→旧,按 pid 过滤,上限裁剪', fn() {
     const sb = loadBus();
     const B = sb.Bus;
@@ -4232,6 +4248,39 @@ const releaseTests = [
     sb.Exporter._buildMaterialShim = okShim;
     await sb.Release.downloadReleaseZip(p, { skipVideo: true });
     assert(!sb.__toasts.some(t => /分镜文件抓取失败/.test(t)), '没失手就不许报,实际提示:' + JSON.stringify(sb.__toasts));
+  } },
+  /* ---- 底部 Bus 通配订阅那一段(W149 第 3 节) ----
+   * 那处空 catch 本身无害:它只兜住"注册订阅"这一下(回调自己的异常由 Bus.emit 隔离、走不到它),
+   * 且 release.dirty 全树零订阅者。真出事的是它兜着的那段——转发时把整条源事件当 payload 递出去,
+   * 源事件的 name 顶掉了 'release.dirty',通配订阅再按名字判来源,于是自喂自转到爆栈
+   * (基线实测:一条 shots.batchDone 转 1695 次,50 格事件留痕被同一条冲干净,Agent 的
+   * 「最近发生了什么」只剩这一条)。爆栈那个 RangeError 又被总线的隔离 catch 吃掉,一声不吭。 */
+  { name: 'Bus 通配订阅 · 一条主线事件只转一次 release.dirty(转发不许顶掉事件名,自喂自会冲掉事件留痕)', fn() {
+    const sb = makeSandbox();
+    installCommon(sb);
+    loadFile(sb, 'bus.js');
+    loadFile(sb, 'release.js');
+    const seen = [];
+    sb.Bus.on('release.dirty', ev => seen.push(ev.name + '<' + ev.src));
+    sb.Bus.on('release.dirty', () => { throw new Error('角标重算崩了'); });
+    ['shots.batchDone', 'compose.done', 'review.smartDone', 'episode.ripped', 'plan.step'].forEach(n =>
+      assertNoThrow(() => sb.Bus.emit(n, { brief: '主线动了' }), '订阅者抛错不得反弹回 emit 侧(总线自己隔离):' + n));
+    assertEq(seen.join(','), 'release.dirty<shots.batchDone,release.dirty<compose.done,release.dirty<review.smartDone,' +
+      'release.dirty<episode.ripped,release.dirty<plan.step',
+      '五条主线事件各转一次,事件名是 release.dirty 而源事件名走 src(顶掉 name 就会自喂自,条数当场炸开)');
+    sb.Bus.emit('agent.chat', {});
+    assertEq(seen.length, 5, '非主线事件不转(转了就是每条消息都重算一次角标)');
+    // 事件留痕没被冲掉:Agent 的「最近发生了什么」按 Bus.recent 取的就是这一份
+    assertEq([...new Set(sb.Bus.recent(50).map(h => h.name))].sort().join(','),
+      'agent.chat,compose.done,episode.ripped,plan.step,release.dirty,review.smartDone,shots.batchDone',
+      '50 格事件留痕里各事件都还在(自喂自时这里只剩转发那一条)');
+    // 订阅注册本身不抛:那处 catch 只在 window.Bus 在场而 Bus.on 不是函数(bus.js 没加载/被桩顶掉)时才走得到
+    assertEq(typeof sb.Bus.on('x', () => {}), 'function', 'Bus.on 是全函数,返回退订句柄');
+    const jsFiles = fs.readdirSync(path.join(ROOT, 'js')).filter(f => /\.js$/.test(f));
+    const emitters = jsFiles.filter(f => /Bus\.emit\('release\.dirty'/.test(fs.readFileSync(path.join(ROOT, 'js', f), 'utf8')));
+    assertEq(emitters.join(','), 'release.js', 'release.dirty 只此一个发出点');
+    const subs = jsFiles.filter(f => /Bus\.on\(\s*'release\.dirty'/.test(fs.readFileSync(path.join(ROOT, 'js', f), 'utf8')));
+    assertEq(subs.join(','), '', 'release.dirty 至今零订阅者;有人开始订阅时重新掂量那处 catch——届时吞掉注册才真有下游丢东西');
   } },
 ];
 
@@ -7471,7 +7520,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 506, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 508, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 130, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
