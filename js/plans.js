@@ -1,7 +1,8 @@
 /* ============ plans.js 持久计划(协同层,第三阶段) ============
  * 项目级制作计划 p.agentPlan:跨会话持久(Store 落库,不再随聊天历史上限淘汰),
  * 步骤映射统一领域命令(episode.generateStoryboard/generateVideos/compose…)或导航动作;
- * 执行经 Commands.execute(ui 模式:决策闸保留),回执驱动步骤状态(done/failed/blocked/pending),
+ * 执行经 Commands.execute(ui 模式:决策闸保留),回执驱动步骤状态(done/failed/blocked/pending);
+ * 注册表标 manual 的人手命令(专家自进化)计划层不代跑,落 blocked 并指回该功能自己的手动入口,
  * 每步落定 emit Bus 'plan.step'(Agent 对话流/问题中心角标同源感知)。
  * 两种生成路径:本地推导 fromWorkflow(零成本,主线全链 playbook 投影 × Domain 状态)/
  * LLM 规划 generate(1 积分,按用户目标拆步)。
@@ -211,8 +212,18 @@
     return plan;
   }
 
+  /* 注册表标了 manual 的命令,计划层一律不代跑(单步「▶ 执行」与 runAll 走同一个漏斗,故只此一处)。
+   * 为什么在这里而不在生成侧:计划步的来源不止一条(LLM 规划 generate / 直接写 p.agentPlan / 旧计划落库回读),
+   * 生成侧筛掉只覆盖其中一条,而真能改坏数据的是带齐 args 的那些步——挡在执行口才是把整条自动路径挡住。
+   * 命令本身不动:它在四端注册表里照旧,人手入口(专家库「🧠 进化」/CLI exec/MCP 工具)一个不减,
+   * 这一步落 blocked(待人工)并把用户指回那个入口——步照留不藏,只是不由计划替他按下去。 */
+  const manualCmd = cmd => {
+    const m = window.CmdRegistry && CmdRegistry.byName[cmd];
+    return m && m.manual ? m : null;
+  };
+
   /* 执行单步:命令步骤经统一命令层(ui 模式),回执驱动状态;导航步骤到位即 done;无命令步骤为手动勾选。
-   * 状态语义:done=完成/failed=失败/blocked=待人工(needs_human 质量闸门)/pending=可(重)执行(用户取消回退)。 */
+   * 状态语义:done=完成/failed=失败/blocked=待人工(needs_human 质量闸门/人手动作)/pending=可(重)执行(用户取消回退)。 */
   async function execStep(p, i, main) {
     const plan = of(p);
     const st = plan && plan.steps[i];
@@ -220,20 +231,28 @@
     if (st.goto) { location.hash = st.goto; st.status = 'done'; st.note = '已导航到位'; }
     else if (st.cmd) {
       if (!window.Commands) { U.toast('命令层未加载,请稍后重试', 'error'); return null; }
-      st.status = 'running'; st.note = '';
-      Store.save();
-      let r;
-      try { r = await Commands.execute(st.cmd, Object.assign({ pid: p.id, epid: st.epid, main: main || document.getElementById('main'), ui: true }, st.args || {})); }
-      catch (e) { r = { ok: false, status: 'failed', error: { code: 'exception', message: (e && e.message) || String(e) } }; }
-      st.time = Store.now();
-      const code = r && r.error && r.error.code;
-      if (r && r.ok) {
-        st.status = 'done';
-        const z = r.result || {};
-        st.note = (r.cost ? '-' + r.cost + '积分' : '') + ((z.total !== undefined && z.total !== null) ? ` ${z.ok}/${z.total}` : '');
-      } else if (r && r.status === 'needs_human') { st.status = 'blocked'; st.note = (r.error && r.error.message) || '待人工处理'; }
-      else if (r && r.status === 'blocked' && ['cancelled', 'compliance-declined', 'human-review'].includes(code)) { st.status = 'pending'; st.note = '已取消,可重新执行'; }
-      else { st.status = 'failed'; st.note = (r && r.error && r.error.message) || '执行失败'; }
+      const man = manualCmd(st.cmd);
+      let r = null;
+      if (man) {
+        st.status = 'blocked';
+        st.note = `「${man.label}」是人手动作,计划不代跑:请到它自己的手动入口执行`;
+        st.time = Store.now();
+        U.toast(`📋 ${st.note}`, 'info', 3500);
+      } else {
+        st.status = 'running'; st.note = '';
+        Store.save();
+        try { r = await Commands.execute(st.cmd, Object.assign({ pid: p.id, epid: st.epid, main: main || document.getElementById('main'), ui: true }, st.args || {})); }
+        catch (e) { r = { ok: false, status: 'failed', error: { code: 'exception', message: (e && e.message) || String(e) } }; }
+        st.time = Store.now();
+        const code = r && r.error && r.error.code;
+        if (r && r.ok) {
+          st.status = 'done';
+          const z = r.result || {};
+          st.note = (r.cost ? '-' + r.cost + '积分' : '') + ((z.total !== undefined && z.total !== null) ? ` ${z.ok}/${z.total}` : '');
+        } else if (r && r.status === 'needs_human') { st.status = 'blocked'; st.note = (r.error && r.error.message) || '待人工处理'; }
+        else if (r && r.status === 'blocked' && ['cancelled', 'compliance-declined', 'human-review'].includes(code)) { st.status = 'pending'; st.note = '已取消,可重新执行'; }
+        else { st.status = 'failed'; st.note = (r && r.error && r.error.message) || '执行失败'; }
+      }
       if (window.Bus) Bus.emit('plan.step', { p, idx: i, step: st, r, brief: `计划步骤「${st.label}」→ ${st.status === 'done' ? '完成' : st.status}` });
     } else { st.status = st.status === 'done' ? 'pending' : 'done'; st.note = ''; } // 手动勾选类
     plan.updatedAt = Store.now();

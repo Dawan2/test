@@ -5034,6 +5034,85 @@ const plansTests = [
     assertEq(sb.Plans.fromWorkflow(bare).steps.filter(s => s.cmd === 'project.extractSubjects').length, 0,
       '计划层同样认这一步没过:提取主体步不出');
   } },
+  /* LLM 规划 generate 按用户目标拆步,cmd 只受"在不在 Commands.list() 里"这一道钳制——而专家自进化就在那张表里,
+   * 于是「执行计划」这条路径拆得出蒸馏步、runAll 与单步按钮照旧下发、全程一次确认都不要;
+   * 蒸馏把条款写死进 persona 且没有撤回口,带齐 args 的计划步(直接写 p.agentPlan、旧计划落库回读)按下去就真改人设。
+   * 命令与四端人手入口一个不减,只在计划这条自动路径上拦:落 blocked(待人工)并把用户指回手动入口。
+   * 判据是共享元数据的 manual 位、不是命令名字面,故两向各钉一次——摘掉这个位它就跑得动,别的命令标上它同样被拦。 */
+  { name: 'execStep/runAll:注册表标 manual 的人手命令计划层不代跑(落 blocked 指回手动入口,命令层零下发)', fn: async () => {
+    const sb = loadPlans();
+    assertEq(!!sb.CmdRegistry.byName['expert.evolve'].manual, true, '前提:专家自进化在共享元数据里标着人手动作');
+    const mk = () => ({ id: 'p1', subjects: [], episodes: [] });
+    const planOf = () => ({ id: 'pl1', title: '收尾', goal: '出片并沉淀经验', createdAt: '', updatedAt: '', steps: [
+      { key: 'k1', label: '智能分镜:第一集', cmd: 'episode.generateStoryboard', epid: 'ep1', status: 'pending' },
+      { key: 'k2', label: '沉淀导演经验', cmd: 'expert.evolve', args: { expert: 'ex_1' }, status: 'pending' },
+      { key: 'k3', label: '合成成片:第一集', cmd: 'episode.compose', epid: 'ep1', status: 'pending' },
+    ] });
+    const p = mk();
+    sb.Plans.replace(p, planOf());
+    await sb.Plans.runAll(p, null);
+    assertEq(sb.__cmdCalls.map(c => c.name).join(','), 'episode.generateStoryboard',
+      '人手命令一次都不许下发到命令层(蒸馏改 persona 没有撤回口),它后面的步也不该被带着跑');
+    const st = p.agentPlan.steps[1];
+    assertEq(st.status, 'blocked', '这一步应落 blocked(待人工):既不是 done,也不是静默跳过');
+    assert(st.note.includes('专家自进化') && st.note.includes('人手动作') && st.note.includes('手动入口'),
+      '尾注应点名是哪条人手动作并把用户指回手动入口;实际:' + st.note);
+    assert(sb.__toasts.some(t => t.includes('手动入口')), 'toast 也该当场提示手动入口;实际:' + sb.__toasts.join(' | '));
+    assert(sb.__toasts.some(t => t.includes('暂停')), 'runAll 应停在这一步,不许跳过它继续往下跑');
+    assertEq(p.agentPlan.steps[2].status, 'pending', '后面的步原样留着,等人工处理完再继续');
+    assertEq(sb.__confirms.length, 0, '拦下就是拦下:不许改成弹个确认框让用户一路点过去');
+    // 单步「▶ 执行」与 runAll 共用 execStep 这一个漏斗:再按一次照样零下发
+    sb.__cmdCalls.length = 0;
+    await sb.Plans.execStep(p, 1, null);
+    assertEq(sb.__cmdCalls.length, 0, '单步执行按钮同样不代跑人手命令');
+    assertEq(p.agentPlan.steps[1].status, 'blocked');
+    // ① 判据就是 manual 那一位:摘掉它,同一条命令立刻按普通命令步下发(别处没有按名字硬编码的第二份)
+    delete sb.CmdRegistry.byName['expert.evolve'].manual;
+    const p1 = mk();
+    sb.Plans.replace(p1, planOf());
+    sb.__cmdCalls.length = 0;
+    await sb.Plans.runAll(p1, null);
+    assertEq(sb.__cmdCalls.map(c => c.name).join(','), 'episode.generateStoryboard,expert.evolve,episode.compose',
+      'manual 位是唯一判据:摘掉它这一步就该照旧下发(拦在这里的不是命令名)');
+    sb.CmdRegistry.byName['expert.evolve'].manual = true;
+    // ② 反向:换一条命令标上 manual,它同样被拦——拦的是「人手动作」这件事
+    sb.CmdRegistry.byName['episode.compose'].manual = true;
+    const p2 = mk();
+    sb.Plans.replace(p2, { id: 'pl2', title: '合成', goal: '出片', steps: [
+      { key: 'c1', label: '合成成片:第一集', cmd: 'episode.compose', epid: 'ep1', status: 'pending' },
+    ] });
+    sb.__cmdCalls.length = 0;
+    await sb.Plans.runAll(p2, null);
+    assertEq(sb.__cmdCalls.length, 0, '标了 manual 的命令一律不代跑(判据不认命令名)');
+    assert(p2.agentPlan.steps[0].note.includes('合成成片'), '尾注应点名当前这条命令的中文名;实际:' + p2.agentPlan.steps[0].note);
+    delete sb.CmdRegistry.byName['episode.compose'].manual;
+    // 源级:计划层不写死命令名,人手与否只从共享元数据现取(另开一份人手命令表即分叉)
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'plans.js'), 'utf8');
+    assertEq((src.match(/expert\.evolve/g) || []).length, 0, 'js/plans.js 不得写死命令名(人手与否是注册表的元数据)');
+    assert(/CmdRegistry\.byName\[[^\]]*\]/.test(src) && /\.manual/.test(src), '人手判据应现取共享元数据的 manual 位');
+  } },
+  /* 拦在执行口而不在生成侧:计划步的来路不止 generate 一条(直接写 p.agentPlan、旧计划落库回读都算),
+   * 而真能改坏数据的正是带齐 args 的那些步——只筛生成侧等于只挡住其中最无害的一条。
+   * 这里钉住生成侧那一半没被顺手改掉:命令名单照旧现取 Commands.list(),evolve 仍在名单里、仍拆得出这一步
+   * (四端人手入口一个不减),只是同一份计划交给 runAll 时命令层零下发。 */
+  { name: 'generate:人手命令仍在命令名单里(不从 cmds 里删),拆得出这一步而执行口一律拦下', fn: async () => {
+    const sb = loadPlans();
+    sb.Commands.list = () => sb.CmdRegistry.names().map(n => ({ name: n }));
+    assert(sb.Commands.list().some(c => c.name === 'expert.evolve'), '前提:evolve 仍在命令名单里(四端人手入口要留)');
+    sb.Tasks.run = async (opt, fn) => fn();
+    sb.Understanding.chatJSONRobust = async () => ({ title: '收尾沉淀', steps: [
+      { label: '智能分镜', cmd: 'episode.generateStoryboard', ep: '第一集' },
+      { label: '沉淀导演经验', cmd: 'expert.evolve' },
+    ] });
+    const p = { id: 'p1', name: '测试剧', subjects: [], episodes: [{ id: 'ep1', title: '第一集', content: '正文', shots: [] }] };
+    const plan = await sb.Plans.generate(p, '做完第一集顺便把经验沉淀进人设');
+    assertEq(plan.steps.map(s => s.cmd || 'goto').join(','), 'episode.generateStoryboard,expert.evolve',
+      '生成侧的钳制口径一字未动:注册命令照旧留在计划里');
+    sb.Plans.replace(p, plan);
+    await sb.Plans.runAll(p, null);
+    assertEq(sb.__cmdCalls.map(c => c.name).join(','), 'episode.generateStoryboard', 'LLM 规划出来的人手步同样不代跑');
+    assertEq(p.agentPlan.steps[1].status, 'blocked', '它落 blocked 待人工,而不是被自动执行掉');
+  } },
 ];
 
 /* ================= 套件 15:continuity.js(连续性,第四阶段) ================= */
