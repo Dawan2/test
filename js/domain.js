@@ -557,7 +557,8 @@
     const blockers = [];
     const bl = (code, label) => blockers.push({ code, label });
     if (!ep) return { status: 'blocked', counts, blockers: [{ code: 'no-episode', label: '分集不存在' }], action: null };
-    if (!(ep.content || '').trim()) bl('no-script', '缺剧本正文');
+    const hasScript = !!(ep.content || '').trim();
+    if (!hasScript) bl('no-script', '缺剧本正文');
     if (counts.total === 0) bl('no-shots', '未生成分镜');
     const shotsStale = D.shotsStale(ep);
     if (shotsStale) bl('shots-stale', '分镜表基于旧剧本/图谱');
@@ -566,6 +567,15 @@
     if (counts.unconfirmed && counts.done === counts.total && counts.total > 0) bl('unconfirmed', counts.unconfirmed + ' 镜待确认');
     const reviewStale = D.reviewStaleByScript(ep); // 剧本/图谱修订或镜头重抽后旧审片记录判旧
     const reviewAvg = !reviewStale && ep.lastReview && typeof ep.lastReview.avg === 'number' ? ep.lastReview.avg : null; // 判旧的旧分不再卡 needs_human(旧版语义由展示层承接)
+    /* 分集级审片门槛(单源:主线 review 步与问题中心的分集审片条目同读这一份,两处不各设一道门)。
+     * 先判这一集当下能不能审:缺正文 / 未拆镜 / 分镜判旧时整集审片无从谈起——哪怕手上还留着一份报告,
+     * 那份审的也不是当前分镜表,主线断点落在上游那几步,审片这一步不对它出结论(档位记 unready)。
+     * 门槛与本函数 status 的可达性同一条:needs_human 只在这三关都过了之后才可能命中。
+     * 过了门槛按既有三态归码,码字面就是 review 步阻塞码与问题中心 kind,达标回 'pass'。 */
+    const reviewGate = !hasScript || counts.total === 0 || shotsStale ? 'unready'
+      : reviewStale ? 'review-stale'
+        : reviewAvg === null ? 'no-review'
+          : reviewAvg < D.REVIEW_MIN ? 'low-review' : 'pass';
     const composedReady = D.epComposedReady(ep, online);
     if (ep.composed && !composedReady) bl('composed-stale', '成片已过期(输入或剧本已变化)');
 
@@ -583,7 +593,7 @@
       status = ep.composed ? 'stale' : 'ready';
       action = { key: 'compose', label: ep.composed ? '重新合成' : '合成成片' };
     } else status = 'done';
-    return { status, counts, blockers, action, reviewAvg, reviewStale, composedReady, shotsStale };
+    return { status, counts, blockers, action, reviewAvg, reviewStale, reviewGate, composedReady, shotsStale };
   };
 
   /* 前置门槛的阻塞码登记表:gateBlockers 只按本表出码,不写第二处字面。
@@ -619,11 +629,13 @@
     const staleShots = epStates.reduce((n, st) => n + st.counts.stale, 0);
     const anyShotsStale = epStates.some(st => st.shotsStale);
     const composedCnt = epStates.filter(st => st.composedReady).length;
-    /* 审片分类(全部复用 episodeState 已推导的字段:判旧的旧分已在那里置 null,此处不另写判旧逻辑) */
-    const rvPass = epStates.filter(st => st.reviewAvg !== null && st.reviewAvg >= D.REVIEW_MIN).length;
-    const rvLow = epStates.filter(st => st.reviewAvg !== null && st.reviewAvg < D.REVIEW_MIN).length;
-    const rvStale = epStates.filter(st => st.reviewStale).length;
-    const rvNone = epStates.filter(st => st.reviewAvg === null && !st.reviewStale).length;
+    /* 审片分类(逐集只数 episodeState 已归好的 reviewGate:判旧、达标线与"这一集能不能审"都在那里判过一遍,
+     * 此处不另写判据——尚不可审的集(缺正文/未拆镜/分镜判旧)不计进任何一档,断点由上游那几步各自报) */
+    const rvOf = code => epStates.filter(st => st.reviewGate === code).length;
+    const rvPass = rvOf('pass');
+    const rvLow = rvOf('low-review');
+    const rvStale = rvOf('review-stale');
+    const rvNone = rvOf('no-review');
     const noImg = subjects.filter(s => !s.image).length;
     const gates = D.gateBlockers(p); // 前置三步(剧本/主体/分集)的阻塞项与问题中心同读一份
     const gateOf = k => gates.filter(g => g.step === k).map(g => ({ code: g.code, label: g.label }));
@@ -695,11 +707,11 @@
         const ep = epOf(st => st.counts.total > 0 && (st.counts.done < st.counts.total || st.counts.stale > 0 || st.counts.failed > 0));
         if (ep) recommendedAction = { key: 'gen', label: '继续生成:' + ep.title, hash: `#/project/${p.id}/episode/${ep.id}` };
       } else if (cur.key === 'review') {
-        const i = epStates.findIndex(st => st.reviewAvg === null || st.reviewAvg < D.REVIEW_MIN);
+        const i = epStates.findIndex(st => st.reviewGate !== 'pass' && st.reviewGate !== 'unready'); // 尚不可审的集不冒充"该审这一集"
         const ep = i >= 0 ? eps[i] : null;
         if (ep) {
           const st = epStates[i];
-          const label = st.reviewAvg !== null ? '审片修订:' : st.reviewStale ? '重新审片:' : '整集审片:';
+          const label = st.reviewGate === 'low-review' ? '审片修订:' : st.reviewGate === 'review-stale' ? '重新审片:' : '整集审片:';
           recommendedAction = { key: 'review', label: label + ep.title, hash: `#/project/${p.id}/episode/${ep.id}` };
         }
       } else if (cur.key === 'film') {

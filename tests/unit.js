@@ -3018,6 +3018,49 @@ const domainTests = [
     assertEq((st2.blockers[0] || {}).code, 'review-stale', '快照失配应报 review-stale(判旧视为未审)');
     assertEq(w.recommendedAction.label, '重新审片:第一集');
   } },
+  { name: 'workflow:审片步只数 episodeState.reviewGate——尚不可审的集(缺正文/未拆镜/分镜判旧)不进任何一档,留着的旧报告也不冒充结论', fn: () => {
+    /* 分集级审片门槛此前有两套:episodeState 的 needs_human 要过"有正文、已拆镜、分镜表不判旧"三关才可能命中,
+     * 而 review 步是把 epStates 的 reviewAvg/reviewStale 直接分类,不问这三关——同一集手上留着一份低分报告时,
+     * 流程条报「1 集审片均分低于 7」,分集状态与问题中心却都说该去拆镜。门槛收进 reviewGate 一处后两侧同判。 */
+    const sb = loadDomain();
+    const D = sb.Domain;
+    const shot = { id: 's0', order: 0, confirm: true, video: { status: 'done', url: 'http://x/v.mp4' } };
+    const mkP = over => Object.assign(
+      makeP([Object.assign({ id: 'ep1', title: '第一集', content: '剧本', shots: [shot], contentRev: 0, graphRev: 0 }, over)], [{ id: 'sj1', name: '主角', image: 'u' }]),
+      { script: 'x', extractDone: true });
+    const low = { avg: 5, perShot: [{ shotId: 's0', score: 5 }] };
+    const gateOf = p => D.episodeState(p, p.episodes[0], true).reviewGate;
+    const rvCodes = p => D.workflow(p, true).steps.find(s => s.key === 'review').blockers.map(b => b.code).join(',');
+    [['缺正文', { content: '' }], ['未拆镜', { shots: [] }], ['分镜判旧', { contentRev: 2, shotsSourceRev: 1 }]].forEach(([why, over]) => {
+      assertEq(gateOf(mkP(over)), 'unready', why + ':该集当下不可审');
+      assertEq(rvCodes(mkP(over)), '', why + ':审片步不出阻塞项(断点落在上游那一步)');
+      const withOld = Object.assign({ lastReview: low }, over); // 同一集手上还留着一份低分报告
+      assertEq(gateOf(mkP(withOld)), 'unready', why + '+旧报告:那份审的不是当前分镜表,仍判不可审');
+      assertEq(rvCodes(mkP(withOld)), '', why + '+旧报告:审片步不许拿它报 low-review');
+    });
+    // 过了门槛按三态归码,达标 pass;码字面就是 review 步的阻塞码
+    assertEq(gateOf(mkP({})), 'no-review');
+    assertEq(gateOf(mkP({ lastReview: low })), 'low-review');
+    assertEq(gateOf(mkP({ lastReview: { avg: 8, snapshotHash: 'bogus-stale' } })), 'review-stale');
+    assertEq(gateOf(mkP({ lastReview: { avg: 8 } })), 'pass');
+    assertEq(rvCodes(mkP({ lastReview: low })), 'low-review', '可审的集照旧逐档报');
+    // 门槛与 episodeState.status 的可达性同一条:未拆镜的集哪怕留着低分报告也不是 needs_human
+    const stuck = mkP({ shots: [], lastReview: low });
+    assertEq(D.episodeState(stuck, stuck.episodes[0], true).status, 'ready', '未拆镜的集分集状态仍是"去拆镜"');
+    const w = D.workflow(stuck, true);
+    assertEq(w.recommendedAction.key, 'shots', '不可审的集不夺走推荐动作,主线仍落在分镜');
+    assertEq(w.steps.find(s => s.key === 'review').done, false, '审片步没有阻塞项不等于审过了');
+    /* 主线真走到审片这一步时也一样:一集已审达标、另一集拆好镜出完片却没有正文(不可审),
+     * 推荐动作不许指着那一集说"整集审片"——它缺的是正文,该断点由分集状态与问题中心承接,这里如实为空。 */
+    const mixed = Object.assign(makeP([
+      Object.assign({}, mkP({ lastReview: { avg: 8 } }).episodes[0], { id: 'ep1', title: '第一集' }),
+      Object.assign({}, mkP({ content: '' }).episodes[0], { id: 'ep2', title: '第二集' }),
+    ], [{ id: 'sj1', name: '主角', image: 'u' }]), { script: 'x', extractDone: true });
+    const wm = D.workflow(mixed, true);
+    assertEq(wm.steps.filter(s => !s.side && !s.done)[0].key, 'review', '主线此刻确实卡在审片这一步');
+    assertEq(wm.epStates.map(st => st.reviewGate).join(','), 'pass,unready');
+    assertEq(wm.recommendedAction, null, '没有可审的集时不许拿不可审那集冒充"整集审片:第二集"');
+  } },
   { name: 'REVIEW_MIN:达标线单源,episodeState 与主线审片步骤同用一个常量', fn: () => {
     const sb = loadDomain();
     assertEq(sb.Domain.REVIEW_MIN, 7);
@@ -3611,6 +3654,43 @@ const issuesTests = [
     // 重新审片(快照对齐)后消失
     ep.lastReview.snapshotHash = sb.Domain.reviewSnapshotHashOf(ep);
     assertEq(sb.Issues.collect(p).length, 0, '快照对齐后不应再报');
+  } },
+  { name: 'collect:分集审片条目与主线 review 步逐集同判——同一集同一份报告,两侧双向相等(任一侧多报/漏报即红)', fn() {
+    /* 两个面各自对外(流程条读 Domain.workflow、问题中心读 Issues),门槛却曾各设一道:
+     * 问题中心在缺正文/未拆镜/分镜判旧处早退一条审片的都不报,review 步却照旧把那些集算进未审甚至低分。
+     * 收进 episodeState.reviewGate 之后本条双向钉住:reviewGate 摊出来的审片档 = 问题中心的审片条目,
+     * 反向也钉(问题中心不许凭空多一条审片类条目),再叠一层"review 步阻塞码 = 各集档位的并集"。 */
+    const sb = loadIssues();
+    const RV = ['no-review', 'review-stale', 'low-review'];
+    const shot = (id, over) => Object.assign({ id, order: +id.slice(2), name: '', plot: 'p', prompt: CLEAN_PROMPT, camera: '固定镜头', duration: 5, characters: [], scene: '', props: [], confirm: true, video: { status: 'done', url: 'http://x/' + id + '.mp4' } }, over || {});
+    const low = { avg: 5, perShot: [{ shotId: 'sh0', score: 5 }] };
+    const mkEp = (id, over) => Object.assign({ id, title: id, content: '剧本正文', shots: [shot('sh0')], contentRev: 0, graphRev: 0 }, over);
+    const eps = [
+      mkEp('e1', {}),                                                            // 有镜未审
+      mkEp('e2', { lastReview: low }),                                           // 低分
+      mkEp('e3', { lastReview: { avg: 8, perShot: [{ shotId: 'sh0', score: 8 }], snapshotHash: 'bogus-stale' } }), // 判旧
+      mkEp('e4', { lastReview: { avg: 8, perShot: [{ shotId: 'sh0', score: 8 }] } }),                              // 达标
+      mkEp('e5', { content: '', lastReview: low }),      // 缺正文,手上留着一份低分报告
+      mkEp('e6', { shots: [], lastReview: low }),        // 未拆镜,同上
+      mkEp('e7', { contentRev: 2, shotsSourceRev: 1, lastReview: low }), // 分镜表判旧,同上
+    ];
+    const p = { id: 'p1', script: '整本剧本原文', subjects: [{ id: 'sj1', name: '主角', image: 'u' }], episodes: eps };
+    const list = sb.Issues.collect(p, { online: false });
+    const wf = sb.Domain.workflow(p, false);
+    eps.forEach((ep, i) => {
+      const gate = wf.epStates[i].reviewGate;
+      const want = (gate === 'pass' || gate === 'unready') ? '' : gate;
+      const got = list.filter(x => x.epid === ep.id && RV.indexOf(x.kind) >= 0).map(x => x.kind).join(',');
+      assertEq(got, want, ep.id + '(reviewGate=' + gate + '):问题中心的审片条目应与主线 review 步同判');
+    });
+    assertEq(eps.map((ep, i) => wf.epStates[i].reviewGate).join(','), 'no-review,low-review,review-stale,pass,unready,unready,unready', '七集的档位应逐集如上(门槛挪动即红)');
+    // review 步的阻塞码 = 各集档位的并集(计数也按可审集数,不把不可审的集算进去)
+    const rv = wf.steps.find(s => s.key === 'review');
+    assertEq(rv.blockers.map(b => b.code).join(','), 'no-review,review-stale,low-review', 'review 步应只报可审集摊出来的那三档');
+    rv.blockers.forEach(b => assertEq(/(\d+) 集/.exec(b.label)[1], '1', b.code + ' 的集数应只数可审集,实际:' + b.label));
+    // 不可审的三集在问题中心各报自己那一步的断点,不是静默无声
+    ['e5', 'e6', 'e7'].forEach((id, k) => assertEq(list.filter(x => x.epid === id).map(x => x.kind).join(','),
+      ['no-script', 'no-shots', 'shots-stale'][k], id + ' 应报上游那一步的断点'));
   } },
   { name: 'collect:提示词稳定词/用词漂移 → 低危提醒(不进高/中危,不改发布门 G2;写全即无)', fn() {
     const sb = loadIssues();
@@ -5154,6 +5234,20 @@ const contractTests = [
     assert(!/=\s*(?:\(?rv\.result[^\n]*\.lowShots|rv\.result\.lowShots)/.test(cli),
       'cli.js produce 不许把回执里的 lowShots 直接当作下一步 shotIds 的名单(它与分镜表漂移时会重抽错镜)');
     assert(/shotIds: fix\.revised/.test(cli) && /reviseTargets\(args, f\)/.test(cli), 'produce 的重抽/复审子集应源自派生出来的重抽面');
+  } },
+  { name: '分集级审片门槛单源:达标线/判旧/"这一集当下能不能审"只在 episodeState.reviewGate 一处,流程条与问题中心都不另判', fn() {
+    /* 行为面由 domain/issues 两条用例双向钉住;这一条钉源级:判据抄回第二份时行为可以完全一致,
+     * 那种改法只有源级判据接得住(与前置门槛码那条同形)。 */
+    const dom = fs.readFileSync(path.join(ROOT, 'js', 'domain.js'), 'utf8');
+    const iss = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
+    ['no-review', 'review-stale', 'low-review'].forEach(k =>
+      assert(new RegExp("st\\.reviewGate === '" + k + "'").test(iss), '问题中心的 ' + k + ' 应按 st.reviewGate 取,取值点丢了即红'));
+    assertEq((iss.match(/Domain\.REVIEW_MIN/g) || []).length, 0, '达标线不许在问题中心比第二遍(只在 Domain 那一份里)');
+    assertEq((iss.match(/st\.reviewStale/g) || []).length, 0, '判旧位不许在问题中心另判一档(三态互斥由 reviewGate 保证)');
+    assertEq((dom.match(/const reviewGate = /g) || []).length, 1, '门槛判据("缺正文/未拆镜/分镜判旧即不可审")应只此一处');
+    const wfBody = dom.slice(dom.indexOf('D.workflow = function'));
+    assertEq((wfBody.match(/reviewAvg|reviewStale/g) || []).length, 0, 'workflow 不许再按 reviewAvg/reviewStale 自己分一遍档(那是 episodeState 归好的)');
+    assert(/st\.reviewGate === code/.test(wfBody), 'review 步的三档集数应按 reviewGate 逐档数');
   } },
   { name: 'SK-25 记账两向对账(G-03):收敛面已落地要记进已落地那半、形态面仍欠不许抹,两半互串都红', fn() {
     /* W136 给这条立的护栏钉的是"两个余面都还欠着";本槽收敛面落地(Domain.reviseRetryLimit 双端单源),
@@ -7966,7 +8060,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 524, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 527, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 141, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -8102,7 +8196,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 170;
+    const FLOOR = 171;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
