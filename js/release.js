@@ -20,7 +20,8 @@
  * - 阈值配置:getSettings().releaseMinReviewScore,默认 7;DEFAULTS 增加该键(不侵入 gsettings.js 太多,仅 fallback)
  *
  * 依赖:window.Issues / window.Domain / window.Compliance / window.HumanReview / window.ZipUtil / window.Store
- *   / window.U / window.Exporter(exportSrt/buildMaterialFiles 等)/ window.WfCore(发布闭环结论回流记忆)
+ *   / window.U / window.Bus(打版本落定发 release.stamped)/ window.Exporter(exportSrt/buildMaterialFiles 等)
+ *   / window.WfCore(发布闭环结论回流记忆)
  *   / window.ReleaseCore(发布留痕的准入判定与写回:与服务端 /api/wf/release、CLI 同一份双端单源)
  * 所有依赖缺失时安全降级(对应门 warn + '模块未加载') */
 (function () {
