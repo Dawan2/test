@@ -6809,6 +6809,15 @@ action 二选一:
       assertEq(m[1].split('|').sort().join(','), names, rel + ' 的单套件清单应与 SUITES 一致');
     });
   } },
+  { name: 'README 数字对账:契约段自报的断言条数由 SUITES.contract 实计(这段话自己也进对账)', fn() {
+    /* 「文档数字对账契约」那段开头自报的条数一直是手写的:每加一条契约断言就得手改一次,
+     * 而改错没人管——把它改小(十一 → 九)全套照旧全绿,W123 的核验实测过一次。
+     * 口径就此定死为「`node tests/unit.js contract` 实跑出来的条数」= `SUITES.contract` 长度:
+     * 这段散文点名的那些数字对账条目只是本套件的一部分,而"哪几条算数字对账"没有机器边界,
+     * 手工圈出来的子集与套件实况一样会漂;取整套件条数则加减任何一条契约用例都会当场红。 */
+    assertDocNum('README.md', /`node tests\/unit\.js contract` 套件[(\uFF08]实测 (\d+) 条断言/g,
+      SUITES.contract.length, 'contract 套件断言条数');
+  } },
   { name: 'README 数字对账:集成测试与 CLI 冒烟用例数由各自套件源码实计(逐行 report 登记点数)', fn() {
     /* 这两个数此前不在对账内:把 126 改成 105、97 改成 64,单测一样全绿。
      * 两套件都要起真实服务子进程,单测里跑不动,故按套件自己的计数口径静态点数——
@@ -6909,7 +6918,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 479, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 480, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 130, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -7016,7 +7025,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 140;
+    const FLOOR = 141;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
