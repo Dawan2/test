@@ -747,6 +747,61 @@ CMD['shots-import'] = async (a, f) => {
     return { episode: ep.id, imported: norm.length, total: ep.shots.length, replaced: !f.append, renamedIds: renamed };
   })).ret;
 };
+/* 存量重复镜头 id 的扫描与改名计划:口径同 shots-import 那道写入闸——
+ * 首次出现的那一行留原 id,后面撞车的行改发新 id(与 Store.trashRestore 的 id 冲突改名同形)。
+ * 扫描与落库共用这一处,dry-run 报的与 --apply 写的就是同一份计算。 */
+const dedupeShotScan = shots => {
+  const rows = shots || [];
+  const seen = new Map(); // id → 首次出现的行号(留原 id 的那一行)
+  const dups = new Map();
+  const taken = new Set();
+  const plan = [];
+  rows.forEach((s, i) => {
+    if (!taken.has(s.id)) { taken.add(s.id); seen.set(s.id, i); return; }
+    const d = dups.get(s.id) || { id: s.id, rows: 1, keepOrder: seen.get(s.id) };
+    d.rows++;
+    dups.set(s.id, d);
+    let nid;
+    do { nid = 'sh_' + Date.now().toString(36) + '_' + crypto.randomBytes(4).toString('hex'); } while (taken.has(nid));
+    plan.push({ order: i, from: s.id, to: nid });
+    taken.add(nid);
+  });
+  return { total: rows.length, unique: new Set(rows.map(s => s.id)).size, duplicates: [...dups.values()], plan };
+};
+/* 存量重复镜头 id 的显式去重出口:用户主动跑,不挂在任何保存路径上偷偷改。
+ * 逃生舱 state-put 与 PUT /api/state 都不设闸(那是刻意的,理由见文件末逃生舱那段),灌进来的同 id 多镜就在库里躺着:
+ * findShot/shot-set/审片回写全按 id 取首行,后面几行结构性够不着;而两端选人闸按行筛(ids.has(s.id)),
+ * 点名一个 id 跑一次批量,表里重复几行就登记几笔钱——本命令是把这批存量收拾干净的那条路。
+ * 引用面有意一个字不动:lastReview.perShot[].shotId / ep.uiSel / Domain.reviseTargets 一律按 find 首行语义解析,
+ * 而首行的 id 本就没改,去重前后落到的是同一行;改 id 的只有那些任何引用都指不到的后续行。
+ * 纯改分镜表,零上游零 LLM,故不经 Tasks.run、不扣一分钱。 */
+CMD['shots-dedupe'] = async (a, f) => {
+  need(a[0] && a[1], '用法:hujing shots-dedupe <pid> <epid> [--apply](默认 dry-run:只报重复 id 与改名计划,一个字不写库)');
+  const { state } = await stateGet(f);
+  const p = (state.projects || []).find(x => x.id === a[0]);
+  if (!p) throw new CliError('项目不存在:' + a[0], 4);
+  const ep0 = findEp(p, a[1]);
+  const pre = dedupeShotScan(ep0.shots);
+  if (!f.apply || !pre.plan.length) {
+    return {
+      episode: ep0.id, total: pre.total, unique: pre.unique, duplicates: pre.duplicates,
+      applied: false, willRename: pre.plan.length, plan: pre.plan,
+      note: pre.plan.length
+        ? 'dry-run:一个字没写库,加 --apply 才落。哪几行改、哪一行留原 id 是定的;新 id 每次现发,--apply 那一趟发出的与这份预览不是同一批。'
+        : '分镜表里没有重复的镜头 id,无需去重(带 --apply 也不会发出任何写入)。',
+    };
+  }
+  return (await withProject(a[0], f, async proj => {
+    const ep = findEp(proj, a[1]);
+    const scan = dedupeShotScan(ep.shots); // 落库前按取到的最新一份重算(计划以真正要写的那棵树为准)
+    scan.plan.forEach(x => { ep.shots[x.order].id = x.to; });
+    log(scan.plan.length + ' 镜的 id 与表内在前的行重复,已改发新 id(首行留原 id;引用按首行解析,故 lastReview/uiSel 一个字未动)');
+    return {
+      episode: ep.id, total: scan.total, unique: scan.unique, duplicates: scan.duplicates,
+      applied: true, renamedIds: scan.plan.length, renamed: scan.plan,
+    };
+  })).ret;
+};
 /* 单镜字段补丁(领域校验,替代裸 Object.assign):受管字段拒绝直写;已知字段类型校验;
  * prompt 走 Store.setShotPrompt 同语义(旧值入 promptHistory,上限 20);素材判旧靠 inputHash 指纹自动生效 */
 const SHOT_PATCH_RULES = {
@@ -1590,7 +1645,8 @@ CMD.memory = async (a, f) => {
  * shots-import 的镜头 id 唯一闸不在这条路上,递同 id 两镜就落两行同 id(点名一次两行都跑、只有首行寻得着)。
  * 有意不在此设闸:这条路写的是整棵树,改一个镜头 id 就得连带改 lastReview.perShot/uiSel/groupId 那些引用它的地方,
  * 那是迁移不是闸;而拒收会让"照原样恢复一份备份"这件逃生舱唯一的活干不成。
- * 递进来的重复 id 要收拾,整表重导 shots-import(改发新 id 并回报 renamedIds)或自己改完再灌一次都行。 */
+ * 递进来的重复 id 要收拾,shots-dedupe 是那条显式出口(默认 dry-run 报计划、--apply 才写);
+ * 整表重导 shots-import(改发新 id 并回报 renamedIds)或自己改完再灌一次同样可以。 */
 CMD['state-get'] = async (_, f) => {
   const { rev, state } = await stateGet(f);
   if (f.out) { fs.writeFileSync(path.resolve(f.out), JSON.stringify({ rev, state }, null, 2), 'utf8'); return { rev, saved: path.resolve(f.out) }; }
@@ -1637,6 +1693,10 @@ const HELP = `虎鲸漫剧 CLI —— 面向 AI 助手与人工的全链路命�
 分镜层
   shots <pid> <epid>                               分镜表(全字段 JSON)
   shots-import <pid> <epid> --file shots.json [--append]   批量落分镜表(默认整表替换)
+  shots-dedupe <pid> <epid> [--apply]              存量重复镜头 id 去重(默认 dry-run:报哪些 id 重复、
+                                                   会改成什么,一个字不写库;--apply 才落,首行留原 id、
+                                                   撞车行改发新 id 并回报 renamedIds,口径同 shots-import 那道闸;
+                                                   零上游零计费,lastReview/uiSel 等引用一律不动——它们按首行解析)
   shot-set <pid> <epid> <sid> --patch '{"prompt":"..."}'   单镜字段补丁
   shot-confirm <pid> <epid> <sid> [--off]          确认闸(批量生成只跑已确认镜)
 
@@ -1682,7 +1742,8 @@ ${CmdRegistry.META.map(m => '  exec ' + (m.name + (CmdRegistry.usageOf(m) ? ' ' 
   memory migrate --from 旧板名 --to 新板名         板块迁移(条目原地改板块名,不丢不双写;旧板名下无条目即报错)
   state-get [--out f.json] | state-put --file f.json --force           裸状态读写(逃生舱:整树原样落库,
                                                    不做领域校验也不过 shots-import 那道写入闸——
-                                                   镜头 id 唯一性由调用方自己保证,灌进去的重复 id 就在库里)
+                                                   镜头 id 唯一性由调用方自己保证,灌进去的重复 id 就在库里,
+                                                   要收拾用 shots-dedupe)
 
 exit code:0 成功 | 1 通用 | 2 参数 | 3 未登录 | 4 不存在 | 5 服务端/上游 | 6 积分不足 | 7 冲突`;
 
