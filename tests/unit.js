@@ -8539,15 +8539,21 @@ const memoryTests = [
     assert(!/const scoped = mem\.filter/.test(ag), 'agent.js 不应再内联召回算法');
     assert((srv.match(/WfCore\.memBlock\(/g) || []).length >= 4, 'wf 工作流端点应按板块注入协作记忆(理解/分镜/审片/提取主体/Agent 对话)');
     assert(cli.includes('WfCore.memRecall('), 'CLI memory list --recall 应与注入侧同算法预览');
-    // 写入面:CLI 与浏览器各写一份(注释已标注),字段集/截断/上限须一致——任一侧漂移此断言先红
+    // 写入面:CLI 与浏览器各写一份(注释已标注),字段集/截断须一致——任一侧漂移此断言先红
     const fields = s => [...s.matchAll(/(\w+):/g)].map(m => m[1]).sort().join(',');
     const cliEntry = cli.match(/const entry = \{([^}]*)\};/);
-    const agPush = ag.match(/mem\.push\(\{([^}]*)\}\);/);
-    assert(cliEntry && agPush, '两端写入口的条目字面都应可定位');
+    const agEntry = ag.match(/const entry = \{([^}]*)\};/);
+    assert(cliEntry && agEntry, '两端写入口的条目字面都应可定位');
     assertEq(fields(cliEntry[1]), 'scope,text,time', 'CLI memory add 条目字段集');
-    assertEq(fields(agPush[1]), 'scope,text,time', '浏览器 memRemember 条目字段集应与 CLI 同集');
-    assert(cliEntry[1].includes('slice(0, 120)') && agPush[1].includes('slice(0, 120)'), '两端都应截 120 字');
-    assert(ag.includes('agentMemory = mem.slice(-50)') && cli.includes('mem.concat([entry]).slice(-50)'), '两端都应按最近 50 条截断');
+    assertEq(fields(agEntry[1]), 'scope,text,time', '浏览器 memRemember 条目字段集应与 CLI 同集');
+    assert(cliEntry[1].includes('slice(0, 120)') && agEntry[1].includes('slice(0, 120)'), '两端都应截 120 字');
+    /* 上限与满桶淘汰:两端用户写入面都经 WfCore.memWrite,不再各写一份裸 slice(-50)
+     * (裸截尾砍数组头部,桶被自动回流条占满时头部往往正是别的用户条) */
+    const agMem = ag.slice(ag.indexOf('function memRemember('), ag.indexOf('function memRecall('));
+    const cliAdd = cli.slice(cli.indexOf("if (sub === 'add') {"), cli.indexOf("if (sub === 'seed')"));
+    assert(agMem.includes('WfCore.memWrite(memAll(), [entry])'), '浏览器 memRemember 应经 memWrite 写回');
+    assert(cliAdd.includes('WfCore.memWrite(mem, [entry])'), 'CLI memory add 应经 memWrite 写回');
+    assert(!/slice\(-/.test(agMem) && !/slice\(-/.test(cliAdd), '两端写入面都不得再自己截尾(上限口径只在 wf-core 一处)');
   } },
   /* ---- 闭环结论回流记忆(SK-26 回流面):派生纯函数 + 四处写入点 ----
    * 回流面此前只是记账里的一句"尚无命令出口";落地后判据全在这几条上:派生只此一份、
@@ -8669,6 +8675,34 @@ const memoryTests = [
     assertEq(w4.filter(m => /^用户要求记住:/.test(m.text)).length, 2, '原地更新不动用户条');
     assertEq(w4[w4.length - 1].text, '回流 sb:new 第二轮', '原地更新换成最新结论');
   } },
+  /* W103:用户手打的那一半写入面(浏览器 memRemember / CLI memory add)此前是裸 slice(-MEM_MAX)——
+   * 桶被自动回流条占满时,用户新加一条会按先进先出砍掉数组头部,而头部往往正是别的用户条。
+   * 两处改经同一 memWrite 后,淘汰优先级对用户写入面一并生效。CLI 那一半的真跑在 cli.smoke。 */
+  { name: '浏览器 memRemember 走 memWrite:满自动条时新加一条「记住…」不挤掉已有的用户条', fn() {
+    const W = require('../js/wf-core.js');
+    const sb = loadAgent();
+    sb.AgentCore.memBlock('', '分镜'); // 先播种,后续 memAll 幂等(改动不涉及播种面)
+    const seeds = sb.Store.state.agentMemory.slice();
+    const users = ['用户要求记住:女主统一叫林晚晴', '用户要求记住:夜戏一律偏冷色'];
+    const fill = W.MEM_MAX - seeds.length - users.length;
+    assert(fill > 0, '种子条数应留得下满桶夹具(种子表长到装不下时此夹具要重排)');
+    sb.Store.state.agentMemory = users.map(t => ({ text: t, time: 't0', scope: '分镜' }))
+      .concat(seeds, Array.from({ length: fill }, (_, i) => ({ text: '回流占位 ' + i, time: 't1', scope: '分镜', fb: 'sb:cap' + i })));
+    assertEq(sb.Store.state.agentMemory.length, W.MEM_MAX, '夹具就位:桶刚好满');
+    sb.AgentCore.memRemember('用户要求记住:雨夜戏一律手持', '分镜');
+    const mem = sb.Store.state.agentMemory;
+    assertEq(mem.length, W.MEM_MAX, '用户写入面也守住 MEM_MAX(不顶破桶)');
+    assertEq(mem[mem.length - 1].text, '用户要求记住:雨夜戏一律手持', '新沉淀的一条在桶尾');
+    assertEq(mem.slice(0, 2).map(m => m.text).join(','), users.join(','), '桶头部那两条用户条一条不少(裸 slice 会砍掉第一条)');
+    assert(!mem.some(m => m.fb === 'sb:cap0') && mem.some(m => m.fb === 'sb:cap1'), '出局的是最旧那条自动回流条');
+    assertEq(seeds.filter(s => mem.some(m => m.text === s.text)).length, seeds.length, '播种条目也一条不少');
+    // 既有口径未变:120 字截断、空文本不写、每次写入落一次盘
+    sb.AgentCore.memRemember('长'.repeat(300), '分镜');
+    assertEq(sb.Store.state.agentMemory[W.MEM_MAX - 1].text.length, W.MEM_TEXT_MAX, '仍截 MEM_TEXT_MAX 字');
+    const saves = sb.Store._saves;
+    sb.AgentCore.memRemember('   ', '分镜');
+    assertEq(sb.Store.state.agentMemory.length + '/' + sb.Store._saves, W.MEM_MAX + '/' + saves, '空文本不写入也不落盘');
+  } },
   { name: '回流写入面四处接线(源级):派生只此一份,四处写入点都存回既有 agentMemory 桶', fn() {
     const W = require('../js/wf-core.js');
     const files = { 'js/review.js': null, 'server.js': null, 'js/release.js': null, 'cli.js': null };
@@ -8693,11 +8727,11 @@ const memoryTests = [
     // 只钉发布这一处:CLI 的 memWrite 现另有提取主体那处回流(W61,走 withProject 的 meta 桶),整文件搜会误伤
     assert(!/WfCore\.mem(Write|Feedback)\(/.test(relSeg) && !/memFeedback\(\{ p, gate/.test(files['cli.js']),
       'CLI 侧不再自己派生发布回流(写入点已归服务端发布端点,免得两端各写一份)');
-    // 上限/截断/低分线三个口径:wf-core 常量与两端既有写入面字面一致(任一侧漂移即红)
+    // 上限/截断/低分线三个口径:上限已收口到 wf-core 一处(两端写入面都经 memWrite),120 字截断仍两端各写一份
     const ag = fs.readFileSync(path.join(ROOT, 'js', 'agent.js'), 'utf8');
-    assertEq(W.MEM_MAX, 50, 'MEM_MAX 应与两端写入面的 50 条上限同数');
+    assertEq(W.MEM_MAX, 50, 'MEM_MAX 仍是 50 条(本层是上限的唯一持有处)');
     assertEq(W.MEM_TEXT_MAX, 120, 'MEM_TEXT_MAX 应与两端写入面的 120 字截断同数');
-    assert(ag.includes('slice(-' + W.MEM_MAX + ')') && ag.includes('slice(0, ' + W.MEM_TEXT_MAX + ')'), '浏览器写入面字面应与 wf-core 常量同数');
+    assert(ag.includes('slice(0, ' + W.MEM_TEXT_MAX + ')'), '浏览器写入面 120 字截断应与 wf-core 常量同数');
     assertEq(W.MEM_LOW_SCORE, 7, '待返工线应与审片重抽入口/发布门 G3 默认阈值同数');
     // 服务端回流点就在闭环写完 lastReview 之后、落盘之前(不另起一次 state 写)
     const srv = files['server.js'];

@@ -1467,10 +1467,10 @@ CMD.memory = async (a, f) => {
     for (let attempt = 0; attempt < 3; attempt++) {
       const { rev, state } = await stateGet(f);
       const mem = Array.isArray(state.agentMemory) ? state.agentMemory : [];
-      const entry = { text: String(f.text).slice(0, 120), time: new Date().toLocaleString('zh-CN'), scope: f.scope || '' }; // 与浏览器 memRemember 同口径(截 120 字,上限 50 条)
+      const entry = { text: String(f.text).slice(0, 120), time: new Date().toLocaleString('zh-CN'), scope: f.scope || '' }; // 与浏览器 memRemember 同口径(截 120 字)
       const meta = {};
       for (const k in state) if (k !== 'projects') meta[k] = state[k]; // meta 桶整组替换(计费键服务端权威回填,不受影响)
-      meta.agentMemory = mem.concat([entry]).slice(-50);
+      meta.agentMemory = WfCore.memWrite(mem, [entry]); // 上限与满桶淘汰优先级同回流面单源(无 fb 的用户条按追加,满桶先挤自动回流条)
       try {
         const d = await PUT('/api/state', { rev, changes: { meta } }, f);
         return { rev: d.rev, total: meta.agentMemory.length, added: entry };
