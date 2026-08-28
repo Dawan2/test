@@ -3922,6 +3922,49 @@ const releaseTests = [
     assertEq(bad.overall, 'fail');
     assert(bad.fails >= 2, '低分审片 + 主体缺图应至少两门 fail,实际 ' + bad.fails);
   } },
+  { name: 'release-core · G4/G5/G6 聚合漏注入 Domain:三门如实未过门,不许照常印「0 镜 pass」', fn() {
+    /* 三门的 agg 是同一次遍历算出来的,那次遍历此前被一个空 catch 兜着:漏注入 Domain 时逐集调用当场抛错,
+     * 三门却拿初值 0 照常报 pass——回执上等于宣称"过期/未确认/失败镜都查过了,一镜不缺",而实际一镜未查。
+     * 这里钉的是「判不出来按未过门算」,不是抬门:注入齐全时三门的判据与计数一个字没动(本条第一段守着)。 */
+    const RC = require('../js/release-core.js');
+    const D = require('../js/domain.js');
+    const COUNT = ['g4-stale', 'g5-unconfirmed', 'g6-failed'];
+    const p = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [releaseReadyEp()] };
+    const withD = RC.gates(p, { Domain: D, online: false });
+    COUNT.forEach(code => assertEq(withD.gates.find(x => x.code === code).status, 'pass', '注入齐全时判据未改:' + code));
+    const bare = RC.gates(p, { online: false });
+    assertEq(bare.gates.length, 7, '仍是七项核心门(判不出来只改这三门的结论,不少一门)');
+    COUNT.forEach(code => {
+      const g = bare.gates.find(x => x.code === code);
+      assertEq(g.status, 'fail', code + ' 判不出来不得报 pass');
+      assert(/Domain/.test(g.info), code + ' 须点名缺的是什么,实际:' + g.info);
+      assert(g.info !== '0 镜', code + ' 没判过就不许报「0 镜」');
+    });
+    assert(bare.fails >= 3, '这三门的未过门须计进 fails(只改 status 不计数,回执摘要与等级还是假的),实际 ' + bare.fails);
+    const blockers = RC.brief(bare).blockers.map(b => b.code);
+    COUNT.forEach(code => assert(blockers.indexOf(code) >= 0, '未过门项须出现在回执摘要里:' + code));
+  } },
+  { name: 'release-core · G4/G5/G6 聚合半途抛错:三门同记 warn,不拿半截计数当全量报', fn() {
+    /* 遍历到第二集才抛时,agg 里已经攒着第一集的数:空 catch 吞掉异常后,G4 会拿这半截数报「2 镜 fail」、
+     * G5/G6 报「0 镜 pass」——三个数没有一个是全量算出来的。判不出来就说判不出来(与 G1 那条 catch 同级记 warn)。 */
+    const RC = require('../js/release-core.js');
+    const D = require('../js/domain.js');
+    const p = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }],
+      episodes: [releaseReadyEp({ id: 'ep1', title: '第1集' }), releaseReadyEp({ id: 'ep2', title: '第2集' })] };
+    const boom = { episodeState(proj, ep, online) {
+      if (ep.id === 'ep2') throw new Error('counts 崩了');
+      return Object.assign({}, D.episodeState(proj, ep, online), { counts: { stale: 2, unconfirmed: 1, failed: 3 } });
+    } };
+    const g = RC.gates(p, { Domain: boom, online: false });
+    ['g4-stale', 'g5-unconfirmed', 'g6-failed'].forEach(code => {
+      const x = g.gates.find(y => y.code === code);
+      assertEq(x.status, 'warn', code + ' 遍历抛错时按判不出来记 warn(不是拿半截计数下结论)');
+      assert(/counts 崩了/.test(x.info), code + ' 须带原始错因,实际:' + x.info);
+      assert(!/镜/.test(x.info), code + ' 不许报镜数(那个数没算完),实际:' + x.info);
+    });
+    assert(g.warns >= 4, '三门 + G10 至少四条 warn,实际 ' + g.warns);
+    assertEq(RC.passed(g), false, '判不出来的门禁结论不放行打版本');
+  } },
   { name: 'release-core · precheck:空项目 / 缺门禁结论 / 未过门各给明确错误码;force 授权位放行且如实标 forced', fn() {
     const RC = require('../js/release-core.js');
     const pass = { overall: 'cond-pass', fails: 0, warns: 1, score: 9, at: 1, gates: [] };
@@ -7135,7 +7178,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 492, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 494, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 130, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
