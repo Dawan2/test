@@ -354,6 +354,29 @@
     say(subs.length - withImg, '没能说清原因');
     return '没有待补图的主体,一位也没跑:' + parts.join('、');
   };
+  /* 点名子集真跑起来、而点名的 id 在主体库里存着多位时,回执上那句话(单源:命令层与 CLI 同读这一份)。
+   * 两端选人闸按位筛(ids.has(s.id)):同 id 存着三位时点名一个 id,三位都真跑、三笔生图钱,
+   * 而回执只报 total=位数——与「点名三个不同 id」的正常批量逐字一样,这一笔多花在哪用户看不出来。
+   * 闸不动(与镜头那一侧同理:点名两位的正常子集不许被砍成一位,第二位会永远跑不到),补的是把位数说出来。
+   * 与镜头那份 dupRowsNote 分开写而不套用:两侧单位与出口都不同——那一侧有 shots-dedupe 这条显式去重命令,
+   * 主体侧没有对应命令,收拾得回主体库人工来;混用会让主体回执论起「分镜表」与「行」来。
+   * 末句点名的是现有修法,连它的已知代价一并说清:主体库的删除按 id 匹配(js/roles.js 那一句
+   * filter(x => x.id !== s.id)),同 id 那几位会被一并删光,不先说清就等于把用户往误删里指。
+   * 点名判据与两端选人闸(Array.isArray(subjectIds) && length)逐字同形:放宽成真值判断时
+   * 字符串 id 会被拆成字符点名清单、类数组连 new Set 都过不去,一次 ok 执行当场变异常。
+   * 整库那一路(不点名)不说这句:没点名就没有「点 1 位跑 3 位」的错觉,total 本来就是位数。 */
+  D.dupSubjectRowsNote = function (picked, subs) {
+    if (!Array.isArray(picked) || !picked.length) return '';
+    const ids = [...new Set(picked)]; // 点名清单按主体去重:与 emptySubjectImageNote 同口径,重复的 id 指的是同一位
+    const list = subs || []; // 这一趟真下发的待跑清单,不是整个主体库(没跑的那几位不该算进计费)
+    const dup = ids.map(id => ({ id, n: list.filter(s => s && s.id === id).length })).filter(x => x.n > 1);
+    if (!dup.length) return '';
+    const extra = dup.reduce((n, x) => n + x.n - 1, 0);
+    return '点名的 ' + ids.length + ' 位主体在主体库里同 id 存着多位(' + dup.map(x => x.id + ' ' + x.n + ' 位').join('、')
+      + '):这一趟按 ' + list.length + ' 位逐位跑、逐位计费,比点名数多花了 ' + extra + ' 位的钱。'
+      + '主体侧没有去重命令,要一个 id 只跑一位,得回主体库把多出来的那几位删掉或改 id'
+      + '(删除按 id 匹配、同 id 那几位一并删光,先确认要留哪一位)。';
+  };
   /* ================= 镜头配音(TTS 渲染清单) =================
    * 配音的唯一解释:哪套音色配置生效、已渲染音轨用的是什么参数、能否混入成片。
    * 浏览器(storyboard/sb-gen/sb-batch)渲染后写回 s.audioMeta,合成侧(sb-io.js / cli.js)据此取音轨并落清单凭据;
