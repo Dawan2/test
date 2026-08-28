@@ -111,7 +111,7 @@
     /* 一镜也没跑仍是 ok(整集已出片时点「一键成片」不该报拦截),但回执得说清为什么是 0 镜:
      * 这句话经 result.note 交给 digest 播报,与 CLI 同读 Domain.emptyBatchNote 一份。 */
     if (!pend.length) {
-      const r = ok({ total: 0, ok: 0, failed: [], skipped: [], note: Domain.emptyBatchNote(p, ep, args.shotIds, online()) });
+      const r = ok({ total: 0, ok: 0, landed: 0, failed: [], skipped: [], note: Domain.emptyBatchNote(p, ep, args.shotIds, online()) });
       r.next = nextOf(p, ep);
       return r;
     }
@@ -119,7 +119,7 @@
     if (args.ui) {
       if (window.HumanReview && HumanReview.guardAsync) { // 真人素材预审:驳回/取消如实 blocked(与 runBatchOp 原预审闸同口径)
         const urls = [...new Set(pend.flatMap(s => HumanReview.shotImageUrls(p, s)))];
-        if (!(await HumanReview.guardAsync(urls))) return blocked('human-review', '真人素材预审未放行,已取消生成', { total: 0, ok: 0, failed: [], skipped: [] });
+        if (!(await HumanReview.guardAsync(urls))) return blocked('human-review', '真人素材预审未放行,已取消生成', { total: 0, ok: 0, landed: 0, failed: [], skipped: [] });
       }
       await new Promise(res => SBGen.batchGenVideos(p, ep, sinkOf(args), pend, {}, res));
       skipped = pend.filter(s => !Store.shotVideoReady(s) && !(s.video && s.video.status === 'failed'))
@@ -129,17 +129,23 @@
       if (args.confirmAll) { unconfirmed.forEach(s => { s.confirm = true; }); Store.save(); }
       const todo = pend.filter(s => s.confirm);
       skipped = args.confirmAll ? [] : unconfirmed.map(s => ({ shotId: s.id, order: s.order + 1, reason: '未确认' }));
-      if (!todo.length) return blocked('unconfirmed', unconfirmed.length + ' 镜未确认已跳过(confirmAll 可授权全量生成)', { total: 0, ok: 0, failed: [], skipped });
+      if (!todo.length) return blocked('unconfirmed', unconfirmed.length + ' 镜未确认已跳过(confirmAll 可授权全量生成)', { total: 0, ok: 0, landed: 0, failed: [], skipped });
       pend = todo;
       await SBGen.batchGenVideos(p, ep, sinkOf(args), todo, { skipConfirmGate: true, skipSmartReview: true, skipCompliance: true, quiet: true });
     }
     const failed = pend.filter(s => s.video && s.video.status === 'failed').map(s => ({ shotId: s.id, order: s.order + 1, error: String(s.video.error || '').slice(0, 80) }));
-    const okCnt = pend.filter(s => Store.shotVideoReady(s)).length;
-    const r = { ok: failed.length === 0, status: failed.length ? 'failed' : 'done', result: { total: pend.length, ok: okCnt, failed, skipped } };
+    const landedRows = pend.filter(s => Store.shotVideoReady(s));
+    const okCnt = landedRows.length;
+    /* 到手片落到同 id 的第几行:这一端数的本来就是表里那几行,故 landed 与 okCnt 恒等——
+     * 算出来而不是抄 okCnt,哪天这一端也改成回最新树按序数重取,两个数会自己岔开。 */
+    const seats = new Set(landedRows.map(s => s.id + '#' + (ep.shots || []).filter(x => x.id === s.id).indexOf(s)));
+    const r = { ok: failed.length === 0, status: failed.length ? 'failed' : 'done', result: { total: pend.length, ok: okCnt, landed: seats.size, failed, skipped } };
     /* 点名的 id 在表里占着多行时,这一趟按行跑、按行计费,而 total 与正常批量长得一样:
-     * 那句话经 result.note 交给 digest 播报,与 CLI 同读 Domain.dupRowsNote 一份(选人闸一个字没动)。 */
+     * 那句话经 result.note 交给 digest 播报,与 CLI 同读 Domain.dupRowsNote 一份(选人闸一个字没动)。
+     * ok 与 landed 岔开时(几轮共用了同一行)那句话同样经 note 播,与 CLI 同读 Domain.landedNote 一份。 */
     const dupNote = Domain.dupRowsNote(args.shotIds, pend);
-    if (dupNote) r.result.note = dupNote;
+    const landedNote = Domain.landedNote(okCnt, seats.size, '行');
+    if (dupNote || landedNote) r.result.note = [dupNote, landedNote].filter(Boolean).join('');
     if (failed.length) r.error = { code: okCnt ? 'partial' : 'gen-failed', message: failed.length + ' 镜生成失败(已退费),可修复后重试' };
     r.next = nextOf(p, ep);
     return r;
@@ -255,24 +261,29 @@
     /* 一位也没跑仍是 ok(全部主体都有图时点 G9 处置/计划步不该记成拦截),但回执得说清为什么是 0 位:
      * 这句话经 result.note 交给 digest 播报,与 CLI 同读 Domain.emptySubjectImageNote 一份。 */
     if (!todo.length) {
-      const r = ok({ total: 0, ok: 0, failed: [], note: Domain.emptySubjectImageNote(p, args.subjectIds) });
+      const r = ok({ total: 0, ok: 0, landed: 0, failed: [], note: Domain.emptySubjectImageNote(p, args.subjectIds) });
       r.next = nextOf(p);
       return r;
     }
     const failed = [];
+    /* 到手图落到同 id 的第几位:这一端写的就是循环里那个对象,故 landed 与 okCnt 恒等——
+     * 算出来而不是抄 okCnt,哪天这一端也改成回最新树按序数重取,两个数会自己岔开。 */
+    const seats = new Set();
     let okCnt = 0;
     for (const s of todo) {
       if (window.COST && Store.credits() < COST.image) { failed.push({ subjectId: s.id, name: s.name, error: '积分不足' }); continue; }
       const before = s.image;
       await EpisodeUtil.genSubjectImage(p, s, null, !!before); // 子集含已有图项时按重新生成语义
-      if (s.image && s.image !== before) okCnt++;
+      if (s.image && s.image !== before) { okCnt++; seats.add(s.id + '#' + (p.subjects || []).filter(x => x.id === s.id).indexOf(s)); }
       else failed.push({ subjectId: s.id, name: s.name, error: '生成失败(已退费)' });
     }
-    const r = { ok: failed.length === 0, status: failed.length ? 'failed' : 'done', result: { total: todo.length, ok: okCnt, failed } };
+    const r = { ok: failed.length === 0, status: failed.length ? 'failed' : 'done', result: { total: todo.length, ok: okCnt, landed: seats.size, failed } };
     /* 点名的 id 在主体库里存着多位时,这一趟按位跑、按位计费,而 total 与正常批量长得一样:
-     * 那句话经 result.note 交给 digest 播报,与 CLI 同读 Domain.dupSubjectRowsNote 一份(选人闸一个字没动)。 */
+     * 那句话经 result.note 交给 digest 播报,与 CLI 同读 Domain.dupSubjectRowsNote 一份(选人闸一个字没动)。
+     * ok 与 landed 岔开时(几轮共用了同一位)那句话同样经 note 播,与 CLI 同读 Domain.landedNote 一份。 */
     const dupNote = Domain.dupSubjectRowsNote(args.subjectIds, todo);
-    if (dupNote) r.result.note = dupNote;
+    const landedNote = Domain.landedNote(okCnt, seats.size, '位');
+    if (dupNote || landedNote) r.result.note = [dupNote, landedNote].filter(Boolean).join('');
     if (failed.length) r.error = { code: okCnt ? 'partial' : 'gen-failed', message: failed.length + ' 位主体生图失败,可重试' };
     r.next = nextOf(p);
     return r;
