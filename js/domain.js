@@ -311,15 +311,19 @@
    * 而回执只报 total=行数——与「点名几个 id 就跑几个 id」的正常批量逐字一样,这一笔多花在哪用户看不出来。
    * 闸不动(按行筛是对的:点名两行的正常子集不许被砍成一行,第二行会永远跑不到),
    * 这里补的是把行数与收拾办法说出来。点名判据与选人闸(Array.isArray(shotIds) && length)逐字同形;
-   * 整集那一路不说这句:没点名就没有「点 1 个跑 3 行」的错觉,total 本来就是行数。 */
+   * 整集那一路不说这句:没点名就没有「点 1 个跑 3 行」的错觉,total 本来就是行数。
+   * 「多花几行」按**点名清单的原始条数**算而不是去重后的 id 数——两者只在机器派生的点名清单上分道:
+   * 发布门 G6 的一键处置把每个失败镜各排一条,同 id 两行时它递来的是 ['dup','dup'],
+   * 点了两条也真跑两行、一行都没多花,按去重后的 1 去减会凭空报出「多花 1 行的钱」这句假话。
+   * 逐个 id 报「占着几行」那一段照旧按去重后的 id 走(同一个 id 报两遍才是废话)。 */
   D.dupRowsNote = function (picked, rows) {
     if (!Array.isArray(picked) || !picked.length) return '';
-    const ids = [...new Set(picked)];
+    const ids = [...new Set(picked)]; // 只用来逐个报「哪个 id 占着几行」:同一个 id 点两次指的还是那一镜
     const list = rows || [];
     const dup = ids.map(id => ({ id, rows: list.filter(s => s && s.id === id).length })).filter(x => x.rows > 1);
-    if (!dup.length) return '';
-    const extra = dup.reduce((n, x) => n + x.rows - 1, 0);
-    return '点名的 ' + ids.length + ' 镜在分镜表里占着多行同 id(' + dup.map(x => x.id + ' ' + x.rows + ' 行').join('、')
+    const extra = list.length - picked.length; // 真跑的行数 − 点名的条数:这才是「比你要的多花了几行」
+    if (!dup.length || extra <= 0) return '';
+    return '点名的 ' + picked.length + ' 镜在分镜表里占着多行同 id(' + dup.map(x => x.id + ' ' + x.rows + ' 行').join('、')
       + '):这一趟按 ' + list.length + ' 行逐行跑、逐行计费,比点名数多花了 ' + extra + ' 行的钱。'
       + '要一个 id 只跑一行,先用 CLI shots-dedupe 收拾存量重复。';
   };
