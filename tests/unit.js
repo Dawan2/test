@@ -295,6 +295,39 @@ function loadPipeline() {
   return sb;
 }
 
+/* 断点条「下一步」真按下去的沙箱:命令层(loadCommands 的注册表 + SBGen 引擎桩)之上再装 pipeline。
+ * 按钮上印的数与引擎实收的镜只在这里能对上账——nextForEp 给的 run 走的是与页面同一条 Commands.execute。
+ * __genShots 记下引擎每次收到的镜头 id(累计),__sentArgs 留档命令层实收的入参(子集位是否被收窄)。 */
+function loadPipelineFix() {
+  const sb = loadCommands();
+  loadFile(sb, 'pipeline.js');
+  sb.__genShots = [];
+  const origGen = sb.SBGen.batchGenVideos;
+  sb.SBGen.batchGenVideos = (p, ep, main, shots, opts, done) => {
+    shots.forEach(s => sb.__genShots.push(s.id));
+    return origGen(p, ep, main, shots, opts, done);
+  };
+  sb.__sentArgs = [];
+  const origExec = sb.Commands.execute;
+  sb.Commands.execute = (name, args) => { sb.__sentArgs.push({ name, shotIds: ((args || {}).shotIds || []).slice() }); return origExec(name, args); };
+  return sb;
+}
+/* 断点条过期镜夹具:kinds 按序列出这一集要哪几种镜——'fresh' 鲜镜 / 'stale' 过期没定稿 / 'locked' 过期已定稿。
+ * 过期走 video.inputHash 与当前输入对不上这条(与 Domain.shotVideoStale 的指纹分支同路,不另造判据);
+ * 全镜 done 且已确认,好让 episodeState 落到 regen-stale 那一档(失败/未出片镜会先把状态抢走)。 */
+function pipeStaleProject(kinds) {
+  const shots = kinds.map((kind, i) => {
+    const s = { id: 'sh' + i, order: i, name: '', plot: 'p', prompt: 'q', camera: '固定镜头', duration: 5,
+      characters: [], scene: '', props: [], confirm: true, video: { status: 'done', url: 'http://x/v.mp4' } };
+    if (kind !== 'fresh') s.video.inputHash = '与当前输入对不上';
+    if (kind === 'locked') s.final = true;
+    return s;
+  });
+  const ep = { id: 'ep1', title: '第一集', content: '剧本正文', sbConfig: { maxRetry: 2 }, shots,
+    lastReview: { avg: 8, perShot: shots.map((s, i) => ({ shotId: s.id, order: i, score: 8 })) } };
+  return { p: { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [ep] }, ep };
+}
+
 function loadSbViews() {
   const sb = makeSandbox();
   installCommon(sb);
@@ -3002,6 +3035,54 @@ const pipelineTests = [
       sb.Domain.episodeState(p, p.episodes[i + 1], false).reviewGate, 'unready', id + ' 在分集状态里就是 unready(两处同一道门槛)'));
     p.episodes.pop(); // 只剩达标集与三种审不了的集 → 无落点,退回首集(与"全部达标"同一条退路)
     assertEq(sb.Pipeline.hashOf(p, 'review'), '#/project/p1/episode/ep1', '没有可审的集时退回首集,不挑一个审不了的集顶上');
+  } },
+  { name: 'nextForEp:「重生成过期镜」按钮上的数就是按下去真下发引擎的镜数(定稿过期镜不混进这个数)', fn: async () => {
+    /* 这个数从前直接印 counts.stale,而过期镜里已定稿的那几镜两端批量生成都锁着 !s.final 不碰:
+     * 按钮写着 2 镜、按下去只重跑其中 1 镜,回来流程条照旧报 2 镜过期。这条把"印的数"钉成"实收的镜数",
+     * 且下发子集照旧带上定稿镜(收窄成可重跑那堆会与 G4 的 fix.shotIds 分家,全定稿时还会收成空数组=整集)。 */
+    const sb = loadPipelineFix();
+    const { p, ep } = pipeStaleProject(['fresh', 'stale', 'locked']);
+    sb.__proj = p;
+    // 先与 Domain 对账:门槛这一侧一个数没动,定稿的过期镜照旧计进 counts.stale
+    assertEq(sb.Domain.episodeState(p, ep, false).counts.stale, 2, '夹具应有 2 镜过期(其中 1 镜已定稿)');
+    const nx = sb.Pipeline.nextForEp(p, ep);
+    assertEq(nx.key, 'regen-stale');
+    assert(/可重跑 1 镜/.test(nx.txt) && /1 镜已定稿/.test(nx.txt) && /解锁终稿/.test(nx.txt),
+      '按钮须印可重跑的镜数并说明另一堆的出路,实际:' + nx.txt);
+    assert(!/重生成过期镜\(2\)/.test(nx.txt), '按钮不许再把总数印成"这一按能跑几镜",实际:' + nx.txt);
+    await nx.run(null);
+    assertEq(sb.__genShots.join(','), 'sh1', '引擎实收的就是可重跑那一镜(定稿镜按 !s.final 挡在外面)');
+    assertEq(sb.__sentArgs.map(a => a.shotIds.join(',')).join(' | '), 'sh1,sh2',
+      '下发子集照旧是全部过期镜:收窄成可重跑那堆即与 G4 的 fix.shotIds 分家(全定稿时还会收成空数组=整集重跑)');
+    assertEq(ep.shots[2].video.inputHash, '与当前输入对不上', '定稿镜的产物一个字节没被覆盖');
+    assertEq(sb.Domain.episodeState(p, ep, false).counts.stale, 1, '按完只消掉可重跑那一镜:总数口径没被本条改动');
+  } },
+  { name: 'nextForEp:过期镜全是定稿镜时按钮如实说一镜也跑不到(不印「可重跑 0 镜」,处置也不顺手摘掉)', fn: async () => {
+    /* 这一档按下去命令层回 ok(total:0),而 digest 对 ok 默认不出提示——用户点完连"什么都没发生"都读不到。
+     * 摘按钮/自动解锁终稿都是改产品口径(等于替用户撤销他按下的锁),故按钮照旧挂着,只把话说清楚。 */
+    const sb = loadPipelineFix();
+    const { p, ep } = pipeStaleProject(['fresh', 'locked']);
+    sb.__proj = p;
+    assertEq(sb.Domain.episodeState(p, ep, false).counts.stale, 1, '夹具:唯一的过期镜已定稿(门照旧数它)');
+    const nx = sb.Pipeline.nextForEp(p, ep);
+    assertEq(nx.key, 'regen-stale');
+    assert(/一镜也重跑不到/.test(nx.txt) && /解锁终稿/.test(nx.txt), '按钮须如实说跑不到并给出人工出路,实际:' + nx.txt);
+    assert(!/可重跑/.test(nx.txt), '一镜也跑不到时不许还报「可重跑 N 镜」,实际:' + nx.txt);
+    assert(!/\(1\)/.test(nx.txt), '也不许把定稿那一镜印成"这一按能跑 1 镜",实际:' + nx.txt);
+    assertEq(typeof nx.run, 'function', '处置照旧挂着(摘按钮/自动解锁是产品口径,不在本槽射程内)');
+    await nx.run(null);
+    assertEq(sb.__genShots.join(','), '', '按下去确实一镜也没跑(按钮上的话与实况对得上)');
+    assertEq(sb.__charges.length, 0, '一镜没跑就一分钱不扣');
+    assertEq(sb.Domain.episodeState(p, ep, false).counts.stale, 1, '门槛照旧 fail 那一档:counts.stale 一个数没动');
+  } },
+  { name: 'nextForEp:没有定稿过期镜时按钮文案一字未变(总数就是可重跑数,不凭空多一句尾巴)', fn: async () => {
+    const sb = loadPipelineFix();
+    const { p, ep } = pipeStaleProject(['fresh', 'stale', 'stale']);
+    sb.__proj = p;
+    const nx = sb.Pipeline.nextForEp(p, ep);
+    assertEq(nx.txt, '🔄 重生成过期镜(2)', '两堆不分家时按钮照旧只印一个数');
+    await nx.run(null);
+    assertEq(sb.__genShots.slice().sort().join(','), 'sh1,sh2', '这两镜都真下发到引擎(印几镜跑几镜)');
   } },
 ];
 
@@ -6324,6 +6405,22 @@ const contractTests = [
     assertEq((cnt.slice(cnt.indexOf('shots.forEach')).match(/[^\n]*final[^\n]*/g) || []).map(x => x.trim()).join(' | '),
       'if (s.final) counts.final++;', 'counts 计数段里 final 只用来数定稿镜:拿它给 counts.stale 分档就是改门槛');
   } },
+  { name: '过期镜分报的取数口(断点条):「重生成过期镜」那一格同读 Domain 的分堆与那句话,不自写第二份', fn() {
+    /* 按钮上的数与 G4 回执上的数回答同一问——「这一按跑得到几镜」。判据(!s.final)与说法各只此一份:
+     * 断点条在自己那段手写一份分堆或另拼一句"已定稿…",行为面此刻两份等价一条都不会红,只有这里报得出来。
+     * 反向一条:下发子集仍取分堆的 all(收窄成 rerun 时全定稿那档会收成空数组,而空数组在子集位上等于整集)。 */
+    const D = require('../js/domain.js');
+    ['staleShotSplit', 'staleSplitNote'].forEach(k => assertEq(typeof D[k], 'function', 'Domain 须导出分报单源:' + k));
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'pipeline.js'), 'utf8');
+    const a = src.indexOf("st.action.key === 'regen-stale'"), b = src.indexOf("case 'running':", a + 1);
+    assert(a >= 0 && b > a, 'js/pipeline.js 应能定位到 regen-stale 那一格(挪窝或改名就同轮改这里,别把本条留成恒真)');
+    const s = blankNonCode(src.slice(a, b), true); // 注释抹掉、字面量留着:判的是真跑的那几行
+    assert(/Domain\.staleShotSplit\(/.test(s), '断点条须现取 Domain.staleShotSplit 分堆');
+    assert(/Domain\.staleSplitNote\(/.test(s), '断点条须现取 Domain.staleSplitNote 拼按钮上那句话');
+    assert(!/\.final/.test(s), '断点条不得自写第二份终稿判据:' + (s.match(/[^\n]*\.final[^\n]*/g) || []).join(' | '));
+    assert(!/解锁终稿|已定稿|可重跑/.test(s), '断点条不得自拼分报文案(与 G4 会长成两种说法)');
+    assert(/shotIds: sp\.all/.test(s), '下发子集须仍是全部过期镜(分堆的 all),收窄成 rerun 即与 G4 的 fix.shotIds 分家');
+  } },
   { name: 'Issues 命令类条目的 cmd 同样在注册表内(与 fixIssue 执行路径一致)', fn() {
     const sb = loadContract();
     const names = sb.Commands.list().map(c => c.name);
@@ -9563,7 +9660,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 573, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 577, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 143, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -9898,7 +9995,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 200;
+    const FLOOR = 201;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
