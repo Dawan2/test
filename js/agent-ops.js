@@ -501,7 +501,7 @@
       if (d.uncfm) out.push({ t: `确认 ${d.uncfm} 镜提示词`, d: '生成前先过一遍确认闸', goto: '分镜视频' });
       if (d.failed) out.push({ t: `处理 ${d.failed} 个失败镜`, d: '失败已退费,可改提示词重试', goto: '分镜视频' });
       if (d.stale) out.push({ t: `${d.stale} 镜已过期`, d: '输入已变更,需重新生成', goto: '分镜视频' });
-      if (d.lowShots.length) out.push({ t: `修订 ${d.lowShots.length} 个低分镜`, d: '按审片问题清单优化提示词(发助手)', text: `镜头${d.lowShots.map(x => x.n).join('、')} 审片低于 7 分。具体问题:${d.lowShots.map(x => `镜头${x.n}(${x.score}分):${x.issues.join(';') || '详见审片报告'}`).join(' / ')}。请按这些问题优化这些镜头的提示词,保持风格一致性` });
+      if (d.lowShots.length) out.push({ t: `修订 ${d.lowShots.length} 个低分镜`, d: '按审片问题清单优化提示词(发助手)', text: `镜头${d.lowShots.map(x => x.n).join('、')} 审片低于 ${Domain.REVIEW_MIN} 分。具体问题:${d.lowShots.map(x => `镜头${x.n}(${x.score}分):${x.issues.join(';') || '详见审片报告'}`).join(' / ')}。请按这些问题优化这些镜头的提示词,保持风格一致性` });
       if (d.noVideo && d.done && !d.generating && !d.failed && d.noVideo + d.done === d.total) out.push({ t: `生成剩余 ${d.noVideo} 镜`, d: '批量生成,按规则扣费', run: '生成视频' });
       if (d.done === d.total && !d.stale) {
         if (d.reviewAvg === null || d.reviewAvg === undefined || d.reviewStale) out.push({ t: '整集审片', d: '四维评审把关', run: '整集审片' });
@@ -656,12 +656,12 @@
       const lows = Domain.reviseTargets(ep).map(t => t.order + '镜(' + t.score + '分)');
       pushEvent(p, ep, {
         key: 'review:' + ((ep.lastReview || {}).time || avg),
-        text: `🎬 整集审片完成:均分 ${avg}${lows.length ? ';低于 7 分:' + lows.slice(0, 6).join('、') : ',全部达标'}。报告已生成${lows.length ? ',需要的话我可以按问题清单逐镜优化提示词' : ''}。`,
+        text: `🎬 整集审片完成:均分 ${avg}${lows.length ? ';低于 ' + Domain.REVIEW_MIN + ' 分:' + lows.slice(0, 6).join('、') : ',全部达标'}。报告已生成${lows.length ? ',需要的话我可以按问题清单逐镜优化提示词' : ''}。`,
         options: [{ t: '合成成片', d: '把已出片镜头合成本集成片', run: '合成成片' }, { t: '去剪辑台', d: '调序/转场/多机位选优', goto: '剪辑' }],
       });
     });
     Bus.on('review.smartStart', ({ p, ep, main, total, maxRetry }) => {
-      if (window.Agent && Agent.notify) Agent.notify(p, ep, main, `🧠 智能审片开始(${total} 镜,达标线 7.0):逐镜评审,不达标自动重生成。进度在右侧面板,你可以继续干活。`);
+      if (window.Agent && Agent.notify) Agent.notify(p, ep, main, `🧠 智能审片开始(${total} 镜,达标线 ${Domain.REVIEW_MIN.toFixed(1)}):逐镜评审,不达标自动重生成。进度在右侧面板,你可以继续干活。`);
     });
     Bus.on('review.smartDone', ({ p, ep, main, pass, retry, manual, quiet }) => {
       if (quiet) return; // headless(跑批/命令层 quiet 调用)不推对话流,由调用方结构化回执汇报

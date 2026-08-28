@@ -443,16 +443,16 @@
         <div><div class="rv-score-label">平均得分</div><div class="rv-score">${avg.toFixed(1)} <small>/ 10</small></div></div>
         <div class="rv-chips">
           <span class="rv-chip">≥8.5 ${reports.filter(x => x.report.score >= 8.5).length} 镜</span>
-          <span class="rv-chip mid">7~8.5 ${reports.filter(x => x.report.score >= 7 && x.report.score < 8.5).length} 镜</span>
-          <span class="rv-chip low">&lt;7 ${reports.filter(x => x.report.score < 7).length} 镜</span>
+          <span class="rv-chip mid">${Domain.REVIEW_MIN}~8.5 ${reports.filter(x => x.report.score >= Domain.REVIEW_MIN && x.report.score < 8.5).length} 镜</span>
+          <span class="rv-chip low">&lt;${Domain.REVIEW_MIN} ${reports.filter(x => x.report.score < Domain.REVIEW_MIN).length} 镜</span>
         </div>
       </div>
       <div class="card" style="margin-top:14px;padding:14px">
         ${reports.map(x => `
         <div class="rv-bar-row" data-jump="${x.shot.id}">
           <span class="small" style="width:52px;flex:none">镜头 ${x.shot.order + 1}</span>
-          <div class="rv-bar-track"><div class="rv-bar-fill ${x.report.score < 7 ? 'low' : ''}" style="width:${x.report.score * 10}%"></div></div>
-          <b style="width:34px;text-align:right;color:${x.report.score >= 8 ? 'var(--green)' : x.report.score >= 7 ? 'var(--yellow)' : 'var(--red)'}">${x.report.score.toFixed(1)}</b>
+          <div class="rv-bar-track"><div class="rv-bar-fill ${x.report.score < Domain.REVIEW_MIN ? 'low' : ''}" style="width:${x.report.score * 10}%"></div></div>
+          <b style="width:34px;text-align:right;color:${x.report.score >= 8 ? 'var(--green)' : x.report.score >= Domain.REVIEW_MIN ? 'var(--yellow)' : 'var(--red)'}">${x.report.score.toFixed(1)}</b>
         </div>`).join('')}
         <div class="hint" style="margin-top:6px">点击某镜查看完整审片报告</div>
       </div>`,

@@ -88,7 +88,7 @@
                   <td class="small"><b>${U.esc(ep.title)}</b>${skip ? ' <span class="tag green">已合成将跳过</span>' : ''}</td>
                   <td class="small">${shots ? shots + ' 镜' : '<span class="muted">未分镜</span>'}</td>
                   <td class="small">${shots ? `${vDone}/${shots}` : '—'}</td>
-                  <td class="small">${ep.lastReview ? (() => { const stale = window.Review && Review.episodeReviewStale(ep); return `<span class="tag ${stale ? 'yellow' : ep.lastReview.avg >= 7 ? 'green' : 'yellow'}" title="${stale ? '镜头集或任一镜视频版本在审片后已变化,均分为旧版结论' : ''}">${ep.lastReview.avg}${stale ? '·旧版' : ''}</span>`; })() : '<span class="muted">—</span>'}</td>
+                  <td class="small">${ep.lastReview ? (() => { const stale = window.Review && Review.episodeReviewStale(ep); return `<span class="tag ${stale ? 'yellow' : ep.lastReview.avg >= Domain.REVIEW_MIN ? 'green' : 'yellow'}" title="${stale ? '镜头集或任一镜视频版本在审片后已变化,均分为旧版结论' : ''}">${ep.lastReview.avg}${stale ? '·旧版' : ''}</span>`; })() : '<span class="muted">—</span>'}</td>
                   <td class="small">${Store.epComposedReady(ep) ? '<span class="tag green">✓</span>' : ep.composed ? (ep.composedUrl ? '<span class="tag yellow" title="合成输入已变化(调序/裁剪/换素材等),跑批将重新合成">待更新</span>' : '<span class="tag yellow" title="离线模拟合成,在线后将重新合成">模拟</span>') : '<span class="muted">—</span>'}</td>
                   <td class="small">${st.status === 'running' ? '<span class="tag cyan"><span class="spinner" style="width:9px;height:9px"></span> ' + U.esc(st.note || '执行中') + '</span>'
                     : st.status === 'done' ? `<span class="tag green">✓ ${U.esc(st.note || '完成')}</span>`
@@ -254,7 +254,7 @@
     if (!targets.length) return { pass: 0, retry: 0, manual: 0 };
     const dock = quiet ? null : U.bgDock({ title: `🧠 智能审片 · ${ep.title}(${targets.length} 镜)` });
     if (dock) {
-      dock.say(`达标线 7.0 分 · 不达标先按问题修订提示词再重生成(每镜最多 ${maxRetry} 次)· 超限转人工处理 · 评审期间可正常操作页面`);
+      dock.say(`达标线 ${Domain.REVIEW_MIN.toFixed(1)} 分 · 不达标先按问题修订提示词再重生成(每镜最多 ${maxRetry} 次)· 超限转人工处理 · 评审期间可正常操作页面`);
       if (window.Bus) Bus.emit('review.smartStart', { p, ep, main, total: targets.length, maxRetry, brief: `智能审片开始(${targets.length} 镜)` }); // 事件总线:Agent 对话流订阅转译(quiet/headless 不发,与原 notify 条件一致)
     }
     const say = h => { if (dock) dock.say(h); };
@@ -269,7 +269,7 @@
         const r = await Review.reviewShot(p, ep, s);
         if (!r) { say('&nbsp;&nbsp;积分不足,审片中止'); manualCnt++; break; }
         lastRep[s.id] = r;
-        if (r.score >= 7) { pass = true; passCnt++; s.confirm = true; say(`&nbsp;&nbsp;✅ <b style="color:var(--green)">${r.score.toFixed(1)}</b> 分,达标(已自动确认)`); } // 审片达标 = 系统替你确认(镜头确认闸联动)
+        if (r.score >= Domain.REVIEW_MIN) { pass = true; passCnt++; s.confirm = true; say(`&nbsp;&nbsp;✅ <b style="color:var(--green)">${r.score.toFixed(1)}</b> 分,达标(已自动确认)`); } // 审片达标 = 系统替你确认(镜头确认闸联动);达标线取 Domain.REVIEW_MIN 单源,与 episodeState/主线审片步骤同一份
         else if (attempt < maxRetry) {
           retryCnt++;
           // 先消费审片 issues 修订提示词再重抽(避免同一问题反复付费重生成);

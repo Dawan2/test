@@ -306,6 +306,7 @@ function loadSbViews() {
     genAudio: async () => {}, snapshotShot() {}, renderShots() {},
     VOICES: [], PROMPT5_SECS: [], TRANSITIONS: [], STRATEGIES: [],
   });
+  loadFile(sb, 'domain.js'); // 状态条的审片达标线现取 Domain.REVIEW_MIN(与 index.html 同顺序:domain 在最前)
   loadFile(sb, 'prompts.js'); // 「按指令改」那步的人设经 Prompts.get 取值(与 index.html 同顺序:prompts 在前)
   loadFile(sb, 'sb-views.js');
   return sb;
@@ -812,7 +813,9 @@ const agentOpsTests = [
     const ep6 = makeEp({ lastReview: { avg: 7.5, perShot: [{ shotId: 'sh0', order: 0, score: 5 }] } });
     ep6.shots.forEach(s => s.confirm = true); ep6.shots[1].video = { status: 'failed' };
     chips = AO.dynamicChips(p, ep6);
-    assert(chips.some(c => c.text && /低于 7 分/.test(c.text)), '低分镜应推 text chip(发助手)');
+    // 达标线文案现取 Domain.REVIEW_MIN,判据跟着取(写死 7 会让常量挪动时这一条假红)
+    const lowLine = new RegExp('低于 ' + require('../js/domain.js').REVIEW_MIN + ' 分');
+    assert(chips.some(c => c.text && lowLine.test(c.text)), '低分镜应推 text chip(发助手)');
     assert(chips.length <= 3, '至多 3 条');
   } },
   { name: 'dynamicChips:项目级(缺主体形象/未拆镜集/可合成集)与空项目', fn() {
@@ -1608,6 +1611,41 @@ const produceTests = [
     assertEq(r.pass, 0);
     assertEq(r.retry, 1, '1.9 轮按 1 轮算');
     assertEq(r.manual, 1, '超限必须落到待人工计数上(质量闸门据此阻断合成)');
+  } },
+  { name: 'autoSmartReview 达标线现取 Domain.REVIEW_MIN:压线达标、常量挪一格闭环跟着挪(不再冻一份字面)', fn: async () => {
+    /* 基线上这里冻着一份字面 7:`if (r.score >= 7)`。把 Domain.REVIEW_MIN 整体挪到 8(连同钉住 7 的那句断言同轮改)
+     * 全套照旧全绿,而闭环仍按 7 判达标并 s.confirm = true——同一集 episodeState 按新达标线判 needs_human,
+     * 一边"系统替你确认了"一边"该转人工",发布门 G3 也 fail。判据不写死数字:压线取 Domain.REVIEW_MIN 现算,
+     * 再把常量在运行期挪一格看闭环跟不跟——闭环自己冻一份字面时,后半段当场红。 */
+    const sb = loadProduce();
+    const MIN = sb.Domain.REVIEW_MIN;
+    const runOne = async score => {
+      const ep = makeEp({ content: '剧本正文', composed: false, shots: [makeShot(0)], sbConfig: { maxRetry: 0 } });
+      sb.__called = []; sb.__reviewCalls = {};
+      sb.__reviewSeq = { sh0: [score] };
+      const r = await sb.SB.autoSmartReview({ id: 'p1' }, ep, null, ep.shots, true);
+      return { r, ep };
+    };
+    /* 两处分叉长这样:闭环把全集镜头都替用户确认掉(unconfirmed 归零),分集状态便落到均分那一支上,
+     * 按另一条达标线判 needs_human——"系统替你确认了"与"该转人工"同时成立。这一句就是那个自相矛盾态。 */
+    const selfContradicts = ep => ep.shots.every(s => s.confirm) &&
+      sb.Domain.episodeState({ id: 'p1', subjects: [] }, ep, true).status === 'needs_human';
+    // 压线那一分:达标、自动确认;同一集的分集状态也不因均分判 needs_human(两侧同读一个常量)
+    const hit = await runOne(MIN);
+    assertEq(hit.r.pass, 1, '恰好压线应判达标(判据是 >= 达标线,不是 > )');
+    assertEq(hit.ep.shots[0].confirm, true, '达标 = 系统替你确认');
+    assert(!selfContradicts(hit.ep), '闭环判达标的集,分集状态不得同时判"该转人工"');
+    // 差半分:不达标、不确认;确认闸如实拦在待确认上,闭环也如实转人工
+    const miss = await runOne(MIN - 0.5);
+    assertEq(miss.r.pass, 0); assertEq(miss.r.manual, 1, '不达标且无重抽轮次 → 转人工');
+    assert(!miss.ep.shots[0].confirm, '不达标的镜不许被替用户确认掉');
+    assertEq(sb.Domain.episodeState({ id: 'p1', subjects: [] }, miss.ep, true).status, 'needs_review');
+    // 常量挪一格:原本压线那一分现在不达标,闭环须跟着挪(闭环自己冻一份字面时这三句红)
+    sb.Domain.REVIEW_MIN = MIN + 1;
+    const moved = await runOne(MIN);
+    assertEq(moved.r.pass, 0, '达标线挪高一格后,原压线分不再达标');
+    assert(!moved.ep.shots[0].confirm, '达标线挪高后不许还按旧线替用户确认');
+    assert(!selfContradicts(moved.ep), '达标线挪一格后闭环与分集状态仍须是同一条结论');
   } },
   { name: 'autoSmartReview:quiet 不建 dock;非 quiet 建 dock', fn: async () => {
     const sb = loadProduce();
@@ -3023,6 +3061,44 @@ const domainTests = [
     assertEq(sb.Domain.REVIEW_MIN, 7);
     const src = fs.readFileSync(path.join(ROOT, 'js/domain.js'), 'utf8');
     assert(!/reviewAvg < 7/.test(src), 'domain 不应再有硬编码 7 的审片达标线字面量');
+  } },
+  { name: 'REVIEW_MIN 消费点零分叉(源级):达标判定与确认闸不得再冻第二份达标数字面', fn: () => {
+    /* 上一条只管 domain.js 自己不留字面,管不着别处照抄一份:智能审片闭环此前就冻着 `r.score >= 7`,
+     * 把 REVIEW_MIN 整体挪到 8(连同钉住 7 的那句断言同轮改)全套照旧全绿,而闭环仍按 7 判达标并
+     * s.confirm = true——同一集分集状态判 needs_human、发布门 G3 fail。行为面那条在 produce 套件里,
+     * 这一条守的是源级:哪天谁在这几处再写一个达标数字面,不必等到常量挪动才暴露。
+     * 判据分两档,因为这几处的数字口径不一样宽:
+     *   严格档 = 达标判定与确认闸那一圈,这些文件里 score/avg 一律不许跟裸数字比,达标线文案也不许写死数字;
+     *   分档档 = 审片报告的评分直方图,那里另有 8.5「优秀」与 8 的色阶(与达标线无关的评分档,不收编),
+     *            故只禁达标线那个数本身——数字现取 Domain.REVIEW_MIN 拼出判据,常量挪一格判据跟着挪。 */
+    const Domain = require('../js/domain.js');
+    const N = Domain.REVIEW_MIN;
+    const STRICT = ['js/produce.js', 'js/sb-views.js', 'js/agent-ops.js'];
+    const BANDED = ['js/review.js', 'js/batchops.js', 'js/wf-core.js'];
+    const read = rel => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    STRICT.concat(BANDED).forEach(rel => {
+      const s = read(rel);
+      assert(s.includes('Domain.REVIEW_MIN'), rel + ' 的达标线应现取 Domain.REVIEW_MIN(改回就地写数即红)');
+      // 达标线那个数不许再跟 score/avg 比:8.5 这类评分档不受影响(常量挪动时判据跟着挪)
+      const forked = new RegExp('(?:score|avg|Score|Avg)\\s*(?:>=|<=|<|>)\\s*' + N + '(?!\\.\\d)', 'g');
+      assertEq((s.match(forked) || []).length, 0, rel + ' 不得再按达标数 ' + N + ' 自判一遍达标(达标线只在 Domain.REVIEW_MIN 一处)');
+    });
+    STRICT.forEach(rel => {
+      const s = read(rel);
+      assertEq((s.match(/(?:score|avg|Score|Avg)\s*(?:>=|<=|<|>)\s*\d/g) || []).length, 0,
+        rel + ' 的达标判定不许拿 score/avg 跟裸数字比,一律经 Domain.REVIEW_MIN');
+      assertEq((s.match(/达标线\s*\d|低于\s*\d+(?:\.\d+)?\s*分/g) || []).length, 0,
+        rel + ' 的达标线文案也不许写死数字(文案与判据分叉时用户读到的是另一条线)');
+    });
+    // 确认闸那一句就是读单源的那一句:达标即替用户确认,判据与常量同处
+    assert(/r\.score >= Domain\.REVIEW_MIN\) \{ pass = true; passCnt\+\+; s\.confirm = true;/.test(read('js/produce.js')),
+      '智能审片闭环的「达标 = 系统替你确认」应就地读 Domain.REVIEW_MIN');
+    /* 反向那一向(与达标线有意不同源的两处,此刻确实还各是各的,收编时红在这里):
+     * 发布门 G3 是用户可配阈值(domain 不读 Store,故不下沉),LLM 评分标准三档是给模型读的提示词正文。 */
+    assert(read('js/release-core.js').includes('DEFAULT_MIN_SCORE = ' + N),
+      '发布门 G3 仍是另一份可配阈值(默认同数、口径不同:它读 settings.releaseMinReviewScore)');
+    assert(/评分标准:≥8\.5 优秀/.test(read('js/wf-core.js')),
+      '审片提示词里的评分标准三档是给模型读的正文,不是平台达标线(这一句在,说明没被顺手改成派生)');
   } },
   { name: 'reviseTargets:重抽面 = 报告低分镜 ∩ 分镜表在列未定稿镜,order 与排序取分镜表实位', fn: () => {
     const sb = loadDomain();
@@ -5467,7 +5543,7 @@ const contractTests = [
     assertEq(typeof Domain.reviseRetryLimit, 'function', 'Domain 应导出收敛次数单源 reviseRetryLimit');
     assertEq((dom.match(/Math\.min\(D\.REVISE_RETRY_MAX,/g) || []).length, 1,
       '1-5 那道钳位在 js/domain.js 里应只此一处');
-    assert(dom.includes('D.REVIEW_MIN = 7;'),
+    assert(dom.includes('D.REVIEW_MIN = ' + Domain.REVIEW_MIN + ';'),
       '达标线仍在 Domain 单源(与收敛次数并排:修订闭环的两个阈值口径同处登记)');
     [['cli.js', cli25], ['js/produce.js', prod], ['js/commands.js', cmds], ['js/storyboard.js', sbSrc]].forEach(([rel, s]) => {
       assert(/Domain\.(reviseRetryLimit|REVISE_RETRY_|reviseRetryOptions)/.test(s),
@@ -8357,7 +8433,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 534, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 536, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 141, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -10776,7 +10852,9 @@ const memoryTests = [
     assertEq(W.MEM_MAX, 50, 'MEM_MAX 仍是 50 条(本层是上限的唯一持有处)');
     assertEq(W.MEM_TEXT_MAX, 120, 'MEM_TEXT_MAX 应与两端写入面的 120 字截断同数');
     assert(ag.includes('slice(0, ' + W.MEM_TEXT_MAX + ')'), '浏览器写入面 120 字截断应与 wf-core 常量同数');
-    assertEq(W.MEM_LOW_SCORE, 7, '待返工线应与审片重抽入口/发布门 G3 默认阈值同数');
+    assertEq(W.MEM_LOW_SCORE, undefined, '待返工线不在 wf-core 另立一份常量(达标线只此 Domain.REVIEW_MIN 一处)');
+    assert(fs.readFileSync(path.join(ROOT, 'js', 'wf-core.js'), 'utf8').includes('+x.score < Domain.REVIEW_MIN'),
+      '待返工镜数应现取 Domain.REVIEW_MIN 判低分');
     // 服务端回流点就在闭环写完 lastReview 之后、落盘之前(不另起一次 state 写)
     const srv = files['server.js'];
     const iLast = srv.indexOf('ep.lastReview = {\n          time: nowStr(), avg,');
