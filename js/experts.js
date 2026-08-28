@@ -95,7 +95,7 @@
     try {
       const out = await API.chatJSON({
         model: (Store.state.settings || {}).defLLM || API.getConfig().model,
-        system: `你是专家人设进化器。根据用户与创作助手在「${bt}」板块的历史协作记忆(用户的纠正/偏好/已确认决定),为该板块的指定专家蒸馏「进化条款」。只返回 JSON {"clauses":["条款1","条款2"]}(1-4条)。要求:与该专家人设领域及「${bt}」板块职责相关、具体可执行、不重复其已有条款;每条≤40字。`,
+        system: Prompts.get('forge.evolveSystem') + `根据用户与创作助手在「${bt}」板块的历史协作记忆(用户的纠正/偏好/已确认决定),为该板块的指定专家蒸馏「进化条款」。只返回 JSON {"clauses":["条款1","条款2"]}(1-4条)。要求:与该专家人设领域及「${bt}」板块职责相关、具体可执行、不重复其已有条款;每条≤40字。`,
         messages: [{ role: 'user', content: `专家:「${e.name}」(${e.role || '其他'})生效板块:${bt}\n人设:\n${e.persona}\n\n「${bt}」板块历史协作记忆:\n${mem.map((t, i) => (i + 1) + '. ' + t).join('\n')}` }],
         temperature: 0.3, max_tokens: 600,
         billingAction: 'llm.evolve', operationId: tk.id,
@@ -138,8 +138,10 @@
     U.toast('已进入项目页,请到「制片 → 智能体分工」对应板块点「🤝 雇佣专家」', 'info', 3500);
   }
 
-  /* 元智能体系统提示词:生成完整专家 skill 的严格 JSON */
-  const FORGE_SYS = `你是「专家 skill 生成器」(元智能体)。用户会描述想要的短剧创作专家(导演/编剧/摄像/策划等,含题材、风格、擅长点),你为其生成完整专家 skill。只返回严格 JSON:
+  /* 元智能体的契约半:严格 JSON 字段面与改稿规则。人设句已收进注册表(forge.system),这半不开放覆盖——
+   * 字段名改一个字 normExpertDraft 就取不到 name/persona,整轮生成失败。
+   * 原字面里人设句与「只返回严格 JSON:」同在一行,故取值时直接相接、不补分隔符(缺省逐字节不变)。 */
+  const FORGE_CONTRACT = `只返回严格 JSON:
 {"name":"专家名(≤8字)","ico":"一个emoji","role":"导演|编剧|摄像|策划|其他","kind":"style|function","style":"漫剧|动漫|写实","tags":["≤4个"],"desc":"80字内简介","persona":"系统人设提示词(你是…创作原则…,具体可执行)","dims":{"光影":"","色调":"","情感氛围":"","服化道审美":"","表演气质":""},"tpl":{"tplImage":"文生图模板,含{style}{subject}变量","tplVideo":"文生视频模板,含{style}{shot}变量","tplReview":"审片模板,含{shot}变量"}}
 规则:kind=style 表示全局风格雇佣专家,dims 与 tpl 必填(dims 五维仅 role=导演时给具体内容,其他 role 可给空字符串);kind=function 表示板块功能专家,不给 dims/tpl。用户提出修改意见时,在上一版基础上改稿并重新输出完整 JSON。`;
 
@@ -170,5 +172,10 @@
     return e;
   }
 
-  window.Experts = { EXPERTS, customExperts, hireExpert, delCustomExpert, evolveExpert, toLab, FORGE_SYS, normExpertDraft };
+  window.Experts = {
+    EXPERTS, customExperts, hireExpert, delCustomExpert, evolveExpert, toLab, normExpertDraft,
+    /* 消费侧(gsettings 工坊页)仍只见一个常量,取值口在此:每次读都过 Prompts.get(浏览器隐式读
+     * Store 覆盖表),页面渲染时解构即拿当次生效值——用户在「全局默认值」改完提示词重进工坊就跟随。 */
+    get FORGE_SYS() { return Prompts.get('forge.system') + FORGE_CONTRACT; },
+  };
 })();
