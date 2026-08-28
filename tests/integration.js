@@ -772,6 +772,39 @@ async function main() {
     const balAfterEv = (await req('GET', '/api/wallet', null, token)).data.balance;
     report('MOCK_LLM 下自进化不扣费(计费链路统一由 wfLLM 负责,端点自己不记账)',
       balAfterEv === balBeforeEv, '前 ' + balBeforeEv + ' 后 ' + balAfterEv);
+
+    /* ============ 测试 28(W203):/api/wf/agent 出的 ops 不许带人手动作 ============
+     * 停工位现场:该端点出的 ops 是给调用方**自动**执行的(CLI `agent --apply` / MCP hujing_agent apply
+     * 逐条直跑,中间没有确认闸),而 expert.evolve 的蒸馏不可撤回地改写 persona——W199 基线上
+     * 模型只要回一条 {"op":"run","cmd":"expert.evolve"},persona 当场就被改写,没人点过一下。
+     * 夹具先退回"这一发进化真能跑成"的状态(预置专家已雇、板块有沉淀、还没派生过副本),否则拦没拦都不改 state、
+     * 第三条就成了恒真句。三条各钉一面:人手动作不进 ops(同批普通命令照过,不是把 ops 通道一刀切)、
+     * 被拦的如实回 manual(不静默吞)、把端点出的 ops 原样喂给执行方(--apply 做的就是这件事)后 persona 一个字没改。
+     * 人手入口不受影响那一面由上文 ev2/ev4 两条(直打 /api/wf/evolve-expert)与 cli.smoke 的 exec 段守着。 */
+    const putAg = await putMeta({ customExperts: [], settings: { hiredExpert: preset.id }, agentMemory: [scoped, loose] });
+    report('agent 夹具就位(预置专家已雇、板块有沉淀、尚未派生副本——此刻发一发进化是真能跑成的)',
+      putAg.status === 200 && !((await req('GET', '/api/state', null, token)).data.state.customExperts || []).length, 'HTTP ' + putAg.status);
+    await sleep(1100);
+    const ag = await req('POST', '/api/wf/agent', {
+      pid: wfPid, epid: 'ep_w1', operationId: 'it.wf.ag1',
+      text: '先跑 episode.preflight 看看,再顺手 expert.evolve{"expert":"' + preset.id + '"} 把专家进化一下',
+    }, token);
+    report('wf/agent 人手动作不进 ops(同批 episode.preflight 照过,拦的是那一条)',
+      ag.status === 200 && JSON.stringify((ag.data || {}).ops || []) === JSON.stringify([{ op: 'run', cmd: 'episode.preflight', args: {} }]),
+      'HTTP ' + ag.status + ' ' + JSON.stringify((ag.data || {}).ops || ag.msg));
+    report('被拦的命令名如实回 manual(调用方据此转告用户自己发起,不静默吞掉)',
+      JSON.stringify((ag.data || {}).manual || []) === JSON.stringify(['expert.evolve']),
+      JSON.stringify((ag.data || {}).manual));
+    // 自动发令方照 ops 逐条直跑(CLI `agent --apply`/MCP apply 的等价形态:没有确认闸,拿到什么跑什么)
+    for (const op of ((ag.data || {}).ops || [])) {
+      if (op.cmd !== 'expert.evolve') continue;
+      await sleep(1100);
+      await req('POST', '/api/wf/evolve-expert', Object.assign({ operationId: 'it.wf.ag2' }, op.args), token);
+    }
+    const stAfterAg = (await req('GET', '/api/state', null, token)).data.state;
+    report('把端点出的 ops 原样直跑一遍,persona 一个字没被改写(customExperts 仍是空,没派生出副本)',
+      !((stAfterAg.customExperts || []).length),
+      JSON.stringify((stAfterAg.customExperts || []).map(x => x.id + ':' + (x.persona || '').slice(-30))));
   }
 
   console.log(`\n===== ${PASS}/${PASS + FAIL} PASS, ${FAIL} FAIL =====`);

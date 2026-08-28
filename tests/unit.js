@@ -1048,6 +1048,92 @@ const agentOpsTests = [
     assert(note.includes('✕'), '最终仍失败应如实呈现');
   } },
 
+  /* ---- W203:人手动作位(注册表 manual)——助手自动发令的两条路都不许跑它,人手入口照旧 ----
+   * 停工位现场(W199 基线实测):`hujing agent "…" --pid X --apply` 与 MCP hujing_agent(apply=true,同一段代码)
+   * 把模型返回的 {"op":"run","cmd":"expert.evolve"} 逐条直跑,没有任何确认闸,回执 ok=true 且
+   * state.customExperts 当场多出一份带「【进化条款 · …】」的副本——蒸馏改写 persona 无撤回口,却不用人点一下。
+   * 浏览器主路不同:exec 类 run op 恒经 U.confirm(agent.js 自动模式与预览卡两条路都是人点),故不动它;
+   * 自修复轮的重试是另一条自动路(回执回喂后直接发令),一并拦。 */
+  { name: 'W203 人手动作位:manual 只挂在 expert.evolve 上,且全仓只有这一个字段名(不许第二份名单)', fn() {
+    const CR = require('../js/cmd-registry.js');
+    assertEq(CR.byName['expert.evolve'].manual, true, 'expert.evolve 须带 manual 位');
+    assertEq(CR.META.filter(m => m.manual).map(m => m.name).join(','), 'expert.evolve', '现只这一条是人手动作');
+    ['js/cmd-registry.js', 'js/wf-core.js', 'js/agent-ops.js', 'js/commands.js', 'server.js', 'cli.js', 'mcp.js'].forEach(f => {
+      assert(!/manualOnly|humanOnly|isManualCmd\s*=/.test(fs.readFileSync(path.join(ROOT, f), 'utf8')),
+        f + ' 不许另起一个人手动作字段/判据(与 manual + WfCore.cmdManual 同一份)');
+    });
+  } },
+  { name: 'W203 WfCore.cmdManual:判据双端唯一一份,未注册命令/空入参一律不误伤', fn() {
+    const WfCore = require('../js/wf-core.js');
+    const CR = require('../js/cmd-registry.js');
+    assertEq(WfCore.cmdManual(CR.byName, 'expert.evolve'), true);
+    assertEq(WfCore.cmdManual(CR.byName, ' expert.evolve '), true, '命令名两端空白应先修剪');
+    assertEq(WfCore.cmdManual(CR.byName, 'episode.produce'), false, '主线命令不是人手动作(别一刀切拦掉编排)');
+    assertEq(WfCore.cmdManual(CR.byName, 'not.a.cmd'), false);
+    assertEq(WfCore.cmdManual(null, ''), false, '空入参不抛');
+  } },
+  { name: 'W203 agentNormalize:助手自动发令路径拦下人手动作,同批普通命令照过、被拦的如实回 manual', fn() {
+    const WfCore = require('../js/wf-core.js');
+    const CR = require('../js/cmd-registry.js');
+    const out = WfCore.agentNormalize({ reply: '顺手进化一下', ops: [
+      { op: 'run', cmd: 'expert.evolve', args: { expert: 'ex_suspense' } },
+      { op: 'run', cmd: 'episode.preflight', args: {} },
+      { op: 'run', cmd: 'expert.evolve', args: { expert: '冷峻悬疑导演' } },
+    ] }, CR.byName);
+    assertEq(out.ops.map(o => o.cmd).join(','), 'episode.preflight', '人手动作不进 ops(进了就会被 --apply 直接跑掉)');
+    assertEq(out.manual.join(','), 'expert.evolve', '被拦的命令名去重后如实回报,不静默吞掉');
+    assertEq(WfCore.agentNormalize({ reply: 'x', ops: [] }, CR.byName).manual.length, 0, '无人手动作时 manual 为空数组');
+  } },
+  { name: 'W203 agentCmdProtocol:人手动作在命令白名单里照实标注(省掉必被拦下的那一轮空转)', fn() {
+    const WfCore = require('../js/wf-core.js');
+    const CR = require('../js/cmd-registry.js');
+    const txt = WfCore.agentCmdProtocol(CR.META);
+    const line = txt.split('\n').find(x => x.includes('expert.evolve'));
+    assert(line && line.includes('人手动作'), '专家自进化那行应标人手动作,实际:' + line);
+    assertEq(txt.split('\n').filter(x => x.includes('人手动作')).length, 1, '只标注册表里真带 manual 的那条');
+  } },
+  { name: 'W203 Commands.list():带 manual 位(浏览器协议与拦截判据同读注册表那一份)', fn() {
+    const sb = loadContract();
+    const CR = require('../js/cmd-registry.js');
+    sb.Commands.list().forEach(c => assertEq(c.manual, !!CR.byName[c.name].manual, c.name + ' 的 manual 位应与注册表一致'));
+    assertEq(sb.Commands.list().filter(c => c.manual).map(c => c.name).join(','), 'expert.evolve');
+  } },
+  { name: 'W203 selfFixRound:人手动作不进自动重发(回执里失败过也不重试),摘要照实交还用户', fn: async () => {
+    const sb = loadAgentOps(); const AO = sb.AgentOps;
+    const p = { id: 'p1' }, ep = makeEp();
+    sb.__apiReady = true;
+    sb.__retried = [];
+    const CR = require('../js/cmd-registry.js');
+    sb.Commands = {
+      list: () => CR.META.map(m => ({ name: m.name, label: m.label, risk: m.risk, needs: m.needs, manual: !!m.manual, args: m.args })),
+      execute: async cmd => { sb.__retried.push(cmd); return { ok: true, status: 'done', result: {} }; },
+    };
+    // 人点过一次「确认执行」而那次失败了,自修复轮想再自动发一次——蒸馏改写 persona 无撤回口,不许
+    sb.__chatJSONResult = { reply: '再试一次进化', ops: [
+      { op: 'run', cmd: 'expert.evolve', args: { expert: 'ex_suspense' } },
+      { op: 'run', cmd: 'episode.generateVideos' },
+    ] };
+    const note = await AO.selfFixRound(p, ep, null, ['▶ expert.evolve:✕ 蒸馏失败(已退费)', '▶ 生成视频:✕ 2 镜失败(已退费)'], 'op_m');
+    assertEq(sb.__retried.join(','), 'episode.generateVideos', '只重发非人手动作的那条(evolve 不许自动重发)');
+    assert(note.includes('expert.evolve') && note.includes('人手动作'), '被拦的应写进摘要交还用户,实际:' + note);
+  } },
+  { name: 'W203 人手入口一条没动:浏览器按钮/exec/MCP 同名工具都不经 cmdManual,evolve 引擎与端点原样', fn() {
+    const CR = require('../js/cmd-registry.js');
+    const cliSrc = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    const mcpSrc = fs.readFileSync(path.join(ROOT, 'mcp.js'), 'utf8');
+    const expSrc = fs.readFileSync(path.join(ROOT, 'js', 'experts.js'), 'utf8');
+    assert(cliSrc.includes("EXEC['expert.evolve']"), 'CLI 人手出口 exec expert.evolve 须仍在');
+    assert(CR.names().includes('expert.evolve'), '不许把人手动作从命令词表里删掉(那是砍功能不是拦自动发令)');
+    assert(mcpSrc.includes('hujing_expert_evolve'), 'MCP 人手出口须仍在');
+    assert(/cmdManual/.test(cliSrc) === false, 'CLI exec 侧不该出现拦截判据(拦的是助手自动发令,不是人手出口)');
+    assert(!/cmdManual/.test(expSrc), '浏览器专家库「🧠 进化」按钮不经拦截判据');
+    // 服务端:端点回传 manual 由 agentNormalize 出,自进化端点本身不认这个位
+    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    const evSeg = srv.slice(srv.indexOf("pathname === '/api/wf/evolve-expert'"));
+    assert(!/cmdManual|\.manual\b/.test(evSeg.slice(0, 4000)), '/api/wf/evolve-expert 一个字没动(人手入口的落点)');
+    assert(/ops: out\.ops, manual: out\.manual/.test(srv), '/api/wf/agent 应把被拦的命令名回给调用方');
+  } },
+
   /* ---- 第三阶段:按需查询(queryProtocol/answerQueries)与事件总线订阅(subscribeBus) ---- */
   { name: 'queryProtocol:协议文本含全部查询类型与续问上限', fn() {
     const sb = loadAgentOps();
@@ -10612,8 +10698,8 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 613, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
-      ['集成测试', 143, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
+    [['单元测试', 620, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+      ['集成测试', 147, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 109, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
       assert(live >= floor, label + '用例数不得少于 ' + floor + '(实测 ' + live + ');确要删测须同轮说明理由,新增用例时把下限抬到当轮实况');
@@ -10947,7 +11033,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 218;
+    const FLOOR = 219;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接

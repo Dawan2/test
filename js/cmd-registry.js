@@ -82,11 +82,15 @@
       /* 专家自进化:作用在「专家」这个对象上而不在某个项目上,故 needs 为空(不吃 pid/epid)——
        * 四端唯一一条项目外的领域命令。它是**人手**动作:不挂在任何主线闭环收尾上,也不进任何 playbook 步序。
        * manual 就是这条口径的单一来源:蒸馏把条款写死进 persona 且没有撤回口,故不许由自动编排代跑。
-       * 两处消费各封一路,合起来才是整条自动路径:
+       * 四处消费各封一路,合起来才是整条自动路径:
        *   编排层的 steps 是会被逐步执行的步序表,故它只许进 cmds(命令面),进任一条目的 steps 即自动蒸馏——
        *   判据在 Skills.validate,按本字段逐条目递归扫 steps,不认命令名字面(改成拼接也拦得住);
-       *   计划层 Plans.execStep 按本字段落 blocked 不代跑(单步「▶ 执行」与 runAll 同一个漏斗)。
-       * 四端的人手入口(浏览器「🧠 进化」按钮 / CLI exec / MCP 工具 / 服务端端点)一条不减,
+       *   计划层 Plans.execStep 按本字段落 blocked 不代跑(单步「▶ 执行」与 runAll 同一个漏斗);
+       *   服务端单轮 WfCore.agentNormalize 不把它放进 ops(CLI agent --apply / MCP hujing_agent apply
+       *   是逐条直跑、中间没有确认闸的自动发令路径),被拦的命令名如实回 manual 由调用方转告用户;
+       *   浏览器自修复轮 AgentOps 的 run 重试白名单排除它(主路 exec 有 U.confirm 把关,回执回喂那一轮没有)。
+       * 后两路的判据统一读 WfCore.cmdManual(双端同一份),不在别处再列一份人手命令名单。
+       * 四端的人手入口(浏览器「🧠 进化」按钮 / CLI exec / MCP hujing_expert_evolve / 服务端端点)一条不减,
        * 这个位只钳制「用户没有逐次点它、由程序替他发起」的那些路径。 */
       name: 'expert.evolve', label: '专家自进化', risk: 'exec', needs: [], manual: true,
       desc: '把导演助手记忆里该专家生效板块的沉淀蒸馏为 ≤4 条进化条款追加进其 persona(1 积分,失败退费);预置专家的条款落自定义副本(同一预置只派生一份)。未在任何板块生效或该板块无沉淀一律在扣费前如实 blocked',

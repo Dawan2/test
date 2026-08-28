@@ -427,9 +427,9 @@
     }
   }
 
-  /* 自省:list 供 Agent/CLI/MCP 发现可用命令(名称/语义/风险级/参数面;desc/args 来自 cmd-registry.js 单源) */
+  /* 自省:list 供 Agent/CLI/MCP 发现可用命令(名称/语义/风险级/人手动作位/参数面;desc/args/manual 来自 cmd-registry.js 单源) */
   function list() {
-    return Object.keys(REG).map(n => ({ name: n, label: REG[n].label || n, risk: REG[n].risk, needs: REG[n].needs, desc: REG[n].desc || '', args: REG[n].args || [] }));
+    return Object.keys(REG).map(n => ({ name: n, label: REG[n].label || n, risk: REG[n].risk, needs: REG[n].needs, manual: !!REG[n].manual, desc: REG[n].desc || '', args: REG[n].args || [] }));
   }
 
   /* ---- UI 调用方统一消化命令回执(第三阶段) ----
