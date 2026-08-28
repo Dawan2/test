@@ -114,7 +114,9 @@ if (!Domain || typeof Domain.episodeState !== 'function') {
 | 记账件份数 / 目录 README 明写数 / 记账件 `FLOOR` | 147 | **148**(含本文) |
 
 `node tests/unit.js` 494/494、`node tests/integration.js` 130/130 全绿;
-`cli.smoke` 按任务口径允许 2 项 master 既有失败。
+`node tests/cli.smoke.js` 实跑 **100/102**,两项失败是 master 既有(「未登录 whoami → exit 3」实得 exit 1、
+「llm --json mock 链路」),与本槽改动无关——发布门那一串(`release-check` 七门结构、基线项目 `overall=fail`、
+`exec project.release` 的 blocked 与 `--force`)逐条仍绿。
 
 ## 6. 交接
 
