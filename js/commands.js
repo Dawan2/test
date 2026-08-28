@@ -99,7 +99,15 @@
   reg('episode.generateVideos', { label: '批量生成视频' }, ({ p, ep, args }) => metered(REG['episode.generateVideos'], async () => {
     ensureSBCfg(p, ep);
     let pend = (ep.shots || []).filter(s => !s.final && !Store.shotVideoReady(s));
-    if (Array.isArray(args.shotIds) && args.shotIds.length) { const ids = new Set(args.shotIds); pend = pend.filter(s => ids.has(s.id)); }
+    if (Array.isArray(args.shotIds) && args.shotIds.length) {
+      /* 过期镜(done 而生成输入已变)被上面那道「未就绪」筛子挡在批量之外——那是所有批量入口的共同口径。
+       * 显式子集是调用方点过名的重生成清单(发布门 G4 一键处置、断点「重生成过期镜」、问题中心过期镜),
+       * 过期镜的唯一出口就在这里:子集位得放它过,否则挑出来的镜一镜也跑不到而回执照报成功。
+       * 判旧现取 Domain.shotVideoStale,与挑子集那一侧同一份判据;终稿锁仍不放(定稿产物不许被覆盖)。 */
+      const ids = new Set(args.shotIds);
+      pend = (ep.shots || []).filter(s => !s.final && ids.has(s.id)
+        && (!Store.shotVideoReady(s) || Domain.shotVideoStale(p, s, online())));
+    }
     if (!pend.length) { const r = ok({ total: 0, ok: 0, failed: [], skipped: [] }); r.next = nextOf(p, ep); return r; }
     let skipped = [];
     if (args.ui) {

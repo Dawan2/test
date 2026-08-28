@@ -2177,6 +2177,24 @@ const commandsTests = [
     assertEq(gotOpts && gotOpts.skipConfirmGate, undefined, 'ui 模式不应跳过确认闸(引擎内弹窗保留)');
     assertEq(ep.shots[1].video.status, 'none', '子集外镜头不应被生成');
   } },
+  { name: 'generateVideos:子集位放过期镜过、挡住点名的鲜镜(过期镜是 done 镜,不开这个口它一镜也跑不到)', fn: async () => {
+    /* 批量入口共用「未就绪」这道筛子,过期镜(done 而生成输入已变)整批被它滤掉,
+     * 显式子集是过期镜唯一的出口;开这个口又不能开成"点了名就重跑"——鲜镜每重跑一镜都真扣费。 */
+    const sb = loadCommands();
+    const { p, ep } = cmdCtx(sb, { shots: [
+      makeShot(0, { confirm: true }),                                                                 // 鲜镜:已出片且输入没动
+      makeShot(1, { confirm: true, video: { status: 'done', url: 'u', inputHash: 'v3:oldstale' } }),  // 过期镜
+      makeShot(2, { confirm: true, video: { status: 'none' } }),                                      // 未出片
+    ] });
+    assertEq(sb.Domain.episodeState(p, ep, false).counts.stale, 1, '夹具前提:恰一镜过期');
+    let got = null;
+    const orig = sb.SBGen.batchGenVideos;
+    sb.SBGen.batchGenVideos = async (pp, ee, main, shots, opts, done) => { got = shots.map(s => s.id); return orig(pp, ee, main, shots, opts, done); };
+    const r = await sb.Commands.execute('episode.generateVideos', { pid: 'p1', epid: 'ep1', ui: true, shotIds: ['sh0', 'sh1'] });
+    assertEq(r.ok, true, '实际:' + JSON.stringify(r.error || {}));
+    assertEq((got || []).join(','), 'sh1', '子集里点名的鲜镜不重跑(每镜都真扣费),过期镜照跑');
+    assertEq(ep.shots[0].video.url, '/uploads/gen/v0.mp4', '鲜镜的产物没被覆盖');
+  } },
   { name: 'generateStoryboard:headless hooks.quiet=true,ui 模式 quiet=false(决策弹窗归 UI)', fn: async () => {
     const sb = loadCommands();
     cmdCtx(sb, { shots: [] });
@@ -4370,6 +4388,46 @@ function releaseReadyEp(over) {
   return Object.assign({ id: 'ep1', title: '第一集', content: '剧本正文', shots: [s],
     lastReview: { avg: 8, perShot: [{ shotId: 'sh0', order: 0, score: 8 }] } }, over || {});
 }
+/* 发布门「一键处置」真跑一遍的沙箱:命令层(loadCommands 的注册表 + SBGen 引擎桩)之上再装发布门那一摞。
+ * 门禁挑出的镜集只在这里数得清——execFix 把 fix 交给 Commands.execute,落到引擎上的那几镜才是真被重生成的镜。
+ * __genShots 记下引擎每次收到的镜头 id(累计),用例据此对着 Domain 的计数逐镜点名。 */
+function loadReleaseFix() {
+  const sb = loadCommands();
+  sb.Compliance = { checkText: () => ({ hits: [] }) };
+  sb.HumanReview = { guardAsync: async () => true, shotImageUrls: () => [] };
+  loadFile(sb, 'issues.js');
+  loadFile(sb, 'continuity.js');   // stampRelease/rollbackTo 用 Continuity.bumpVer
+  loadFile(sb, 'release-core.js');
+  loadFile(sb, 'release.js');
+  sb.__genShots = [];
+  const orig = sb.SBGen.batchGenVideos;
+  sb.SBGen.batchGenVideos = (p, ep, main, shots, opts, done) => {
+    shots.forEach(s => sb.__genShots.push(s.id));
+    return orig(p, ep, main, shots, opts, done);
+  };
+  return sb;
+}
+/* 过期镜夹具:done 且生成输入指纹已变的镜即"过期镜"。哪几镜过期只写在 STALE 意图表里,
+ * 是不是真过期一律由真 Domain 判(用例先拿 counts.stale 对一次账),夹具不自己抄一份判据。 */
+function staleFixProject(over) {
+  const mk = (id, order, ov) => Object.assign({
+    id, order, name: '', plot: 'p', prompt: 'q' + order, camera: '固定镜头', duration: 5,
+    characters: [], scene: '', props: [], confirm: true, video: { status: 'done', url: 'u' },
+  }, ov || {});
+  const old = () => ({ status: 'done', url: 'u', inputHash: 'v3:oldstale' });
+  const ep = Object.assign({
+    id: 'ep1', title: '第一集', content: '剧本正文', sbConfig: { maxRetry: 2 },
+    shots: [
+      mk('sh0', 0),                                  // 鲜镜:已出片且输入没动,不该被顺手重跑
+      mk('sh1', 1, { video: old() }),                // 过期镜
+      mk('sh2', 2, { video: { status: 'failed', error: '上游超时' } }), // 失败镜:归 G6 不归 G4
+      mk('sh3', 3, { video: { status: 'none' } }),   // 未出片:归待生成不归过期
+      mk('sh4', 4, { video: old() }),                // 过期镜
+    ],
+    lastReview: { avg: 8, perShot: [] },
+  }, over || {});
+  return { p: { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [ep] }, ep };
+}
 /* 交付包落地面:装真 js/ziputil.js 与最小下载桩,数得清"用户到手几个文件、每个文件里装的是什么"。
  * urlFail 让第 N 次 URL.createObjectURL 抛错(N 从 1 起),用来走 downloadReleaseZip 的兜底那条路。 */
 function loadReleaseZip(urlFail) {
@@ -4559,6 +4617,49 @@ const releaseTests = [
       assertEq(x.status, 'pass', 'headless ' + code + ' 计数为 0 仍判 pass');
       assertEq(shown(x), 0, 'headless ' + code + ' 计数为 0 时回执须印 0 镜');
     });
+  } },
+  { name: 'G4 一键处置:真按下去落到引擎上的镜,就是该集 counts.stale 数的那几镜(一镜不多一镜不少)', fn: async () => {
+    /* 此前钉住 G4 子集的只有「fix.shotIds 里装了哪几个 id」。装得对不等于按下去跑得对:
+     * 过期镜本身是 done 镜,批量入口那道「未就绪」筛子(!shotVideoReady)会把它们整批滤掉,
+     * 于是弹窗上写着「2 镜素材与当前剧本不一致」、按钮按下去一镜也没重跑,回执还报成功——
+     * 门禁数出来的镜与处置真正碰到的镜是两回事,这一条把它们钉成同一批。 */
+    const sb = loadReleaseFix();
+    const { p, ep } = staleFixProject();
+    const STALE = ['sh1', 'sh4'];
+    sb.__proj = p;
+    /* 先与 Domain 对账:期望镜集不是用例自己数出来的,它得先等于 episodeState 报的那个数
+     * (夹具日后被改动、或 counts.stale 判据变了,先红在这一句上,而不是在下面变成恒真)。 */
+    assertEq(sb.Domain.episodeState(p, ep, false).counts.stale, STALE.length,
+      '夹具前提:该集 counts.stale 应为 ' + STALE.length + ' 镜');
+
+    const g4 = sb.Release.collect(p, { online: false }).gates.find(g => g.code === 'g4-stale');
+    assertEq(g4.status, 'fail', '有过期镜 G4 应 fail');
+    assertEq((g4.fix.shotIds || []).slice().sort().join(','), STALE.join(','), 'G4 挑出的镜集应就是该集的过期镜集');
+
+    await sb.Release.execFix(p, g4, null, () => {});
+    assertEq(sb.__genShots.slice().sort().join(','), STALE.join(','),
+      '一键处置真正下发引擎的镜须逐个对上 counts.stale 那几镜(子集位放不过过期镜时这里是空)');
+    ['sh0', 'sh2', 'sh3'].forEach(id => assert(sb.__genShots.indexOf(id) < 0,
+      '子集外的 ' + id + ' 不该被这一按重跑(鲜镜白花钱、失败镜与未出片镜各归 G6/G5),实际下发:' + sb.__genShots.join(',')));
+  } },
+  { name: 'G4 一键处置:终稿锁是唯一挡在处置外的过期镜(锁着的镜不重跑,回执按真跑的镜数报)', fn: async () => {
+    /* 过期镜集里混进终稿镜时,「门禁数的镜 = 处置跑的镜」这条等式有一个有意的缺口:
+     * 终稿是用户按下的锁,重生成会直接覆盖掉定稿产物,批量入口一律不碰(shot.generateVideo 同样按 final 拒绝)。
+     * 缺口只此一个,且回执上的 total 按真跑的镜数报——处置没碰的镜不许算进"处理了几镜"。 */
+    const sb = loadReleaseFix();
+    const { p, ep } = staleFixProject();
+    ep.shots[1].final = true; // sh1 定稿:仍算过期镜(计数不动),但处置不许碰它
+    sb.__proj = p;
+    assertEq(sb.Domain.episodeState(p, ep, false).counts.stale, 2, '终稿镜仍照旧计进 counts.stale(门槛一字不动)');
+
+    const g4 = sb.Release.collect(p, { online: false }).gates.find(g => g.code === 'g4-stale');
+    assertEq((g4.fix.shotIds || []).slice().sort().join(','), 'sh1,sh4', '子集位如实带上终稿过期镜(漏带就成了空数组=整集重跑)');
+
+    let got = null;
+    await sb.Release.execFix(p, g4, null, r => { got = r; });
+    assertEq(sb.__genShots.join(','), 'sh4', '终稿镜不重跑,其余过期镜照跑');
+    assertEq(ep.shots[1].video.inputHash, 'v3:oldstale', '终稿镜的产物一个字节没被覆盖');
+    assertEq(got && got.result && got.result.total, 1, '回执按真跑的镜数报(终稿那镜没碰,不算处理过)');
   } },
   { name: 'G2 问题清零:真实 Issues 数组契约——脏项目 fail 挂问题中心导航,干净项目 pass', fn() {
     const sb = loadRelease();
@@ -5871,6 +5972,24 @@ const contractTests = [
       assert(hits.length, rel + ' 找不到 shotIds 子集位的取数点(挪窝或改名就同轮改这里,别把本条留成恒真)');
       hits.forEach(m => assert(m[1].startsWith(' && args.shotIds.length'),
         rel + ' 的 shotIds 子集位应仍是"空数组即整集";问题中心因此在空重抽面上不出这个字段,实际:' + JSON.stringify(m[0])));
+    });
+  } },
+  { name: '过期镜的唯一出口:两端 episode.generateVideos 的子集位都放过期镜过(一端改了另一端没改即红)', fn() {
+    /* 过期镜是 done 镜,被两端共用的那道「未就绪」筛子(shotVideoReady)挡在批量之外;
+     * 发布门 G4 一键处置、断点「重生成过期镜」、问题中心的过期镜条目全靠子集位把它送进去,
+     * 子集位不开口,挑出来的镜一镜也跑不到而回执照报成功。浏览器那一端由 release 套件真跑钉住,
+     * CLI 这一端单测层没有可真跑的引擎,故在此源级点名:两处都得现取 Domain.shotVideoStale。 */
+    [['js/commands.js', path.join(ROOT, 'js', 'commands.js'), "reg('episode.generateVideos'", "\n  reg('"],
+      ['cli.js', path.join(ROOT, 'cli.js'), "EXEC['episode.generateVideos']", '\nEXEC[']].forEach(([rel, abs, head, tail]) => {
+      const src = fs.readFileSync(abs, 'utf8');
+      const i = src.indexOf(head);
+      assert(i >= 0, rel + ' 找不到 episode.generateVideos 的实现(挪窝或改名就同轮改这里,别把本条留成恒真)');
+      const rest = src.slice(i + head.length);
+      const body = rest.slice(0, rest.indexOf(tail) >= 0 ? rest.indexOf(tail) : rest.length);
+      assert(body.includes('Array.isArray(args.shotIds) && args.shotIds.length'), rel + ' 的 generateVideos 段里找不到子集位');
+      assert(/Domain\.shotVideoStale\(/.test(body),
+        rel + ' 的子集过滤须现取 Domain.shotVideoStale 放过期镜过(与挑子集那一侧同一份判据)');
+      assert(/!s\.final && ids\.has\(s\.id\)/.test(body), rel + ' 的子集过滤仍须挡住终稿镜(定稿产物不许被覆盖)');
     });
   } },
   { name: '分集级审片门槛单源:达标线/判旧/"这一集当下能不能审"只在 episodeState.reviewGate 一处,流程条与问题中心都不另判', fn() {
@@ -8870,7 +8989,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 550, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 554, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 143, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -9139,7 +9258,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 190;
+    const FLOOR = 191;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
