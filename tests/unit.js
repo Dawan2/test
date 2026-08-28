@@ -5376,12 +5376,79 @@ const GUARD_TOPICS = [
   { id: 'suite-count-floor', anchors: ['单元测试', 'CLI 冒烟', 'README.md'],
     why: '三套件用例数只增不减:删测并把 README 一并改小时,红在下限这一层' },
   { id: 'floor-slack', anchors: ['SLACK', '记账件份数'],
-    why: '四条 FLOOR 与 live 的差额有上限:那段差额就是能被静默删掉的条数' },
+    why: '五条 FLOOR 与 live 的差额有上限:那段差额就是能被静默删掉的条数(护栏主题那格判的是在册 + 销号的总数)' },
   { id: 'unit-name-unique', anchors: ['套件 · 用例名', 'SUITES'],
     why: '单元用例名全局唯一:重名会让按名成集比对把一条吃掉,删测与重名互相抵消' },
   { id: 'ledger-count-3way', anchors: ['索引表共 ', 'FLOOR'],
     why: '记账件份数由 README 明写并与目录/索引表三方对齐,且只增不减' },
+  { id: 'topic-unlist-ledger', anchors: ['topicLedgerVerdict', 'topicRoster()'], hosts: 2,
+    why: '销号必须显式落笔:花名册上的编号要么在册、要么在销号台账里带闭合理由,下限只增不减(两处承载:一处拿实况对花名册、一处拿造出来的清单钉判词自己)' },
 ];
+/* ---- 下限、销号台账与花名册:让「撤掉一条登记」这件事非留痕不可 ----
+ * 上面那张表只登记"此刻在册"的主题,而撤登记此前只有一个下限数字守着,两种改法都一条不红:
+ * 把 TOPIC_FLOOR 改小而一条主题都不删(下限判的是 `>=`,往下让位它不管),
+ * 或者连同下限一起把某条主题整段删掉(删完 live 与 floor 又相等了)——后者正是完整的销号动作,
+ * 而"销号须同轮写明理由"这句纪律至今是写给人的。两种改法落到同一个后果:一道护栏没了,报错句里一个字都没有。
+ * 这里按记账件份数那格棘轮的形状立三层:
+ *   1. 花名册——历史编号逐个写在记账件里,每个号此刻要么在册、要么在销号台账里,少一个就点名报出来;
+ *      删登记与"连同下限一起删"从此落到同一句红上,改小下限救不了它;
+ *   2. 下限只增不减——TOPIC_FLOOR 不得低于花名册条数,改小那个字面先红在这一层;
+ *   3. 销号必须显式落笔——编号搬进 GUARD_TOPICS_CLOSED 并写下闭合理由,锚点原样搬过来,
+ *      好让"这道护栏是真没了,还是被别的主题接手了"事后仍判得出来。
+ * 有意不禁新登记主题:在册多出花名册没有的号一条不红,加主题照旧只改上面那张表。 */
+const TOPIC_FLOOR = 11;
+const GUARD_TOPICS_CLOSED = [
+  /* 形状:{ id: '主题编号', anchors: [原样搬过来], why: '这道护栏原本守什么',
+   *        closed: '为什么可以不守了(被守的那一面已不存在 / 判据并进了哪一条)',
+   *        by: '接手的主题编号;确无继任写空串' }
+   * 空表是常态——它在这儿是为了让销号有个只能显式落笔的去处。 */
+];
+/* 花名册现取记账件正文那一节,有意不在源码里再抄一份:抄在这里的话,
+ * 销号只要顺手把那一行也删掉就照旧无声,而记账件是落笔即定、删改都看得见的记录。 */
+function topicRoster() {
+  const src = fs.readFileSync(path.join(ROOT, 'docs', 'skills-wave', 'w178-topic-floor-unlist.md'), 'utf8');
+  const sec = src.split(/^## /m).find(s => /^花名册/.test(s)) || '';
+  return [...sec.matchAll(/^\| `([a-z][a-z0-9-]{4,})` \|/gm)].map(m => m[1]);
+}
+/* 花名册 / 在册 / 销号台账 / 下限字面 四者的判词,逐条给出红句(全绿时回空数组)。
+ * 抽成纯函数是为了喂得进造出来的清单:「删掉一条登记」「连同下限一起改小」在真仓库里都要改文件才做得出来,
+ * 单测里做不到,而判词正是这几层唯一读的东西,拿造出来的四元组喂它是同一件事在判据这一层的等价形态。
+ * hosted(条目) 回"这条主题的锚点此刻还有没有承载用例",由调用方注入(实况取全套件、造例直接给)。 */
+function topicLedgerVerdict({ roster, live, closed, floor, hosted }) {
+  const lines = [];
+  const liveIds = live.map(t => t.id), closedIds = closed.map(t => t.id);
+  const known = new Set(liveIds.concat(closedIds));
+  if (!roster.length) lines.push('花名册一个编号都没取到(那一节被挪走或表格形状变了,本条会整条退化成恒真句,故先红在这里)');
+  roster.forEach(id => {
+    if (!known.has(id)) {
+      lines.push(id + ':花名册上有,清单与销号台账里都没有——撤一道护栏须把编号搬进销号台账并写下闭合理由,' +
+        '把 TOPIC_FLOOR 一起改小不作数');
+    }
+  });
+  if (floor < roster.length) {
+    lines.push('下限 ' + floor + ' 低于花名册的 ' + roster.length + ' 条:下限只增不减,改小它就是给"往后白删几条"腾地方');
+  }
+  if (liveIds.length + closedIds.length < floor) {
+    lines.push('历史编号总数(在册 ' + liveIds.length + ' + 销号 ' + closedIds.length + ')低于下限 ' + floor);
+  }
+  const seen = new Set();
+  closed.forEach(t => {
+    const id = t.id || '(缺编号)';
+    if (seen.has(id)) lines.push(id + ':销号台账里重号');
+    seen.add(id);
+    if (liveIds.includes(t.id)) lines.push(id + ':既在册又在销号台账里(销号了就该从清单里撤走,两头挂着等于谁都不必对它负责)');
+    if ((t.anchors || []).length < 2) lines.push(id + ':销号台账里的锚点少于 2 个(原样搬过来,好让事后判得出这道护栏是不是真没了)');
+    if (!t.why) lines.push(id + ':销号台账缺 why(这道护栏原本守什么得原样留着,否则事后没人判得出销得对不对)');
+    const reason = String(t.closed || '').trim();
+    if (reason.length < 12) lines.push(id + ':缺闭合理由(为什么可以不守了要写下来,一句话也得是一句话)');
+    else if (reason === String(t.why || '').trim()) lines.push(id + ':闭合理由照抄 why(why 说的是它守什么,闭合理由要说的是为什么可以不守了)');
+    if (hosted(t) && !t.by) {
+      lines.push(id + ':销号了而锚点此刻仍点得到承载用例——要么这道护栏还在(不该销号),要么写明接手的主题编号');
+    }
+    if (t.by && !liveIds.includes(t.by)) lines.push(id + ':接手编号「' + t.by + '」不在册(接手方得是清单里真有的主题)');
+  });
+  return lines;
+}
 /* 全部套件的用例源码(抹掉注释、字面量留着)+ 打印用标签:护栏主题按锚点在这上面找落点。
  * 取 fn 的运行时源码而不是按文件切段:用例挪到别的套件、换个写法都不影响取数,判的是"这段判据还在不在跑"。 */
 function guardHostsOf(anchors) {
@@ -8598,7 +8665,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 542, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 544, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 141, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -8609,7 +8676,7 @@ action 二选一:
         label + '用例数:README.md 写的 ' + n + ' 低于下限 ' + floor + '(把文档数字改小来迁就删测即红)'));
     });
   } },
-  { name: '棘轮下限不得静默落后实况:四条 FLOOR 与 live 的差额有上限(加测不抬下限、把下限改小都红在这里)', fn() {
+  { name: '棘轮下限不得静默落后实况:五条 FLOOR 与 live 的差额有上限(加测不抬下限、把下限改小都红在这里)', fn() {
     /* 上一条与记账件份数那条钉的都是 `live >= floor`,这个方向只拦"往下走"、拦不住"停在原地":
      * 加了用例不抬 FLOOR,下限就静默停在旧水位(某一槽加 6 条只抬了记账件那格,单元那格从 480 松到 486 一条不红);
      * 反过来把 FLOOR 字面改小而一条用例都没删,同样全绿。两种改法落到同一个后果——
@@ -8617,8 +8684,10 @@ action 二选一:
      * 判据不取 `live === floor`:那会让每加一条用例都必须同轮改这个字面,等于再造一个要人工同步的数
      * (`>=` 当年正是为避开这一点才这么写的)。这里钉的是**差额本身有上限**:下限允许落后,
      * 但不得落后超过 SLACK 格——差额就是"能被静默删掉的条数",今天它无界,本条把它钉成 SLACK。
-     * 常规加测槽(一轮 1–3 条)照旧不必动那些字面,连着几槽不抬、一槽加 4 条以上不抬、或把下限调小都当场红。
-     * 四个 FLOOR 字面现取自本文件源码:取不到即红,挪窝或改名都得同轮改这里,不许把本条留成恒真。 */
+     * 常规加测槽(一轮 1–3 条)照旧不必改那些字面,连着几槽不抬、一槽加 4 条以上不抬、或把下限调小都当场红。
+     * 护栏主题那格与另外四格同理:登记面一次加 4 条以上而下限停在旧水位,多出来那几条撤起来只剩花名册一层
+     * (花名册只覆盖登记进它的号),故这一格也收进来一起判,live 取的是历史编号总数(在册 + 销号)。
+     * 五个 FLOOR 字面现取自本文件源码:取不到即红,挪窝或改名都得同轮改这里,不许把本条留成恒真。 */
     const SLACK = 3;
     const self = fs.readFileSync(__filename, 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
@@ -8627,14 +8696,17 @@ action 二选一:
       '集成测试': reportLines('tests/integration.js'),
       'CLI 冒烟': reportLines('tests/cli.smoke.js'),
       '记账件份数': fs.readdirSync(path.join(ROOT, 'docs', 'skills-wave')).filter(f => /^w\d+-.+\.md$/.test(f)).length,
+      '护栏主题': GUARD_TOPICS.length + GUARD_TOPICS_CLOSED.length,
     };
     const floors = [...self.matchAll(/\['(单元测试|集成测试|CLI 冒烟)', (\d+),/g)].map(m => [m[1], +m[2]]);
     assertEq(floors.length, 3, '三套件棘轮那条的 FLOOR 字面取不到(改了那张表的形状就同轮改这里,别把本条留成恒真)');
     const ledger = [...self.matchAll(/^ *const FLOOR = (\d+);$/gm)];
     assertEq(ledger.length, 1, '记账件份数那条的 FLOOR 字面取不到(同上)');
-    floors.concat([['记账件份数', +ledger[0][1]]]).forEach(([label, floor]) => {
+    const topic = [...self.matchAll(/^const TOPIC_FLOOR = (\d+);$/gm)];
+    assertEq(topic.length, 1, '护栏主题那格的下限字面取不到(同上)');
+    floors.concat([['记账件份数', +ledger[0][1]], ['护栏主题', +topic[0][1]]]).forEach(([label, floor]) => {
       assert(live[label] - floor <= SLACK, label + ':下限 ' + floor + ' 落后实测 ' + live[label] + ' 共 ' +
-        (live[label] - floor) + ' 格(上限 ' + SLACK + ' 格);加了用例/记账件就把那个 FLOOR 字面抬到当轮实况,' +
+        (live[label] - floor) + ' 格(上限 ' + SLACK + ' 格);加了用例/记账件/护栏主题就把那个 FLOOR 字面抬到当轮实况,' +
         '把它改小同样红在这里——这个差额就是能被静默删掉的条数');
     });
   } },
@@ -8692,9 +8764,9 @@ action 二选一:
      * 承载用例不许是空壳(锚点还在而断言被掏空,等于护栏名存实亡)。
      * 抹注释那一口另有自检:锚点只写在注释里不算落点——W136 记过"变异体里那句注释替被测断言把活干了"的假红,
      * 同一形状放到这里就是"删掉断言、把锚点留在注释里"照旧全绿。 */
-    const TOPIC_FLOOR = 10;
-    assert(GUARD_TOPICS.length >= TOPIC_FLOOR, '护栏主题不得少于 ' + TOPIC_FLOOR + ' 条(实测 ' + GUARD_TOPICS.length +
-      ');新登记主题时把下限抬到当轮实况,销号须同轮说明理由');
+    const total = GUARD_TOPICS.length + GUARD_TOPICS_CLOSED.length;
+    assert(total >= TOPIC_FLOOR, '护栏主题的历史编号总数不得少于 ' + TOPIC_FLOOR + ' 条(实测在册 ' + GUARD_TOPICS.length +
+      ' + 销号 ' + GUARD_TOPICS_CLOSED.length + ');新登记主题时把下限抬到当轮实况,销号是把编号搬进销号台账、不是从清单里删掉了事');
     const ids = GUARD_TOPICS.map(t => t.id);
     assertEq(new Set(ids).size, ids.length, '主题编号须逐条唯一(重号会让其中一条的失联被另一条盖住)');
     const weak = [];
@@ -8718,6 +8790,67 @@ action 二选一:
       '字面量被一并抹掉:锚点大多写在断言的取值与消息字面里,全抹掉会把所有主题一起报成失联');
     assertEq(Object.entries(SUITES).reduce((a, [, t]) => a.concat(t.map(x => x.fn)), []).length,
       Object.values(SUITES).reduce((n, t) => n + t.length, 0), '取用例源码那一口与套件表求和对不上(遍历口径失准,两条护栏主题断言都不可信)');
+  } },
+  { name: '护栏主题销号须留痕:花名册逐号点名 + 下限只增不减(改小下限、连同下限一起撤登记都红在这一条)', fn() {
+    /* 上一条钉的是"清单条数不许少于下限",而下限自己是个可改的字面:改小它而一条主题都不删照旧全绿,
+     * 连同下限一起把某条主题整段删掉——即完整的销号动作——同样全绿(W175 §6.1 两种改法各实测红 0)。
+     * 这里把"哪些编号登记过"从可改的数字换成逐号点名的花名册(写在记账件里,与源码分开),
+     * 每个号此刻要么在册、要么在销号台账里带着闭合理由;下限则不许低于花名册条数。
+     * 于是撤登记这件事只剩两条路:写下闭合理由(留痕、放行),或者当场红。
+     * 判词本身另有一条用例拿造出来的清单钉着,本条只负责把实况喂进去。 */
+    const roster = topicRoster();
+    assert(roster.length >= 11, '花名册只取到 ' + roster.length + ' 个编号(记账件里那一节被挪走、改了表格形状或整份被删时,' +
+      '本条会静默退化成恒真句,故先红在这里)');
+    const dupRoster = roster.filter((id, i) => roster.indexOf(id) !== i);
+    assertEq(dupRoster.join(' / '), '', '花名册里有重号(重号会让其中一条的缺席被另一条盖住)');
+    const lines = topicLedgerVerdict({
+      roster, live: GUARD_TOPICS, closed: GUARD_TOPICS_CLOSED, floor: TOPIC_FLOOR,
+      hosted: t => guardHostsOf(t.anchors || []).length > 0,
+    });
+    assertEq(lines.join(' / '), '', '护栏主题的花名册/在册/销号台账三者对不上:撤一道护栏要把编号搬进销号台账并写明闭合理由,' +
+      '新登记主题照旧只改 GUARD_TOPICS 那张表(花名册没有的号一条不红)');
+  } },
+  { name: '护栏主题销号判词自身立得住:撤登记、连同下限一起改小、空理由销号各自点名(拿造出来的清单喂判词)', fn() {
+    /* 上一条只在"实况正好合规"时全绿,它证不了自己拦得住什么:判词整段退化成回空数组,它照样全绿。
+     * 真去删一条登记再跑全套不是单测做得到的事(要改文件),故照 W175 那条的做法把判词抽成纯函数,
+     * 拿造出来的花名册/在册/销号台账/下限四元组直接喂它——这是同一件事在判据这一层的等价形态。
+     * 逐路各钉一次:两种静默放松(改小下限、连同下限一起撤登记)必须点名,而合法增主题与写全理由的销号必须放行。 */
+    const T = id => ({ id, anchors: [id + '-锚点甲', id + '-锚点乙'], why: id + ' 守的那一面' });
+    const base = {
+      roster: ['t-alpha', 't-beta', 't-gamma'], live: [T('t-alpha'), T('t-beta'), T('t-gamma')],
+      closed: [], floor: 3, hosted: () => false,
+    };
+    const v = o => topicLedgerVerdict(Object.assign({}, base, o)).join(' / ');
+    const two = base.live.slice(0, 2);
+    assertEq(v({}), '', '现况形态(花名册逐号都在册)不许误报');
+    assertEq(v({ live: base.live.concat([T('t-new')]) }), '', '新登记一条花名册上没有的主题不许红——本条不禁增主题');
+    assert(v({ live: two }).includes('t-gamma'), '撤掉一条登记须点名那个编号(只报"少了一条"与数字层同形,读报错分不出撤的是哪道护栏)');
+    assert(v({ live: two, floor: 2 }).includes('t-gamma'),
+      '连同下限一起改小(销号的完整动作)照旧须点名那个编号——这一路正是本条要接的那一路');
+    assert(v({ floor: 2 }).includes('下限'), '下限改小而一条主题都不删同样须红(那段差额就是往后能被白删的条数)');
+    const ok = { id: 't-gamma', anchors: ['t-gamma-锚点甲', 't-gamma-锚点乙'], why: 't-gamma 守的那一面',
+      closed: '它守的那一面已随分镜确认闸一起撤掉,承载用例同轮删除', by: '' };
+    const closedAs = o => ({ live: two, closed: [Object.assign({}, ok, o || {})] });
+    assertEq(v(closedAs()), '', '编号搬进销号台账并写下闭合理由后放行:销号本身不禁,只要求留痕');
+    assert(v(closedAs({ closed: '' })).includes('闭合理由'), '空的闭合理由须红(留痕不是留个空位)');
+    assert(v(closedAs({ closed: ok.why })).includes('照抄'), '闭合理由照抄 why 须红(它守什么与为什么可以不守了是两句话)');
+    assert(v(closedAs({ anchors: ['t-gamma-锚点甲'] })).includes('锚点'), '销号台账里的锚点少于两个须红(锚点原样搬过来才判得出这道护栏是不是真没了)');
+    assert(v(closedAs({ why: '' })).includes('why'), '销号台账缺 why 须红');
+    assert(v(Object.assign(closedAs(), { hosted: () => true })).includes('接手'),
+      '锚点此刻仍点得到承载用例而没写接手编号须红(这道护栏还在,不该悄悄销号)');
+    assertEq(v(Object.assign(closedAs({ by: 't-alpha' }), { hosted: () => true })), '',
+      '写明接手编号且接手方在册时放行(一道护栏并进另一条主题是合法去向)');
+    assert(v(Object.assign(closedAs({ by: 't-nobody' }), { hosted: () => true })).includes('t-nobody'), '接手编号不在册须红');
+    assert(v({ closed: [ok] }).includes('两头'), '同一编号既在册又在销号台账须红(两头挂着等于谁都不必对它负责)');
+    assert(v({ roster: [] }).includes('花名册'), '花名册一个编号都取不到时须红(取数口失效不许静默放行)');
+    // 判词对真清单同样咬得住:拿实况抽掉最后一条、下限一并改小,仍须点名那个编号
+    const real = GUARD_TOPICS[GUARD_TOPICS.length - 1];
+    const realLines = topicLedgerVerdict({
+      roster: topicRoster(), live: GUARD_TOPICS.slice(0, -1), closed: GUARD_TOPICS_CLOSED,
+      floor: TOPIC_FLOOR - 1, hosted: () => false,
+    });
+    assert(realLines.some(l => l.startsWith(real.id)), '拿真清单撤掉最后一条并把下限一并改小,判词须点名 ' + real.id +
+      '(花名册没覆盖到在册主题时,上一条就只剩数字层那点保护)');
   } },
   { name: 'README 数字对账:注册表口径(能力/KB/提示词/命令/专家)由各注册表实计', fn() {
     const Skills = require('../js/skills.js');
@@ -8785,7 +8918,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 183;
+    const FLOOR = 184;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
