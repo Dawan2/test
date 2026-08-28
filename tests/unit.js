@@ -4541,9 +4541,15 @@ const contractTests = [
     assert(/Math\.max\(1, Math\.min\(5, ep\.sbConfig\.maxRetry \|\| 2\)\)/.test(prod),
       '浏览器闭环此刻仍就地钳自己那份 maxRetry 缺省(同上)');
     assert(dom.includes('D.REVIEW_MIN = 7;'), '达标线仍在 Domain 单源(对照项:收敛次数没有这样一份登记)');
-    ['domain.js', 'wf-core.js'].forEach(f => assertEq(
-      (fs.readFileSync(path.join(ROOT, 'js', f), 'utf8').match(/maxRetry/g) || []).length, 0,
-      'js/' + f + ' 此刻还没有收敛次数的登记口径(收进双端单源后须同步改 SK-25 的仍欠段)'));
+    /* 两向都取:按名字(大小写一概不论,`reviseMaxRetry` 这样的驼峰改写照旧算)与按形状
+     * (1-5 那道钳位),免得改个名就绕过去——两端此刻钳的正是同一个 1..5 区间。 */
+    ['domain.js', 'wf-core.js'].forEach(f => {
+      const s = fs.readFileSync(path.join(ROOT, 'js', f), 'utf8');
+      assertEq((s.match(/maxretry/gi) || []).length, 0,
+        'js/' + f + ' 此刻还没有收敛次数的登记口径(收进双端单源后须同步改 SK-25 的仍欠段)');
+      assertEq((s.match(/Math\.min\(5,/g) || []).length, 0,
+        'js/' + f + ' 此刻也没有那道 1-5 钳位(换个名字把收敛次数收进来同样红)');
+    });
     /* 反向二:两端闭环形态此刻确实不同构——浏览器把重试循环嵌在逐镜循环里、整集重抽面派生一处不引,
      * CLI 是整集轮次循环且每轮现取实况派生子集。哪天浏览器改走整集子集重抽,这三句先红。 */
     const iShotLoop = prod.indexOf('for (const s of targets)');

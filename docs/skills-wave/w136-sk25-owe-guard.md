@@ -79,12 +79,21 @@
 assert(/Math\.max\(1, Math\.min\(5, \+args\.maxRetry \|\| 2\)\)/.test(cli25), …);        // cli.js
 assert(/Math\.max\(1, Math\.min\(5, ep\.sbConfig\.maxRetry \|\| 2\)\)/.test(prod), …);   // js/produce.js
 assert(dom.includes('D.REVIEW_MIN = 7;'), …);                                            // 对照项
-['domain.js', 'wf-core.js'].forEach(f => assertEq((…match(/maxRetry/g) || []).length, 0, …));
+['domain.js', 'wf-core.js'].forEach(f => {                     // 双端单源层此刻零命中
+  assertEq((s.match(/maxretry/gi) || []).length, 0, …);        // 按名字(大小写不论)
+  assertEq((s.match(/Math\.min\(5,/g) || []).length, 0, …);    // 按形状(1-5 那道钳位)
+});
 ```
 
 第三句是对照项,不是凑数:同一份 `domain.js` 里**达标线有 `REVIEW_MIN` 这样一份登记、收敛次数一个字没有**,
 "有登记口径"长什么样与"没有"长什么样在同一个文件里并排放着,这一面欠着才算量得准。
-哪天收敛口径真下沉成 `D.reviseMaxRetry` 之类,第四句当场红,逼着同轮改记账。
+
+末尾两句**分名字与形状两向取,是被变异逼出来的**。第一版只写了区分大小写的 `/maxRetry/g`,
+变异「`js/domain.js` 真加一份 `D.reviseMaxRetry` 单源」当场从红转绿——驼峰改写里那个 `M` 是大写,
+名字判据一个字都没命中。改成 `/maxretry/gi` 接住这一路,再补一句按 `Math.min(5,` 取形状的,
+接住"换个与 `maxRetry` 无关的名字(如 `reviseRounds`)把同一道 1-5 钳位收进来"。
+这条变异第一次跑是在 `contract` 单套件上、当时的改法带一句写着 `maxRetry` 的注释故红了,
+把注释去掉再跑全套才暴露出来——**变异体里那句注释替被测断言把活干了**,记一句备忘。
 
 **余面二(两端闭环形态不同构)** 的实据是两侧循环的嵌套方向:
 
@@ -103,7 +112,7 @@ assert(cli25.slice(iCliLoop, iCliLoop + 1400).includes('low = await reviseTarget
 
 ## 4. 变异实测
 
-七条,每条改完跑 `contract` 套件、验完还原。基线上这七处一条都不红(第 1 节已量过其中最要紧的两处)。
+九条,每条改完跑**全套** `unit`、验完还原。基线上这九处一条都不红(第 1 节已量过其中最要紧的两处)。
 
 | # | 变异 | 结果 |
 |---|---|---|
@@ -112,12 +121,20 @@ assert(cli25.slice(iCliLoop, iCliLoop + 1400).includes('low = await reviseTarget
 | 3 | 从 `gaps` 里摘掉 `G-03`(留 `G-12`) | 红 1 |
 | 4 | 把 `Domain.reviseTargets` 挤回仍欠段(已交账的写成欠账) | 红 1 |
 | 5 | 仍欠段只留收敛面、删掉形态那一面 | 红 1 |
-| 6 | `js/domain.js` 真加一份 `D.reviseMaxRetry` 单源而记账不改 | 红 1 |
+| 6a | `js/domain.js` 真加一份 `D.reviseMaxRetry` 单源而记账不改 | 红 1 |
+| 6b | 同上但改名 `D.reviseRounds`(与 `maxRetry` 三字无关,只留 1-5 钳位) | 红 1 |
+| 6c | 收进 `js/wf-core.js` 那一侧而不是 `domain.js` | 红 1 |
 | 7 | `js/produce.js` 改走 `Domain.reviseTargets` 而记账不改 | 红 1 |
 
-七条各红且只红本条,报错句各不相同(段不在 / 锚点缺 / 键被摘 / 已落地挤进欠账 / 源码收编了记账没跟上),
-单看报错就知道是哪一路被改的。变异 6、7 是"欠账真还上了"的那一路——它们红不是坏事,
+九条各红且只红本条,报错句各不相同(段不在 / 锚点缺 / 键被摘 / 已落地挤进欠账 /
+源码收编了记账没跟上、且按名字与按形状分报两句),单看报错就知道是哪一路被改的。
+变异 6、7 是"欠账真还上了"的那一路——它们红不是坏事,
 是提醒下一个人:收编的同轮把 SK-25 的 `note` 改掉,别留一句陈年谎话。
+
+**6a 最初是假红,值得单独记一句**(详见 3.2 末):第一版判据只查区分大小写的 `maxRetry`,
+而变异体里恰好带了一句写着小写 `maxRetry` 的注释——注释替断言把活干了,
+在 `contract` 单套件上看着是红的;把那句注释去掉再跑全套才转绿,暴露出名字判据根本没命中驼峰改写。
+教训是**变异体要写成"下一个人真会那么写"的样子**,顺手加的说明性注释会喂给字面级判据一个假阳性。
 
 ## 5. `G-03` 此刻仍欠什么(原话未动)
 
