@@ -127,6 +127,20 @@
     'no-eps': { sev: 'low', at: '', detail: () => '还没有分集:先按整本剧本拆集,分镜/生成/审片/成片都挂在分集上' },
   };
 
+  /* ================= 分集级阻塞码投影表(Domain.episodeState 的阻塞码 → 危险级) =================
+   * 键就是那份阻塞码全集(Domain.epBlockerCodes()),逐集循环按本表取危险级出条目——
+   * 码名与危险级各只此一份,分支里不再逐条手写 kind/sev,本层也不另起近义码。
+   * 与前置门槛那张表的差别只在形状:门槛按码查表投影,分集这一档的条目还要带各自的明细/处置/早退,
+   * 故仍是逐集循环里的分支;可枚举的是码与危险级,漏投由契约用例逐码点名(见 EPB_SKIP)。 */
+  const EPB = {
+    'no-script': 'high', 'no-shots': 'mid', 'shots-stale': 'mid', 'failed-shots': 'high',
+    'stale-shots': 'mid', 'unconfirmed': 'low', 'composed-stale': 'mid',
+  };
+  /* 有意不投的分集级阻塞码 + 理由(不投是写下来的决定,不是漏掉;白名单之外漏投即红) */
+  const EPB_SKIP = {
+    'no-episode': '逐集循环的入参恒取自项目的分集表,拿不到"分集不存在"这一态——它是 episodeState 给按 id 查单集的调用方兜底的空态,不是项目里的待处理问题',
+  };
+
   /* 取该行的命中:整面结论按面缓存(同一面上挂多条投影只跑一次),再按校验项 id 分给各行。
    * 这是本模块唯一一处 Skills 取值点——面字面量只在表里,取不到注册表(未加载)时如实回空。 */
   function hitsOf(S, r, obj, ck, cache) {
@@ -177,26 +191,26 @@
       const obj = { p, ep }, cache = {};
       /* 每条问题必须 Object.assign({}, base, …) 新开对象:同一集可挂多条问题,直接改 base 会让已入组条目全部串成同一引用(二十二轮修复) */
       if (!(ep.content || '').trim()) {
-        out.push(Object.assign({}, base, { kind: 'no-script', sev: 'high', count: 1, label: `「${ep.title}」缺剧本正文`, detail: '无剧本无法拆镜与生成本集理解', goto: `#/project/${p.id}/episode/${ep.id}` }));
+        out.push(Object.assign({}, base, { kind: 'no-script', sev: EPB['no-script'], count: 1, label: `「${ep.title}」缺剧本正文`, detail: '无剧本无法拆镜与生成本集理解', goto: `#/project/${p.id}/episode/${ep.id}` }));
         return;
       }
       /* 剧本文本面与付费卡点位置排在未分镜等早退分支之前:剧本刚写完还没拆镜时正是这几条最该看得见的时候 */
       emit('episode', 'pre', obj, cache, base);
-      if (!c.total) { out.push(Object.assign({}, base, { kind: 'no-shots', sev: 'mid', count: 1, label: `「${ep.title}」未生成分镜`, detail: '已有剧本未拆镜,可直接智能分镜', cmd: 'episode.generateStoryboard' })); return; }
-      if (st.shotsStale) { out.push(Object.assign({}, base, { kind: 'shots-stale', sev: 'mid', count: 1, label: `「${ep.title}」分镜表基于旧剧本/图谱`, detail: '剧本或事件图谱修订后未重新拆镜', goto: `#/project/${p.id}/episode/${ep.id}` })); return; }
+      if (!c.total) { out.push(Object.assign({}, base, { kind: 'no-shots', sev: EPB['no-shots'], count: 1, label: `「${ep.title}」未生成分镜`, detail: '已有剧本未拆镜,可直接智能分镜', cmd: 'episode.generateStoryboard' })); return; }
+      if (st.shotsStale) { out.push(Object.assign({}, base, { kind: 'shots-stale', sev: EPB['shots-stale'], count: 1, label: `「${ep.title}」分镜表基于旧剧本/图谱`, detail: '剧本或事件图谱修订后未重新拆镜', goto: `#/project/${p.id}/episode/${ep.id}` })); return; }
       if (c.failed) {
         const fs = (ep.shots || []).filter(s => s.video && s.video.status === 'failed');
         out.push(Object.assign({}, base, {
-          kind: 'failed-shots', sev: 'high', count: c.failed, label: `「${ep.title}」${c.failed} 镜生成失败`,
+          kind: 'failed-shots', sev: EPB['failed-shots'], count: c.failed, label: `「${ep.title}」${c.failed} 镜生成失败`,
           detail: fs.map(s => `镜头${s.order + 1}:${String(s.video.error || '未知错误').slice(0, 36)}`).slice(0, 4).join(';') + (fs.length > 4 ? '…' : '') + '(失败已退费,可重试)',
           cmd: 'episode.generateVideos', shotIds: fs.map(s => s.id),
         }));
       }
       if (c.stale) {
         const ss = (ep.shots || []).filter(s => Domain.shotVideoStale(p, s, on));
-        out.push(Object.assign({}, base, { kind: 'stale-shots', sev: 'mid', count: c.stale, label: `「${ep.title}」${c.stale} 镜素材已更新(过期)`, detail: `镜头 ${ss.map(s => s.order + 1).slice(0, 8).join('、')}${ss.length > 8 ? '…' : ''} 生成后输入有变化,建议重生成`, goto: `#/project/${p.id}/episode/${ep.id}` }));
+        out.push(Object.assign({}, base, { kind: 'stale-shots', sev: EPB['stale-shots'], count: c.stale, label: `「${ep.title}」${c.stale} 镜素材已更新(过期)`, detail: `镜头 ${ss.map(s => s.order + 1).slice(0, 8).join('、')}${ss.length > 8 ? '…' : ''} 生成后输入有变化,建议重生成`, goto: `#/project/${p.id}/episode/${ep.id}` }));
       }
-      if (c.unconfirmed && !c.generating) out.push(Object.assign({}, base, { kind: 'unconfirmed', sev: 'low', count: c.unconfirmed, label: `「${ep.title}」${c.unconfirmed} 镜待确认`, detail: '未确认镜头不参与批量生成,先过确认闸', goto: `#/project/${p.id}/episode/${ep.id}` }));
+      if (c.unconfirmed && !c.generating) out.push(Object.assign({}, base, { kind: 'unconfirmed', sev: EPB['unconfirmed'], count: c.unconfirmed, label: `「${ep.title}」${c.unconfirmed} 镜待确认`, detail: '未确认镜头不参与批量生成,先过确认闸', goto: `#/project/${p.id}/episode/${ep.id}` }));
       /* 审片步骤未完成:与 Domain 主线审片步(no-review/review-stale)同一口径,判据不写第二份。
        * 挂载位置在此处即"该集已有镜头"——未拆镜/分镜判旧在上面已早退,故有镜头(或已出片/已合成)
        * 而审片没过,主线断点就落在审片这一步,以前问题中心只报低分、这两态一条都看不见。
@@ -211,7 +225,7 @@
         const lows = Domain.reviseTargets(ep); // 低分镜面与修订闭环重抽面同一份派生(达标线/判旧/交集不写第二份)
         out.push(Object.assign({}, base, { kind: 'low-review', sev: 'mid', count: lows.length || 1, label: `「${ep.title}」审片均分 ${st.reviewAvg} 低于达标线`, detail: lows.length ? `低分镜:${lows.map(x => x.order + '镜' + x.score + '分').slice(0, 6).join('、')}` : '整体质量待修订(可让助手按问题清单优化提示词)', goto: `#/project/${p.id}/episode/${ep.id}` }));
       }
-      if (ep.composed && !st.composedReady) out.push(Object.assign({}, base, { kind: 'composed-stale', sev: 'mid', count: 1, label: `「${ep.title}」成片已过期`, detail: '合成输入或剧本已变化,需重新合成', cmd: 'episode.compose' }));
+      if (ep.composed && !st.composedReady) out.push(Object.assign({}, base, { kind: 'composed-stale', sev: EPB['composed-stale'], count: 1, label: `「${ep.title}」成片已过期`, detail: '合成输入或剧本已变化,需重新合成', cmd: 'episode.compose' }));
       /* 跨镜主体一致性 / 分镜景别衔接 / 提示词稳定词 / 成片字幕可读性:四条同为投影表里的分集级低危提醒
        * (景别与稳定词同属 shots 面,表的整面缓存保证一次跑完按条目分挂,不重复跑整面) */
       emit('episode', 'post', obj, cache, base);
@@ -232,6 +246,12 @@
   function gates() {
     return Object.keys(GATES).map(code => ({ kind: code, sev: GATES[code].sev, level: 'project' }));
   }
+  /* 分集级阻塞码投影表的只读投影(同上现生成副本):kind 就是 Domain.episodeState 的阻塞码 */
+  function epBlockers() {
+    return Object.keys(EPB).map(code => ({ kind: code, sev: EPB[code], level: 'episode' }));
+  }
+  /* 不投的分集级阻塞码白名单(契约断言用,每次现生成副本) */
+  function epSkips() { return Object.assign({}, EPB_SKIP); }
 
-  return { collect, count, reminders, gates };
+  return { collect, count, reminders, gates, epBlockers, epSkips };
 });
