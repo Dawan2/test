@@ -284,17 +284,28 @@
     }
     return out;
   };
-  /* 回流写入(双端同一口径):带 fb 的条目按键原地更新——同一集/同一项目反复闭环只留最新一条结论,
-   * 不把 50 条上限刷满挤掉用户自己沉淀的偏好;无 fb 的条目按追加处理。回新数组,不改入参。 */
+  /* 回流写入(双端同一口径):带 fb 的条目按键原地更新——同一集/同一项目反复闭环只留最新一条结论;
+   * 无 fb 的条目按追加处理。回新数组,不改入参。
+   * 原地更新只压住"同一集反复跑"这一路:集数本身在长——回流每集占三条(理解/分镜/审片各一个 fb 键),
+   * 桶到 MEM_MAX 后若还按先进先出截尾,十几集下来先出局的就是排在最前面的用户「记住…」。
+   * 所以满桶淘汰按优先级来:先挤最旧的自动回流条(带 fb),用户自沉淀的条目留到最后;
+   * 本次刚写下/刚更新的条目不参与本轮淘汰(否则新结论会把自己挤掉);
+   * 自动条不够扣(空桶、全是用户条)时退回先进先出挤最旧的——与原行为一致。 */
   W.memWrite = function (mem, entries) {
     const out = (Array.isArray(mem) ? mem : []).slice();
+    const fresh = [];
     (Array.isArray(entries) ? entries : []).forEach(e => {
       if (!e || !e.text) return;
       const i = e.fb ? out.findIndex(m => m && m.fb === e.fb) : -1;
-      if (i >= 0) out[i] = Object.assign({}, out[i], e);
-      else out.push(e);
+      if (i >= 0) { out[i] = Object.assign({}, out[i], e); fresh.push(out[i]); }
+      else { out.push(e); fresh.push(e); }
     });
-    return out.length > W.MEM_MAX ? out.slice(-W.MEM_MAX) : out;
+    while (out.length > W.MEM_MAX) {
+      let i = out.findIndex(m => m && m.fb && fresh.indexOf(m) < 0);
+      if (i < 0) i = out.findIndex(m => fresh.indexOf(m) < 0);
+      out.splice(i < 0 ? 0 : i, 1);
+    }
+    return out;
   };
   /* ---- 记忆播种与板块迁移(双端唯一一份) ----
    * 板块改名迁移与"标准沉淀 + 知识库种子"补种此前只发生在浏览器 agent.js memAll() 里,headless
