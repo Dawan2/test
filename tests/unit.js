@@ -7369,6 +7369,51 @@ const contractTests = [
     [].concat(...Skills.list().map(s => s.checks)).forEach(id => assert(typeof Skills.CHECKS[id] === 'function', '校验项未注册实现:' + id));
     assertEq(Skills.check('review', {}).length, Skills.list('review').reduce((n, s) => n + s.checks.length, 0), 'check 结果数应等于该步已登记校验项数');
   } },
+  { name: '人手命令不许进任一条目的 steps:manual 单源 + 逐条目递归扫(SK-26 之外的 playbook 同样封死)', fn() {
+    /* SK-26 那条判据只看它自己的 steps 与自己那本 playbook 投影,而 steps 是**每一条**编排条目都有的东西:
+     * 同一手改法插进 SK-25(审片修订闭环)或 SK-30(一键成片投影)的 steps 里,基线上一条测都不红——
+     * 而那两本 playbook 与 SK-26 那本走的是同一个出口(Skills.playbooks() → mcp.js hujing_playbook),
+     * 调用方照着步序一步步跑,蒸馏就在主线跑完的路上自动发生了,而蒸馏改写 persona 没有撤回口。
+     * SK-05/SK-16 那两本红,红的是"这条链逐字应该是那九步/四步"那类整链恒等断言——
+     * 它拦下这一手是顺带的,链一旦按产品需要真加了一步,那道拦阻就跟着让开了。
+     * 故判据换类别:不数某一条链有几步,而是把「这条命令是人手动作」做成注册表事实(cmd-registry 的 manual),
+     * 由 Skills.validate 逐条目递归扫 steps。四种绕法一并封死——换条目、改成字符串拼接(判的是运行期取到的
+     * cmd 值,不是源码字面)、嵌一层 steps、写在今天还不投影的非编排条目上(kinds/pending 一改就投影得出来)。 */
+    const Skills = require('../js/skills.js');
+    const CmdRegistry = require('../js/cmd-registry.js');
+    const manual = CmdRegistry.META.filter(m => m.manual).map(m => m.name);
+    assertEq(manual.join(','), 'expert.evolve', '人手命令清单取自注册表 manual 字段(多一条少一条都要同轮交代产品口径)');
+    // 禁令封的是编排面,不是这条命令本身:它照旧是四端出口,且仍被 SK-26 登记在 cmds 上
+    assert(Skills.list().some(s => s.cmds.includes('expert.evolve')), 'expert.evolve 仍须被条目登记在 cmds 上(禁进 steps 不等于摘掉人手出口)');
+    // 实况:逐条目 + 逐本 playbook 投影递归扫,一条人手命令都不许出现
+    const hits = [];
+    const scan = (who, steps, at) => (steps || []).forEach((st, i) => {
+      if (manual.includes(st && st.cmd)) hits.push(who + ' 步骤 ' + at.concat(i + 1).join('.') + ':' + st.cmd);
+      if (Array.isArray(st && st.steps)) scan(who, st.steps, at.concat(i + 1));
+    });
+    Skills.list().forEach(s => scan(s.id, s.steps, []));
+    Skills.playbooks().forEach(pb => scan(pb.id + '(投影)', pb.steps, []));
+    assertEq(hits.join(' / '), '', '人手命令出现在编排步序里(等于把自动蒸馏写成口径)');
+    assertEq(Skills.validate({ CmdRegistry }).join(' | '), '', '本条判据在实况上应无话可说');
+    /* 四种绕法当场红:判据自己在这里被变异一次,免得它日后静静退化成恒真句 */
+    const reg = id => Skills.REG.find(x => x.id === id);
+    const cases = [
+      ['SK-25 直接插一步', 'review.reviseLoop', { cmd: 'expert.evolve', args: {} }],
+      ['SK-30 直接插一步', 'film.produceProjection', { cmd: 'expert.evolve', args: {} }],
+      ['字符串拼接', 'review.reviseLoop', { cmd: 'expert.' + 'evolve', args: {} }],
+      ['嵌一层 steps', 'film.produceProjection', { cmd: 'episode.compose', args: {}, steps: [{ cmd: 'expert.evolve', args: {} }] }],
+      ['写在非编排条目上', 'core.memoryDual', { cmd: 'expert.evolve', args: {} }],
+    ];
+    cases.forEach(([label, id, step]) => {
+      const s = reg(id);
+      s.steps.push(step);
+      try {
+        const bad = Skills.validate({ CmdRegistry });
+        assert(bad.some(x => x.startsWith(id + ':') && x.includes('人手命令')), label + ':' + id + ' 的 steps 里塞进人手命令应当场红,实际:' + (bad.join(' | ') || '(无)'));
+      } finally { s.steps.pop(); }
+    });
+    assertEq(Skills.validate({ CmdRegistry }).join(' | '), '', '变异用例应把注册表还原干净');
+  } },
   { name: 'skill 索引对齐短名单 30 条:SK 编号连续、波次配比 9/5/16、四类单源键全覆盖', fn() {
     const Skills = require('../js/skills.js');
     const list = Skills.list();
@@ -9965,7 +10010,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 586, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 587, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 143, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 108, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -10300,7 +10345,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 206;
+    const FLOOR = 207;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接

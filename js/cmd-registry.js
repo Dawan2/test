@@ -80,8 +80,11 @@
     },
     {
       /* 专家自进化:作用在「专家」这个对象上而不在某个项目上,故 needs 为空(不吃 pid/epid)——
-       * 四端唯一一条项目外的领域命令。它是**人手**动作:不挂在任何主线闭环收尾上,也不进 SK-26 的 playbook 步序。 */
-      name: 'expert.evolve', label: '专家自进化', risk: 'exec', needs: [],
+       * 四端唯一一条项目外的领域命令。它是**人手**动作:不挂在任何主线闭环收尾上,也不进任何 playbook 步序。
+       * manual 就是这条口径的单一来源:编排层的 steps 是会被逐步执行的步序表,
+       * 蒸馏又是写死进 persona 且没有撤回口的动作,故它只许进 cmds(命令面),进任一条目的 steps 即自动蒸馏。
+       * 判据在 Skills.validate:按本字段逐条目递归扫 steps,不认命令名字面(改成拼接也拦得住)。 */
+      name: 'expert.evolve', label: '专家自进化', risk: 'exec', needs: [], manual: true,
       desc: '把导演助手记忆里该专家生效板块的沉淀蒸馏为 ≤4 条进化条款追加进其 persona(1 积分,失败退费);预置专家的条款落自定义副本(同一预置只派生一份)。未在任何板块生效或该板块无沉淀一律在扣费前如实 blocked',
       args: [{ name: 'expert', type: 'string', required: true, desc: '专家 id 或名称(预置 ex_* 或自定义 cx_*)' }, UI],
     },
