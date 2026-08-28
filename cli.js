@@ -726,11 +726,25 @@ CMD['shots-import'] = async (a, f) => {
     const ep = findEp(proj, a[1]);
     const base = f.append ? (ep.shots || []).length : 0;
     const norm = arr.map((s, i) => normShot(s, i, base));
+    /* 镜头 id 唯一闸:normShot 透传 raw.id(整表导出改完再导回时,视频/审片/确认态按 id 认领原镜),
+     * 但同 id 两行落库后这张表就散了——findShot/shot-set/审片回写全按 id 取首行,第二行再也寻不着,
+     * 而点名子集是按行筛的(ids.has(s.id)),点名一次两行都跑,一个 id 收两笔视频钱、写回的还是首行。
+     * 撞上表内已有或本次已分配的 id 就改发新 id(口径同 Store.trashRestore 的 id 冲突改名),并如实报出改了几镜。 */
+    const taken = new Set(f.append ? (ep.shots || []).map(s => s.id) : []);
+    let renamed = 0;
+    norm.forEach(s => {
+      if (taken.has(s.id)) {
+        renamed++;
+        do { s.id = 'sh_' + Date.now().toString(36) + '_' + crypto.randomBytes(4).toString('hex'); } while (taken.has(s.id));
+      }
+      taken.add(s.id);
+    });
+    if (renamed) log(renamed + ' 镜的 id 与表内已有/本次重复,已改发新 id(镜头 id 是分镜表唯一寻址键,重复即无法逐镜寻址)');
     ep.shots = f.append ? (ep.shots || []).concat(norm) : norm;
     ep.status = 'storyboarded';
     ep.shotsSourceRev = ep.contentRev || 0; // 导入即一次"分镜发布":记录对应剧本版本(对齐智能分镜发布口径,消除"手动导入仍判旧"误报)
     ep.shotsGraphRev = ep.graphRev || 0;    // 记录对应事件图谱版本
-    return { episode: ep.id, imported: norm.length, total: ep.shots.length, replaced: !f.append };
+    return { episode: ep.id, imported: norm.length, total: ep.shots.length, replaced: !f.append, renamedIds: renamed };
   })).ret;
 };
 /* 单镜字段补丁(领域校验,替代裸 Object.assign):受管字段拒绝直写;已知字段类型校验;

@@ -2945,6 +2945,38 @@ const commandsTests = [
     assertEq(c2.result.note, c0.result.note, 'CLI 那端类数组不许抛(抛出去 exec 直接非零退出),实际:' + c2.result.note);
     assertEq(sbc.__genShots.join(','), '', '三次都没有镜下发到引擎');
   } },
+  { name: 'CLI shots-import:同 id 两行进不了分镜表(撞 id 改发新 id),点名一次引擎就只收一行', fn: async () => {
+    /* 镜头 id 是分镜表的唯一寻址键:findShot/shot-set/shot-confirm/审片回写都按 id 取首行。
+     * 而两端选人闸按行筛(ids.has(s.id))——同 id 两行落库后点名一次两行都跑,一个 id 收两笔视频钱,
+     * 且两笔写回的都是首行(第二行永远寻不着,钱花了什么也没多出来)。闸设在写入侧,选人那一侧一个字没动:
+     * 本条不许改成"选人按 id 去重只跑一行"来假过——那会把点名两行的正常子集也一并砍掉。
+     * raw.id 透传本身要留着:整表导出改完导回时,视频/审片/确认态全靠 id 认领原镜。 */
+    const sb = loadCli();
+    const { ep } = cliCtx(sb, []);
+    const file = path.join(require('os').tmpdir(), 'w226-shots-' + process.pid + '.json');
+    const write = rows => fs.writeFileSync(file, JSON.stringify(rows));
+    try {
+      write([
+        { id: 'dup', plot: '同 id 第一行', prompt: 'p1', confirm: true, image: 'i.png' },
+        { id: 'dup', plot: '同 id 第二行', prompt: 'p2', confirm: true, image: 'i.png' },
+      ]);
+      const CMD = vm.runInContext('CMD', sb);
+      const r = await CMD['shots-import'](['p1', 'ep1'], { file });
+      assertEq(r.imported, 2, '两行都得落库(闸改的是 id,不是替用户砍掉一行)');
+      assertEq(r.renamedIds, 1, '改发新 id 的镜数要如实报出来(静默改 id 等于把寻址键悄悄换了)');
+      assertEq(ep.shots[0].id, 'dup', '首行照旧认领用户给的 id(导出改完导回时按 id 认领原镜)');
+      assert(ep.shots[1].id !== 'dup' && /^sh_/.test(ep.shots[1].id), '撞 id 的第二行须改发新 id,实际:' + ep.shots[1].id);
+      // 追加导入撞的是表内已有的 id,同一道闸
+      write([{ id: 'dup', plot: '追加撞 id', prompt: 'p3', confirm: true, image: 'i.png' }]);
+      const r2 = await CMD['shots-import'](['p1', 'ep1'], { file, append: true });
+      assertEq(r2.renamedIds, 1, '--append 撞表内已有 id 同样改发新 id');
+      assertEq(ep.shots.map(s => s.id).filter((v, i, a) => a.indexOf(v) === i).length, 3, '落库后三行三个 id,一个不重');
+      // 写入闸修好后,点名一次引擎实收一行、按一镜计费(此前是 ["dup","dup","dup"]、total=3)
+      const g = await sb.EXEC['episode.generateVideos'].run({ pid: 'p1', epid: 'ep1', shotIds: ['dup'] }, {});
+      assertEq(sb.__genShots.join(','), 'dup', '点名一个 id,引擎只收那一行');
+      assertEq(g.result.total, 1, '回执按真跑的镜数报(重复 id 时这里是 3,三笔视频钱)');
+    } finally { try { fs.unlinkSync(file); } catch (_) {} }
+  } },
   { name: 'CLI exec smartReview:单独调用只评一次(重抽循环只在 produce 编排里),故注册表不替它登记 maxRetry', fn: async () => {
     /* 浏览器那一端 episode.smartReview 自己带重抽循环,轮次入参有落点;headless 这一端不是同一形态——
      * 它是一次 /api/wf/smart-review 往返,重抽循环长在 produce 编排里。故 --args '{"maxRetry":5}'
@@ -11500,7 +11532,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 643, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 644, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 147, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 109, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
