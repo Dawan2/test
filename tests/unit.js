@@ -3622,6 +3622,43 @@ const plansTests = [
     assertEq(had.steps[0].cmd, undefined);
     assert(had.steps[0].goto.includes('/episode/ep1'));
   } },
+  /* 项目级前置三步(提取主体/主体生图/剧本拆集)的待办判定曾是全仓第三份门槛拷贝:
+   * 计划层各自内联判「剧本在不在、主体库空不空、缺几张图、有没有分集」,与 Domain.gateBlockers
+   * (流程条与问题中心同读的那一份)并列。这里两向钉住它已收口——换掉派生的产出计划步随之改,
+   * 内联拷贝拿不到桩,退回去当场红。 */
+  { name: 'fromWorkflow:项目级前置三步的待办判定现取 Domain.gateBlockers(计划层不写第三份门槛拷贝)', fn() {
+    const sb = loadPlans();
+    const real = sb.Domain.gateBlockers;
+    const p = { id: 'p1', script: '整本剧本', subjects: [{ id: 'sj1', name: '主角', image: '' }], episodes: [] };
+    assertEq(sb.Plans.fromWorkflow(p).steps.map(s => s.cmd).join(','), 'subject.generateImage,project.splitEpisodes',
+      '基线:真派生报 subjects-no-image + no-eps,对应补图步与拆集步');
+    // ① 派生说没有前置断点 → 项目级一步不出(项目对象一字未改:内联拷贝会照旧数出缺图与空分集)
+    sb.Domain.gateBlockers = () => [];
+    assertEq(sb.Plans.fromWorkflow(p), null, '门槛派生说没有前置断点,计划层就不该自己再判出一步');
+    // ② 缺图数取阻塞项自带的 count,不在计划层重数一遍(桩给的 7 与项目里真实的 1 张不同)
+    sb.Domain.gateBlockers = () => [{ step: 'subjects', code: 'subjects-no-image', label: '7 个主体缺权威图', count: 7 }];
+    const one = sb.Plans.fromWorkflow(p).steps;
+    assertEq(one.map(s => s.cmd).join(','), 'subject.generateImage', '表外的码不投,只出补图这一步');
+    assertEq(one[0].label, '补齐主体参考图(7 个缺图)', '缺图数应取阻塞项的 count');
+    // ③ 剧本这一步没过(no-script 在)时,提取与拆集两步都不抢在前面
+    sb.Domain.gateBlockers = () => [{ step: 'script', code: 'no-script', label: '未上传剧本' },
+      { step: 'subjects', code: 'no-subjects', label: '未提取主体' }, { step: 'eps', code: 'no-eps', label: '未建分集' }];
+    assertEq(sb.Plans.fromWorkflow(p), null, 'no-script 未消前不出提取主体/剧本拆集步');
+    sb.Domain.gateBlockers = real;
+  } },
+  { name: 'fromWorkflow:剧本这一步与流程条同口径(提取过主体的老项目不再一步都推不出来)', fn() {
+    const sb = loadPlans();
+    // 老项目:提取过主体但没存整本原文——流程条与问题中心都认这一步已过,计划层从前认它没剧本
+    const legacy = { id: 'p1', extractDone: true, subjects: [], episodes: [] };
+    assertEq(sb.Domain.workflow(legacy, false).steps.find(s => s.key === 'script').done, true,
+      '前提:流程条认这类老项目的剧本步已过');
+    const pl = sb.Plans.fromWorkflow(legacy);
+    assert(pl, '同一个项目流程条说剧本已在库、计划层说无待推进事项——两个面结论不许相反');
+    assertEq(pl.steps.map(s => s.cmd).join(','), 'project.extractSubjects,project.splitEpisodes',
+      '实际:' + pl.steps.map(s => s.label).join(' / '));
+    // 反向:剧本这一步真没过时提取/拆集仍不出——本条钉的是同口径,不是把门槛拆掉
+    assertEq(sb.Plans.fromWorkflow({ id: 'p2', subjects: [], episodes: [] }), null, '两个字段都空时前置两步仍不出');
+  } },
   { name: 'fromWorkflow:需授权/需人工挑选的状态一律出导航步(重拆覆盖/过期镜子集/确认闸不代授权)', fn() {
     const sb = loadPlans();
     const doneShot = cleanEp().shots[0];
@@ -4778,6 +4815,26 @@ const contractTests = [
     const gateKinds = Issues.gates().map(g => g.kind);
     F.projection().forEach(x => x.codes.forEach(c =>
       assert(gateKinds.indexOf(c) >= 0 || c === 'no-shots', 'flow-tpl 按码筛的前置码 ' + c + ' 应同在 Issues.gates() 里(码名再分裂即红)')));
+  } },
+  { name: '前置门槛第三份拷贝已消:js/plans.js 的项目级待办按 gateBlockers 的码取材,不自己判剧本/主体/分集', fn() {
+    /* 上一条钉的是流程条与问题中心两个消费面,计划层曾是第三份:三个取材器各自内联判了一遍
+     * 「剧本在不在、主体库空不空、缺几张图、有没有分集」,且剧本那半的口径还与门槛派生不同。
+     * 这里从源级封死回潮的三条路——判据字面、缺图计数、码名分裂。 */
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'plans.js'), 'utf8');
+    const Domain = require('../js/domain.js');
+    assert(src.includes('Domain.gateBlockers(p)'), 'js/plans.js 的项目级前置三步应现取 Domain.gateBlockers');
+    assertEq((src.match(/p\.script/g) || []).length, 0,
+      'js/plans.js 不得再自己判整本原文在不在(那是 gateBlockers 的判据,口径还与它不同:少了 extractDone 那一半)');
+    assertEq((src.match(/!s\.image/g) || []).length, 0, 'js/plans.js 不得再自己数缺图主体(缺图数取阻塞项自带的 count)');
+    assertEq((src.match(/!\(p\.episodes \|\| \[\]\)\.length/g) || []).length, 0, 'js/plans.js 不得再自己判分集表空不空');
+    // 按码取材的码必须是 gateBlockers 真会回的码:分裂出一个近义码只会静默筛空,看起来与"这步没待办"一模一样
+    const codes = new Set([].concat(
+      Domain.gateBlockers({ id: 'p', subjects: [], episodes: [] }),
+      Domain.gateBlockers({ id: 'p', script: 'x', subjects: [{ name: 'a' }], episodes: [{ id: 'e1' }] })
+    ).map(g => g.code));
+    const used = [...src.matchAll(/gates\['([a-z-]+)'\]/g)].map(m => m[1]);
+    assertEq(used.length, 5, '项目级三步按码取材共五处(提取步与拆集步各判两码:剧本这一步过了没、本步自己的断点在不在;补图步一处)');
+    used.forEach(c => assert(codes.has(c), 'js/plans.js 按码取材的 ' + c + ' 不是 Domain.gateBlockers 会回的码(码名分裂即静默筛空)'));
   } },
   { name: '命令元数据单源:mcp.js 工具描述由注册表生成(hujing_exec 词表不再手抄)', fn() {
     const CR = require('../js/cmd-registry.js');
@@ -7470,7 +7527,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 506, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 509, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 130, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -7606,7 +7663,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 160;
+    const FLOOR = 161;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
