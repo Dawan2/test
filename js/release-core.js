@@ -39,13 +39,17 @@
     const list = [];
     let fails = 0, warns = 0;
     // G1 workflow 每集 status === 'done'
-    try {
+    // Domain 是本层的必注入依赖:漏注入不许落进下面的 catch 降成 warn——判不出来就不等于"没有未过门项",
+    // 那会让本该 fail 的 G1 在回执上算成 fails 0(浏览器那半的 warn 说的是页面模块未加载,与调用方漏传不是一回事)。
+    if (!Domain || typeof Domain.episodeState !== 'function') {
+      list.push(gate('g1-workflow', '主线步骤全完成', 'fail', '缺 Domain 注入:主线状态判不出来')); fails++;
+    } else try {
       const blockers = [];
       eps.forEach(ep => {
         const st = Domain.episodeState(p, ep, online);
-        if (st.status !== 'done') blockers.push({ ep: ep.title || ep.id, status: st.status, action: (st.action && st.action.label) || '' });
+        if (st.status !== 'done') blockers.push({ ep: ep.title || ep.id, status: st.status, label: (st.action && st.action.label) || '' });
       });
-      if (blockers.length) { list.push(gate('g1-workflow', '主线步骤全完成', 'fail', blockers.map(b => b.ep + '(' + b.status + (b.action ? ':' + b.label : '') + ')').join('；'))); fails++; }
+      if (blockers.length) { list.push(gate('g1-workflow', '主线步骤全完成', 'fail', blockers.map(b => b.ep + '(' + b.status + (b.label ? ':' + b.label : '') + ')').join('；'))); fails++; }
       else list.push(gate('g1-workflow', '主线步骤全完成', 'pass', eps.length + ' 集 done'));
     } catch (e) { list.push(gate('g1-workflow', '主线步骤', 'warn', 'Domain 异常:' + e.message)); warns++; }
     // G3 审片(每集都必须有审片记录且达标:无记录集=fail,与前端 Release.collect 同口径)

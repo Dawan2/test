@@ -3922,6 +3922,39 @@ const releaseTests = [
     assertEq(bad.overall, 'fail');
     assert(bad.fails >= 2, '低分审片 + 主体缺图应至少两门 fail,实际 ' + bad.fails);
   } },
+  { name: 'release-core · G1 未过门回执:逐集点名推荐动作(不印 undefined),与浏览器那半逐字同形', fn() {
+    /* 收集侧把推荐动作按 `action` 存、渲染侧却读 `b.label`,于是每一集恒印「集名(状态:undefined)」:
+     * 门禁结论没错,错在回执——看回执的人被告知"下一步是 undefined"。两端各有一份渲染,
+     * 故这里连浏览器那半一起钉,任一侧改回读错字段即红。 */
+    const RC = require('../js/release-core.js');
+    const D = require('../js/domain.js');
+    const noScript = releaseReadyEp({ id: 'ep1', title: '第1集', content: '' }); // blocked → 编写剧本
+    const noShots = releaseReadyEp({ id: 'ep2', title: '第2集', shots: [] });    // ready   → 生成分镜
+    const p = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [noScript, noShots] };
+    const g1 = RC.gates(p, { Domain: D, online: false }).gates.find(x => x.code === 'g1-workflow');
+    assertEq(g1.status, 'fail');
+    assert(!/undefined/.test(g1.info), 'G1 回执不许出现 undefined(推荐动作取错字段即恒印它),实际:' + g1.info);
+    assertEq(g1.info, '第1集(blocked:编写剧本)；第2集(ready:生成分镜)', '每集按「集名(状态:推荐动作)」点名');
+    const sb = loadRelease();
+    const b1 = sb.Release.collect(p, { online: false }).gates.find(x => x.code === 'g1-workflow');
+    assertEq(b1.info.replace(/· /g, ''), g1.info, '两端 G1 回执逐字同形(浏览器那半只多一个「· 」前缀)');
+  } },
+  { name: 'release-core · gates 漏注入 Domain:G1 如实 fail 且计进 fails(判不出来不得在回执上记成零未过门)', fn() {
+    /* Domain 是本层的必注入依赖。漏注入时逐集调用当场抛 TypeError、被 G1 那个 catch 兜成 warn,
+     * 于是同一个未完成的项目:注入了 → fail(fails 1),漏注入 → warn(fails 0),回执上未过门项凭空少一条。
+     * 这里钉的是「判不出来按未过门算」,不是抬门:注入齐全时的判据与计数一个字没动(上一条用例守着)。 */
+    const RC = require('../js/release-core.js');
+    const D = require('../js/domain.js');
+    const p = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [releaseReadyEp({ content: '' })] };
+    const withD = RC.gates(p, { Domain: D, online: false });
+    const bare = RC.gates(p, { online: false });
+    const g1 = bare.gates.find(x => x.code === 'g1-workflow');
+    assertEq(g1.status, 'fail', '缺 Domain 注入不得降成 warn');
+    assert(/Domain/.test(g1.info), 'info 须点名缺的是什么,实际:' + g1.info);
+    assertEq(bare.fails, withD.fails, '同一夹具漏注入不许比注入时少一门 fail');
+    assertEq(bare.gates.length, 7, '仍是七项核心门(缺注入只改 G1 的结论,不少一门)');
+    assert(RC.brief(bare).blockers.some(b => b.code === 'g1-workflow'), '未过门项须出现在回执摘要里');
+  } },
   { name: 'release-core · precheck:空项目 / 缺门禁结论 / 未过门各给明确错误码;force 授权位放行且如实标 forced', fn() {
     const RC = require('../js/release-core.js');
     const pass = { overall: 'cond-pass', fails: 0, warns: 1, score: 9, at: 1, gates: [] };
@@ -7135,7 +7168,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 492, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 494, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 130, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 102, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -7271,7 +7304,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 149;
+    const FLOOR = 150;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
