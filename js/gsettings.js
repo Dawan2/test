@@ -370,7 +370,8 @@
         }
         const list = customExperts();
         const idx = list.findIndex(x => x.id === ne.id);
-        if (idx >= 0) list[idx] = ne; else list.push(ne);
+        // 派生源不随编辑丢失:from 丢了下次点预置专家的「🧠 进化」会再派生一份副本
+        if (idx >= 0) { if (list[idx].from) ne.from = list[idx].from; list[idx] = ne; } else list.push(ne);
         if (forgeDraft && forgeDraft.id === ne.id) forgeDraft = null; // 草稿经编辑保存后清掉预览
         Store.save();
         U.toast(`已保存「${ne.name}」到专家库`, 'success');
@@ -555,7 +556,10 @@
           <div class="small muted" style="line-height:1.7;margin-bottom:10px;border-top:1px dashed var(--border2);padding-top:8px">
             ${DIR_DIMS.map(d => `<div>· <b>${d}</b>:${U.esc(e.dims[d].slice(0, 20))}…</div>`).join('')}
           </div>
-          <button class="btn sm ${hired && hired.id === e.id ? '' : 'primary'}" data-hire="${e.id}" ${hired && hired.id === e.id ? 'disabled' : ''}>${hired && hired.id === e.id ? '✓ 雇佣中' : '⚡ 雇佣该导演'}</button>
+          <div class="row" style="gap:8px;flex-wrap:wrap">
+            <button class="btn sm ${hired && hired.id === e.id ? '' : 'primary'}" data-hire="${e.id}" ${hired && hired.id === e.id ? 'disabled' : ''}>${hired && hired.id === e.id ? '✓ 雇佣中' : '⚡ 雇佣该导演'}</button>
+            <button class="btn sm" data-pevolve="${e.id}" title="从使用记录进化:把该专家生效板块的协作记忆蒸馏为进化条款(1积分)。预置专家不可改写,条款写进它的自定义副本">🧠 进化</button>
+          </div>
         </div>`).join('')}
       </div>
       ${myStyle.length ? `
@@ -597,7 +601,8 @@
           <p class="small muted" style="line-height:1.7;margin-bottom:10px">${U.esc(e.desc || '')}</p>
           <div class="row" style="gap:8px;flex-wrap:wrap">
             <button class="btn sm" data-x="tolab">到板块中雇佣调用 →</button>
-            ${e.custom ? `<button class="btn sm" data-cedit="${e.id}">✏ 编辑</button><button class="btn sm" data-cevolve="${e.id}" title="从使用记录进化:把导演助手记忆里你的纠正/偏好蒸馏为该专家的进化条款,追加进人设(1积分)">🧠 进化</button><button class="btn sm" data-cdel="${e.id}">🗑 删除</button>` : ''}
+            ${e.custom ? `<button class="btn sm" data-cedit="${e.id}">✏ 编辑</button><button class="btn sm" data-cevolve="${e.id}" title="从使用记录进化:把导演助手记忆里你的纠正/偏好蒸馏为该专家的进化条款,追加进人设(1积分)">🧠 进化</button><button class="btn sm" data-cdel="${e.id}">🗑 删除</button>`
+              : `<button class="btn sm" data-pevolve="${e.id}" title="从使用记录进化:把该专家生效板块的协作记忆蒸馏为进化条款(1积分)。预置专家不可改写,条款写进它的自定义副本">🧠 进化</button>`}
           </div>
         </div>`).join('')}
       </div>`;
@@ -612,6 +617,8 @@
       });
       body.querySelectorAll('[data-cdel]').forEach(b => b.onclick = () => delCustomExpert(b.dataset.cdel, renderExperts));
       body.querySelectorAll('[data-cevolve]').forEach(b => b.onclick = () => evolveExpert(customExperts().find(x => x.id === b.dataset.cevolve), renderExperts));
+      // 预置专家同一个人手入口、同一份计费口径:蒸馏出的条款由 evolveExpert 落到该预置专家的自定义副本
+      body.querySelectorAll('[data-pevolve]').forEach(b => b.onclick = () => evolveExpert(EXPERTS.find(x => x.id === b.dataset.pevolve), renderExperts));
 
       body.querySelectorAll('[data-hire]').forEach(b => b.onclick = () => {
         hireExpert(allExperts().find(x => x.id === b.dataset.hire), renderExperts);
