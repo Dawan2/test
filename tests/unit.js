@@ -1852,11 +1852,22 @@ function loadCommands() {
       ep.shots = [makeShot(0), makeShot(1)];
       if (hooks && hooks.done) hooks.done(2);
     },
+    /* 与 sb-io.doCompose 同口径的合成桩:每跑一次真扣一次 ff.compose、写回成片指纹四件套。
+     * 少了这两笔,"这一步扣没扣费""跑完算不算最新"在沙箱里都读不出来(cost 恒 0、成片恒判旧)。 */
     composeVideo: (p, ep, main, opts) => {
       sb.__called.push('composeVideo');
       const tk = sb.__composeTask === undefined ? { status: 'done' } : sb.__composeTask;
       if (opts && opts.onTask) opts.onTask(tk);
-      if (tk && tk.status === 'done') { ep.composed = true; ep.composedUrl = '/uploads/gen/final.mp4'; }
+      if (tk && tk.status === 'done') {
+        sb.__credits = (sb.__credits == null ? 999 : sb.__credits) - sb.COST.compose;
+        ep.composed = true;
+        ep.composedUrl = '/uploads/gen/final.mp4';
+        ep.composedVia = 'shots';
+        ep.composedInputHash = sb.Domain.composedInputHash(ep, false);
+        ep.composedDialogueSig = sb.Domain.composedDialogueSig(ep, false);
+        ep.composedSourceRev = ep.contentRev || 0;
+        ep.composedGraphRev = ep.graphRev || 0;
+      }
     },
     autoSmartReview: async (p, ep, main, shots, quiet) => { sb.__called.push('autoSmartReview'); return sb.__reviewR || { pass: 3, retry: 0, manual: 0 }; },
   });
@@ -1906,6 +1917,20 @@ function cmdCtx(sb, over) {
   const ep = makeEp(Object.assign({ content: '测试剧本正文', composed: false, shots: [makeShot(0, { confirm: true }), makeShot(1, { confirm: true })] }, over || {}));
   const p = { id: 'p1', episodes: [ep], subjects: [{ id: 'sub1', name: '主角', kind: 'character', image: 'x.png' }] };
   sb.__proj = p;
+  return { p, ep };
+}
+/* cmdCtx 之上把这一集做成「已合成且合成输入未变」(Domain.epComposedReady 为真):
+ * 指纹现取沙箱里那份真 Domain,不手抄第二份——判据换了这里跟着换,夹具不会替产品作假证 */
+function composedCtx(sb, over) {
+  const { p, ep } = cmdCtx(sb, over);
+  ep.composed = true;
+  ep.composedUrl = '/uploads/gen/old.mp4';
+  ep.composedVia = 'shots';
+  ep.composedSourceRev = ep.contentRev || 0;
+  ep.composedGraphRev = ep.graphRev || 0;
+  ep.composedInputHash = sb.Domain.composedInputHash(ep, false);
+  ep.composedDialogueSig = sb.Domain.composedDialogueSig(ep, false);
+  assert(sb.Domain.epComposedReady(ep, false), '夹具前提:这一集得真是「已合成且指纹未变」');
   return { p, ep };
 }
 /* CLI(headless 那一端)沙箱:cli.js 是脚本不是模块,末尾自调 main();这里只掐掉那一行入口,
@@ -2124,6 +2149,96 @@ const commandsTests = [
     assertEq(r.ok, true); assertEq(r.result.url, '/uploads/gen/final.mp4');
     assertEq(ep.composed, true, '合成成功应写回 composed');
   } },
+  /* 计划投影(TODO_OF['episode.compose'])与问题中心(composed-stale)都按 Domain.epComposedReady 判
+   * 「这一集没必要重跑」,而命令层此前无条件重跑:同一份输入拼出同一条成片,ff.compose 却真扣一次。
+   * 三方判据在这条里当场对质——投影说不用跑,自动步就不许跑。 */
+  { name: 'compose:成片已是最新时,自动/主线步不重跑——零调用零扣费,判据与计划投影/问题中心同一份', fn: async () => {
+    const sb = loadCommands();
+    const { p, ep } = composedCtx(sb);
+    loadFile(sb, 'issues.js');
+    // 另外两处投影的实况:两边都说"没必要重跑"
+    assertEq(sb.Domain.episodeState(p, ep, false).composedReady, true, '计划层取材器读的就是这个位');
+    assertEq(sb.Issues.collect(p, { online: false }).filter(x => x.kind === 'composed-stale').length, 0,
+      '问题中心不报成片过期(它也认这一份已是最新)');
+    // ① 单点自动调用(headless):原地返回旧成片
+    const c0 = sb.Store.credits();
+    const r = await sb.Commands.execute('episode.compose', { pid: 'p1', epid: 'ep1' });
+    assertEq(r.ok, true, '不重跑不是拦截:' + JSON.stringify(r.error || {}));
+    assertEq(r.status, 'done');
+    assertEq(r.result.fresh, true, '回执得说清这一次没重跑(否则与真跑完一模一样)');
+    assertEq(r.result.url, '/uploads/gen/old.mp4', '回的是原来那条成片,不是新拼的');
+    assertEq(r.cost, 0, '一分钱不该花');
+    assertEq(sb.Store.credits(), c0, '钱包一动不动');
+    assertEq(sb.__called.filter(x => x === 'composeVideo').length, 0, '合成引擎一次都不该起来');
+    assertEq(sb.__charges.length, 0, 'ff.compose 一笔都不该记');
+    assert(r.next && r.next.status, '照旧附 Domain 重推的 next');
+    // ② 一键成片编排(主线自动步):第 4 步同样不重跑,整轮零扣费
+    const sb2 = loadCommands();
+    const { ep: ep2 } = composedCtx(sb2);
+    const b0 = sb2.Store.credits();
+    const r2 = await sb2.Commands.execute('episode.produce', { pid: 'p1', epid: 'ep1' });
+    assertEq(r2.ok, true, '实际:' + JSON.stringify(r2.error || {}));
+    const cp = r2.result.steps.find(x => x.step === 'compose');
+    assertEq(cp.ok, true); assertEq(cp.cost, 0, '合成步扣费得是 0');
+    assertEq(cp.result.fresh, true, '编排回执里也留着这句实话');
+    assertEq(r2.cost, 0, '整轮零扣费(镜头都出片了、成片也最新,没有一件事要做)');
+    assertEq(sb2.Store.credits(), b0, '钱包一动不动');
+    assertEq(sb2.__called.filter(x => x === 'composeVideo').length, 0, '编排也不许把合成引擎叫起来');
+    assertEq(ep2.composedUrl, '/uploads/gen/old.mp4', '旧成片没被同一份输入覆盖一遍');
+    // ③ 反面:合成输入一变(改台词 → 烧录字幕/SRT 失配)就照旧真跑真扣费
+    const sb3 = loadCommands();
+    const { ep: ep3 } = composedCtx(sb3);
+    ep3.shots[0].dialogue = '改过的台词';
+    assertEq(sb3.Domain.epComposedReady(ep3, false), false, '前提:这一集已判旧');
+    const d0 = sb3.Store.credits();
+    const r3 = await sb3.Commands.execute('episode.compose', { pid: 'p1', epid: 'ep1' });
+    assertEq(r3.result.fresh, undefined, '真跑那一档不许带这句');
+    assertEq(r3.result.url, '/uploads/gen/final.mp4', '判旧就该重拼一条新的');
+    assertEq(d0 - sb3.Store.credits(), sb3.COST.compose, '判旧重跑照旧真扣 ff.compose');
+  } },
+  /* 另一头:这一档只挡"没人点名的重跑"。用户在工作区/剪辑台/预览窗/问题中心点下去的那次合成,
+   * 是他自己要的重来(换过转场参数想再渲一遍、想覆盖掉手改过的时间线),挡掉等于按钮点了没反应。 */
+  { name: 'compose:用户点名的重新合成(force)不被"已是最新"挡住——真跑真扣费,六个点名入口都带这个位', fn: async () => {
+    const sb = loadCommands();
+    const { ep } = composedCtx(sb);
+    const c0 = sb.Store.credits();
+    const r = await sb.Commands.execute('episode.compose', { pid: 'p1', epid: 'ep1', ui: true, force: true });
+    assertEq(r.ok, true, '实际:' + JSON.stringify(r.error || {}));
+    assertEq(r.result.fresh, undefined, '点名重来跑的是真合成,不该报"已是最新"');
+    assertEq(r.result.url, '/uploads/gen/final.mp4', '成片得是新拼的那条');
+    assertEq(ep.composedUrl, '/uploads/gen/final.mp4');
+    assertEq(sb.__called.filter(x => x === 'composeVideo').length, 1, '引擎得真起来一次');
+    assertEq(c0 - sb.Store.credits(), sb.COST.compose, '点名重来就是真扣一次 ff.compose');
+    assertEq(r.cost, sb.COST.compose);
+    /* 源级:点名入口靠 force 这个位穿透,少一个入口就是一颗点了没反应的按钮。
+     * 反过来,自动/主线那三条(一键成片编排、计划步、跑批经 produce)一律不许带它。 */
+    const NAMED = [
+      ['js/storyboard.js', 3], // 顶栏「合成成片」+ 流程条下一步/上一步的成片步
+      ['js/sb-io.js', 1],      // 预览窗「合成成片」
+      ['js/sb-views.js', 1],   // 剪辑台「合成成片」
+    ];
+    NAMED.forEach(([f, n]) => {
+      const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+      assertEq((src.match(/force: true/g) || []).length, n, f + ' 的点名入口应各带 force(少一个即一颗点了没反应的按钮)');
+    });
+    /* 问题中心那一条现跑一遍:「▶ 重新合成」带 force,而同一个处置口上的另外两条命令不带——
+     * force 在各命令里不是同一个意思(project.release 的 force 是「未过发布门也强打版本」),
+     * 处置口一律带上等于替用户签了别处的授权。 */
+    const ui = loadIssues();
+    loadFile(ui, 'issues-ui.js');
+    const seen = [];
+    ui.Commands = { execute: async (name, a) => { seen.push([name, a.force]); return { ok: true }; }, digest: () => {} };
+    const ip = { id: 'p1' };
+    await ui.Issues.fixIssue(ip, { cmd: 'episode.compose', epid: 'ep1' }, null);
+    await ui.Issues.fixIssue(ip, { cmd: 'episode.generateVideos', epid: 'ep1', shotIds: ['s1'] }, null);
+    await ui.Issues.fixIssue(ip, { cmd: 'episode.generateStoryboard', epid: 'ep1' }, null);
+    assertEq(JSON.stringify(seen), JSON.stringify([['episode.compose', true], ['episode.generateVideos', undefined], ['episode.generateStoryboard', undefined]]),
+      '只有「▶ 重新合成」这一条按点名重来发,实际:' + JSON.stringify(seen));
+    const plSrc = fs.readFileSync(path.join(ROOT, 'js/plans.js'), 'utf8');
+    assertEq((plSrc.match(/force/g) || []).length, 0, '计划步是自动步:不许替用户按下"照旧重来"');
+    const cmdSrc = fs.readFileSync(path.join(ROOT, 'js/commands.js'), 'utf8');
+    assertEq((cmdSrc.match(/force: true/g) || []).length, 0, '一键成片编排给子步的 args 里不许写死 force');
+  } },
   { name: 'smartReview:manual>0 转 needs_human(质量闸门语义)', fn: async () => {
     const sb = loadCommands();
     cmdCtx(sb);
@@ -2188,7 +2303,7 @@ const commandsTests = [
     assertEq(keys.join(','), 'generateVideos,smartReview,compose', '编排步骤序应与跑批/前端一致');
     assert(r.result.steps.every(x => x.ok), '各步骤应全部成功');
     assertEq(r.result.url, '/uploads/gen/final.mp4');
-    assertEq(r.cost, 5, 'cost 应累加子步(1 镜生成 × 5)');
+    assertEq(r.cost, 5 + sb.COST.compose, 'cost 应累加子步(1 镜生成 × 5 + 合成一次)');
     assert(r.next && r.next.status, '应附 next');
   } },
   { name: 'produce:待人工镜头质量闸门阻断合成(riskyCompose 放行)', fn: async () => {
@@ -2474,6 +2589,60 @@ const commandsTests = [
       '整集这一路的实话与点名那一路分得开,实际:' + JSON.stringify(gen.result.note));
     assert(new RegExp(ep.shots.length + ' 镜已出片').test(gen.result.note), '数得对上本集镜数,实际:' + gen.result.note);
     assert(sb.__called.includes('composeVideo'), '合成照做');
+  } },
+  /* 同一件事在 headless 那一端:CLI 的 exec 是 MCP 与一键成片编排第 4 步共用的出口,
+   * 它自己那份前置判定与浏览器命令层各写一份,谁也不替谁作证。 */
+  { name: 'CLI exec compose:成片已是最新时不发 ffmpeg 往返(--force / --ratio 点名重来照跑;hujing compose 原语不吃这道闸)', fn: async () => {
+    const D = require('../js/domain.js');
+    const mk = () => {
+      const sb = loadCli();
+      const { p, ep } = cliCtx(sb, [makeShot(0, { confirm: true, image: 'i0.png' }), makeShot(1, { confirm: true, image: 'i1.png' })]);
+      Object.assign(ep, { contentRev: 0, graphRev: 0, sbConfig: { ratio: '16:9', subtitle: true } });
+      ep.composed = true; ep.composedUrl = '/uploads/gen/old.mp4'; ep.composedVia = 'shots';
+      ep.composedSourceRev = 0; ep.composedGraphRev = 0;
+      ep.composedInputHash = D.composedInputHash(ep, true);
+      ep.composedDialogueSig = D.composedDialogueSig(ep, true);
+      assert(D.epComposedReady(ep, true), '夹具前提:已合成且合成输入未变');
+      sb.__posts = [];
+      sb.api = async (method, url) => { sb.__posts.push(url); return { url: '/uploads/gen/new.mp4', count: 2, transitions: { degraded: [] } }; };
+      return { sb, p, ep };
+    };
+    const ff = sb => sb.__posts.filter(u => u === '/api/ffmpeg/compose').length;
+    // ① 缺省(一键成片第 4 步、MCP、脚本):原地返回旧成片,一次 ffmpeg 往返都不发(ff.compose 是服务端按往返记账的)
+    const a = mk();
+    const r = await a.sb.EXEC['episode.compose'].run({ pid: 'p1', epid: 'ep1' }, {});
+    assertEq(r.ok, true, '实际:' + JSON.stringify(r.error || {}));
+    assertEq(r.result.fresh, true, '回执得说清这一次没重跑');
+    assertEq(r.result.url, '/uploads/gen/old.mp4', '回的是原来那条成片');
+    assertEq(ff(a.sb), 0, '一次 ffmpeg 往返都不该发(发了就是真扣一次 ff.compose)');
+    assertEq(a.ep.composedUrl, '/uploads/gen/old.mp4', '旧成片没被同一份输入覆盖一遍');
+    // ② --force:用户点名重来
+    const b = mk();
+    const rb = await b.sb.EXEC['episode.compose'].run({ pid: 'p1', epid: 'ep1', force: true }, {});
+    assertEq(rb.result.fresh, undefined); assertEq(ff(b.sb), 1, '点名重来得真发往返');
+    assertEq(b.ep.composedUrl, '/uploads/gen/new.mp4', '成片得换成新拼的那条');
+    // ③ --ratio/--no-subtitle 是不进成片指纹的渲染参数(指纹读的是 ep.sbConfig 那份):
+    //    给了就按点名重来处理,否则等于把用户点的画幅/字幕开关静默吞掉、回一句"已是最新"
+    const c = mk();
+    await c.sb.EXEC['episode.compose'].run({ pid: 'p1', epid: 'ep1' }, { ratio: '9:16' });
+    assertEq(ff(c.sb), 1, '点了画幅就得按点名重来跑');
+    const d = mk();
+    await d.sb.EXEC['episode.compose'].run({ pid: 'p1', epid: 'ep1' }, { subtitle: false });
+    assertEq(ff(d.sb), 1, '点了字幕开关同理');
+    // ④ 判旧就照跑(这道闸只挡"输入没变")
+    const e = mk();
+    e.ep.shots[0].dialogue = '改过的台词';
+    assertEq(D.epComposedReady(e.ep, true), false, '前提:这一集已判旧');
+    await e.sb.EXEC['episode.compose'].run({ pid: 'p1', epid: 'ep1' }, {});
+    assertEq(ff(e.sb), 1, '判旧重跑照旧真发往返');
+    // ⑤ hujing compose 那条原语不走本闸:它本身就是"按这些参数现渲一条"的人手动作
+    const g = mk();
+    await vm.runInContext('CMD', g.sb).compose(['p1', 'ep1'], {}); // CMD 与 EXEC 同为 const,同一 context 里再求一次值取出来
+    assertEq(ff(g.sb), 1, '人手原语照旧现渲');
+    // ⑥ 共享元数据登记了这个授权位(CLI 用法清单/MCP 工具描述/Agent 参数整形同读一份)
+    const R = require('../js/cmd-registry.js');
+    assert((R.byName['episode.compose'].args || []).some(x => x.name === 'force' && x.type === 'boolean'),
+      '注册表须登记 force(没登记 Agent 侧 sanitizeCmdArgs 会把它抹掉,点名重来传不进去)');
   } },
   { name: 'CLI exec smartReview:单独调用只评一次(重抽循环只在 produce 编排里),故注册表不替它登记 maxRetry', fn: async () => {
     /* 浏览器那一端 episode.smartReview 自己带重抽循环,轮次入参有落点;headless 这一端不是同一形态——
@@ -4977,6 +5146,23 @@ const plansTests = [
     assertEq(sb.Store._saves > 0, true, '执行后应 Store.save 持久化');
     const sm = sb.Plans.summary(p);
     assertEq(sm.done, 1); assertEq(sm.total, pl.steps.length);
+  } },
+  /* 计划步是自动步:它不许替用户按下"照旧重来"(带 force),而命令层判定没重跑时,
+   * 这一步照旧记 done——那句"完成"后面要是一片空白,用户读起来与真跑了一轮一模一样。 */
+  { name: 'execStep:计划步不带 force(自动步不代授权重跑);命令层说没重跑时尾注得说出来', fn: async () => {
+    const sb = loadPlans();
+    const p = { id: 'p1', subjects: [{ id: 'sj1', name: '主角', kind: 'character', image: '' }], episodes: [{ id: 'ep1', title: '第一集', content: '剧本', shots: [] }] };
+    sb.Plans.replace(p, sb.Plans.fromWorkflow(p));
+    sb.__cmdResult = { ok: true, status: 'done', cost: 0, result: { url: '/uploads/gen/old.mp4', fresh: true } };
+    await sb.Plans.execStep(p, 1, null);
+    const st = p.agentPlan.steps[1];
+    assertEq(st.status, 'done', '没必要重跑不是失败');
+    assertEq(st.note, '已是最新,未重跑', '尾注得说清这一步没花钱也没重跑;实际:' + JSON.stringify(st.note));
+    assertEq('force' in sb.__cmdCalls[0].args, false, '计划步不许替用户点名重来');
+    // 反面:真跑了一轮就没有这句(带成恒有的话,每次真花钱的步都要说"未重跑")
+    sb.__cmdResult = { ok: true, status: 'done', cost: 3, result: { url: '/uploads/gen/final.mp4' } };
+    await sb.Plans.execStep(p, 1, null);
+    assertEq(p.agentPlan.steps[1].note, '-3积分', '真跑那一档照旧只报成本');
   } },
   { name: 'execStep:needs_human→blocked;用户取消→pending 可重试;失败→failed', fn: async () => {
     const sb = loadPlans();
@@ -10612,7 +10798,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 613, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 617, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 143, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 109, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -10947,7 +11133,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 218;
+    const FLOOR = 219;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
