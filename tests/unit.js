@@ -347,6 +347,45 @@ function loadSbViews() {
   return sb;
 }
 
+/* 右栏 rightHTML(防废片提醒那一档)要真跑一遍:比 loadSbViews 多补它渲染路径上的全局
+ * (COST/MODELS/PH/ASSET_TAG 常量、SBGen 生成链、Voice/HumanReview 桩,以及带 desc 的策略表)。 */
+function loadSbViewsRight() {
+  const sb = makeSandbox();
+  installCommon(sb);
+  sb.Store.shotVideoStale = () => false;
+  sb.Review = { reportStale: () => false };
+  sb.U.thumb = f => f;
+  sb.U.hashColor = () => 0;
+  Object.assign(sb.SB, {
+    blankShot: () => ({}), buildShotPrompt: () => '', onEpPage: () => true,
+    genAudio: async () => {}, snapshotShot() {}, renderShots() {},
+    VOICES: [], PROMPT5_SECS: [], TRANSITIONS: [], STRATEGIES: [{ id: 'ref', name: '分镜参考', desc: '先生成分镜图确认构图再转视频' }],
+  });
+  sb.styleOf = () => '漫剧';
+  sb.negOf = () => '';
+  sb.COST = new Proxy({}, { get: () => 1 });
+  sb.MODELS = new Proxy({}, { get: () => ['prov,模型'] });
+  sb.PH = { image: () => '', shot: () => '' };
+  sb.ASSET_TAG = { character: 'cyan', scene: 'green', prop: 'yellow' };
+  sb.SBGen = { shotVersions: () => [], estShotDuration: () => 5, syncFrames() {} };
+  sb.Voice = { norm: v => ({ voice: String(v || '') }) };
+  sb.HumanReview = { shotImageUrls: () => [] };
+  loadFile(sb, 'domain.js');
+  loadFile(sb, 'prompts.js');
+  sb.Store.findSubject = (p, n) => sb.Domain.findSubject(p, n);
+  sb.Store.subjectImage = (p, n) => { const r = sb.Domain.findSubject(p, n); return r ? ((r.form && r.form.image) || r.s.image || '') : ''; };
+  loadFile(sb, 'sb-views.js');
+  return sb;
+}
+/* 防废片提醒夹具:单主体单镜项目;over 只改主体的图字段,ref 是该镜引用名(可为形态全称) */
+function refImgP(over, ref) {
+  const s = Object.assign({ id: 'sj1', name: '阿茶', kind: 'character', forms: [] }, over);
+  const shot = { id: 'sh0', order: 0, plot: '阿茶推门', prompt: '阿茶推门', camera: '固定镜头', duration: 5,
+    characters: [ref || '阿茶'], scene: '', props: [], confirm: true, history: [] };
+  const ep = { id: 'ep1', title: '第一集', content: '正文', shots: [shot], sbConfig: {} };
+  return { id: 'p1', name: '项目', style: '漫剧', script: '整本', subjects: [s], episodes: [ep] };
+}
+
 function loadSbIo() {
   const sb = makeSandbox();
   installCommon(sb);
@@ -3186,6 +3225,48 @@ const sbViewsTests = [
     const done = makeShot(1, { reviews: [{ score: 8 }] });
     const hd = sb.SBViews.shotThumbHTML({ id: 'p1' }, ep, done, 1, done);
     assert(hd.includes('✓ 已出片 · 审 8.0') && !hd.includes('ws-gen'), '非生成中走归一状态条');
+  } },
+  { name: 'rightHTML 防废片「出场主体缺图」:判据现取 Domain.subjectRefImage(桩换派生即改口,内联拷贝拿不到桩)', fn() {
+    /* 本档提醒答的是「这一镜生成时带不带得上主体参考图」,与真实发包同一个判据。
+     * 桩是本条的主判据:项目对象一字不改、只换派生,退回任何一份内联字段判定都看不见桩。 */
+    const sb = loadSbViewsRight();
+    const p = refImgP({ image: '/uploads/a/real.png' });
+    const ep = p.episodes[0];
+    sb.Domain.subjectRefImage = () => ''; // 派生说这一镜带不上图 → 提醒必须出
+    assert(/出场主体缺图/.test(sb.SBViews.rightHTML(p, ep, ep.shots[0], 0)), '派生说没图时须报缺图');
+    const p2 = refImgP({}); // 主体一张图都没有
+    const ep2 = p2.episodes[0];
+    sb.Domain.subjectRefImage = () => '/uploads/a/stub.png'; // 派生说带得上 → 提醒必须不出
+    assert(!/出场主体缺图/.test(sb.SBViews.rightHTML(p2, ep2, ep2.shots[0], 0)), '派生说有图时不得报缺图');
+  } },
+  { name: 'rightHTML 防废片:形态没单独出图不算缺图(主体权威图照样随包发出去,不报假警)', fn() {
+    /* 回归:此前右栏把形态引用解析成"只有形态自带图"的对象再自己判 !(image||imgRef),
+     * 于是「主体图齐全、这个形态没单独出图」被报成缺图,处置还指向一个无图可补的主体。 */
+    const sb = loadSbViewsRight();
+    const p = refImgP({ image: '/uploads/a/real.png', forms: [{ id: 'fm1', name: '战损' }] }, '阿茶-战损');
+    const ep = p.episodes[0];
+    const sel = ep.shots[0];
+    assertEq(sb.Domain.shotRefImages(p, sel).refImages.length, 1, '前提:这一镜实际带着主体权威图发出去');
+    const h = sb.SBViews.rightHTML(p, ep, sel, 0);
+    assert(!/出场主体缺图/.test(h), '实际带得上图就不该报缺图');
+    assert(h.includes('已绑定主体图') && !h.includes('缺主体图,废片风险高'), '角色标签同口径:已绑定,不打 ⚠');
+    // 反向那半:主体也没图时照旧报,免得整档提醒被改哑
+    const p2 = refImgP({ forms: [{ id: 'fm1', name: '战损' }] }, '阿茶-战损');
+    const ep2 = p2.episodes[0];
+    assertEq(sb.Domain.shotRefImages(p2, ep2.shots[0]).refImages.length, 0, '前提:这一镜实际不带任何主体参考');
+    assert(/出场主体缺图/.test(sb.SBViews.rightHTML(p2, ep2, ep2.shots[0], 0)), '实际带不上图仍须报缺图');
+  } },
+  { name: 'rightHTML 防废片:只有占位图的主体算缺图(占位 dataURL 不喂模型),与真实发包同结论', fn() {
+    const sb = loadSbViewsRight();
+    const p = refImgP({ image: 'data:image/ph;seed=abc' });
+    const ep = p.episodes[0];
+    assertEq(sb.Domain.shotRefImages(p, ep.shots[0]).refImages.length, 0, '前提:占位图不随包发送');
+    assert(/出场主体缺图/.test(sb.SBViews.rightHTML(p, ep, ep.shots[0], 0)), '占位图须报缺图');
+    // 大头照顶上时同样按实际发包算(权威图字段空着也不报缺)
+    const p2 = refImgP({ imgRef: '/uploads/a/head.png' });
+    const ep2 = p2.episodes[0];
+    assertEq(sb.Domain.shotRefImages(p2, ep2.shots[0]).refImages.length, 1, '前提:大头照随包发送');
+    assert(!/出场主体缺图/.test(sb.SBViews.rightHTML(p2, ep2, ep2.shots[0], 0)), '带得上大头照就不报缺图');
   } },
 ];
 
@@ -7179,6 +7260,29 @@ const contractTests = [
     assertEq(used.length, 5, '项目级三步按码取材共五处(提取步与拆集步各判两码:剧本这一步过了没、本步自己的断点在不在;补图步一处)');
     used.forEach(c => assert(codes.has(c), 'js/plans.js 按码取材的 ' + c + ' 不是 Domain.gateBlockers 会回的码(码名分裂即静默筛空)'));
   } },
+  { name: '「这一镜带不带得上主体参考图」只此一份:右栏防废片提醒经 Domain.subjectRefImage,不自判图字段', fn() {
+    /* 全仓「主体有没有图」分两问,判据本来就不同,不许互相迁就:
+     *   ① 权威图字段齐不齐(G9 / 门槛派生 / 补图选人 …)—— 判 !s.image;
+     *   ② 这一镜生成时带不带得上参考图 —— 判 Domain.subjectRefImage(形态图 > 大头照 > 权威图,占位 dataURL 不算)。
+     * 右栏那档提醒问的是 ②,却自己按 ① 的字段拼了第三种判据,且对形态引用只看形态自带图。
+     * 这里从源级封死回潮,并顺带钉住 ① 的两端 G9 一个字没被这次收口带走。 */
+    const sv = fs.readFileSync(path.join(ROOT, 'js', 'sb-views.js'), 'utf8');
+    assertEq((sv.match(/sj\.image \|\| sj\.imgRef/g) || []).length, 0,
+      'js/sb-views.js 不得再自己判主体图字段(那是第三份谓词,对形态引用还判错)');
+    assertEq((sv.match(/Domain\.subjectRefImage\(/g) || []).length, 1,
+      'js/sb-views.js 的取图判据应只此一处派生调用(多写一处就是又分家了)');
+    // ② 这一问的其余消费方(真实发包、真人审核取 URL)本来就走同一条优先级链,别名分裂即红
+    const dom = fs.readFileSync(path.join(ROOT, 'js', 'domain.js'), 'utf8');
+    assert(dom.includes('D.subjectRefImage = function'), 'Domain 应保有这一份派生');
+    // ① 权威图那一问的门槛未被迁就:两端 G9 仍按 !s.image 判,只有大头照的主体照旧算缺图
+    const Domain = require('../js/domain.js');
+    const RC = require('../js/release-core.js');
+    const headOnly = { id: 'p1', subjects: [{ id: 'sj1', name: '阿茶', imgRef: '/uploads/a/head.png' }], episodes: [] };
+    const g9 = RC.gates(headOnly, { Domain, online: true }).gates.find(x => x.code === 'g9-subjects');
+    assertEq(g9.status, 'fail', 'G9 判的是权威图齐不齐:只有大头照仍算缺图(不许被 ② 的口径抬走)');
+    assertEq(Domain.gateBlockers(headOnly).filter(x => x.code === 'subjects-no-image').length, 1, '门槛派生同口径');
+    assert(!Domain.subjectRefImage(Domain.findSubject(headOnly, '阿茶')) === false, '而 ② 那一问上大头照就是能发出去的图——两问结论相反是有意的');
+  } },
   { name: '拆集的切分输入单源:整本原文在不在只在 Domain.projectScript 一处,命令层与计划层同读', fn() {
     /* 门槛派生答的是「剧本这一步走过没有」(extractDone 也算走过),拆集要的是「整本原文读不读得到」——
      * 提取过主体却没存原文的老项目上两问结论相反,而这是有意的,不能靠改门槛去抹平。
@@ -10052,7 +10156,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 598, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 602, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 143, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 108, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
