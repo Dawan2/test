@@ -4178,6 +4178,78 @@ const releaseTests = [
     });
     assert(r.overall !== 'pass' && r.overall !== 'cond-pass', '判不出来不放行,实际 overall=' + r.overall);
   } },
+  { name: '两端 · G4/G5/G6 回执上印的镜数就是 Domain.counts 的和(换加数来源、串位、只取首集都红)', fn() {
+    /* 三门此前只有源级判据钉着计数口径(扫 js/release.js 那段的可执行行里有没有
+     * `Domain.episodeState(…)` 与 `agg[k] += … counts`)。源级判据看得见形状、看不见「那个数有没有原样
+     * 流到回执上」:把加数换成就地数镜头、把三门的数串位、或只取首个受累集的数,源码形状仍在,它照绿。
+     * 这里让夹具给出三集彼此可辨的计数,断言两端(浏览器 Release.collect / headless ReleaseCore.gates)
+     * 回执上的镜数正是这三个和。门槛一字不动:0 仍 pass、非 0 仍 fail,只钉数从哪来。 */
+    const COUNTS = {
+      ep1: { stale: 0, unconfirmed: 4, failed: 7 },
+      ep2: { stale: 2, unconfirmed: 0, failed: 11 },
+      ep3: { stale: 3, unconfirmed: 13, failed: 60 },
+    };
+    const KEYS = ['stale', 'unconfirmed', 'failed'];
+    const ids = Object.keys(COUNTS);
+    const want = {};
+    KEYS.forEach(k => { want[k] = ids.reduce((n, id) => n + COUNTS[id][k], 0); });
+    /* 夹具先自证有辨识力:三个和两两不等(相等则串位不红)、也不撞任何一集的单集数
+     * (撞上则「只取首个受累集」不红);日后有人调夹具数字把辨识力调没了,先红在这两条上。 */
+    assertEq(new Set(KEYS.map(k => want[k])).size, 3, '三个和须两两不等,实际:' + KEYS.map(k => want[k]).join(','));
+    const singles = ids.reduce((a, id) => a.concat(KEYS.map(k => COUNTS[id][k])), []);
+    KEYS.forEach(k => assert(singles.indexOf(want[k]) < 0, k + ' 的和不得撞上任何单集数(撞上就分不清和与单集):' + want[k]));
+
+    const project = () => ({ id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }],
+      episodes: ids.map(id => releaseReadyEp({ id, title: id })) });
+    /* 夹具只换 counts 这一项,其余推导仍走真 Domain:三集本身都是齐备镜(就地数镜头会数出 0),
+     * 故回执上出现这三个和,只可能是 counts 原样流过去的。 */
+    const withCounts = (base, table) => (proj, ep, online) =>
+      Object.assign({}, base(proj, ep, online), { counts: Object.assign({ noSubjectImage: 0 }, table[ep.id]) });
+    const shown = g => { const m = /^(\d+) 镜/.exec(g.info); assert(m, g.code + ' 回执须以镜数开头,实际:' + g.info); return +m[1]; };
+    const GATES = [['g4-stale', 'stale'], ['g5-unconfirmed', 'unconfirmed'], ['g6-failed', 'failed']];
+    const zeros = { ep1: { stale: 0, unconfirmed: 0, failed: 0 }, ep2: { stale: 0, unconfirmed: 0, failed: 0 }, ep3: { stale: 0, unconfirmed: 0, failed: 0 } };
+
+    // 浏览器一端
+    const sb = loadRelease();
+    const realState = sb.Domain.episodeState;
+    sb.Domain.episodeState = withCounts(realState, COUNTS);
+    const r = sb.Release.collect(project(), { online: false });
+    GATES.forEach(([code, k]) => {
+      const g = r.gates.find(x => x.code === code);
+      assertEq(g.status, 'fail', code + ' 计数非 0 仍判 fail(门槛不动)');
+      assertEq(shown(g), want[k], code + ' 回执上的镜数须等于三集 counts.' + k + ' 之和(换加数来源即红)');
+    });
+    /* 一键处置落到哪一集同样由 counts 定:ep1 的 stale 是 0,过期镜那门得跳过它落到 ep2;
+     * 未确认/失败两门 ep1 就非 0,落 ep1。挑集时读错字段(比如三门都读 stale)在这里红。 */
+    assertEq(r.gates.find(x => x.code === 'g4-stale').fix.epid, 'ep2', 'G4 的一键处置须落到首个 stale 非 0 的集');
+    assertEq(String(r.gates.find(x => x.code === 'g5-unconfirmed').fix.hash).split('/').pop(), 'ep1', 'G5 的跳转须落到首个 unconfirmed 非 0 的集');
+    assertEq(r.gates.find(x => x.code === 'g6-failed').fix.epid, 'ep1', 'G6 的一键处置须落到首个 failed 非 0 的集');
+    // 计数归零这一面照旧 pass 且如实印 0(把镜数写死成常数的改法,在这一面与上一面必有一面红)
+    sb.Domain.episodeState = withCounts(realState, zeros);
+    const r0 = sb.Release.collect(project(), { online: false });
+    GATES.forEach(([code]) => {
+      const g = r0.gates.find(x => x.code === code);
+      assertEq(g.status, 'pass', code + ' 计数为 0 仍判 pass(门槛不动)');
+      assertEq(shown(g), 0, code + ' 计数为 0 时回执须印 0 镜');
+      assertEq(g.fix, null, code + ' 无受累镜时不挂一键处置');
+    });
+
+    // headless 一端:同一份夹具、同样三个和(两端各有一份聚合,一端改了另一端没改也要红)
+    const RC = require('../js/release-core.js');
+    const D = require('../js/domain.js');
+    const g = RC.gates(project(), { Domain: { episodeState: withCounts(D.episodeState, COUNTS) }, online: false });
+    GATES.forEach(([code, k]) => {
+      const x = g.gates.find(y => y.code === code);
+      assertEq(x.status, 'fail', 'headless ' + code + ' 计数非 0 仍判 fail(门槛不动)');
+      assertEq(shown(x), want[k], 'headless ' + code + ' 回执上的镜数须等于三集 counts.' + k + ' 之和');
+    });
+    const g0 = RC.gates(project(), { Domain: { episodeState: withCounts(D.episodeState, zeros) }, online: false });
+    GATES.forEach(([code]) => {
+      const x = g0.gates.find(y => y.code === code);
+      assertEq(x.status, 'pass', 'headless ' + code + ' 计数为 0 仍判 pass');
+      assertEq(shown(x), 0, 'headless ' + code + ' 计数为 0 时回执须印 0 镜');
+    });
+  } },
   { name: 'G2 问题清零:真实 Issues 数组契约——脏项目 fail 挂问题中心导航,干净项目 pass', fn() {
     const sb = loadRelease();
     // 脏:失败镜(高危)→ G2 fail;原实现把 Issues.collect 返回的数组当 {list} 读,恒 pass 永久放行
