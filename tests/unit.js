@@ -3889,6 +3889,20 @@ function beatSystemOf(ov) {
   loadFile(sb, 'knowledge.js');
   return vm.runInContext('(' + m[1] + ')', sb);
 }
+/* 全局抽屉意图路由步(agent-global.js 的 routeIntent)的 sys 装配式:按源码原文取出,
+ * 在装好注册表的沙箱里求值——被求值的就是生产源码那几行,取值口改坏即红。
+ * (routeIntent 是 IIFE 内私有函数,只由抽屉发送流程调用,该路径的 DOM 重交互归 e2e) */
+function routeSystemOf(ov, list) {
+  const src = fs.readFileSync(path.join(ROOT, 'js', 'agent-global.js'), 'utf8');
+  const m = src.match(/\n\s*const sys = ([\s\S]+?);\n\s*const recent = /);
+  assert(m, 'js/agent-global.js 应有意图路由步的 sys 装配式(位置变了要同步本夹具)');
+  const sb = makeSandbox();
+  installCommon(sb);
+  if (ov) sb.Store.state.settings.promptOverrides = ov;
+  loadFile(sb, 'prompts.js');
+  sb.list = list; // 板块清单由取值口按 AGENT_BOARDS 现拼,此处以夹具串代入
+  return vm.runInContext('(' + m[1] + ')', sb);
+}
 /* 全仓「系统人设位上的内联人设」持有者名单:文件 → 处数(按路径升序)。
  * 判据是 system: / (role=system 的) content: / 赋给模板变量 之后紧跟的 你是… 字面。
  * 有意不在此口径内:js/prompts.js 的注册表 def、js/experts-data.js 的专家人设数据(走生效人设通道)、
@@ -4884,7 +4898,7 @@ const contractTests = [
     /* 仍欠段只认「仍欠」之后那段(锚点写在"已落地"那半里不算交账),且点名的余量逐处对照源码还在:
      * 剧本模块那几步已随 SK-03 收编,故这里点名的换成别处仍内联的那几步,收编时同样转红 */
     const owed = sk11.note.split('仍欠').slice(1).join('仍欠');
-    assert(owed.includes('js/agent-global.js') && owed.includes('js/proj-planner.js'),
+    assert(owed.includes('js/proj-planner.js'),
       'SK-11 的仍欠段须点名 G-13 余量落在哪几处(不在本条自己的登记面里)');
     const eps = fs.readFileSync(path.join(ROOT, 'js', 'episodes.js'), 'utf8');
     assert(!eps.includes("system: '你是短剧剧本结构分析师。'"),
@@ -4908,9 +4922,13 @@ const contractTests = [
     const exp11 = fs.readFileSync(path.join(ROOT, 'js', 'experts.js'), 'utf8');
     assertEq((exp11.match(/system: ['`]你是/g) || []).length, 0, 'js/experts.js 不得退回内联人设(已收进 forge.evolveSystem)');
     assert(!/const FORGE_SYS = /.test(exp11), '锻造器人设不得退回整串常量(已收进 forge.system)');
-    ['js/agent-global.js', 'js/proj-planner.js'].forEach(rel =>
+    ['js/proj-planner.js'].forEach(rel =>
       assert(/(?:system:|content:|return|=)\s*['`]你是/.test(fs.readFileSync(path.join(ROOT, rel), 'utf8')),
         '仍欠段点名的 ' + rel + ' 此刻确实还有内联人设(收编后须同步改 SK-11 的仍欠段)'));
+    /* 意图路由那处已随本轮收编:同形的反向断言按实况翻面(常量形态,故连 const 一起钉) */
+    assert(!owed.includes('js/agent-global.js'), '意图路由已收编,SK-11 的仍欠段不得再把 js/agent-global.js 记成欠账');
+    assert(!/(?:const|let|var)\s+\w+\s*=\s*[`']你是/.test(fs.readFileSync(path.join(ROOT, 'js', 'agent-global.js'), 'utf8')),
+      'js/agent-global.js 不得退回内联人设(已收进 agent.routeSystem)');
     /* 制作计划那处已随本轮收编:同形的反向断言按实况翻面 */
     assert(!owed.includes('js/plans.js'), '制作计划生成已收编,SK-11 的仍欠段不得再把 js/plans.js 记成欠账');
     assertEq((fs.readFileSync(path.join(ROOT, 'js', 'plans.js'), 'utf8').match(/system: ['`]你是/g) || []).length, 0,
@@ -5070,12 +5088,16 @@ const contractTests = [
     // 点名断言只认「仍欠」之后那段:锚点写在"已落地"那半里不算交账
     const owed = sk10.note.split('仍欠').slice(1).join('仍欠');
     assert(owed, 'SK-10 的 note 须写明仍欠什么(G-13 没闭合)');
-    assert(owed.includes('js/agent-global.js') && owed.includes('js/proj-planner.js'),
+    assert(owed.includes('js/proj-planner.js'),
       'SK-10 的仍欠段须点名 G-13 余量真正还落在哪几处');
     /* 反向:仍欠段点名的那几处此刻确实还在内联(收编了不改记账当场红) */
-    ['js/agent-global.js', 'js/proj-planner.js'].forEach(rel =>
+    ['js/proj-planner.js'].forEach(rel =>
       assert(/(?:system:|content:|return|=)\s*['`]你是/.test(fs.readFileSync(path.join(ROOT, rel), 'utf8')),
         rel + ' 此刻确实还有内联人设(收编后须同步改 SK-10 的仍欠段)'));
+    /* 意图路由那处已随本轮收编:同形的反向断言按实况翻面(常量形态,故连 const 一起钉) */
+    assert(!owed.includes('js/agent-global.js'), '意图路由已收编,SK-10 的仍欠段不得再把 js/agent-global.js 记成欠账');
+    assert(!/(?:const|let|var)\s+\w+\s*=\s*[`']你是/.test(fs.readFileSync(path.join(ROOT, 'js', 'agent-global.js'), 'utf8')),
+      'js/agent-global.js 不得退回内联人设(已收进 agent.routeSystem)');
     /* 制作计划那处已随本轮收编:同形的反向断言按实况翻面 */
     assert(!owed.includes('js/plans.js'), '制作计划生成已收编,SK-10 的仍欠段不得再把 js/plans.js 记成欠账');
     assertEq((fs.readFileSync(path.join(ROOT, 'js', 'plans.js'), 'utf8').match(/system: ['`]你是/g) || []).length, 0,
@@ -5325,9 +5347,9 @@ const contractTests = [
       .map(rel => [rel, (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(RE) || []).length])
       .filter(([, n]) => n).map(([rel, n]) => rel + ':' + n);
     assertEq(inlinePersonaHolders.join(', '),
-      'js/agent-global.js:1, js/wf-core.js:1',
+      'js/wf-core.js:1',
       '全仓内联人设持有者名单应精确到文件:处数(G-13 余量清单,收编一处即须同步减)');
-    assertEq(inlinePersonaHolders.reduce((a, x) => a + Number(x.split(':')[1]), 0), 2, 'G-13 余量总处数');
+    assertEq(inlinePersonaHolders.reduce((a, x) => a + Number(x.split(':')[1]), 0), 1, 'G-13 余量总处数');
     // 本槽的落点:js/gsettings.js 整条从名单上消失(该文件此后零内联人设)
     assert(!inlinePersonaHolders.some(x => x.startsWith('js/gsettings.js')),
       'js/gsettings.js 应已零内联人设(工坊那份人设字面在 js/experts.js,不记在本文件名下)');
@@ -5827,6 +5849,85 @@ action 二选一:
     ['agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem'].forEach(k =>
       assert(Skills.byId('core.personaCtx').prompts.includes(k), 'SK-03 应登记 ' + k));
   } },
+  { name: 'Agent 意图路由人设:独立键 agent.routeSystem 取值,缺省装配逐字节等于收编前的内联字面', fn() {
+    const Prompts = require('../js/prompts.js');
+    const PERSONA = '你是意图路由器。'; // 收编前写死在 js/agent-global.js 的 routeIntent 里
+    const LIST = '- 剧本(剧本Agent):卖点/梗概/剧本正文 · 雇佣专家:未雇佣';
+    const INLINE = PERSONA + `以下是短剧创作流水线的各板块及其职责:\n${LIST}\n`
+      + '判断用户本条消息最想交给哪个板块处理(创作/修改/执行类意图归属对应板块;进度查询/闲聊/跨板块综合问题返回 null)。'
+      + '只返回 JSON {"board":"板块key 或 null","reason":"≤20字"},board 只能是以上板块 key 之一或 null。';
+    assertEq(Prompts.get('agent.routeSystem'), PERSONA, '缺省人设句应与收编前的内联字面逐字节相同');
+    assertEq(routeSystemOf(null, LIST), INLINE, '该步装配整条应与收编前逐字节相同(板块清单/判据句/返回契约都不动)');
+    const item = Prompts.list().find(x => x.key === 'agent.routeSystem');
+    assert(item && !item.vars.length && item.name.startsWith('Agent 意图路由') && item.name.includes('系统人设'),
+      '注册表应登记 Agent 意图路由人设条目(无变量,可在全局默认值页在线改写)');
+    /* 独立键而不与 Agent 那四条复用:路由器只判归属不作答,与四种对话模式的角色都不同(同字面才谈得上复用) */
+    assertEq(Prompts.list().filter(x => x.def === PERSONA).length, 1, '该人设句应恰好命中注册表一条');
+    ['agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem'].forEach(k =>
+      assert(Prompts.get(k) !== PERSONA, '意图路由人设不得与既有键 ' + k + ' 同字面'));
+    /* 覆盖只换人设句:板块清单、判据句、返回 JSON 契约逐字节不变,且不串到别的键上 */
+    const OV = { 'agent.routeSystem': '你是板块调度路由(覆盖生效)。' };
+    assertEq(routeSystemOf(OV, LIST), OV['agent.routeSystem'] + INLINE.slice(PERSONA.length),
+      '覆盖只换人设句,其后的板块清单与判据/契约半逐字节不变');
+    ['agent.system', 'agent.panelSystem', 'agent.drawerSystem', 'agent.previsSystem'].forEach(k =>
+      assertEq(Prompts.get(k, OV), Prompts.get(k), '覆盖 agent.routeSystem 时 ' + k + ' 应逐字节不动'));
+    /* 契约半不开放:board 只能取板块 key,用户改坏即整轮路由解析不出板块,故这些字面一个都不进注册表 */
+    ['"board"', '"reason"', '≤20字', '板块 key 之一或 null'].forEach(f =>
+      assertEq(Prompts.list().filter(x => x.def.includes(f)).length, 0, '返回契约不进注册表:' + f));
+    /* 板块清单也不进注册表:板块表是 AGENT_BOARDS 单源,做成提示词副本等于允许用户存一份过期板块表 */
+    assertEq(Prompts.list().filter(x => x.def.includes('各板块及其职责')).length, 0, '板块清单应由取值口现拼,不进注册表');
+    /* 展示顺序按运行流程:路由是全局抽屉那一路的辅助步,紧接抽屉人设之后、在预排模式之前 */
+    const keys = Prompts.list().map(x => x.key);
+    assertEq(keys[keys.indexOf('agent.drawerSystem') + 1], 'agent.routeSystem', '意图路由应紧接全局抽屉之后登记');
+    assert(keys.indexOf('agent.routeSystem') < keys.indexOf('agent.previsSystem'), '意图路由应排在预排模式之前');
+  } },
+  { name: 'Agent 意图路由人设(源级):js/agent-global.js 零内联,取值口在调用点现取,三张全仓名单同步减一处', fn() {
+    const Prompts = require('../js/prompts.js');
+    const Skills = require('../js/skills.js');
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'agent-global.js'), 'utf8');
+    // 取值口与这一步的锚点配对:键挪到别的调用点即红(路由步由 step:'route' 的辅助槽位钉住)
+    assert(/const sys = Prompts\.get\('agent\.routeSystem'\)[\s\S]{0,1200}step: 'route'/.test(src),
+      'agent.routeSystem 应就在意图路由步的取值口上,且与该步 step:route 槽位配对');
+    assertEq((src.match(/Prompts\.get\('agent\.routeSystem'\)/g) || []).length, 1, '该键在本文件应只有一个取用口');
+    /* 在调用点现取,不写成模块顶层常量:顶层求值会把覆盖表冻在加载那一刻,用户改了也要刷新页面才生效 */
+    assert(!/\n {2}(?:const|let|var) \w+ = Prompts\.get\('agent\.routeSystem'\)/.test(src),
+      '取值口不得提到模块顶层常量(顶层求值会冻覆盖表)');
+    const head = src.slice(0, src.indexOf("Prompts.get('agent.routeSystem')"));
+    assert(/async function routeIntent\(/.test(head) && !/\n {2}function /.test(src.slice(head.lastIndexOf('async function routeIntent('), src.indexOf("Prompts.get('agent.routeSystem')"))),
+      '取值口应落在 routeIntent 函数体内(每次路由现取一遍生效值)');
+    // 契约半与判据句仍写在源码里:它们是路由解析判据,不随人设覆盖变动
+    assert(src.includes('"board":"板块key 或 null"') && src.includes('board 只能是以上板块 key 之一或 null'),
+      '返回 JSON 契约应仍留在装配口(不开放覆盖)');
+    assert(/const list = AGENT_BOARDS\.map/.test(src), '板块清单应仍按 AGENT_BOARDS 现拼(板块表单源)');
+    /* 本槽收编该文件唯一的内联人设,收完零内联:三种写法(system 值位/具名常量/直接 return)与"引号紧跟你是"都为 0 */
+    assertEq((src.match(/(?:system:\s*|return\s*|(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*)(?:'|`)你是/g) || []).length, 0,
+      'js/agent-global.js 不应再有内联人设字面');
+    assertEq((src.match(/['`]你是/g) || []).length, 0, 'js/agent-global.js 不应再有以「你是」开头的字面');
+    /* 有意不收的两句上下文框定语:全局任务上下文块尾那句与板块协作那句都随实况现拼(同一个三元的两支),
+     * 与 ops 协议同属装配半、不开放覆盖;它们不在上面三种判据内,但仍要点名钉住"没被顺手塞进注册表" */
+    assert(src.includes('你是虎鲸,元Agent,掌握以上全局上下文') && src.includes('你当前作为「'),
+      '两句上下文框定语应仍留在装配口(随板块/流水线实况现拼)');
+    assertEq(Prompts.list().filter(x => x.def.includes('元Agent') || x.def.includes('你当前作为')).length, 0,
+      '上下文框定语不进注册表(它是随实况现拼的装配半)');
+    // 纯浏览器链路:这一步没有 Node 对端,三个 Node 端都不得长出第二份
+    ['server.js', 'cli.js', 'mcp.js'].forEach(rel => {
+      const s = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      assert(!s.includes('你是意图路由器') && !s.includes('板块 key 之一或 null'), rel + ' 不应出现意图路由步(该步只在浏览器抽屉)');
+    });
+    // 三张判据不同的全仓名单同步减这一处(名单本身在各自用例里逐字节钉,此处只钉本槽落点)
+    assert(!inlinePersonaHolders().some(x => x.startsWith('js/agent-global.js')),
+      'js/agent-global.js 应已退出持有者名单(本处已收编)');
+    const sk3 = Skills.byId('core.personaCtx');
+    assert(sk3.prompts.includes('agent.routeSystem'), 'SK-03 应登记 agent.routeSystem');
+    assert(sk3.note.includes('agent.routeSystem') && sk3.note.includes('js/agent-global.js') && sk3.note.includes('零内联人设'),
+      'SK-03 的 note 须写明这一步的收编落点(键与取值口所在文件)与该文件至此零内联');
+    assert(sk3.note.includes('冻') || sk3.note.includes('加载那一刻'), 'SK-03 的 note 须交代为什么在调用点现取而不是顶层常量');
+    // 缺口未闭合(名单还有余量):标记不摘,G-13 的关联索引逐字节不变
+    assertEq(Object.keys(Skills.gaps()).length, 20, '缺口投影键数应不变');
+    assertEq(Skills.gaps()['G-13'].join(','), 'script.hookType,script.aiToneBan,subjects.refDiscipline,eps.structureStage,gen.videoTpl,film.rhythmInject',
+      'G-13 的六条关联索引逐字节不变(只收一处不预支摘标记)');
+    assertEq(Skills.validate({ Prompts }).join(' | '), '', '新键须被 skill 索引引用且引用键都存在');
+  } },
   { name: '音色推荐两份人设:单个/批量各一键,缺省逐字节等于收编前的内联字面,覆盖不串台', fn: async () => {
     const Prompts = require('../js/prompts.js');
     const Skills = require('../js/skills.js');
@@ -5968,11 +6069,11 @@ action 二选一:
      * G-13 的余量到此有了唯一判据——不再只是散文里的一个数字(口径与例外见 inlinePersonaHolders 注释) */
     const holders = inlinePersonaHolders();
     assertEq(holders.join(' '),
-      'js/agent-global.js:1 js/proj-planner.js:2',
+      'js/proj-planner.js:2',
       '全仓内联人设持有者名单(文件:处数)');
     assert(!holders.some(x => x.startsWith('js/beatboard.js:')), 'js/beatboard.js 应已退出持有者名单(本处已收编)');
-    assertEq(holders.length, 2, '持有者文件数');
-    assertEq(holders.reduce((n, x) => n + Number(x.split(':')[1]), 0), 3, '全仓内联人设处数');
+    assertEq(holders.length, 1, '持有者文件数');
+    assertEq(holders.reduce((n, x) => n + Number(x.split(':')[1]), 0), 2, '全仓内联人设处数');
   } },
   { name: '漫剧气泡对白人设:经 Prompts.get(comic.bubbleSystem) 取值,缺省逐字节等于收编前的内联字面', fn() {
     const Prompts = require('../js/prompts.js');
@@ -6016,13 +6117,13 @@ action 二选一:
     const census = files.map(f => [f, (fs.readFileSync(path.join(ROOT, f), 'utf8').match(/['"`]你是/g) || []).length])
       .filter(x => x[1]).map(x => x[0] + ':' + x[1]);
     assertEq(census.join(' '), [
-      'js/agent-global.js:1', 'js/api.js:2', 'js/experts-data.js:16',
+      'js/api.js:2', 'js/experts-data.js:16',
       'js/gsettings.js:1', 'js/proj-planner.js:2',
-      'js/prompts.js:36', 'js/wf-core.js:1',
+      'js/prompts.js:37', 'js/wf-core.js:1',
     ].join(' '), '全仓人设字面持有者名单(逐文件计数)');
     assert(!census.some(x => x.startsWith('js/editors.js:')), 'js/editors.js 收编后应已不在持有者名单上');
-    assertEq(Prompts.list().filter(x => x.def.startsWith('你是')).length, 36,
-      '名单里 js/prompts.js 那 36 处就是注册表 def 本身(注册表条数变了这张名单也要跟着改)');
+    assertEq(Prompts.list().filter(x => x.def.startsWith('你是')).length, 37,
+      '名单里 js/prompts.js 那 37 处就是注册表 def 本身(注册表条数变了这张名单也要跟着改)');
   } },
   { name: 'Agent 辅助两步人设:回执核验修复/会话纪要蒸馏各一独立键,缺省逐字节等于收编前的内联字面', fn() {
     const Prompts = require('../js/prompts.js');
