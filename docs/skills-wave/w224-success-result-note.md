@@ -1,8 +1,8 @@
 # W224 · 成功 `ok` 时的 `result.note` 从哪来:live 举证出一处真漏(智能审片空审档),最小修一处漏斗
 
 **基线**:`cursor/w220-integration-3c7a`(`16baeb9`)。在飞的 W219 / W221 / W222 / W223 按任务口径**一条没碰**。
-**范围**:产品面两个文件、两处判据——`js/produce.js`(+4 −1:引擎把自己数的可审镜数随回执报出)、
-`js/commands.js`(+9 −1:`episode.smartReview` 的成功回执在可审镜为 0 时补一句 `note`);
+**范围**:产品面两个文件、两处判据——`js/produce.js`(+5 −2:引擎把自己数的可审镜数随回执报出)、
+`js/commands.js`(+13 −2:`episode.smartReview` 的成功回执在可审镜为 0 时补一句 `note`);
 `tests/unit.js`(+2 条 `produce` 用例、桩回执补一位、两处 `FLOOR`)、`README.md` 与本目录 `README.md` 数字同步。
 **不做**:不碰 `js/plans.js`、`js/pipeline.js`、`js/storyboard.js`、`js/sb-views.js`、`js/sb-io.js`、`js/issues*.js`、
 `js/release*.js`、`cli.js`、`server.js`、`mcp.js`;不动 `Commands.digest` 一个字;
@@ -195,7 +195,7 @@ M3b 与 M3 读数相同不是重复:它证明**真跑那一处**的 `targets` �
 `README.md` 的「单元测试(N 项断言」643 → 645;本目录 `README.md` 明写份数 234 → **235**(含本文)。
 `integration` / `cli.smoke` 两格 `FLOOR` 按 live 就位、未动。
 
-产品面相对基线只有两个文件:`js/produce.js`(+4 −1)、`js/commands.js`(+9 −1)。
+产品面相对基线只有两个文件:`js/produce.js`(+5 −2)、`js/commands.js`(+13 −2)。
 `js/domain.js` / `js/plans.js` / `js/pipeline.js` / `js/issues.js` / `js/issues-ui.js` / `js/release.js` /
 `js/release-core.js` / `js/storyboard.js` / `js/sb-views.js` / `js/sb-io.js` / `js/skills.js` /
 `js/cmd-registry.js` / `cli.js` / `server.js` / `mcp.js` **逐个零 diff**——
