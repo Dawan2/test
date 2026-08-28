@@ -8453,6 +8453,57 @@ function blankNonCode(src, keepText) {
   }
   return out.join('');
 }
+/* 选人闸「待跑清单被按 id 收窄」的扫描(镜头与主体两侧四处共用一份判据)。
+ * 原先只看 `pend =`/`todo =` 那一行上有没有 `new Set`/`findIndex`/`indexOf(`——钉的是某一行的字面不是语义:
+ * 把去重状态挪到上一行的局部变量上(`const seen = new Set()` 再 filter)整条判据就静静放行。
+ * 现在按语句取(续行随括号一并收进来),再顺着这条语句引用到的标识符回溯本段里的声明做一次浅数据流:
+ *   · 放行的只有点名清单自己建的那个成员集 `new Set(<picked>)`,且它只许被读(`.has(`);
+ *   · 闭包里另起 Set/Map/对象累加器、按位比的 `findIndex`/`indexOf`、或对成员集 `add`/`delete` 边筛边改,
+ *     都是"点名清单到待跑清单之间的去重",逐条回一句原因。
+ * 入参 skel 是抹过注释与字面量的骨架(blankNonCode),picked 形如 `args.shotIds`,target 是待跑清单变量名的选择支。
+ * 回空即没被收窄。 */
+function pickerNarrowHits(skel, picked, target) {
+  /* 按括号深度把骨架切成语句:一行读完括号还没配平就是续行,与下一行并成一条。
+   * 段首那一行本来就是从函数头中间切开的(括号净开着),故 `;`/`{`/`}` 收尾的行一律另算一处边界并归零深度,
+   * 否则整段会被并成一条语句、把段尾任何一处 new Set 都算到待跑清单头上。 */
+  const stmts = [];
+  let buf = '', depth = 0;
+  skel.split('\n').forEach(ln => {
+    buf += (buf ? '\n' : '') + ln;
+    for (const ch of ln) { if (ch === '(' || ch === '[') depth++; else if (ch === ')' || ch === ']') depth--; }
+    if (depth <= 0 || /[;{}]$/.test(ln.trim())) { stmts.push(buf); buf = ''; depth = 0; }
+  });
+  if (buf) stmts.push(buf);
+  const assignRe = /(?:^|[\s;{(])(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*=(?![=>])([\s\S]*)$/;
+  const decls = new Map(); // 变量名 → 它在本段里被赋过的各份右值
+  const targetRe = new RegExp('^(?:' + target + ')$');
+  const targets = [];
+  stmts.forEach(t => {
+    const m = t.match(assignRe);
+    if (!m) return;
+    decls.set(m[1], (decls.get(m[1]) || []).concat([m[2]]));
+    if (targetRe.test(m[1])) targets.push([m[1], m[2]]);
+  });
+  const hits = [], seen = new Set();
+  const idents = t => [...t.matchAll(/(?:^|[^.\w$])([A-Za-z_$][\w$]*)/g)].map(m => m[1]);
+  const scan = (name, rhs, left) => {
+    [...rhs.matchAll(/new\s+(Set|Map|WeakSet|WeakMap)\s*\(([^)]*)\)/g)].forEach(m => {
+      if (m[1] !== 'Set' || m[2].trim() !== picked) hits.push(name + ' = new ' + m[1] + '(' + m[2].trim() + ')');
+      else if (new RegExp('\\b' + name + '\\s*\\.\\s*(add|delete|clear)\\s*\\(').test(skel)) hits.push(name + ' 这个点名成员集被 add/delete 边筛边改');
+    });
+    const pos = rhs.match(/\.\s*(findIndex|indexOf|lastIndexOf)\s*\(/);
+    if (pos) hits.push(name + ' 按位比 .' + pos[1] + '(');
+    if (/Object\.create\s*\(/.test(rhs) || /^\s*\{\s*\}\s*;?\s*$/.test(rhs)) hits.push(name + ' 起了一个跨行攒状态的累加器');
+    if (left <= 0) return;
+    idents(rhs).forEach(n => {
+      if (seen.has(n) || !decls.has(n)) return;
+      seen.add(n);
+      decls.get(n).forEach(r => scan(n, r, left - 1));
+    });
+  };
+  targets.forEach(([name, rhs]) => scan(name, rhs, 3));
+  return hits;
+}
 /* 还原套件里每条 report(...) 调用的外层块链:逐字符配对括号,取栈上每个未闭合
  * 开括号所在行的行首至该括号那段原文(「块头」)。抹码后括号必须净配平,配不平
  * 说明扫描失准,直接抛错而不是拿半截栈静默放行。
@@ -9116,13 +9167,28 @@ const contractTests = [
       assert(code.length > 20, rel + ' 的 generateVideos 段可执行行取不到(整段被判成注释本条即恒真),实测 ' + code.length + ' 行');
       const dup = code.filter(t => /逐行计费|多花了|shots-dedupe/.test(t));
       assertEq(dup.join(' | '), '', rel + ' 的可执行行里不许出现那句话的字面(出现即说明又抄了一份)');
-      /* 选人闸的躯干:骨架(抹掉注释与字面量)里 ids.has(s.id) 之后不许冒出按 id 收窄的去重 */
+      /* 选人闸的躯干:骨架(抹掉注释与字面量)里 ids.has(s.id) 之后不许冒出按 id 收窄的去重。
+       * 扫的是「点名清单到待跑清单之间的任意去重」而不是某一行的字面(见 pickerNarrowHits) */
       const skel = blankNonCode(body);
       assert(/ids\.has\(s\.id\)/.test(skel), rel + ' 的选人闸得还是按行筛 ids.has(s.id)');
-      const narrow = skel.split('\n').filter(t => /\b(pend|todo) = /.test(t) && /(new Set|findIndex|indexOf\()/.test(t));
+      const narrow = pickerNarrowHits(skel, 'args.shotIds', 'pend|todo');
       assertEq(narrow.join(' | '), '',
         rel + ' 的待跑清单被按 id 收窄了——第二行会永远跑不到,这句 note 不是拿来给它开路的');
     });
+    /* 判据自证:去重挪到上一行的局部变量上曾经能整条绕过去(只钉 `pend = ` 那一行的字面时),
+     * 三手改法各造一份喂给同一个扫描,不红即说明这条判据又退回钉字面了;
+     * 反面拿活树上那一句(点名清单建成员集、只按 id 判在不在)钉住它不误判,否则收紧就是把闸判死。 */
+    const m8 = [
+      ['上一行另起一个去重集', 'const seen = new Set();\npend = (ep.shots || []).filter(s => ids.has(s.id) && !seen.has(s.id) && (seen.add(s.id), true));'],
+      ['点名成员集边筛边删', 'pend = (ep.shots || []).filter(s => ids.has(s.id) && ids.delete(s.id));'],
+      ['按位比只取首行', 'pend = (ep.shots || []).filter((s, i, xs) => ids.has(s.id) && xs.findIndex(x => x.id === s.id) === i);'],
+      ['对象累加器攒已跑过的 id', 'const done = {};\npend = (ep.shots || []).filter(s => ids.has(s.id) && !done[s.id] && (done[s.id] = 1));'],
+    ];
+    const withGate = t => blankNonCode('const ids = new Set(args.shotIds);\n' + t);
+    m8.forEach(([why, t]) => assert(pickerNarrowHits(withGate(t), 'args.shotIds', 'pend|todo').length,
+      '判据自证:「' + why + '」这手没被扫出来(收窄扫描退回只钉某一行的字面即在这里红)'));
+    assertEq(pickerNarrowHits(withGate('pend = (ep.shots || []).filter(s => !s.final && ids.has(s.id));'), 'args.shotIds', 'pend|todo').join(' | '), '',
+      '判据自证:活树上那一句按行筛被误判成收窄了(闸被判死,点名两行就跑不成两行)');
     /* 派生这一侧:点名判据与选人闸逐字同形(非数组的 shotIds 走整集那一路,那一路本来就没有这句话) */
     const src = fs.readFileSync(path.join(ROOT, 'js', 'domain.js'), 'utf8');
     const i = src.indexOf('D.dupRowsNote = function');
@@ -9177,13 +9243,20 @@ const contractTests = [
       assertEq(dup.join(' | '), '', rel + ' 的可执行行里不许出现那句话的字面(出现即说明又抄了一份)');
       const wrong = code.filter(t => /Domain\.dupRowsNote\(/.test(t));
       assertEq(wrong.join(' | '), '', rel + ' 的主体补图不许改读镜头那一份 note(主体库里没有"行",也没有 shots-dedupe 这条出口)');
-      /* 选人闸的躯干:骨架(抹掉注释与字面量)里 ids.has(s.id) 之后不许冒出按 id 收窄的去重 */
+      /* 选人闸的躯干:骨架(抹掉注释与字面量)里 ids.has(s.id) 之后不许冒出按 id 收窄的去重。
+       * 与镜头那一侧同一份扫描(pickerNarrowHits):钉的是点名清单到待跑清单之间的任意去重,不是某一行的字面 */
       const skel = blankNonCode(body);
       assert(/ids\.has\(s\.id\)/.test(skel), rel + ' 主体侧的选人闸得还是按位筛 ids.has(s.id)');
-      const narrow = skel.split('\n').filter(t => /\btodo = /.test(t) && /(new Set|findIndex|indexOf\()/.test(t));
+      const narrow = pickerNarrowHits(skel, 'args.subjectIds', 'todo');
       assertEq(narrow.join(' | '), '',
         rel + ' 的待跑主体清单被按 id 收窄了——第二位会永远跑不到,这句 note 不是拿来给它开路的');
     });
+    /* 判据自证(与镜头那一侧同形):去重挪到上一行的局部变量上得照样红,而活树上那一句按位筛不许被误判 */
+    const gate = t => blankNonCode('const ids = Array.isArray(args.subjectIds) && args.subjectIds.length ? new Set(args.subjectIds) : null;\n' + t);
+    assert(pickerNarrowHits(gate('const seen = new Set();\nconst todo = (p.subjects || []).filter(s => ids ? ids.has(s.id) && !seen.has(s.id) && (seen.add(s.id), true) : !s.image);'),
+      'args.subjectIds', 'todo').length, '判据自证:主体侧「上一行另起一个去重集」这手没被扫出来(收窄扫描退回只钉某一行的字面即在这里红)');
+    assertEq(pickerNarrowHits(gate('const todo = (p.subjects || []).filter(s => ids ? ids.has(s.id) : !s.image);'), 'args.subjectIds', 'todo').join(' | '), '',
+      '判据自证:活树上那一句按位筛被误判成收窄了(闸被判死,点名两位就跑不成两位)');
     /* 派生这一侧:点名判据与选人闸逐字同形;末句得给现有修法(主体侧没有去重命令,给的是主体库里的人工动作) */
     const src = fs.readFileSync(path.join(ROOT, 'js', 'domain.js'), 'utf8');
     const i = src.indexOf('D.dupSubjectRowsNote = function');
@@ -12924,7 +12997,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 263;
+    const FLOOR = 264;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
