@@ -3220,6 +3220,22 @@ const busTests = [
     B.emit('*', {});
     assertEq(all.join(','), 'a,b,*', '通配订阅应收全部,emit "*" 只触发一次通配');
   } },
+  { name: 'emit:事件名由 emit 定,payload 顶不掉(转发另一条事件时不许顶着别人的名字发出去)', fn() {
+    /* `Object.assign({ name }, payload)` 里 payload 后写,payload 带 name 就把事件名换掉了:
+     * 分发用的是 emit 那个名字、事件对象上写的却是另一个,通配订阅按 ev.name 判来源时
+     * 会把转发件当成源事件再转一次——自喂自到爆栈,而爆栈的异常正好被下面那层隔离 catch 吃掉。 */
+    const sb = loadBus();
+    const B = sb.Bus;
+    const got = [];
+    B.on('release.dirty', ev => got.push(ev));
+    const ev = B.emit('release.dirty', { name: 'shots.batchDone', src: 'shots.batchDone', ok: 3 });
+    assertEq(ev.name, 'release.dirty', 'emit 的回执名是 emit 那个名字');
+    assertEq(got.length, 1);
+    assertEq(got[0].name, 'release.dirty', '分发给订阅者的事件名同样不许被 payload 顶掉');
+    assertEq(got[0].src, 'shots.batchDone', 'payload 其余字段照旧带过去');
+    assertEq(got[0].ok, 3);
+    assertEq(B.recent(1)[0].name, 'release.dirty', '事件留痕记的也是 emit 那个名字');
+  } },
   { name: 'recent:新→旧,按 pid 过滤,上限裁剪', fn() {
     const sb = loadBus();
     const B = sb.Bus;
@@ -4370,6 +4386,86 @@ const releaseTests = [
       assert(!core.includes(t), 'release-core.js 不得引用环境句柄:' + t));
     assert(!/Tasks\.run/.test(core) && !/Tasks\.run/.test(rel.slice(rel.indexOf('function stampRelease'), rel.indexOf('function releaseList'))),
       '发布留痕不是计费动作:两端都不进 Tasks.run');
+  } },
+  /* ---- 交付包打包:抓分镜失手不许静默(W149) ----
+   * buildReleaseZip 里抓分镜文件那段原本兜着一个 `catch (_) {}`:Exporter 抛错时这一集的整个
+   * storyboard/ 目录一个文件都不进包(兜底 CSV 在 else 分支上,抓取失败这一路走不到),
+   * 而回执与下载提示照报「交付包已下载:N 个文件」——用户拆包才发现缺分镜。 */
+  { name: '交付包 · 抓分镜失手如实回报 + 回退内置分镜表(不静默少一集分镜还按成功交付)', fn: async () => {
+    const sb = loadRelease();
+    const packed = []; // ZipUtil 桩:截下每次真正入包的清单
+    sb.ZipUtil = { create: files => { packed.length = 0; files.forEach(f => packed.push(f)); return { length: files.length }; }, download() {} };
+    const p = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }],
+      episodes: [releaseReadyEp({ id: 'ep1', title: '第一集' }), releaseReadyEp({ id: 'ep2', title: '第二集' })] };
+    // 正面一段:抓取正常时判据一字未改——分镜文件仍按 storyboard/<集>/ 逐个入包,回执不报失败
+    const ok = await sb.Release.buildReleaseZip(p, { skipVideo: true });
+    assertEq((ok.storyboardFailed || []).length, 0, '抓取正常时不得凭空报失败');
+    assert(packed.some(f => f.name === 'storyboard/1_第一集/分镜表.csv'), '抓取正常时仍走 Exporter 那份清单:' + packed.map(f => f.name).join(','));
+    // 抓取抛错:两集各记一条,且各自仍有一份兜底分镜表进包(原空 catch 下这两集的 storyboard/ 是空的)
+    sb.Exporter._buildMaterialShim = async () => { throw new Error('分镜读崩了'); };
+    const r = await sb.Release.buildReleaseZip(p, { skipVideo: true });
+    assertEq(r.storyboardFailed.length, 2, '两集抓分镜都失手应各记一条,实际 ' + JSON.stringify(r.storyboardFailed));
+    assert(/第一集/.test(r.storyboardFailed[0]) && /分镜读崩了/.test(r.storyboardFailed[0]),
+      '回执须点名是哪一集、错在哪,实际:' + r.storyboardFailed[0]);
+    assertEq(packed.filter(f => /^storyboard\//.test(f.name)).map(f => f.name).join(','),
+      'storyboard/1_第一集_分镜表.csv,storyboard/2_第二集_分镜表.csv', '失手时两集各回退一份内置分镜表,不许整个 storyboard/ 消失');
+    // 包内 README.txt 同样如实登记(拆包的人手边只有这一份)
+    const readme = packed.find(f => f.name === 'README.txt');
+    assert(readme && /分镜文件抓取失败/.test(readme.data) && /第一集/.test(readme.data) && /第二集/.test(readme.data),
+      '包内 README.txt 须登记抓分镜失手的集,实际:' + (readme && readme.data));
+    // 返回值不是数组时同样按失手记(shim 回 undefined 时 storyboard/ 一样是空的)
+    sb.Exporter._buildMaterialShim = async () => undefined;
+    const r2 = await sb.Release.buildReleaseZip(p, { skipVideo: true });
+    assertEq(r2.storyboardFailed.length, 2, 'shim 不回数组时同样按失手记,实际 ' + JSON.stringify(r2.storyboardFailed));
+    assertEq(packed.filter(f => /^storyboard\//.test(f.name)).length, 2, '同样回退内置分镜表');
+  } },
+  { name: '交付包 · 抓分镜失手在下载回执上看得见(只印文件数的话,缺分镜的包与齐全的包长得一样)', fn: async () => {
+    const sb = loadRelease();
+    sb.ZipUtil = { create: files => ({ length: files.length }), download() {} };
+    const p = { id: 'p1', name: '剧', subjects: [{ id: 'sj1', name: '主', image: 'u' }], episodes: [releaseReadyEp({ title: '第一集' })] };
+    const okShim = sb.Exporter._buildMaterialShim;
+    sb.Exporter._buildMaterialShim = async () => { throw new Error('分镜读崩了'); };
+    await sb.Release.downloadReleaseZip(p, { skipVideo: true });
+    assert(sb.__toasts.some(t => /交付包已下载/.test(t)), '下载成功那条提示照旧在');
+    assert(sb.__toasts.some(t => /分镜文件抓取失败/.test(t)), '抓分镜失手须另有一条提示,实际提示:' + JSON.stringify(sb.__toasts));
+    // 抓取正常时不得多出这条噪音
+    sb.__toasts.length = 0;
+    sb.Exporter._buildMaterialShim = okShim;
+    await sb.Release.downloadReleaseZip(p, { skipVideo: true });
+    assert(!sb.__toasts.some(t => /分镜文件抓取失败/.test(t)), '没失手就不许报,实际提示:' + JSON.stringify(sb.__toasts));
+  } },
+  /* ---- 底部 Bus 通配订阅那一段(W149 第 3 节) ----
+   * 那处空 catch 本身无害:它只兜住"注册订阅"这一下(回调自己的异常由 Bus.emit 隔离、走不到它),
+   * 且 release.dirty 全树零订阅者。真出事的是它兜着的那段——转发时把整条源事件当 payload 递出去,
+   * 源事件的 name 顶掉了 'release.dirty',通配订阅再按名字判来源,于是自喂自转到爆栈
+   * (基线实测:一条 shots.batchDone 转 1695 次,50 格事件留痕被同一条冲干净,Agent 的
+   * 「最近发生了什么」只剩这一条)。爆栈那个 RangeError 又被总线的隔离 catch 吃掉,一声不吭。 */
+  { name: 'Bus 通配订阅 · 一条主线事件只转一次 release.dirty(转发不许顶掉事件名,自喂自会冲掉事件留痕)', fn() {
+    const sb = makeSandbox();
+    installCommon(sb);
+    loadFile(sb, 'bus.js');
+    loadFile(sb, 'release.js');
+    const seen = [];
+    sb.Bus.on('release.dirty', ev => seen.push(ev.name + '<' + ev.src));
+    sb.Bus.on('release.dirty', () => { throw new Error('角标重算崩了'); });
+    ['shots.batchDone', 'compose.done', 'review.smartDone', 'episode.ripped', 'plan.step'].forEach(n =>
+      assertNoThrow(() => sb.Bus.emit(n, { brief: '主线动了' }), '订阅者抛错不得反弹回 emit 侧(总线自己隔离):' + n));
+    assertEq(seen.join(','), 'release.dirty<shots.batchDone,release.dirty<compose.done,release.dirty<review.smartDone,' +
+      'release.dirty<episode.ripped,release.dirty<plan.step',
+      '五条主线事件各转一次,事件名是 release.dirty 而源事件名走 src(顶掉 name 就会自喂自,条数当场炸开)');
+    sb.Bus.emit('agent.chat', {});
+    assertEq(seen.length, 5, '非主线事件不转(转了就是每条消息都重算一次角标)');
+    // 事件留痕没被冲掉:Agent 的「最近发生了什么」按 Bus.recent 取的就是这一份
+    assertEq([...new Set(sb.Bus.recent(50).map(h => h.name))].sort().join(','),
+      'agent.chat,compose.done,episode.ripped,plan.step,release.dirty,review.smartDone,shots.batchDone',
+      '50 格事件留痕里各事件都还在(自喂自时这里只剩转发那一条)');
+    // 订阅注册本身不抛:那处 catch 只在 window.Bus 在场而 Bus.on 不是函数(bus.js 没加载/被桩顶掉)时才走得到
+    assertEq(typeof sb.Bus.on('x', () => {}), 'function', 'Bus.on 是全函数,返回退订句柄');
+    const jsFiles = fs.readdirSync(path.join(ROOT, 'js')).filter(f => /\.js$/.test(f));
+    const emitters = jsFiles.filter(f => /Bus\.emit\('release\.dirty'/.test(fs.readFileSync(path.join(ROOT, 'js', f), 'utf8')));
+    assertEq(emitters.join(','), 'release.js', 'release.dirty 只此一个发出点');
+    const subs = jsFiles.filter(f => /Bus\.on\(\s*'release\.dirty'/.test(fs.readFileSync(path.join(ROOT, 'js', f), 'utf8')));
+    assertEq(subs.join(','), '', 'release.dirty 至今零订阅者;有人开始订阅时重新掂量那处 catch——届时吞掉注册才真有下游丢东西');
   } },
 ];
 
@@ -7638,7 +7734,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 512, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 516, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 141, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 107, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -7774,7 +7870,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 163;
+    const FLOOR = 164;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
