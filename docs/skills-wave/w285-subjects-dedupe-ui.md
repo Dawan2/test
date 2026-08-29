@@ -3,7 +3,8 @@
 > 起点(现取):`origin/cursor/w284-integration-7c31` = `0a4fa431296681cb290b27b23ba84c541099dca2`
 > 本支:`cursor/w285-subjects-dedupe-ui-3f26`(功能支,不合 master、不开 PR、不开第二条支)
 > `checkout -b` 后 `rev-parse HEAD` 现取 `0a4fa431296681cb290b27b23ba84c541099dca2`,与交接自称的 `0a4fa43` 逐字节相符。
-> 产品面与判据落在 `5284c6d`(本文是紧随其后那一条提交,故本支尖 = 本文这条提交,交接时以 `git rev-parse` 现取为准)。
+> 三条提交:产品面与判据 `5284c6d` → 本文与索引 `3eefb76` → 判据加固(弹窗桩按 `U.openModal` 真实契约重建,
+> 见 §五 末与 §六 M1 那一笔)+ 本行。本支尖 = 最后那条,交接时以 `git rev-parse` 现取为准。
 
 ## 一、这一槽收的是哪条缺口
 

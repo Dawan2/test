@@ -2468,8 +2468,18 @@ function loadRoles() {
   sb.U.thumb = f => f;
   sb.EpisodeUtil = { buildSubjectPrompt: () => '提示词' };
   sb.RoleEditor = { openSubjectEdit() {} };
+  /* 弹窗桩按真实契约建:U.openModal 开的那一下就 onMount(节点, close)——延后到用例里再挂,
+   * "开弹窗即写库"这一手就从判据下面漏过去了(量过:那一手只红在一句不相干的话上)。
+   * 每开一个记一格 {opt, m, closed}。 */
   sb.__modals = [];
-  sb.U.openModal = opt => { sb.__modals.push(opt); return () => {}; };
+  sb.U.openModal = opt => {
+    const m = roleDom();
+    const rec = { opt, m, closed: 0 };
+    const close = () => { rec.closed++; };
+    sb.__modals.push(rec);
+    if (opt.onMount) opt.onMount(m, close);
+    return close;
+  };
   let seq = 0;
   sb.Store.uid = p => p + '_u' + (++seq);
   sb.Store.getProject = id => (sb.__proj && sb.__proj.id === id ? sb.__proj : null);
@@ -3606,32 +3616,31 @@ const commandsTests = [
     sb.Views.roles(embed, 'p1', true);
     assert(/data-x="dedupe"/.test(embed.innerHTML),
       '嵌在项目页里的那一版(embedded)同样得有入口:两处头部按钮行只挂一处,从项目详情进来就没这条路');
-    // ② 点开只预览:重复面三样都报出来、改名计划逐位点名,而一个字不写库
+    // ② 点开只预览:重复面三样都报出来、改名计划逐位点名,而一个字不写库(弹窗桩开那一下就 onMount,故"开弹窗即写"红在这里)
     const saves = sb.Store._saves;
     main.querySelector('[data-x=dedupe]').onclick();
     assertEq(sb.__modals.length, 1, '点入口须开一个弹窗(沿用 U.openModal 那一套)');
-    const opt = sb.__modals[0];
-    assert(/dup/.test(opt.body) && /3 位/.test(opt.body) && /第 1 位「A-首位」/.test(opt.body),
-      '预览得报出重复的是哪个 id、几位、哪一位留原 id,三样都要:' + opt.body);
-    assert(/第 3 位「C-第二位」/.test(opt.body) && /第 4 位「D-第三位」/.test(opt.body) && !/第 2 位「B-不重复」/.test(opt.body),
-      '改名计划得逐位点名(改的是撞车那两位,不重复的那一位不许进计划):' + opt.body);
+    const dry = sb.__modals[0];
+    assert(/dup/.test(dry.opt.body) && /3 位/.test(dry.opt.body) && /第 1 位「A-首位」/.test(dry.opt.body),
+      '预览得报出重复的是哪个 id、几位、哪一位留原 id,三样都要:' + dry.opt.body);
+    assert(/第 3 位「C-第二位」/.test(dry.opt.body) && /第 4 位「D-第三位」/.test(dry.opt.body) && !/第 2 位「B-不重复」/.test(dry.opt.body),
+      '改名计划得逐位点名(改的是撞车那两位,不重复的那一位不许进计划):' + dry.opt.body);
     assertEq(sb.Store._saves, saves, '预览这一屏不许写库(这条入口的"可撤销"就落在这一格上)');
+    assertEq(dry.closed, 0, '预览这一屏不许自己关掉(它就是那道确认闸的正面)');
     assertEq(p.subjects.map(s => s.id).join(','), 'dup,solo,dup,dup', '预览之后库里一个 id 都不许变');
     // ③ 确认闸:取消那一下同样不写库
-    let closed = 0;
-    const m1 = roleDom();
-    opt.onMount(m1, () => { closed++; });
-    m1.querySelector('[data-x=cancel]').onclick();
-    assertEq(closed, 1, '取消得把弹窗关掉');
+    dry.m.querySelector('[data-x=cancel]').onclick();
+    assertEq(dry.closed, 1, '取消得把弹窗关掉');
     assertEq(sb.Store._saves, saves, '取消不许写库');
     assertEq(p.subjects.map(s => s.id).join(','), 'dup,solo,dup,dup', '取消之后库里一个 id 都不许变');
-    // ④ 确认那一下才落库:首位留原 id、撞车位改发新 id、一位不删、内容不动
-    const preview = opt.body.match(/sj_u\d+/g) || [];
+    // ④ 再点开、按确认才落库:首位留原 id、撞车位改发新 id、一位不删、内容不动
+    main.querySelector('[data-x=dedupe]').onclick();
+    assertEq(sb.__modals.length, 2, '取消之后再点入口,得能再开一次(取消不是"处理过了")');
+    const go = sb.__modals[1];
+    const preview = go.opt.body.match(/sj_u\d+/g) || [];
     assertEq(preview.length, 2, '预览里那两个新 id 取不到(展示形状改了就同轮改这里),实际:' + JSON.stringify(preview));
-    const m2 = roleDom();
-    opt.onMount(m2, () => { closed++; });
-    m2.querySelector('[data-x=apply]').onclick();
-    assertEq(closed, 2, '落库之后得把弹窗关掉');
+    go.m.querySelector('[data-x=apply]').onclick();
+    assertEq(go.closed, 1, '落库之后得把弹窗关掉');
     assertEq(sb.Store._saves, saves + 1, '确认那一下恰好写一次库');
     assertEq(p.subjects.length, 4, '去重是改 id、不是替用户删位:一位都不许少(同 id 那几位各有各的名字与设定)');
     assertEq(p.subjects[0].id, 'dup', '首位留原 id(引用全靠它继续解析到同一位)');
