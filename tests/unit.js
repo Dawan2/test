@@ -4210,8 +4210,13 @@ const commandsTests = [
     assertEq(filmed(c6.ep.shots).length, 2, '真出片两行:' + vids(c6.ep.shots));
     assertEq(r6.result.ok + '/' + r6.result.landed, '2/2', '浏览器批量视频那一端:失败行不占座位:' + vids(c6.ep.shots));
     assertEq(r6.result.landed, filmed(c6.ep.shots).length, 'landed 恒等于真出片的行数:' + vids(c6.ep.shots));
-    /* ⑦ 源级锚(注释不算数):四处循环里的座位登记都得排在本轮引擎那一步之后。
-     * 上面六档钉的是行为,这一层点名说清「挪了哪一处」——也顺手拦住"再补一处提前登记"这种加法。 */
+  } },
+  { name: 'landed 那一族的源级锚:四处循环里的座位登记都排在本轮引擎之后,浏览器批量视频那一处仍由「真就绪的行」派生', fn() {
+    /* 上一条钉的是行为(六档各自现跑),这一条只做一件事:点名说清「座位登记挪到了哪一处」。
+     * 分开成两条是量出来的——把任一处的登记提前,上一条在自己第一档上就抛了,
+     * 这一层根本跑不到(一条用例只报一句);合在一处的写法等于让源级这半边在变异下永不开火。
+     * 另一半用处是拦"加法":四处各只许有一处 seats.add,再补一处提前登记的路当场红。
+     * `landed` 这一族此前全树零源级判据(W278 §四 M8 量到),本条是补上的那一层。 */
     const cliSrc = blankNonCode(fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8'), true);
     const cmdSrc = blankNonCode(fs.readFileSync(path.join(ROOT, 'js', 'commands.js'), 'utf8'), true);
     const seg = (src, from, to) => {
@@ -9268,6 +9273,8 @@ const GUARD_TOPICS = [
     why: '销号必须显式落笔:花名册上的编号要么在册、要么在销号台账里带闭合理由,下限只增不减(两处承载:一处拿实况对花名册、一处拿造出来的清单钉判词自己)' },
   { id: 'epfix-produce-gate', anchors: ['Domain.epFixOf', 'episode.produce'], hosts: 2,
     why: '受阻集的处置口与一键成片的就绪闸同一份实况:produce 当场退回的四态不许还挂它(两处承载:命令层那条让 produce 真跑一遍再问处置口,Domain 那条逐态点名分档)' },
+  { id: 'landed-seat-order', anchors: ['landedRows', 'seats.add('],
+    why: '座位只在本轮引擎成功之后才登记:四处批量循环里那一句 seats.add 都排在引擎那一步之后、各只此一处,浏览器批量视频那一处仍由「真就绪的行」派生——提前登记会把本轮失败(钱已退)那一位/那一行也算成占了座,landed 就不再是落库数(行为面另有一条六档现跑,此题守的是那一层源级)' },
 ];
 /* ---- 下限、销号台账与花名册:让「撤掉一条登记」这件事非留痕不可 ----
  * 上面那张表只登记"此刻在册"的主题,而撤登记此前只有一个下限数字守着,两种改法都一条不红:
@@ -9281,7 +9288,7 @@ const GUARD_TOPICS = [
  *   3. 销号必须显式落笔——编号搬进 GUARD_TOPICS_CLOSED 并写下闭合理由,锚点原样搬过来,
  *      好让"这道护栏是真没了,还是被别的主题接手了"事后仍判得出来。
  * 有意不禁新登记主题:在册多出花名册没有的号一条不红,加主题照旧只改上面那张表。 */
-const TOPIC_FLOOR = 19;
+const TOPIC_FLOOR = 20;
 const GUARD_TOPICS_CLOSED = [
   /* 形状:{ id: '主题编号', anchors: [原样搬过来], why: '这道护栏原本守什么',
    *        closed: '为什么可以不守了(被守的那一面已不存在 / 判据并进了哪一条)',
@@ -13484,7 +13491,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 697, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 698, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -13892,7 +13899,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 295;
+    const FLOOR = 296;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
