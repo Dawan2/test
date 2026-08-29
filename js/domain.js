@@ -362,10 +362,10 @@
    * 两端选人闸按位筛(ids.has(s.id)):同 id 存着三位时点名一个 id,三位都真跑、三笔生图钱,
    * 而回执只报 total=位数——与「点名三个不同 id」的正常批量逐字一样,这一笔多花在哪用户看不出来。
    * 闸不动(与镜头那一侧同理:点名两位的正常子集不许被砍成一位,第二位会永远跑不到),补的是把位数说出来。
-   * 与镜头那份 dupRowsNote 分开写而不套用:两侧单位与出口都不同——那一侧有 shots-dedupe 这条显式去重命令,
-   * 主体侧没有对应命令,收拾得回主体库人工来;混用会让主体回执论起「分镜表」与「行」来。
-   * 末句点名的是现有修法,连它的已知代价一并说清:主体库的删除按 id 匹配(js/roles.js 那一句
-   * filter(x => x.id !== s.id)),同 id 那几位会被一并删光,不先说清就等于把用户往误删里指。
+   * 与镜头那份 dupRowsNote 分开写而不套用:两侧单位与出口都不同——那一侧指的是 shots-dedupe,
+   * 这一侧指的是 subjects-dedupe;混用会让主体回执论起「分镜表」与「行」来。
+   * 末句先给去重命令,再给回主体库人工改这条路,连它的已知代价一并说清:主体库的删除按 id 匹配
+   * (js/roles.js 那一句 filter(x => x.id !== s.id)),同 id 那几位会被一并删光,不先说清就等于把用户往误删里指。
    * 点名判据与两端选人闸(Array.isArray(subjectIds) && length)逐字同形:放宽成真值判断时
    * 字符串 id 会被拆成字符点名清单、类数组连 new Set 都过不去,一次 ok 执行当场变异常。
    * 整库那一路(不点名)不说这句:没点名就没有「点 1 位跑 3 位」的错觉,total 本来就是位数。
@@ -382,8 +382,36 @@
     if (!dup.length || extra <= 0) return '';
     return '点名的 ' + picked.length + ' 位主体在主体库里同 id 存着多位(' + dup.map(x => x.id + ' ' + x.n + ' 位').join('、')
       + '):这一趟按 ' + list.length + ' 位逐位跑、逐位计费,比点名数多花了 ' + extra + ' 位的钱。'
-      + '主体侧没有去重命令,要一个 id 只跑一位,得回主体库把多出来的那几位删掉或改 id'
+      + '要一个 id 只跑一位,先用 CLI subjects-dedupe 收拾存量重复(默认 dry-run 报计划、--apply 才写:'
+      + '首位留原 id、撞车位改发新 id);也可回主体库自己把多出来的那几位删掉或改 id'
       + '(删除按 id 匹配、同 id 那几位一并删光,先确认要留哪一位)。';
+  };
+  /* 同 id 多位/多行的去重扫描与改名计划(双端单源:主体库与分镜表共用这一套规则,两侧不各写一份)。
+   * 规则一句话:首次出现的那一位/行留原 id,后面每一处撞车各发一个新 id——
+   * 与 shots-import 那道写入闸、Store.trashRestore 的 id 冲突改名同形。
+   * 引用面因此一个字不用动:两侧按 id 的引用一律是 find 首位/首行语义,而首位留的就是原 id,
+   * 去重前后落到的是同一位/同一行;改 id 的只有那些任何引用都指不到的后续位。
+   * 也不替调用方删位:同 id 那几位各有各的内容,删掉就是丢数据。
+   * 新 id 由调用方注入(Node 侧用 crypto、别处另有发号器),本模块不认识任何随机源;
+   * mint 收下已占用 id 的集合,由它负责发一个不在集合里的 id。
+   * 入参一个字段都不改(纯扫描),落库由调用方按 plan 逐条写。 */
+  D.dupIdScan = function (rows, mint) {
+    const list = Array.isArray(rows) ? rows : [];
+    const first = new Map(); // id → 首次出现的序号(留原 id 的那一位)
+    const dups = new Map();
+    const taken = new Set();
+    const plan = [];
+    list.forEach((x, i) => {
+      const id = x && x.id;
+      if (!taken.has(id)) { taken.add(id); first.set(id, i); return; }
+      const d = dups.get(id) || { id, n: 1, keepOrder: first.get(id) };
+      d.n++;
+      dups.set(id, d);
+      const nid = mint(taken);
+      plan.push({ order: i, from: id, to: nid });
+      taken.add(nid);
+    });
+    return { total: list.length, unique: new Set(list.map(x => x && x.id)).size, duplicates: [...dups.values()], plan };
   };
   /* 引擎调用成功次数与到手产物数岔开时,回执上那句话(单源:命令层与 CLI 同读这一份)。
    * 同 id 多位/多行的那一趟跑到一半别处改了表,序数越界的那一轮按兜底退回首位,

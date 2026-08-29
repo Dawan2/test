@@ -10,7 +10,7 @@
 { "mcpServers": { "hujing": { "command": "node", "args": ["C:/Users/EDY/modelvideo-hujing/mcp.js"] } } }
 ```
 
-- 39 个工具(`hujing_*`),stdio 传输,零依赖;工具调用 = 包装 cli.js,计费/幂等/退费语义与 CLI 完全一致。个数以运行期 `tools/list` 现取为准(本文这个数由契约测试钉在实况上)。
+- 40 个工具(`hujing_*`),stdio 传输,零依赖;工具调用 = 包装 cli.js,计费/幂等/退费语义与 CLI 完全一致。个数以运行期 `tools/list` 现取为准(本文这个数由契约测试钉在实况上)。
 - 工具结果:stdout 纯 JSON 原样透传;非零 exit 时 `isError:true` 并附 exit code 语义。
 - 例外一个只读工具:`hujing_playbook` 直读注册表 `js/skills.js` 答复(主线编排 playbook 步骤表 + 就绪检查各面已登记校验项),不起 CLI 子进程、不打服务端、零计费,未登录也答得出;步骤只给命令名与步序,授权位(`overwrite`/`confirmAll`/`riskyCompose`)与子集位留空由你按情况自己定。
 - 中段流程模板 `hujing_flow_template`(包装 `cli.js flow-template`,只读零计费):`segment` 取 `mid|subjects|eps|shots|gen`,给 `pid` 时按项目实况标注每步 `todo/clear/optional`、给出 `next` 与缺前置 `gaps`(缺剧本/缺主体图等,此时 `ready:false`);每步带 `cli` 调用串、逐个参数的取数出处(`args[].from`)与断点码(`stop[].codes`),照着走即可,不必自己拼调用顺序。
@@ -86,6 +86,10 @@ node cli.js export $PID <epid> --out ./dist                # 下载 mp4+srt
 - 逃生舱与 `PUT /api/state` 都是**整树原样落库、不做领域校验**:镜头 id 唯一性由调用方自己保证,
   灌进去的同 id 两镜就在库里(点名一次两行都跑、各收一笔视频钱,而只有首行寻得着)。要收拾就整表重导
   `shots-import`(撞 id 改发新 id 并回报 `renamedIds`),别指望这条路上有闸。
+- 两张表各有一条显式去重出口:`shots-dedupe <pid> <epid>` / `subjects-dedupe <pid>`(同形)。
+  默认 dry-run 只报「哪些 id 重复、几行/几位、哪一行留原 id、会改成什么」而一个字不写库,`--apply` 才落:
+  首行/首位留原 id、撞车的改发新 id 并回报 `renamedIds`,一行/一位都不删,零上游零计费。
+  引用面不用跟着改——两侧按 id 的引用都是首行/首位语义,而首行留的就是原 id。
 
 ## 排错速查
 

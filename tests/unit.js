@@ -3385,6 +3385,153 @@ const commandsTests = [
     assert(/shots-dedupe/.test(cliSrc.slice(cliSrc.indexOf('/* ---- 逃生舱'), cliSrc.indexOf("CMD['state-get']"))),
       '逃生舱那段注释须把这条收拾办法点出来(不设闸的那条路得说清收拾走哪儿)');
   } },
+  { name: 'CLI subjects-dedupe:存量重复主体 id 的显式去重出口——与镜头那条同形,默认 dry-run 不写库,--apply 只改够不着的后续位', fn: async () => {
+    /* 镜头那一侧三条(导入设闸 / 逃生舱不设闸 / shots-dedupe 是存量出口)之外,主体库一直缺这条出口:
+     * 逃生舱与 PUT /api/state 整树原样落库,灌进来的同 id 多位就在库里躺着——findSubject/subject-image
+     * 全按 id 取首位、后面几位结构性够不着,而选人闸按位筛,点名一个 id 补图库里几位就收几笔生图钱。
+     * 本条钉的是那条出口,形状与镜头那条逐格对齐:**显式**(用户自己发命令,不挂在任何保存路径上偷偷改)、
+     * 默认 dry-run(先报哪些 id 重复、会改成什么,一个字不写库)、--apply 才落、首位留原 id、
+     * 撞车位改发新 id 并如实回报 renamedIds。引用面一个字不动是现跑量出来的:分镜按**名字**引用主体,
+     * 按 id 的那几处一律 find 首位语义,而首位留的就是原 id——去重前后落到的是同一位。
+     * 也不替用户删位:同 id 那几位各有各的名字与设定,而主体库的删除按 id 匹配会把它们一并删光。
+     * 纯改主体库零上游零 LLM,故不许有人顺手给它套 Tasks.run/扣费(源级钉住)。 */
+    const sb = loadCli();
+    const CMD = vm.runInContext('CMD', sb);
+    const findSubject = vm.runInContext('findSubject', sb); // 按 id 那一处的取数口:量的就是它去重前后落到哪一位
+    const D = require('../js/domain.js');
+    const { disk } = cliDisk(sb, { shots: [makeShot(0, { confirm: true, image: 'i0.png', characters: ['A-首位'] })] });
+    const pOf = () => disk.projects[0];
+    pOf().subjects = [
+      { id: 'dup', name: 'A-首位', kind: 'character', image: 'a.png' },
+      { id: 'solo', name: 'B-不重复', kind: 'character', image: 'b.png' },
+      { id: 'dup', name: 'C-第二位', kind: 'character' },
+      { id: 'dup', name: 'D-第三位', kind: 'character' },
+    ];
+    // 引用逐条解析成"落到第几位":去重前后拿同一把尺子量(分镜按名字引用 / 按 id 那几处按 find 首位语义)
+    const refs = p => ({
+      byName: (p.subjects || []).indexOf(D.findSubject(p, 'A-首位').s),
+      byId: (p.subjects || []).indexOf(findSubject(p, 'dup')),
+      shotChars: (p.episodes[0].shots || []).map(s => (s.characters || []).join(',')),
+    });
+    const before = refs(pOf());
+    assertEq(JSON.stringify(before), JSON.stringify({ byName: 0, byId: 0, shotChars: ['A-首位'] }),
+      '夹具前提:两处引用此刻都落在首位上,实际:' + JSON.stringify(before));
+    let writes = 0;
+    const commit = sb.withProject;
+    sb.withProject = async (...a) => { writes++; return commit(...a); };
+    // ① 默认 dry-run:报得出重复的是谁、哪一位留原 id、会改成什么,而一次写入都不发
+    const dry = await CMD['subjects-dedupe'](['p1'], {});
+    assertEq(writes, 0, 'dry-run 不许发出任何写入(这条命令的"可撤销"就落在这一格上)');
+    assertEq(dry.applied, false, 'dry-run 的回执得自己说清没落库');
+    assertEq(dry.willRename, 2, '三位同 id → 留首位、改后两位,实际:' + dry.willRename);
+    assertEq(JSON.stringify(dry.duplicates), JSON.stringify([{ id: 'dup', seats: 3, keepOrder: 0 }]),
+      '重复的是哪个 id、几位、哪一位留原 id,三样都得报出来(单位词是"位"不是"行"),实际:' + JSON.stringify(dry.duplicates));
+    assertEq(dry.plan.map(x => x.order + ':' + x.from).join(','), '2:dup,3:dup',
+      '计划得逐位点名"改哪一位、原来是什么 id",实际:' + JSON.stringify(dry.plan));
+    assert(dry.plan.every(x => /^sj_/.test(x.to) && x.to !== 'dup'),
+      '计划里的新 id 得是真发出来的一个新 id、前缀对齐 newSubject:' + JSON.stringify(dry.plan));
+    assertEq(pOf().subjects.map(s => s.id).join(','), 'dup,solo,dup,dup', 'dry-run 之后库里一个 id 都不许变');
+    // ② --apply 才写:首位留原 id、后两位改发新 id,renamedIds 如实回报
+    const done = await CMD['subjects-dedupe'](['p1'], { apply: true });
+    assertEq(writes, 1, '--apply 恰好提交一次');
+    assertEq(done.applied, true, '真写了就得说真写了');
+    assertEq(done.renamedIds, 2, '改发新 id 的位数如实回报(静默改寻址键等于把用户的脚本悄悄弄失配)');
+    const after = pOf();
+    assertEq(after.subjects.length, 4, '去重是改 id、不是替用户删位:一位都不许少(同 id 那几位各有各的名字与设定,删掉就是丢数据)');
+    assertEq(after.subjects[0].id, 'dup', '首位留原 id(引用全靠它继续解析到同一位)');
+    assertEq(after.subjects[1].id, 'solo', '不重复的那一位一个字都不许动');
+    assert(after.subjects[2].id !== 'dup' && after.subjects[3].id !== 'dup' && /^sj_/.test(after.subjects[2].id),
+      '撞车的后续位须改发新 id,实际:' + JSON.stringify(after.subjects.map(s => s.id)));
+    assertEq(new Set(after.subjects.map(s => s.id)).size, 4, '落库后四位四个 id,一个不重');
+    assertEq(after.subjects.map(s => s.name + '/' + (s.image || '无图')).join(','),
+      'A-首位/a.png,B-不重复/b.png,C-第二位/无图,D-第三位/无图', '只改 id,一位的内容都不许动');
+    assertEq(done.renamed.map(x => x.order + '→' + x.to).join(','),
+      after.subjects.map((s, i) => i + '→' + s.id).filter((_, i) => i >= 2).join(','),
+      '回执里那份改名映射要与落库实况逐条对得上');
+    assertEq(JSON.stringify(done.duplicates), JSON.stringify(dry.duplicates),
+      '--apply 回执报的重复面须与 dry-run 那份逐字相同(两条路各算一份就会漂,用户照 dry-run 点头、apply 干的却是别的)');
+    // ③ 引用面:去重前后落到的是同一位(这就是"不改引用"的现跑依据),镜头行里那个名字也一个字没动
+    assertEq(JSON.stringify(refs(after)), JSON.stringify(before),
+      '两处引用去重前后须落到同一位——指错主体才是要迁移的理由,而现跑指的是同一位,实际:' + JSON.stringify(refs(after)));
+    // ④ 收的正是那笔双扣费:点名一个 id,引擎从此只收一位(去重前是三位三笔生图钱)
+    sb.__imgs = [];
+    sb.genImage = async () => { sb.__imgs.push(1); return { url: '/uploads/img/g' + sb.__imgs.length + '.png' }; };
+    const g = await sb.EXEC['subject.generateImage'].run({ pid: 'p1', subjectIds: ['dup'] }, {});
+    assertEq(sb.__imgs.length, 1, '点名一个 id,引擎只收那一位');
+    assertEq(g.result.total, 1, '回执按真跑的位数报(去重前这里是 3,三笔生图钱)');
+    assertEq(g.result.note, undefined, '一个 id 只剩一位之后,「多花了几位的钱」那句话自然不再说:' + JSON.stringify(g.result.note));
+    // ⑤ 干净的库上跑:如实说没得可去,--apply 也不发写入(不许拿空提交冒充一次"处理过了")
+    const clean = loadCli();
+    const cleanCmd = vm.runInContext('CMD', clean);
+    const c = cliDisk(clean, {});
+    c.disk.projects[0].subjects = [{ id: 'sj0', name: 'A' }, { id: 'sj1', name: 'B' }];
+    let cleanWrites = 0;
+    const cleanCommit = clean.withProject;
+    clean.withProject = async (...a) => { cleanWrites++; return cleanCommit(...a); };
+    const noop = await cleanCmd['subjects-dedupe'](['p1'], { apply: true });
+    assertEq(cleanWrites, 0, '没有重复 id 时带 --apply 也不许发出写入');
+    assertEq(noop.willRename, 0, '实际:' + JSON.stringify(noop));
+    assertEq(c.disk.projects[0].subjects.map(s => s.id).join(','), 'sj0,sj1', '干净的库一个 id 不许动');
+    // ⑥ 源级:纯改表不许有人给它套计费;两条路同读一个扫描,不许各算一份
+    const cliSrc = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    const body = cliSrc.slice(cliSrc.indexOf("CMD['subjects-dedupe']")).split('\n};')[0];
+    assert(body && !/Tasks\.run|billingAction|charge|operationId/.test(body),
+      'subjects-dedupe 纯改主体库、零上游零 LLM,不许走计费路径:' + body);
+    assert(/f\.apply/.test(body), '写不写库只能由 --apply 这一个位决定(默认档得是 dry-run)');
+    assertEq((body.match(/dedupeSubjectScan\(/g) || []).length, 2,
+      '两条路(dry-run 读一份、--apply 落库前按最新那棵树重算一份)都得调同一个 dedupeSubjectScan,'
+      + '各写一份计算迟早漂——用户照 dry-run 点的那个头就不作数了');
+    // 引用面的源级判据只看代码骨架:注释与回执/日志字面里提到那几个名字是说明,不是改写
+    assert(!/formerNames|forms|imgRef|renameSubject/.test(blankNonCode(body)),
+      'subjects-dedupe 的代码骨架里出现了引用字段:现跑证明首位留原 id 时引用落到的是同一位,动它才是新增风险——'
+      + '真要迁移请连着"改哪几处、凭什么"一起判,别顺手塞进来:' + blankNonCode(body));
+    // 对照面:镜头那条出口原样在册,逃生舱那段把两侧的收拾办法都点了名(两条命令并存、各管各的一张表)
+    assert(/CMD\['shots-dedupe'\]/.test(cliSrc), '对照面:镜头那条出口得还在(本命令的形状就是照它写的)');
+    assert(/subjects-dedupe/.test(cliSrc.slice(cliSrc.indexOf('/* ---- 逃生舱'), cliSrc.indexOf("CMD['state-get']"))),
+      '逃生舱那段注释须把主体这一侧的收拾办法也点出来(不设闸的那条路得说清两张表各收拾走哪儿)');
+  } },
+  { name: '两条去重命令同读一份规则:镜头侧与主体侧的扫描都委托 Domain.dupIdScan,首位留原 id 那套口径不许两端各抄一份', fn() {
+    /* 主体侧那条出口是照镜头那条写的,而「首次出现留原 id、后面每处撞车各发一个新 id」这套规则一旦各抄一份,
+     * 两条命令迟早对同一份脏数据给出两种计划(改哪一位、留哪一位),而用户是照 dry-run 那份点头的。
+     * 故规则本身下沉派生 dupIdScan,两侧的扫描函数只注入自己那一端的发号器与单位词(行 / 位)。
+     * 三层判据:派生在册且算得出计划、两处扫描都真委托它、扫描段里不许再长出第二份规则记账。 */
+    const D = require('../js/domain.js');
+    assertEq(typeof D.dupIdScan, 'function', 'Domain 须导出这一份共用扫描 dupIdScan(两条命令的规则单源)');
+    const cliSrc = fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8');
+    const segOf = head => {
+      const i = cliSrc.indexOf(head);
+      assert(i >= 0, 'cli.js 找不到「' + head + '」(挪窝或改名就同轮改这里,别把本条留成恒真)');
+      const rest = cliSrc.slice(i + head.length);
+      const j = rest.indexOf('\n};');
+      return blankNonCode(rest.slice(0, j >= 0 ? j : rest.length), true); // 注释抹掉、字面量留着:发号器前缀与单位词都写在字面上
+    };
+    [['const dedupeShotScan', 'sh_', 'rows'], ['const dedupeSubjectScan', 'sj_', 'seats']].forEach(([head, prefix, unit]) => {
+      const seg = segOf(head);
+      assert(seg.includes('Domain.dupIdScan('), head + ' 段须委托 Domain.dupIdScan(两端各写一份规则迟早给出两种计划):' + seg);
+      assert(seg.includes(prefix) && /crypto\.randomBytes/.test(seg),
+        head + ' 段得注入自己那一端的发号器:新 id 是真发出来的(前缀 ' + prefix + '),不许是拼出来的可预测串:' + seg);
+      assert(seg.includes(unit + ':'), head + ' 段得在这里换上自己那个单位词(' + unit + '):单位词是两侧唯一该分开的东西');
+      // 规则本身不许在这一层再长一份:「谁是首位」那套记账(id → 首次序号)只许在派生里
+      assertEq((seg.match(/new Map\(|new Set\(/g) || []).length, 0,
+        head + ' 段又攒了一份"谁是首位"的记账,那是派生的活(抄回来两侧就能各判一套):' + seg);
+      assertEq((seg.match(/keepOrder/g) || []).length, 2,
+        head + ' 段里 keepOrder 只该出现两次(透传派生那一份:键名 + d.keepOrder);自己算一遍"留哪一位"就是把规则抄回来了:' + seg);
+    });
+    // 派生自己:算得出计划,而且新 id 一律由注入的发号器来发(派生里不许出现任何随机源)
+    const rows = [{ id: 'a' }, { id: 'b' }, { id: 'a' }, { id: 'a' }];
+    let n = 0;
+    const scan = D.dupIdScan(rows, () => 'new' + (++n));
+    assertEq(JSON.stringify(scan.duplicates), JSON.stringify([{ id: 'a', n: 3, keepOrder: 0 }]),
+      '派生报的是中性单位 n(单位词由两端各自换上),实际:' + JSON.stringify(scan.duplicates));
+    assertEq(scan.plan.map(x => x.order + ':' + x.from + '→' + x.to).join(','), '2:a→new1,3:a→new2',
+      '首位留原 id、后两处各发一个新 id:' + JSON.stringify(scan.plan));
+    assertEq(rows.map(x => x.id).join(','), 'a,b,a,a', '派生是纯扫描:入参一个字段都不许改(落库由命令层按 plan 写)');
+    const dsrc = fs.readFileSync(path.join(ROOT, 'js', 'domain.js'), 'utf8');
+    const dseg = blankNonCode(dsrc.slice(dsrc.indexOf('D.dupIdScan = function')).split('\n  };')[0]);
+    assert(dseg.length > 200, '派生段取不到(挪窝或改名就同轮改这里,别把本条留成恒真),实测 ' + dseg.length + ' 字');
+    assert(!/crypto|Math\.random|Date\.now|window|require\(/.test(dseg),
+      '派生不许自己发号也不许碰环境:发号器由调用方注入(UMD 双端同一份的前提):' + dseg);
+  } },
   { name: 'generateVideos 点名重复 id 真跑那一趟:两端回执都说出行数并点名 shots-dedupe(选人闸仍按行筛,一行都不许少跑)', fn: async () => {
     /* 上面三条(导入设闸 / 逃生舱不设闸 / shots-dedupe 是存量出口)管的是表本身,这一条管**生成那一拍**:
      * 存量重复表上点名一个 id,选人闸按行筛出三行,三行都真跑、三笔视频钱,而回执只报 total=3——
@@ -3751,7 +3898,8 @@ const commandsTests = [
      * 选人闸按位筛出三位、三位都真跑、三笔生图钱,而回执只报 total=3——与干净库上点名三个不同 id 的
      * 正常批量逐字相同(连 cost 都一样),用户在生图那一拍根本不知道自己多付了两位。
      * 收法是补一句话,不是改选人:按 id 只跑一位会让第二、三位永远跑不到(它们各有各的名字与设定)。
-     * 与镜头那一侧同形而措辞另起一份——主体侧没有 shots-dedupe 那样的去重命令,末句给的是主体库里的人工修法。 */
+     * 与镜头那一侧同形而措辞另起一份:出口是主体侧自己那条 subjects-dedupe(单位是"位"、收拾的是主体库),
+     * 末句另留一条主体库里的人工修法与它的已知代价。 */
     const dupSubs = () => [
       { id: 'dup', name: 'A-首位', kind: 'character' }, { id: 'solo', name: 'B-不重复', kind: 'character' },
       { id: 'dup', name: 'C-第二位', kind: 'character' }, { id: 'dup', name: 'D-第三位', kind: 'character' },
@@ -3778,8 +3926,9 @@ const commandsTests = [
     assert(/dup 3 位/.test(note) && /按 3 位逐位跑/.test(note) && /多花了 2 位的钱/.test(note),
       '回执得说出"点名 1 个 id 却跑了 3 位、多花 2 位的钱";位数说的是这一趟真下发的那几位'
       + '(拿整个主体库去数会把没跑的位也算进来),实际:' + JSON.stringify(note));
-    assert(/主体库/.test(note) && /删掉或改 id/.test(note), '得把现有修法点出来(只报警不给活路等于没说):' + note);
-    assert(!/shots-dedupe|分镜表/.test(note), '主体侧没有那条去重命令,不许硬塞镜头那份措辞:' + note);
+    assert(/subjects-dedupe/.test(note), '得把主体侧那条去重出口点出来(只报警不给活路等于没说):' + note);
+    assert(/主体库/.test(note) && /删掉或改 id/.test(note), '人工那条修法也得留着(去重命令改的是 id,想少几位仍得自己删):' + note);
+    assert(!/shots-dedupe|分镜表/.test(note), '主体侧那条出口是 subjects-dedupe,不许硬塞镜头那份措辞:' + note);
     sb.Commands.digest(r);
     assertEq(sb.__toasts.filter(t => /同 id 存着多位/.test(t)).length, 1,
       'digest 得把这一句真播出去(成功档默认静默,不播就等于没说),实际 toast:' + JSON.stringify(sb.__toasts));
@@ -6165,9 +6314,10 @@ const domainTests = [
     assert(/dup 3 位/.test(n), '得逐个点名"哪个 id 存着几位":' + n);
     assert(/按 3 位逐位跑/.test(n) && /逐位计费/.test(n), '得说清这一趟按几位跑、按几位计费:' + n);
     assert(/多花了 2 位的钱/.test(n), '多花的位数 = 位数 − 点名数:' + n);
-    assert(/主体库/.test(n) && /删掉或改 id/.test(n), '得把现有修法说出来(只报警不给活路等于没说):' + n);
-    assert(/一并删光/.test(n), '现有修法的已知代价得一并说清(删除按 id 匹配),不然是把用户往误删里指:' + n);
-    /* 不许硬塞镜头那一侧的措辞:主体库里没有"行"也没有"分镜表",更没有 shots-dedupe 这条命令 */
+    assert(/subjects-dedupe/.test(n), '得点名收拾存量重复的那条出口命令(不点名出口等于只报警不给活路):' + n);
+    assert(/主体库/.test(n) && /删掉或改 id/.test(n), '人工那条修法也得留着(去重命令改的是 id,想少几位仍得自己删):' + n);
+    assert(/一并删光/.test(n), '人工那条修法的已知代价得一并说清(删除按 id 匹配),不然是把用户往误删里指:' + n);
+    /* 不许硬塞镜头那一侧的措辞:主体库里没有"行"也没有"分镜表",出口是同形而另一条的 subjects-dedupe */
     assert(!/镜|行|分镜表|shots-dedupe/.test(n), '主体这一侧不该冒出镜头那份 note 的字眼:' + n);
     // 反面:不说话的那几路
     assertEq(sb.Domain.dupSubjectRowsNote(['dup', 'solo'], [subs[0], subs[1]]), '', '点名几位跑几位(各占一位)时一句不说');
@@ -6193,6 +6343,47 @@ const domainTests = [
     const m = sb.Domain.dupSubjectRowsNote(['x', 'y', 'z'], multi);
     assert(/y 2 位/.test(m) && /z 3 位/.test(m) && !/x \d+ 位/.test(m), '只点真重复的那几个:' + m);
     assert(/按 6 位逐位跑/.test(m) && /多花了 3 位的钱/.test(m), '多花的位数按各 id 分别累计:' + m);
+  } },
+  { name: 'dupIdScan:同 id 多位/多行的去重规则单源——首次出现留原 id、后面每处撞车各发一个新 id,发号器由调用方注入', fn: () => {
+    /* 上面两条说的是"这一趟多花了钱"那句话,这一条是收拾那批存量的规则本身:
+     * 两条 CLI 命令(shots-dedupe / subjects-dedupe)同读这一份,两侧只注入自己那一端的发号器与单位词。
+     * 规则收在这里而不是各写一份,是因为它定的是"改哪一位、留哪一位"——两份计算一漂,
+     * 用户照 dry-run 点的那个头就不作数了。 */
+    const sb = loadDomain();
+    const mint = () => { let n = 0; return () => 'new' + (++n); };
+    const rows = [{ id: 'a', tag: '首位' }, { id: 'b' }, { id: 'a', tag: '第二位' }, { id: 'a' }, { id: 'b' }];
+    const scan = sb.Domain.dupIdScan(rows, mint());
+    assertEq(scan.total, 5, '总数是原样的条数(去重是改 id,不是砍条目)');
+    assertEq(scan.unique, 2, 'unique 报的是扫描前那份 id 集合的大小(照它与 total 的差就读得出重了几处)');
+    assertEq(JSON.stringify(scan.duplicates), JSON.stringify([{ id: 'a', n: 3, keepOrder: 0 }, { id: 'b', n: 2, keepOrder: 1 }]),
+      '逐个 id 报"几处、哪一处留原 id",序按首次出现,实际:' + JSON.stringify(scan.duplicates));
+    assertEq(scan.plan.map(x => x.order + ':' + x.from + '→' + x.to).join(','), '2:a→new1,3:a→new2,4:b→new3',
+      '计划只覆盖撞车的那几处(首次出现那一处不进计划),实际:' + JSON.stringify(scan.plan));
+    assertEq(rows.map(x => x.id + '/' + (x.tag || '')).join(','), 'a/首位,b/,a/第二位,a/,b/',
+      '纯扫描:入参一个字段都不许改(落库由调用方按 plan 逐条写)');
+    // 发号器收的是"已占用 id 的集合":它得能看见原有 id 与本轮已发出的新 id,才发得出一个真不撞的
+    const seen = [];
+    sb.Domain.dupIdScan([{ id: 'a' }, { id: 'a' }, { id: 'a' }], taken => {
+      seen.push([...taken].join('|'));
+      return 'x' + seen.length;
+    });
+    assertEq(seen.join(' / '), 'a / a|x1',
+      '第二次发号时得看得见第一次发出去的那个(看不见就可能两处撞成同一个新 id),实际:' + seen.join(' / '));
+    // 干净的表/空表/脏入参:一律不发号、不抛
+    const nomint = () => { assert(false, '没有撞车时不许发号(发一次就是白改一个寻址键)'); };
+    assertEq(JSON.stringify(sb.Domain.dupIdScan([{ id: 'a' }, { id: 'b' }], nomint)),
+      JSON.stringify({ total: 2, unique: 2, duplicates: [], plan: [] }), '干净的表:重复面与计划都空');
+    [undefined, null, 'a', 0, {}].forEach(bad => {
+      let out;
+      try { out = sb.Domain.dupIdScan(bad, nomint); }
+      catch (e) { assert(false, '非数组入参不许抛(命令层拿到的 subjects/shots 可能压根不在):' + JSON.stringify(bad) + ' → ' + e.message); }
+      assertEq(JSON.stringify(out), JSON.stringify({ total: 0, unique: 0, duplicates: [], plan: [] }),
+        '非数组一律当空表:' + JSON.stringify(bad));
+    });
+    // 缺 id 的条目照同一套规则算(第二处缺 id 的也是撞车):不许因为 undefined 就静默放过去
+    let k = 0;
+    const holes = sb.Domain.dupIdScan([{}, { id: 'a' }, {}], () => 'h' + (++k));
+    assertEq(holes.plan.map(x => x.order + '→' + x.to).join(','), '2→h1', '第二处缺 id 的同样算撞车,得给它发一个新 id:' + JSON.stringify(holes.plan));
   } },
 ];
 
@@ -9273,6 +9464,8 @@ const GUARD_TOPICS = [
     why: '销号必须显式落笔:花名册上的编号要么在册、要么在销号台账里带闭合理由,下限只增不减(两处承载:一处拿实况对花名册、一处拿造出来的清单钉判词自己)' },
   { id: 'epfix-produce-gate', anchors: ['Domain.epFixOf', 'episode.produce'], hosts: 2,
     why: '受阻集的处置口与一键成片的就绪闸同一份实况:produce 当场退回的四态不许还挂它(两处承载:命令层那条让 produce 真跑一遍再问处置口,Domain 那条逐态点名分档)' },
+  { id: 'dedupe-rule-single', anchors: ['dupIdScan', 'dedupeSubjectScan'],
+    why: '两条去重命令(镜头 / 主体)同读一份规则:「首次出现留原 id、后面每处撞车各发一个新 id」收在 Domain.dupIdScan,两侧的扫描只注入自己那一端的发号器与单位词——各抄一份就能对同一份脏数据给出两种计划(改哪一位、留哪一位),而用户是照 dry-run 那份点头的' },
   { id: 'landed-seat-order', anchors: ['landedRows', 'seats.add('],
     why: '座位只在本轮引擎成功之后才登记:四处批量循环里那一句 seats.add 都排在引擎那一步之后、各只此一处,浏览器批量视频那一处仍由「真就绪的行」派生——提前登记会把本轮失败(钱已退)那一位/那一行也算成占了座,landed 就不再是落库数(行为面另有一条六档现跑,此题守的是那一层源级)' },
 ];
@@ -9288,7 +9481,7 @@ const GUARD_TOPICS = [
  *   3. 销号必须显式落笔——编号搬进 GUARD_TOPICS_CLOSED 并写下闭合理由,锚点原样搬过来,
  *      好让"这道护栏是真没了,还是被别的主题接手了"事后仍判得出来。
  * 有意不禁新登记主题:在册多出花名册没有的号一条不红,加主题照旧只改上面那张表。 */
-const TOPIC_FLOOR = 20;
+const TOPIC_FLOOR = 21;
 const GUARD_TOPICS_CLOSED = [
   /* 形状:{ id: '主题编号', anchors: [原样搬过来], why: '这道护栏原本守什么',
    *        closed: '为什么可以不守了(被守的那一面已不存在 / 判据并进了哪一条)',
@@ -10126,7 +10319,7 @@ const contractTests = [
     });
   } },
   { name: '点名的 id 在主体库存着多位那句实话双端单源:两端真跑回执都现取 Domain.dupSubjectRowsNote,选人闸仍按位筛没被改成按 id 去重', fn() {
-    /* 与镜头那一侧那条(dupRowsNote)成对而分开写:主体侧没有 shots-dedupe 那条去重命令,
+    /* 与镜头那一侧那条(dupRowsNote)成对而分开写:主体侧的出口是自己那条 subjects-dedupe,
      * 措辞与出口都另起一份,套用镜头那份会让主体回执论起"分镜表"与"行"来。
      * 另钉住这句 note 的前提没被顺手改掉——选人闸得还是按位筛,拿这句话给"按 id 只跑一位"开路时本条红。 */
     const D = require('../js/domain.js');
@@ -10159,7 +10352,7 @@ const contractTests = [
       'args.subjectIds', 'todo').length, '判据自证:主体侧「上一行另起一个去重集」这手没被扫出来(收窄扫描退回只钉某一行的字面即在这里红)');
     assertEq(pickerNarrowHits(gate('const todo = (p.subjects || []).filter(s => ids ? ids.has(s.id) : !s.image);'), 'args.subjectIds', 'todo').join(' | '), '',
       '判据自证:活树上那一句按位筛被误判成收窄了(闸被判死,点名两位就跑不成两位)');
-    /* 派生这一侧:点名判据与选人闸逐字同形;末句得给现有修法(主体侧没有去重命令,给的是主体库里的人工动作) */
+    /* 派生这一侧:点名判据与选人闸逐字同形;末句得给出口(主体侧自己那条 subjects-dedupe)与人工修法各一条 */
     const src = fs.readFileSync(path.join(ROOT, 'js', 'domain.js'), 'utf8');
     const i = src.indexOf('D.dupSubjectRowsNote = function');
     assert(i >= 0, 'js/domain.js 找不到 D.dupSubjectRowsNote(挪窝或改名就同轮改这里)');
@@ -10168,8 +10361,9 @@ const contractTests = [
     assert(code.length > 5, 'dupSubjectRowsNote 段可执行行取不到(整段被判成注释本条即恒真),实测 ' + code.length + ' 行');
     assert(code.some(t => /Array\.isArray\(picked\) \|\| !picked\.length/.test(t)),
       'dupSubjectRowsNote 的点名判据须与选人闸同形(放宽成真值判断,字符串 subjectIds 就会被当点名清单)');
+    assert(code.some(t => /subjects-dedupe/.test(t)), '这句话须点名主体侧那条去重出口(只报警不给活路等于没说)');
     assert(code.some(t => /主体库/.test(t)) && code.some(t => /删掉或改 id/.test(t)),
-      '这句话须给出现有修法(主体侧没有去重命令,只报警不给活路等于没说)');
+      '人工那条修法也得留着(去重命令改的是 id,想少几位仍得回主体库自己删)');
     assert(!code.some(t => /shots-dedupe/.test(t)), '主体侧不许点名镜头那条去重命令(它只收拾分镜表,收拾不到主体库)');
     /* 反面:镜头那一份原样在册且仍点着自己的出口——两份并存、各管各的(合并成一份即在这里红) */
     assertEq(typeof D.dupRowsNote, 'function', '镜头那一份是本条的对照面,没了就同轮改这里');
@@ -13491,7 +13685,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 698, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 701, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
