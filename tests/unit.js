@@ -6476,6 +6476,32 @@ const issuesTests = [
     const pi = sb.Issues.collect({ id: 'p3', script: '整本剧本', subjects: p.subjects, episodes: [plainEp] }).find(x => x.kind === 'stale-shots');
     assertEq(pi.detail, '镜头 1 生成后输入有变化,建议重生成', '两堆不分家时明细一字不变');
   } },
+  { name: 'collect:失败镜/过期镜明细的镜号按分镜表实位出(order 字段漂了也不跟着漂)', fn() {
+    /* 明细上那个号是人拿去回分集页找镜的,而分集页缩略图一直按实位出号。order 是落库字段:
+     * 插镜/删镜/换序后没人重排它,同一镜就在两块面上报两个号;同 id 多行时按 id 取首行更是把
+     * 后几行的毛病一律算到首行头上。夹具把这两种坏账一起摆出来——order 自称 5/5/0,失败镜那一堆的
+     * 第三行还与首行同 id(过期镜那一堆的入选是按 id 取的集合,同 id 会把鲜镜也带进来,不在本条量)。 */
+    const sb = loadIssues();
+    const mk = (id, order, ex) => Object.assign({}, cleanEp().shots[0], { id, order }, ex || {});
+    const done = h => ({ status: 'done', url: 'http://x/v.mp4', inputHash: h });
+    const subjects = [{ id: 'sj1', name: '主角', kind: 'character', image: 'u' }];
+    const failEp = cleanEp({ composed: false, shots: [
+      mk('sh0', 5),
+      mk('sh1', 5, { video: { status: 'failed', error: '上游超时' } }),
+      mk('sh0', 0, { video: { status: 'failed', error: '额度不足' } }),
+    ] });
+    const fi = sb.Issues.collect({ id: 'p1', script: '整本剧本', subjects, episodes: [failEp] }).find(x => x.kind === 'failed-shots');
+    assert(fi, '夹具应真落在失败镜那一档(否则下面的判定成空转)');
+    assertEq(fi.detail, '镜头2:上游超时;镜头3:额度不足(失败已退费,可重试)',
+      '失败镜明细应按实位出号(读 order 字段时是 6 与 1、按 id 取首行时是 2 与 1),实际:' + fi.detail);
+    const staleEp = cleanEp({ composed: false, shots: [
+      mk('st0', 5), mk('st1', 5, { video: done('v3:旧指纹') }), mk('st2', 0, { video: done('v3:旧指纹') }),
+    ] });
+    const si = sb.Issues.collect({ id: 'p2', script: '整本剧本', subjects, episodes: [staleEp] }).find(x => x.kind === 'stale-shots');
+    assert(si, '夹具应真落在过期镜那一档');
+    assertEq(si.detail, '镜头 2、3 生成后输入有变化,建议重生成',
+      '过期镜明细应按实位出号(读 order 字段时是 6、1),实际:' + si.detail);
+  } },
   { name: '双端单源:Node 无 window 与浏览器路径对同一夹具逐字节同结论(kind 集合全等)', fn() {
     const NodeIssues = require('../js/issues.js'); // Node 侧:无 window/document/Store,依赖经 require 取
     assertEq(typeof globalThis.window, 'undefined', '本进程不得有 window(证明 Node 侧真的跑在无浏览器环境里)');
@@ -9625,6 +9651,34 @@ const contractTests = [
     ].forEach(([re, label]) => {
       assert(re.test(bo), label + '是要落库的文本,应照旧按 s.order 记(与面板那个实位号有意不同源)');
     });
+  } },
+  { name: '问题中心展示镜号(源级):失败镜/过期镜明细取 Domain.shotNo,提醒投影行与低分镜明细照旧读各自上游派生的号', fn() {
+    /* 镜号这条线的最后一面。问题中心的明细持久渲染在问题清单上(CLI issues / MCP 也把它原样吐出来),
+     * 而 s.order 是落库字段:增删镜/换序后同一镜在分集页缩略图上是第三镜、在问题清单里写着「镜头 1」,
+     * 人照着这个号回分集页就找错镜——同一条条目上的 shotIds 却是按 id 精确带出的,两半不许分家。
+     * 本槽只收「本层自己拿着分镜表行对象出号」的那两处:失败镜明细与过期镜明细。
+     * 有意不收的两族两个方向都钉着,后续槽真要收就得同轮改这条判据:
+     *   ① 提醒投影行(craftLine / sizeLine / lexLine / consistLine / captionLine)印的 h.order 是
+     *      js/skills.js 命中里带上来的号(那一族连着回执与提示词口径),本层只管印,不在展示层另抄一份对位;
+     *   ② 低分镜明细的 x.order 已经是 Domain.reviseTargets 按分镜表实位派生的号(编排面与展示面同一份),
+     *      再套一层 shotNo 就是第二份对位。 */
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'issues.js'), 'utf8');
+    [["detail: fs.map(s => `镜头", '失败镜明细'], ['detail: `镜头 ${ss.map(', '过期镜明细']].forEach(([anchor, label]) => {
+      const hit = src.split('\n').filter(l => l.includes(anchor));
+      assertEq(hit.length, 1, label + '按字面锚不到或不止一处(文案变了就同轮改这条判据):' + anchor);
+      assert(/Domain\.shotNo\(ep\.shots, s\)/.test(hit[0]),
+        label + '的镜号应取 Domain.shotNo(表内实位):' + hit[0].trim().slice(0, 80));
+    });
+    /* 往下削:整份文件一处都不许再按 order 字段出镜号(本层自己出号只此两处,退回即与分集页两号分家) */
+    assertEq((src.match(/\.order \+ 1/g) || []).length, 0,
+      'js/issues.js 不许再按 order 字段出镜号:' + (src.split('\n').find(l => /\.order \+ 1/.test(l)) || '').trim().slice(0, 80));
+    /* 往上收:那两族的号各有各的上游,顺手在本层改成现算同样当场点名 */
+    [[/const lexLine = h => `镜头\$\{h\.order\}/, '提示词稳定词提醒的一行明细'],
+      [/const consistLine = h => `镜头\$\{h\.order\}「/, '跨镜主体一致性提醒的一行明细'],
+    ].forEach(([re, label]) => assert(re.test(src),
+      label + '的镜号应照旧取 js/skills.js 命中里带上来的 h.order(那一族连着回执与提示词口径,不在本层单收)'));
+    assert(/lows\.map\(x => x\.order \+ '镜'/.test(src),
+      '低分镜明细的号应照旧取 Domain.reviseTargets 派生的实位(编排面与展示面同一份,本层不再套一层对位)');
   } },
   { name: '修订闭环重抽面单源:server/CLI/助手摘要/问题中心都不自筛低分镜,CLI 不摘回执 lowShots 当 shotIds', fn() {
     /* G-03 这一面钉的是"该重抽哪几镜由编排层派生":判据(达标线 / 报告判旧 / 与分镜表取交集 / 定稿不重抽)
