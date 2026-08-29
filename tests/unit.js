@@ -3820,6 +3820,131 @@ const commandsTests = [
       '首位的图与提示词一个字不动(生图那一路把产物写回首位是同一个错法):' + JSON.stringify(fx3.subs()[0]));
     assertEq(r3.name + '|' + r3.image, 'C-第二位|/uploads/img/gen.png', '回执与落库那一位对得上:' + JSON.stringify(r3));
   } },
+  { name: 'CLI subject-image --file 上传失败不许把库改脏:一次落库往返都不发、图与提示词逐字段未动,上游那句错与退出码如实带出', fn: async () => {
+    /* 上一条钉的是"取哪一位、写回哪一位",三个图源里只走了 --url 与 --gen;--file 多的是 uploadFile 那一步,
+     * 而多出来的那一步**会失败**(端点 5xx、文件根本不在),此前树上没有一条用例问过"失败了库怎么办"。
+     * 现跑实现已对:赋值写在 await 右侧,uploadFile 一抛错整条 fn 就断在那儿,withProject 的 diff 与 PUT 一步都没跑到。
+     * 故本条一个字不改产品码,只把这副形状钉住——它一旦被"顺手 try/catch 一下别让用户看见红字"改掉,
+     * 命令会报成一次没有图的成功、库里那位的图被空串顶掉,而错话与退出码全丢。
+     * 桩下到 fetch 那一层(不是 api):退出码 5 是 cli.js 自己按 HTTP 500 推的,错话取的是响应体里那一句——
+     * 桩在 api 上就等于用例自己造了个 exit 5,推错了也量不出来。
+     * 落库面读的是 clone 语义的 disk 夹具:命令只在自己手里那份快照上改一改也会看起来"落库了",
+     * 共享同一个对象量不出真假;而"脏不脏"这件事只在真发出 PUT 那一刻才成立,故往返清单与库内容两层一起判。 */
+    const clone = x => JSON.parse(JSON.stringify(x));
+    const baseSubs = () => [
+      { id: 'sj1', name: '女主', kind: 'character', image: '/uploads/img/old.png', prompt: '旧提示词', description: '设定A' },
+      { id: 'sj2', name: '男主', kind: 'character', image: '/uploads/img/b.png', prompt: '提示词B' },
+    ];
+    const jres = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
+    const fx = uploadRes => {
+      const sb = loadCli();
+      const disk = { projects: [{ id: 'p1', subjects: baseSubs(), episodes: [] }], settings: {} };
+      const calls = [];
+      sb.fetch = async (url, init) => {
+        const route = init.method + ' ' + String(url).replace('http://t.local', '');
+        calls.push(route);
+        if (route === 'GET /api/state') return jres(200, { code: 0, data: { rev: 3, state: clone(disk) } });
+        if (route === 'POST /api/upload') return uploadRes();
+        if (route === 'PUT /api/state') {
+          const chg = (init.body ? JSON.parse(init.body) : {}).changes || {};
+          for (const pid in (chg.projects || {})) {
+            const i = disk.projects.findIndex(x => x.id === pid);
+            if (i >= 0) disk.projects[i] = clone(chg.projects[pid]);
+          }
+          return jres(200, { code: 0, data: { rev: 4 } });
+        }
+        return jres(404, { code: 1, message: '本条夹具没准备这条往返:' + route });
+      };
+      return { sb, calls, subs: () => disk.projects[0].subjects };
+    };
+    const seats = subs => subs.map(s => s.name + '|' + (s.image || '无图') + '|' + (s.prompt || '无提示词')).join(' , ');
+    const CLEAN = '女主|/uploads/img/old.png|旧提示词 , 男主|/uploads/img/b.png|提示词B';
+    const flags = pic => ({ server: 'http://t.local', token: 't', file: pic });
+    const tmp = path.join(require('os').tmpdir(), 'w317-subjimg-' + process.pid + '.png');
+    fs.writeFileSync(tmp, 'fake-png');
+    try {
+      // ① 上传端点 500:如实抛上游那句错与 exit 5,落库往返一次不发,库里两位逐字段未动
+      const bad = fx(() => jres(500, { code: 1, message: '上传失败:磁盘写满' }));
+      let err = null;
+      try { await bad.sb.CMD['subject-image'](['p1', 'sj1'], flags(tmp)); } catch (e) { err = e; }
+      assert(err, '上传失败时这条命令必须抛出来(吞掉就是一次没有图的成功)');
+      assertEq(err.message, '上传失败:磁盘写满', '上游那句错原样带出,不许换成自己编的一句:' + err.message);
+      assertEq(err.exit, 5, '上游 5xx 照 5 出码(吞成 1 就把服务端故障报成了"连不上服务端"):' + err.exit);
+      assertEq(bad.calls.join(' , '), 'GET /api/state , POST /api/upload',
+        '上传一抛错,落库那次 PUT 一次都不许发出去:' + bad.calls.join(' , '));
+      assertEq(seats(bad.subs()), CLEAN, '库里两位的图与提示词逐字段一个都不许被改:' + seats(bad.subs()));
+      // ② 文件根本不在:按参数错拒(exit 2),连上传那次往返都不发,库同样一个字不动
+      const gone = fx(() => { throw new Error('文件不在时不该走到上传'); });
+      err = null;
+      try { await gone.sb.CMD['subject-image'](['p1', 'sj1'], flags(tmp + '.nope')); } catch (e) { err = e; }
+      assert(err && /文件不存在/.test(err.message), '本地文件不在须如实报出来:' + (err && err.message));
+      assertEq(err.exit, 2, '本地文件不在是参数错(exit 2),不许混进服务端那一族:' + err.exit);
+      assertEq(gone.calls.join(' , '), 'GET /api/state', '文件不在时上传与落库两次往返都不许发:' + gone.calls.join(' , '));
+      assertEq(seats(gone.subs()), CLEAN, '库里两位逐字段未动:' + seats(gone.subs()));
+      // ③ 对照面:上传成功那一趟真落库(没有这一格,把命令改成"什么都不做直接抛"时 ①② 照样绿)
+      const ok = fx(() => jres(200, { code: 0, data: { url: '/uploads/img/new.png' } }));
+      const r = await ok.sb.CMD['subject-image'](['p1', 'sj1'], flags(tmp));
+      assertEq(r.id + '|' + r.name + '|' + r.image, 'sj1|女主|/uploads/img/new.png', '回执报的是上传回来那张图:' + JSON.stringify(r));
+      assertEq(ok.calls.join(' , '), 'GET /api/state , POST /api/upload , PUT /api/state',
+        '成功那一趟才发落库那次 PUT,且只发一次:' + ok.calls.join(' , '));
+      assertEq(seats(ok.subs()), '女主|/uploads/img/new.png|旧提示词 , 男主|/uploads/img/b.png|提示词B',
+        '成功时新图落在点到那一位身上,提示词不动、另一位不动:' + seats(ok.subs()));
+    } finally { try { fs.unlinkSync(tmp); } catch (_) {} }
+  } },
+  { name: 'CLI subject-image 点名库里没有的主体:照「找不到」出 exit 4(与项目/分集找不到同一档),三个图源都不下发上游、一次落库都不发', fn: async () => {
+    /* 那个出口现取抛 CliError(…, 4),而 exit code 是 Agent 分流的唯一依据(4 是"点名的东西不在",
+     * 与 2 参数错、5 服务端错各归各);此前树上没有一条用例读过它——把 4 写成 1 或换成 need(…) 出 2,
+     * 现跑一条都不红,而调用方从此把"库里没这人"当成了自己参数写错或服务端故障。
+     * 三个图源一起量的是同一件事的另一半:取位在取图**之前**,故点错人时一分钱的上游都不许下发——
+     * 把 findSubject 挪到 genImage / uploadFile 之后,退出码仍是 4 而钱已经花掉,只有往返清单读得出来。
+     * 「同一档」这一格读的是同一棵树上别的命令真跑出来的码(项目不存在 / 分集不存在),不是源码字面:
+     * 哪天有人把这一族分叉成两个码,先红在这里。 */
+    const clone = x => JSON.parse(JSON.stringify(x));
+    const jres = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
+    const disk = { projects: [{ id: 'p1', subjects: [{ id: 'sj1', name: '女主', kind: 'character', image: '/uploads/img/old.png', prompt: '旧提示词' }],
+      episodes: [{ id: 'ep1', title: '第一集', content: '正文', shots: [] }] }], settings: {} };
+    const sb = loadCli();
+    const calls = [];
+    sb.fetch = async (url, init) => {
+      const route = init.method + ' ' + String(url).replace('http://t.local', '');
+      calls.push(route);
+      if (route === 'GET /api/state') return jres(200, { code: 0, data: { rev: 3, state: clone(disk) } });
+      return jres(500, { code: 1, message: '这条往返本轮压根不该发:' + route });
+    };
+    const flags = { server: 'http://t.local', token: 't' };
+    const tmp = path.join(require('os').tmpdir(), 'w317-notfound-' + process.pid + '.png');
+    fs.writeFileSync(tmp, 'fake-png');
+    const grabErr = async fn => { try { await fn(); return null; } catch (e) { return e; } };
+    try {
+      // ① 三个图源逐路同形:错话点名那个串、exit 4、GET 之外一次往返都没有
+      for (const [label, extra] of [['--url', { url: '/uploads/img/new.png' }], ['--gen', { gen: true }], ['--file', { file: tmp }]]) {
+        calls.length = 0;
+        const err = await grabErr(() => sb.CMD['subject-image'](['p1', '没这人'], Object.assign({}, flags, extra)));
+        assert(err, label + ':点名库里没有的主体必须抛,不许静默当成一次成功');
+        assertEq(err.message, '主体不存在:没这人', label + ':错话须点名用户给的那个串(照抄一句不带串的话,用户不知道自己点错了谁):' + err.message);
+        assertEq(err.exit, 4, label + ':「点名的东西不在」照 4 出码(写成 1 或改走 need 出 2 都是把它并进了别的族):' + err.exit);
+        assertEq(calls.join(' , '), 'GET /api/state',
+          label + ':取位失败在取图之前,上游与落库两次往返都不许发(挪到取图之后就是钱花了人没找到):' + calls.join(' , '));
+      }
+      assertEq(JSON.stringify(disk.projects[0].subjects[0]),
+        JSON.stringify({ id: 'sj1', name: '女主', kind: 'character', image: '/uploads/img/old.png', prompt: '旧提示词' }),
+        '库里那一位逐字段未动:' + JSON.stringify(disk.projects[0].subjects[0]));
+      // ② 同一档:同一棵树上别的「找不到」出口现跑也是 4(这一族不许在这条命令上分叉)
+      const sameFamily = [
+        ['项目不存在', () => sb.CMD['subject-image'](['pX', 'sj1'], Object.assign({}, flags, { url: '/u/a.png' }))],
+        ['主体库读不到项目', () => sb.CMD.subjects(['pX'], flags)],
+        ['分集不存在', () => sb.CMD['episode-show'](['p1', 'epX'], flags)],
+      ];
+      for (const [label, fn] of sameFamily) {
+        const err = await grabErr(fn);
+        assert(err && err.exit === 4, label + ':同一族「找不到」现跑也须是 4(本条 ① 的量尺就是它):' + (err && err.exit + ' / ' + err.message));
+      }
+      // ③ 参数错那一族仍是 2:没有这一格,把 4 与 2 并成一个码时 ① 只需跟着改数字就能过
+      const noSource = await grabErr(() => sb.CMD['subject-image'](['p1', 'sj1'], flags));
+      assert(noSource && noSource.exit === 2 && /--file\/--url\/--gen/.test(noSource.message),
+        '三选一都没给仍是参数错 exit 2:「找不到」与「参数错」得分得开:' + (noSource && noSource.exit + ' / ' + noSource.message));
+    } finally { try { fs.unlinkSync(tmp); } catch (_) {} }
+  } },
   { name: '两条去重命令同读一份规则:镜头侧与主体侧的扫描都委托 Domain.dupIdScan,首位留原 id 那套口径不许两端各抄一份', fn() {
     /* 主体侧那条出口是照镜头那条写的,而「首次出现留原 id、后面每处撞车各发一个新 id」这套规则一旦各抄一份,
      * 两条命令迟早对同一份脏数据给出两种计划(改哪一位、留哪一位),而用户是照 dry-run 那份点头的。
@@ -15465,7 +15590,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-      [['单元测试', 722, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+      [['单元测试', 724, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
