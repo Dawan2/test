@@ -447,7 +447,9 @@
       // 助手看见的名单与 chip 发出去的重抽面因此恒一致;二十轮的问题原文照旧按 reportId 精确取回报告
       // (被挤出最近 5 条时为空数组降级)
       d.lowShots = Domain.reviseTargets(ep).map(t => {
-        const s = (ep.shots || []).find(x => x.id === t.shotId);
+        // order 就是这一条落到的实位(同 WfCore.reviseSubset):同 id 多行时 find 会去首行那份报告里找,
+        // 后几行的 reportId 在那儿取不到——镜号报着第 2 行,问题清单却是首行那句或干脆空着
+        const s = (ep.shots || [])[t.order - 1];
         const rep = t.reportId && s ? ((s.reviews || []).find(r => r.id === t.reportId)) : null;
         return { n: t.order, score: t.score,
           issues: rep ? (rep.issues || []).slice(0, 2).map(it => String(it.analysis || it.type || '').slice(0, 40)) : [] };

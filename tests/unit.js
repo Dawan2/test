@@ -893,6 +893,33 @@ const agentOpsTests = [
     assert(/均分5.5\(旧版\)/.test(blk), '判旧仍如实报均分与旧版标记');
     assert(!/全部达标/.test(blk), '判旧时不许冒充"全部达标"');
   } },
+  { name: 'stateDigest:同 id 多行时每条低分镜的问题原文取自己那一行的 reviews(取首行即红)', fn() {
+    const sb = loadAgentOps(); const AO = sb.AgentOps;
+    /* 整集审片按行出报告,同 id 各行的报告分别存在各自那一行的 reviews 里;
+     * 镜号已按行分开(Domain.reviseTargets 的 order 就是实位),问题原文若还按 find 首行回取,
+     * 助手看见的就是"2镜"配着首行那一句问题——点名的镜与展示的问题对不上号。 */
+    /* 同 id 的两行有意不排在表首:序数(第几行同 id)与实位(第几行)因此对不上,
+     * 拿 nth 当行号取也一样错行 */
+    const ep = makeEp({
+      shots: [makeShot(0, { reviews: [{ id: 'r0', issues: [{ analysis: '别家的问题' }] }] }),
+        makeShot(1, { id: 'dup', reviews: [{ id: 'rA', issues: [{ analysis: '首行:主光不足' }] }] }),
+        // 末行整集审片之后又单独审过一次:整集那份不在表头,取原文仍按 reportId 认人
+        makeShot(2, { id: 'dup', reviews: [{ id: 'rB2', issues: [{ analysis: '事后单镜报告' }] },
+          { id: 'rB', issues: [{ analysis: '次行:机位穿帮' }] }] })],
+      lastReview: { avg: 6, perShot: [
+        { shotId: 'sh0', order: 0, score: 9, reportId: 'r0' },
+        { shotId: 'dup', order: 1, score: 5, reportId: 'rA' },
+        { shotId: 'dup', order: 2, score: 4, reportId: 'rB' },
+      ] },
+    });
+    sb.Review = { episodeReviewStale: () => false };
+    const d = AO.stateDigest({ id: 'p1' }, ep);
+    assertEq(d.lowShots.map(x => x.n).join(','), '2,3', '两行各自成一条低分镜(镜号按实位分开)');
+    assertEq(d.lowShots.map(x => x.n + ':' + x.issues.join('')).join(' / '), '2:首行:主光不足 / 3:次行:机位穿帮',
+      '各条的问题原文取自己那一行的报告(回取首行 reviews 时后几行取不到会空,拿 nth 当行号则串到别家)');
+    assert(/镜头3\(4分\):次行:机位穿帮/.test((AO.dynamicChips({ id: 'p1' }, ep).find(c => /修订/.test(c.t)) || {}).text || ''),
+      '发给助手的修订指令里,每一镜配的问题清单也应是它自己那一行的');
+  } },
   { name: 'stateBlock:集级只列非零项/项目级各集一行', fn() {
     const sb = loadAgentOps(); const AO = sb.AgentOps;
     const ep = makeEp();
@@ -12818,7 +12845,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 670, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 671, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 148, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -13226,7 +13253,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 271;
+    const FLOOR = 272;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
