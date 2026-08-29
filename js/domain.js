@@ -414,6 +414,29 @@
     });
     return { total: list.length, unique: new Set(list.map(x => x && x.id)).size, duplicates: [...dups.values()], plan };
   };
+  /* 同 id 那几位/几行各自的位次(只从 dupIdScan 那一份结果派生,不再扫第二遍表)。
+   * 扫描给的是整组口径——哪个 id、几处撞车、哪一处留原 id、后面每处改成什么;
+   * 而卡片那一端要的是逐张一句「这一张是第几处、共几处」:同 id 那几处在卡片上与几个不同条目长得一模一样,
+   * 整组那个数说得出「有几处要改」,说不出「是哪几张卡撞了」。位次与"改哪一处、留哪一处"是同一套序,
+   * 故收在这里而不是各页面自己再数一遍:两份数法一漂,卡片上标的第几位就与预览里改的那一位对不上。
+   * 位次由计划现推——计划里 from 是这个 id 的那几条恰是首处之外的后续处、按序号升序排,
+   * 于是首处算第 1、计划里第 k 条算第 k+1,共几处 = 1 + 那几条。有意不读 duplicates 上的处数字段:
+   * 那个字段名由两端各自换成自己的单位词(位 / 行),读它这一层就得认识两个名字;
+   * 单位词照旧留给调用方在展示那一层换上,本层只出数字。
+   * 回一张按序号取的表({序号: {id, nth, total}});干净表/空表/脏入参一律回空表(一处都不标)。 */
+  D.dupIdMarks = function (scan) {
+    const s = scan || {};
+    const dups = Array.isArray(s.duplicates) ? s.duplicates : [];
+    const plan = Array.isArray(s.plan) ? s.plan : [];
+    const marks = {};
+    dups.forEach(d => {
+      /* 首处序号缺了整组就数不出位次(手攒的重复面才会这样),那时整组一处不标,不留一个按 undefined 取的格子 */
+      if (typeof d.keepOrder !== 'number') return;
+      const orders = [d.keepOrder].concat(plan.filter(x => x.from === d.id).map(x => x.order));
+      orders.forEach((order, k) => { marks[order] = { id: d.id, nth: k + 1, total: orders.length }; });
+    });
+    return marks;
+  };
   /* 引擎调用成功次数与到手产物数岔开时,回执上那句话(单源:命令层与 CLI 同读这一份)。
    * 同 id 多位/多行的那一趟跑到一半别处改了表,序数越界的那一轮按兜底退回首位,
    * 于是两轮写到同一位身上:引擎两次都成功、`ok` 照数两次,而到手产物只有一份(后一轮盖了前一轮)。

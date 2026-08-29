@@ -68,6 +68,7 @@ N1/N2/N5 与 `w175-guard-enroll.md` §6.1 登记的残留形状逐字相符(那�
 | `dedupe-rule-single` | W283 | 两条去重命令(镜头 / 主体)同读一份规则:「首次出现留原 id、后面每处撞车各发新 id」收在 `Domain.dupIdScan`,两侧扫描只注入自己那端的发号器与单位词 |
 | `dedupe-ui-rule-single` | W285 | 主体库页面那条去重入口与 CLI 同读一份规则:页面只注入自己的发号器(`Store.uid`)与单位词,预览与落库同调一个扫描、写库只在确认那一下 |
 | `dedupe-shots-ui-single` | W287 | 分镜面那条去重入口同读一份规则,且预览里那句「旧审片报告会塌几条」只许拿 `Domain.reviewRows` 在两棵表上各跑一遍现算(页面上不另数一套「第几条同 id」) |
+| `dedupe-card-mark-derive` | W289 | 主体库卡片上那枚「第几位 / 共几位」小标的位次只从页头那一份扫描派生(`Domain.dupIdMarks`),页面不再扫第二遍 |
 
 前十条是 `c2acb4d` 上现取的在册编号(`w158-rename-vs-delete.md` 那一线陆续登记,到那个 HEAD 为止一条没撤);
 接下来七条是 W174 / W175 两槽在集成线上补登记的源级护栏(本槽从 `c2acb4d` 叉出时看不见它们,合入 W182 集成线时按并集补进花名册);
