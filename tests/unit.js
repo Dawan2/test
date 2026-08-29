@@ -4090,6 +4090,160 @@ const commandsTests = [
     assertEq(none.r.total + '/' + none.r.ok, '0/0', '前提:确认闸把这一镜挡在外面,零调用');
     assertEq(none.r.landed, 0, '空跑回执也得带 landed:0(字段时有时无,调用方就得先判 undefined)');
   } },
+  { name: '座位只在本轮引擎真成功之后才登记:取行/取位成功而本轮生成失败的那一轮,ok 不计、landed 也不占这个座位', fn: async () => {
+    /* 上面两条钉的是「产物落到哪一行/哪一位」与「ok 与 landed 各说一件事」,而它们跑到失败轮的那几档
+     * 失败都出在**取行/取位**那一步(同 id 一行不剩时 nthShot 委托回 findShot 当场抛「镜头不存在」),
+     * 座位那半边一次都没被真开火:把 `seats.add` 从「本轮引擎成功之后」提到「取行之后、开跑之前」,
+     * 上面那些判据一条不红。于是「landed 数的是产物真落到几位/几行」这句话在失败轮上是没判据的——
+     * 提前登记的话,三行里中间那行上游 502(钱已由 Tasks/服务端退掉)也照样占着一个座位,
+     * 回执报 landed:3 而磁盘上只有两行有片;读 landed 的人(断点续跑、问题中心、跑批回执)
+     * 会以为三行都到手了,下一轮那行仍判未就绪再扣一遍——这正是当初另立 landed 要挡的那件事。
+     * 本条造的就是「取行/取位成功、本轮引擎才失败」那一档:失败的话术得是引擎那一句
+     * (报「镜头不存在」/「主体不存在」说明夹具压根没跑到引擎,座位那半边又没被开火),
+     * landed 恒等于磁盘上真到手的行数/位数,且永不超过 ok。四处同形的洞一并收:
+     * CLI gen-episode(视频与补底图两台引擎)、exec 两条批量、浏览器两条批量。 */
+    const pending = { confirm: true, image: 'i.png', video: { status: 'none' } };
+    const trioRows = () => [
+      makeShot(0, Object.assign({ id: 'dup', plot: '首行' }, pending)),
+      makeShot(1, Object.assign({ id: 'dup', plot: '第二行' }, pending)),
+      makeShot(2, Object.assign({ id: 'dup', plot: '第三行' }, pending)),
+    ];
+    const trioSubs = () => [
+      { id: 'dup', name: 'A-首位', kind: 'character' },
+      { id: 'dup', name: 'B-第二位', kind: 'character' },
+      { id: 'dup', name: 'C-第三位', kind: 'character' },
+    ];
+    const filmed = ss => ss.filter(s => s.video && s.video.status === 'done');
+    const vids = ss => ss.map(s => s.plot + ':' + ((s.video && s.video.url) || '无片')).join(' | ');
+    const imgs = ss => ss.map(s => s.name + ':' + (s.image || '无图')).join(' | ');
+    /* 视频引擎桩:点名那一行如实失败(失败态照真引擎那样先写回 s.video 再抛),其余各得一段不同的片 */
+    const vidStub = (sb, failPlot) => {
+      sb.genShotVideo = async (proj, epLive, s) => {
+        sb.__genShots.push(s.id);
+        if (s.plot === failPlot) { s.video = { status: 'failed', error: '上游 502' }; throw new Error('上游 502(已退费)'); }
+        s.video = { status: 'done', url: '/uploads/gen/v' + sb.__genShots.length + '.mp4' };
+        return s;
+      };
+    };
+    // ① CLI gen-episode:三行里中间那行 genShotVideo 失败 → ok:2,landed 只占两个座位(磁盘上正是两行有片)
+    const sb1 = loadCli();
+    const fx1 = cliDisk(sb1, { shots: trioRows() });
+    vidStub(sb1, '第二行');
+    const g1 = await sb1.CMD['gen-episode'](['p1', 'ep1'], {});
+    const rows1 = fx1.epOf().shots;
+    assertEq(sb1.__genShots.length, 3, '前提:三行都真下发到引擎(第二行那笔上游失败)');
+    assertEq(g1.failed.length, 1, '前提:只失败一行:' + JSON.stringify(g1.failed));
+    assert(/上游 502/.test(g1.failed[0].error),
+      '前提:这一轮取行是成功的、错出在 genShotVideo(报「镜头不存在」说明夹具没跑到引擎,座位那半边又没被开火):' + JSON.stringify(g1.failed));
+    assertEq(filmed(rows1).length, 2, '磁盘上真到手两行片:' + vids(rows1));
+    assertEq(g1.ok, 2, 'ok 只数引擎调用成功的那两次');
+    assertEq(g1.landed, 2, '本轮引擎失败那一行不许占座位(提前登记会报 3,而磁盘上只有两行有片):' + vids(rows1));
+    assertEq(g1.landed, filmed(rows1).length, 'landed 恒等于磁盘上真出片的行数(实测 ' + filmed(rows1).length + ' 行)');
+    assert(g1.landed <= g1.ok, 'landed 报的是落库数,永不该超过引擎调用成功次数:ok ' + g1.ok + ' / landed ' + g1.landed);
+    assertEq(g1.note, undefined, '两个数相等时一句不加:' + g1.note);
+    // ② 同一条路上的另一台引擎:缺底图那行补生图就断了(视频一次没跑),座位同样不许占
+    const sb2 = loadCli();
+    const fx2 = cliDisk(sb2, { shots: [
+      makeShot(0, Object.assign({ id: 'dup', plot: '首行' }, pending)),
+      makeShot(1, { id: 'dup', order: 1, plot: '缺底图那行', confirm: true, video: { status: 'none' } }),
+      makeShot(2, Object.assign({ id: 'dup', plot: '第三行' }, pending)),
+    ] });
+    vidStub(sb2, null);
+    sb2.genImage = async () => { throw new Error('生图上游失败(已退费)'); };
+    const g2 = await sb2.CMD['gen-episode'](['p1', 'ep1'], {});
+    const rows2 = fx2.epOf().shots;
+    assertEq(sb2.__genShots.length, 2, '前提:缺底图那行在补图那一步就断了,视频引擎只收到两行');
+    assertEq(g2.failed.length, 1, '前提:只失败一行:' + JSON.stringify(g2.failed));
+    assert(/生图上游失败/.test(g2.failed[0].error), '前提:取行成功、错出在补底图那台引擎:' + JSON.stringify(g2.failed));
+    assertEq(g2.ok + '/' + g2.landed, '2/2', '补底图就失败的那一行同样不占座位:' + vids(rows2));
+    assertEq(g2.landed, filmed(rows2).length, 'landed 恒等于磁盘上真出片的行数:' + vids(rows2));
+    // ③ exec episode.generateVideos:同形(整集那一路,不点名故不带 dup 那句)
+    const sb3 = loadCli();
+    const fx3 = cliDisk(sb3, { shots: trioRows() });
+    vidStub(sb3, '第二行');
+    const e3 = await sb3.EXEC['episode.generateVideos'].run({ pid: 'p1', epid: 'ep1' }, {});
+    const rows3 = fx3.epOf().shots;
+    assertEq(sb3.__genShots.length, 3, '前提:三行都真下发(第二行那笔上游失败)');
+    assertEq(e3.result.failed.length, 1, '前提:只失败一行:' + JSON.stringify(e3.result.failed));
+    assert(/上游 502/.test(e3.result.failed[0].error), '前提:取行成功、错出在 genShotVideo:' + JSON.stringify(e3.result.failed));
+    assertEq(e3.result.ok + '/' + e3.result.landed, '2/2', 'exec 那条批量同形:失败那一行不占座位:' + vids(rows3));
+    assertEq(e3.result.landed, filmed(rows3).length, 'landed 恒等于磁盘上真出片的行数:' + vids(rows3));
+    assertEq(e3.result.note, undefined, '两个数相等时一句不加:' + e3.result.note);
+    // ④ exec subject.generateImage:三位同 id,第二位 genImage 失败 → ok:2,landed 只占两个座位
+    const sb4 = loadCli();
+    const fx4 = cliDisk(sb4);
+    fx4.disk.projects[0].subjects = trioSubs();
+    let imgN = 0;
+    sb4.genImage = async () => {
+      imgN++;
+      if (imgN === 2) throw new Error('生图上游失败(已退费)');
+      return { url: '/uploads/img/g' + imgN + '.png' };
+    };
+    const e4 = await sb4.EXEC['subject.generateImage'].run({ pid: 'p1' }, {});
+    const subs4 = fx4.disk.projects[0].subjects;
+    assertEq(imgN, 3, '前提:三位都真下发(第二位那笔上游失败)');
+    assertEq(e4.result.failed.length, 1, '前提:只失败一位:' + JSON.stringify(e4.result.failed));
+    assert(/生图上游失败/.test(e4.result.failed[0].error),
+      '前提:这一轮取位是成功的、错出在 genImage(报「主体不存在」说明没跑到引擎):' + JSON.stringify(e4.result.failed));
+    assertEq(subs4.filter(s => s.image).length, 2, '磁盘上真到手两张图:' + imgs(subs4));
+    assertEq(e4.result.ok + '/' + e4.result.landed, '2/2', '本轮生图失败那一位不许占座位:' + imgs(subs4));
+    assertEq(e4.result.landed, subs4.filter(s => s.image).length, 'landed 恒等于磁盘上真有图的位数:' + imgs(subs4));
+    assertEq(e4.result.note, undefined, '两个数相等时一句不加:' + e4.result.note);
+    // ⑤ 浏览器主体生图那一端:引擎回来没出图的那一位同样不占座位(两端一个口径)
+    const sb5 = loadCommands();
+    const c5 = cmdCtx(sb5);
+    c5.p.subjects = trioSubs();
+    let bN = 0;
+    sb5.EpisodeUtil.genSubjectImage = async (p, s) => { bN++; if (bN === 2) return; s.image = '/uploads/img/b' + bN + '.png'; };
+    const r5 = await sb5.Commands.execute('subject.generateImage', { pid: 'p1' });
+    assertEq(bN, 3, '前提:三位都真下发(第二位那笔没出图)');
+    assertEq(r5.result.failed.length, 1, '前提:只失败一位:' + JSON.stringify(r5.result.failed));
+    assertEq(c5.p.subjects.filter(s => s.image).length, 2, '真到手两张图:' + imgs(c5.p.subjects));
+    assertEq(r5.result.ok + '/' + r5.result.landed, '2/2', '浏览器那一端同形:没出图那一位不占座位:' + imgs(c5.p.subjects));
+    assertEq(r5.result.landed, c5.p.subjects.filter(s => s.image).length, 'landed 恒等于真有图的位数:' + imgs(c5.p.subjects));
+    // ⑥ 浏览器批量视频那一端:座位由「真就绪的那几行」派生,失败行结构上就进不来
+    const sb6 = loadCommands();
+    const c6 = cmdCtx(sb6, { shots: [0, 1, 2].map(i => makeShot(i, { confirm: true, video: { status: 'none' } })) });
+    sb6.__genFail = ['sh1'];
+    const r6 = await sb6.Commands.execute('episode.generateVideos', { pid: 'p1', epid: 'ep1' });
+    assertEq(r6.result.failed.length, 1, '前提:只失败一行:' + JSON.stringify(r6.result.failed));
+    assertEq(filmed(c6.ep.shots).length, 2, '真出片两行:' + vids(c6.ep.shots));
+    assertEq(r6.result.ok + '/' + r6.result.landed, '2/2', '浏览器批量视频那一端:失败行不占座位:' + vids(c6.ep.shots));
+    assertEq(r6.result.landed, filmed(c6.ep.shots).length, 'landed 恒等于真出片的行数:' + vids(c6.ep.shots));
+    /* ⑦ 源级锚(注释不算数):四处循环里的座位登记都得排在本轮引擎那一步之后。
+     * 上面六档钉的是行为,这一层点名说清「挪了哪一处」——也顺手拦住"再补一处提前登记"这种加法。 */
+    const cliSrc = blankNonCode(fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8'), true);
+    const cmdSrc = blankNonCode(fs.readFileSync(path.join(ROOT, 'js', 'commands.js'), 'utf8'), true);
+    const seg = (src, from, to) => {
+      const a = src.indexOf(from);
+      const b = src.indexOf(to, a + 1);
+      assert(a > 0 && b > a, '源级锚取不到实现段(挪窝/改名就同轮改这里,别把本条留成恒真):' + from);
+      return src.slice(a, b);
+    };
+    [
+      ['cli.js gen-episode', seg(cliSrc, "CMD['gen-episode']", 'CMD.wait ='), 'await genShotVideo(', 'seats.add('],
+      ['cli.js exec episode.generateVideos', seg(cliSrc, "EXEC['episode.generateVideos']", "EXEC['shot.generateVideo']"), 'await genShotVideo(', 'seats.add('],
+      ['cli.js exec subject.generateImage', seg(cliSrc, "EXEC['subject.generateImage']", "EXEC['project.extractSubjects']"), 'await genImage(', 'seats.add('],
+      ['js/commands.js subject.generateImage', seg(cmdSrc, "reg('subject.generateImage'", "reg('project.extractSubjects'"), 'await EpisodeUtil.genSubjectImage(', 'seats.add('],
+    ].forEach(([label, body, engine, add]) => {
+      assertEq((body.match(/seats\.add\(/g) || []).length, 1, label + ':座位登记那一句应只此一处(多一处就是多一条提前登记的路)');
+      const iE = body.indexOf(engine), iA = body.indexOf(add);
+      assert(iE > 0, label + ' 里取不到本轮引擎那一步 ' + engine + '(挪窝/改名就同轮改这里)');
+      assert(iA > 0, label + ' 里取不到座位登记那一句 ' + add + '(同上)');
+      assert(iE < iA, label + ':座位登记得排在本轮引擎之后,现在排在前面——'
+        + '提前登记等于把本轮失败(钱已退)那一位/那一行也算作占了座,landed 就不再是落库数');
+    });
+    // gen-episode 那一处还隔着一道「本轮真成功」的判定:座位登记得在它之后(登记进的是 result.ok++ 那一档)
+    const genSeg = seg(cliSrc, "CMD['gen-episode']", 'CMD.wait =');
+    assert(genSeg.indexOf('if (r.ret) throw r.ret;') < genSeg.indexOf('seats.add('),
+      'gen-episode:座位登记得排在「本轮真成功」那道判定之后(排在前面就把失败轮也登记进去了)');
+    // 浏览器批量视频那一端不在循环里登记:座位由真就绪的那几行派生,这一份派生关系本身就是判据
+    const vidSeg = seg(cmdSrc, "reg('episode.generateVideos'", "reg('shot.generateVideo'");
+    assert(/const landedRows = pend\.filter\(s => Store\.shotVideoReady\(s\)\)/.test(vidSeg),
+      '浏览器批量视频:到手行仍得按 Store.shotVideoReady 筛(改成按 pend 全量算就把失败行也算成落库了)');
+    assert(/const seats = new Set\(landedRows\.map\(/.test(vidSeg),
+      '浏览器批量视频:座位集合仍得由 landedRows 派生(改回 pend.map 即等于提前登记)');
+  } },
   { name: 'CLI exec produce:点名的轮次钳过即落库,下一轮不带入参跑的就是这个次数(单独调 smartReview 那一端仍不写库)', fn: async () => {
     /* 此前这一端只读不写:`exec episode.produce --args '{"maxRetry":4}'` 当轮真跑 4 轮,
      * 磁盘上那份 sbConfig.maxRetry 却还是旧的 1——用户在浏览器打开该集参数面板看到的仍是 1,
@@ -13330,7 +13484,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 696, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 697, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
