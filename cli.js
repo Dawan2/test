@@ -734,8 +734,11 @@ const dedupeSubjectScan = subs => {
 /* 存量重复主体 id 的显式去重出口:与镜头侧 shots-dedupe 同一套规则、同一副形状(默认 dry-run、--apply 才写),
  * 用户主动跑,不挂在任何保存路径上偷偷改。
  * 逃生舱 state-put 与 PUT /api/state 都不设闸(那是刻意的,理由见文件末逃生舱那段),灌进来的同 id 多位就在库里躺着:
- * findSubject/subject-image/subject-copy 全按 id 取首位,后面几位结构性够不着;而两端选人闸按位筛(ids.has(s.id)),
- * 点名一个 id 跑一次批量补图,库里重复几位就登记几笔生图钱——本命令是把这批存量收拾干净的那条路。
+ * findSubject/subject-image/subject-copy 全按 id 取首位,后面几位按 id 够不着;而两端选人闸按位筛(ids.has(s.id)),
+ * 点名一个 id 跑一次批量补图,库里重复几位就登记几笔生图钱
+ * (那几笔各落各的位:exec subject.generateImage 点名子集与整库两档都按 nthSubject 逐位写回、几位各得一张图,
+ * 浏览器同名命令写的就是循环里那一位;按 id 点名单位的 subject-image / subject-copy 仍走 findSubject,写回的只有首位)
+ * ——本命令是把这批存量收拾干净的那条路。
  * 引用面有意一个字不动:分镜按**名字**引用主体(Domain.findSubject 解析全名/曾用名/形态),按 id 的那几处
  * (findSubject / 资产库保存 / 卡片定位)一律 find 首位语义,而首位的 id 本就没改,去重前后落到的是同一位;
  * 改 id 的只有那些任何引用都指不到的后续位。也不替用户删位——同 id 那几位各有各的名字与设定,
@@ -1757,12 +1760,14 @@ CMD.memory = async (a, f) => {
 
 /* ---- 逃生舱:裸 state 读写(任意复杂操作) ----
  * 契约是"整树原样落库、调用方负责":文件里是什么就写什么,一处领域校验都不做——
- * shots-import 的镜头 id 唯一闸不在这条路上,递同 id 两镜就落两行同 id(点名一次两行都跑、只有首行寻得着)。
+ * shots-import 的镜头 id 唯一闸不在这条路上,递同 id 两镜就落两行同 id
+ * (点名一次两行都跑、各收一笔钱:两条批量路径按 nthShot 逐行写回、两行各得一段片,而按 id 点名单镜的只落首行)。
  * 有意不在此设闸:这条路写的是整棵树,改一个镜头 id 就得连带改 lastReview.perShot/uiSel/groupId 那些引用它的地方,
  * 那是迁移不是闸;而拒收会让"照原样恢复一份备份"这件逃生舱唯一的活干不成。
  * 递进来的重复 id 要收拾,shots-dedupe 是那条显式出口(默认 dry-run 报计划、--apply 才写);
  * 整表重导 shots-import(改发新 id 并回报 renamedIds)或自己改完再灌一次同样可以。
- * 主体那一侧同理(整树原样落库,同 id 多位就在库里,点名一次几位都跑而只有首位寻得着),
+ * 主体那一侧同理(整树原样落库,同 id 多位就在库里,点名一次几位都跑、批量补图按 nthSubject 逐位写回、
+ * 几位各得一张图,而按 id 点名单位的只落首位),
  * 出口是同形的 subjects-dedupe;两条命令同读 Domain.dupIdScan 那一套规则。 */
 CMD['state-get'] = async (_, f) => {
   const { rev, state } = await stateGet(f);
