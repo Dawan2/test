@@ -276,6 +276,67 @@
     done && done();
   }
 
+  /* ---- 存量重复主体 id 去重(浏览器这一端的入口,与 CLI subjects-dedupe 同一套规则) ----
+   * 规则本身(首次出现那一位留原 id、后面每处撞车各发一个新 id)只在 Domain.dupIdScan 一份,
+   * 这里注入的只有浏览器那一端的发号器(Store.uid,前缀对齐新建主体)与主体侧的单位词(位);
+   * 纯扫描不改任何字段,落库由调用方按 plan 逐条写。 */
+  function dedupeScan(subs) {
+    const scan = Domain.dupIdScan(subs, taken => {
+      let nid;
+      do { nid = Store.uid('sj'); } while (taken.has(nid));
+      return nid;
+    });
+    return Object.assign({}, scan, { duplicates: scan.duplicates.map(d => ({ id: d.id, seats: d.n, keepOrder: d.keepOrder })) });
+  }
+  /* 去重弹窗:开弹窗只预览(算出计划,一个字不写库),按下确认那一下才落库——与 CLI 的 dry-run / --apply 两档同形。
+   * 落库前按当下那棵树重算一遍(计划以真要写的这一份为准,新 id 现发,故预览里那批只是示意值)。
+   * 一位不删(同 id 那几位各有各的名字与设定,而主体库的删除按 id 匹配会把它们一并删光),内容一字不动;
+   * 分镜按名字引用主体、按 id 那几处按首位解析,而首位留的就是原 id,故一处引用不用改。
+   * 纯改主体库、零上游零 LLM,不经 Tasks.run、不扣一分钱。 */
+  function openDedupe(p, done) {
+    const subs = p.subjects || [];
+    const pre = dedupeScan(subs);
+    const seatOf = i => `第 ${i + 1} 位「${U.esc((subs[i] || {}).name || '未命名')}」`;
+    U.openModal({
+      title: '🧹 主体 id 去重',
+      wide: true,
+      body: `
+      <div class="hint" style="margin:0 0 10px">主体库共 ${subs.length} 位,其中 ${pre.plan.length} 位与在前的位共用同一个 id(整树导入/恢复容易留下这种重复)。
+        按 id 取主体的地方只找得到首位、后面几位够不着,而批量补图按位逐位跑、逐位计费——同一个 id 存几位就收几笔生图钱。
+        去重只改 id:首位留原 id、撞车位各改发一个新 id,<b>一位不删、名字与设定一个字不动</b>;
+        分镜按名字引用主体,按 id 那几处按首位解析,故一处引用都不用改。要"少几位"仍请自己删(删除按 id 匹配,同 id 那几位会一并删光,先想清留哪一位)。</div>
+      ${pre.duplicates.map(d => `
+      <div class="card row" style="padding:8px 12px;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+        <span class="tag yellow">${U.esc(d.id)}</span>
+        <b class="small">${d.seats} 位</b>
+        <span class="small muted grow">留 ${seatOf(d.keepOrder)} 的原 id,其余各发新 id</span>
+      </div>`).join('')}
+      <div class="small" style="margin:10px 0 6px"><b>改名计划(${pre.plan.length} 位)</b></div>
+      <div style="max-height:38vh;overflow:auto;display:flex;flex-direction:column;gap:6px">
+        ${pre.plan.map(x => `
+        <div class="row small" style="gap:8px;align-items:center;flex-wrap:wrap">
+          <span style="min-width:150px">${seatOf(x.order)}</span>
+          <span class="tag">${U.esc(x.from)}</span>
+          <span class="muted">→</span>
+          <span class="tag green">${U.esc(x.to)}</span>
+        </div>`).join('')}
+      </div>
+      <div class="hint" style="margin:10px 0 0">这一屏还没写库。新 id 在按下确认那一下现发,与上面这批示意值不是同一批;哪几位改、哪一位留原 id 是定的。</div>`,
+      footer: `<button class="btn" data-x="cancel">取消</button><button class="btn primary" data-x="apply">✓ 确认去重(改 ${pre.plan.length} 位的 id)</button>`,
+      onMount(m, close) {
+        m.querySelector('[data-x=cancel]').onclick = close;
+        m.querySelector('[data-x=apply]').onclick = () => {
+          const scan = dedupeScan(p.subjects || []);
+          if (!scan.plan.length) { close(); return U.toast('主体库里已经没有重复的主体 id 了', 'info'); }
+          scan.plan.forEach(x => { p.subjects[x.order].id = x.to; });
+          Store.save(); close();
+          U.toast(`已为 ${scan.plan.length} 位主体改发新 id(首位留原 id,一位没删、引用一处没动)`, 'success', 4000);
+          done && done();
+        };
+      },
+    });
+  }
+
   Views.roles = function (main, pid, embedded) {
     const p = Store.getProject(pid);
     if (!p) { location.hash = '#/projects'; return; }
@@ -292,6 +353,9 @@
       const genAllBtn = needGen.length ? `<button class="btn sm primary" data-x="genall" title="为全部缺图主体一键 AI 生图(每张 -${COST.image} 积分,逐张扣费,余额不足即停)">✨ 补齐主体图(${needGen.length})</button>` : '';
       const newSubjBtn = `<button class="btn sm" data-x="newsubj" title="手动新建主体(角色/场景/道具),不经剧本解析">＋ 新建主体</button>`;
       const batchVoiceBtn = p.subjects.some(s => s.kind === 'character') ? `<button class="btn sm" data-x="bvoice" title="AI 按人设为全部角色推荐音色,试听确认后批量绑定">✨ 批量配音色</button>` : '';
+      /* 存量重复 id 的入口:同 id 多位在卡片上与两个不同主体长得一样,故只在库里真有重复时露出来并报出位数 */
+      const dupSeats = dedupeScan(p.subjects).plan.length;
+      const dedupeBtn = dupSeats ? `<button class="btn sm" data-x="dedupe" title="库里有 ${dupSeats} 位主体与在前的位共用同一个 id(按 id 只找得到首位、批量补图却逐位计费);点开先看计划,确认才改 id,一位不删、零积分">🧹 主体 id 去重(${dupSeats})</button>` : '';
       main.innerHTML = `
       <div class="page">
         ${embedded ? '' : `
@@ -306,6 +370,7 @@
             ${newSubjBtn}
             ${batchVoiceBtn}
             ${genAllBtn}
+            ${dedupeBtn}
             <button class="btn sm" data-x="importlib" title="把资产库里的主体导入本项目复用">📥 从资产库导入</button>
             ${p.narration ? `<span class="tag cyan">旁白:${U.esc(Voice.label(p.narration))}</span>` : '<span class="tag">旁白:未设置</span>'}
           </div>
@@ -314,6 +379,7 @@
           ${newSubjBtn}
           ${batchVoiceBtn}
           ${genAllBtn}
+          ${dedupeBtn}
           <button class="btn sm" data-x="importlib" title="把资产库里的主体导入本项目复用">📥 从资产库导入</button>
           ${p.narration ? `<span class="tag cyan">旁白:${U.esc(Voice.label(p.narration))}</span>` : '<span class="tag">旁白:未设置</span>'}
         </div>` : ''}
@@ -464,6 +530,9 @@
         }
         render();
       };
+      /* ---- 存量重复主体 id 去重:先预览计划,确认才写库(与 CLI subjects-dedupe 同读一份规则) ---- */
+      const dedupe = main.querySelector('[data-x=dedupe]');
+      if (dedupe) dedupe.onclick = () => openDedupe(p, render);
       /* ---- 卡片级音色绑定(角色):音色设置弹窗 / 音色参考音频 ---- */
       const bVoice = main.querySelector('[data-x=bvoice]');
       if (bVoice) bVoice.onclick = () => batchRecommendVoices(p, render);
@@ -499,6 +568,6 @@
 
   /* 主体编辑页(精修/配音/设定/资产/定稿大弹窗)与场景画板已拆至 role-editor.js(window.RoleEditor)。
    * 共享操作经 window.RoleOps 桥接供其消费(加载顺序:本文件在前)。 */
-  window.RoleOps = { KIND_NAME, formWord, VIEW_MODES, currentViewMode, viewImg, modePrompt, genMainImage, replaceMainImage, genModeImage, touchImage, setVoice, recommendVoice, bindRefAudio, openForms, toggleFinalize };
+  window.RoleOps = { KIND_NAME, formWord, VIEW_MODES, currentViewMode, viewImg, modePrompt, genMainImage, replaceMainImage, genModeImage, touchImage, setVoice, recommendVoice, bindRefAudio, openForms, toggleFinalize, dedupeScan, openDedupe };
 })();
 

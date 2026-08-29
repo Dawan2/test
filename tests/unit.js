@@ -2456,6 +2456,40 @@ function loadDirector() {
   loadFile(sb, 'director.js');
   return sb;
 }
+/* 主体库页(js/roles.js)沙箱:页面渲染与去重弹窗都真跑产品代码。
+ * Store.uid 换成计数发号器——installCommon 那份回的是常量,而发号器"避让已占用 id"那圈会在常量上转不出来;
+ * 计数器同时让"确认那一下现发的新 id 与预览里那批不是同一批"在用例里读得出来。
+ * 加载序与 index.html 同:domain.js 在 roles.js 之前(去重规则的单源就在它上面)。 */
+function loadRoles() {
+  const sb = makeSandbox();
+  installCommon(sb);
+  sb.COST = { image: 2 };
+  sb.Voice = { label: () => '默认音色', norm: () => ({ voice: '默认音色' }) };
+  sb.U.thumb = f => f;
+  sb.EpisodeUtil = { buildSubjectPrompt: () => '提示词' };
+  sb.RoleEditor = { openSubjectEdit() {} };
+  sb.__modals = [];
+  sb.U.openModal = opt => { sb.__modals.push(opt); return () => {}; };
+  let seq = 0;
+  sb.Store.uid = p => p + '_u' + (++seq);
+  sb.Store.getProject = id => (sb.__proj && sb.__proj.id === id ? sb.__proj : null);
+  sb.Store.credits = () => 999;
+  sb.Store.myAssets = () => [];
+  loadFile(sb, 'domain.js');
+  loadFile(sb, 'roles.js');
+  return sb;
+}
+/* 极简 DOM 桩:innerHTML 存渲染产物(页面上长没长出那个按钮就读它),
+ * querySelector 惰性造节点(同一选择器取到同一个,handler 绑上就点得着),querySelectorAll 回空
+ * ——卡片级那几圈绑定不在本层驱动。弹窗与页面同用这一份。 */
+function roleDom() {
+  const nodes = {};
+  return {
+    innerHTML: '', value: '', style: {}, dataset: {}, onclick: null,
+    querySelector: sel => (nodes[sel] = nodes[sel] || { value: '', style: {}, dataset: {}, onclick: null, closest: () => null }),
+    querySelectorAll: () => [],
+  };
+}
 const commandsTests = [
   { name: 'execute:未注册命令返回 unknown-command', fn: async () => {
     const sb = loadCommands();
@@ -3531,6 +3565,151 @@ const commandsTests = [
     assert(dseg.length > 200, '派生段取不到(挪窝或改名就同轮改这里,别把本条留成恒真),实测 ' + dseg.length + ' 字');
     assert(!/crypto|Math\.random|Date\.now|window|require\(/.test(dseg),
       '派生不许自己发号也不许碰环境:发号器由调用方注入(UMD 双端同一份的前提):' + dseg);
+  } },
+  { name: '主体库页面那条去重入口:库里真有同 id 多位才露出来,点开只预览、确认那一下才改 id(一位不删、零计费、引用落到同一位)', fn() {
+    /* 那条出口此前只在 CLI/MCP 上,浏览器这一端没有入口:同 id 多位在卡片上与两个不同主体长得一模一样
+     * (卡片按 p.subjects 逐条渲染),用户要发现自己在多付钱,只剩批量补图那句 note 一条路。
+     * 本条钉的是页面上这条入口,形状与 CLI 那条逐格对齐:只在真有重复时露出并报出要改几位、
+     * 点开是预览(一个字不写库)、按下确认那一下才落库、首位留原 id、撞车位改发新 id、
+     * 一位不删、内容不动、纯改表不许登记任务也不许扣钱。
+     * 引用面「去重前后落到同一位」是现跑量的:分镜按名字引用主体,按 id 那几处一律 find 首位语义。 */
+    const sb = loadRoles();
+    const D = require('../js/domain.js');
+    const p = {
+      id: 'p1', name: '脏剧',
+      subjects: [
+        { id: 'dup', name: 'A-首位', kind: 'character', image: 'a.png' },
+        { id: 'solo', name: 'B-不重复', kind: 'character', image: 'b.png' },
+        { id: 'dup', name: 'C-第二位', kind: 'character' },
+        { id: 'dup', name: 'D-第三位', kind: 'character' },
+      ],
+      episodes: [{ id: 'ep1', title: '第一集', shots: [{ id: 'sh0', order: 0, characters: ['A-首位'], scene: '', props: [] }] }],
+    };
+    sb.__proj = p;
+    // 引用逐条解析成"落到第几位":去重前后拿同一把尺子量
+    const refs = () => JSON.stringify({
+      byName: p.subjects.indexOf(D.findSubject(p, 'A-首位').s),
+      byId: p.subjects.findIndex(s => s.id === 'dup'),
+      shotChars: p.episodes[0].shots.map(s => (s.characters || []).join(',')),
+    });
+    const before = refs();
+    assertEq(before, JSON.stringify({ byName: 0, byId: 0, shotChars: ['A-首位'] }),
+      '夹具前提:两处引用此刻都落在首位上,实际:' + before);
+    // ① 入口:页面上真长出这个按钮,并报出要改几位(卡片看不出重复,这个数就是"发现"那一下)
+    const main = roleDom();
+    sb.Views.roles(main, 'p1');
+    assert(/data-x="dedupe"/.test(main.innerHTML),
+      '主体库页面须有那条去重入口(浏览器侧没有入口时,存量重复只能靠批量补图那句 note 发现)');
+    assert(/主体 id 去重\(2\)/.test(main.innerHTML),
+      '入口上得报出要改几位(三位同 id → 留首位、改后两位),实际:' + (main.innerHTML.match(/[^>]*去重[^<]*/) || [''])[0]);
+    const embed = roleDom();
+    sb.Views.roles(embed, 'p1', true);
+    assert(/data-x="dedupe"/.test(embed.innerHTML),
+      '嵌在项目页里的那一版(embedded)同样得有入口:两处头部按钮行只挂一处,从项目详情进来就没这条路');
+    // ② 点开只预览:重复面三样都报出来、改名计划逐位点名,而一个字不写库
+    const saves = sb.Store._saves;
+    main.querySelector('[data-x=dedupe]').onclick();
+    assertEq(sb.__modals.length, 1, '点入口须开一个弹窗(沿用 U.openModal 那一套)');
+    const opt = sb.__modals[0];
+    assert(/dup/.test(opt.body) && /3 位/.test(opt.body) && /第 1 位「A-首位」/.test(opt.body),
+      '预览得报出重复的是哪个 id、几位、哪一位留原 id,三样都要:' + opt.body);
+    assert(/第 3 位「C-第二位」/.test(opt.body) && /第 4 位「D-第三位」/.test(opt.body) && !/第 2 位「B-不重复」/.test(opt.body),
+      '改名计划得逐位点名(改的是撞车那两位,不重复的那一位不许进计划):' + opt.body);
+    assertEq(sb.Store._saves, saves, '预览这一屏不许写库(这条入口的"可撤销"就落在这一格上)');
+    assertEq(p.subjects.map(s => s.id).join(','), 'dup,solo,dup,dup', '预览之后库里一个 id 都不许变');
+    // ③ 确认闸:取消那一下同样不写库
+    let closed = 0;
+    const m1 = roleDom();
+    opt.onMount(m1, () => { closed++; });
+    m1.querySelector('[data-x=cancel]').onclick();
+    assertEq(closed, 1, '取消得把弹窗关掉');
+    assertEq(sb.Store._saves, saves, '取消不许写库');
+    assertEq(p.subjects.map(s => s.id).join(','), 'dup,solo,dup,dup', '取消之后库里一个 id 都不许变');
+    // ④ 确认那一下才落库:首位留原 id、撞车位改发新 id、一位不删、内容不动
+    const preview = opt.body.match(/sj_u\d+/g) || [];
+    assertEq(preview.length, 2, '预览里那两个新 id 取不到(展示形状改了就同轮改这里),实际:' + JSON.stringify(preview));
+    const m2 = roleDom();
+    opt.onMount(m2, () => { closed++; });
+    m2.querySelector('[data-x=apply]').onclick();
+    assertEq(closed, 2, '落库之后得把弹窗关掉');
+    assertEq(sb.Store._saves, saves + 1, '确认那一下恰好写一次库');
+    assertEq(p.subjects.length, 4, '去重是改 id、不是替用户删位:一位都不许少(同 id 那几位各有各的名字与设定)');
+    assertEq(p.subjects[0].id, 'dup', '首位留原 id(引用全靠它继续解析到同一位)');
+    assertEq(p.subjects[1].id, 'solo', '不重复的那一位一个字都不许动');
+    assertEq(new Set(p.subjects.map(s => s.id)).size, 4, '落库后四位四个 id,一个不重');
+    assert(/^sj_/.test(p.subjects[2].id) && /^sj_/.test(p.subjects[3].id),
+      '撞车的后续位须改发新 id(前缀对齐新建主体那一处):' + JSON.stringify(p.subjects.map(s => s.id)));
+    assertEq(p.subjects.map(s => s.name + '/' + (s.image || '无图')).join(','),
+      'A-首位/a.png,B-不重复/b.png,C-第二位/无图,D-第三位/无图', '只改 id,一位的内容都不许动');
+    assertEq(preview.filter(id => p.subjects.some(s => s.id === id)).length, 0,
+      '新 id 是确认那一下现发的:预览那批只是示意值,隔着一次重算不许拿它落库,实际:' + JSON.stringify(preview));
+    assertEq(refs(), before, '两处引用去重前后须落到同一位——指错主体才是要迁移的理由,实际:' + refs());
+    assertEq(sb.__toasts.filter(t => /改发新 id/.test(t)).length, 1,
+      '改完得如实说改了几位(静默改寻址键等于把用户的脚本悄悄弄失配),实际:' + JSON.stringify(sb.__toasts));
+    // ⑤ 纯改表零上游:一笔任务、一分钱都不许有
+    assertEq(sb.__tasks.length + sb.__charges.length, 0,
+      '纯改主体库、零上游零 LLM:不许登记生成任务也不许扣一分钱,实际:' + JSON.stringify({ tasks: sb.__tasks, charges: sb.__charges }));
+    // ⑥ 收拾干净之后入口自己消失(done 回调真重渲了页面),再扫一遍也没得可改
+    assert(!/data-x="dedupe"/.test(main.innerHTML),
+      '去重完那一下页面得重渲、入口跟着消失(库里没有重复时不该挂着这个按钮)');
+    assertEq(sb.RoleOps.dedupeScan(p.subjects).plan.length, 0, '干净的库上再扫一遍,一位都不该再改');
+    assertEq(sb.RoleOps.dedupeScan(p.subjects).unique, 4,
+      'unique 报的仍是这一趟扫描前的 id 数(落库后必然等于 total),口径与两条命令逐字同形、没被这条入口改掉');
+  } },
+  { name: '主体库那条去重入口不许另抄一份规则:页面这一端只注入自己的发号器与单位词,规则仍现取 Domain.dupIdScan(纯改表零计费,删除语义未动)', fn() {
+    /* 行为面那条钉的是"入口在、预览不写库、确认才写";这一条钉的是它凭什么与 CLI 那条命令一致——
+     * 「首次出现留原 id、后面每处撞车各发一个新 id」这套规则只在派生一份,页面这一端注入的只有
+     * Store.uid 那个发号器与主体侧的单位词。抄一份到页面上行为可以完全一样,只有源级这条接得住:
+     * 两份计算一旦漂,用户照预览点的那个头就不作数了。
+     * 另钉两件本槽没做的事:纯改表不许被顺手套上任务/扣费;按 id 删主体那一句(删除语义)一字未动。 */
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'roles.js'), 'utf8');
+    const segOf = (head, tail) => {
+      const i = src.indexOf(head);
+      assert(i >= 0, 'js/roles.js 找不到「' + head + '」(挪窝或改名就同轮改这里,别把本条留成恒真)');
+      const rest = src.slice(i + head.length);
+      const j = rest.indexOf(tail);
+      assert(j > 100, 'js/roles.js「' + head + '」那一段取不到(同上),实测 ' + j + ' 字');
+      return rest.slice(0, j);
+    };
+    // 扫描段:委托派生 + 注入自己那一端的发号器与单位词,不许再攒一份"谁是首位"的记账
+    const scan = blankNonCode(segOf('function dedupeScan(', '\n  /*'), true);
+    assert(scan.includes('Domain.dupIdScan('),
+      '页面这一端的扫描须委托 Domain.dupIdScan(两处各写一份规则迟早对同一份脏数据给出两种计划):' + scan);
+    assert(/Store\.uid\('sj'\)/.test(scan), '得注入浏览器那一端的发号器(前缀对齐新建主体那一处):' + scan);
+    assert(scan.includes('seats:'), '单位词在这一层换上(主体库里没有"行"):' + scan);
+    assertEq((scan.match(/new Map\(|new Set\(/g) || []).length, 0,
+      '扫描段又攒了一份"谁是首位"的记账,那是派生的活(抄回来两端就能各判一套):' + scan);
+    assertEq((scan.match(/keepOrder/g) || []).length, 2,
+      '扫描段里 keepOrder 只该出现两次(透传派生那一份:键名 + d.keepOrder):' + scan);
+    // 弹窗段:预览与落库同调一个扫描;写库只此一处且排在确认那一下;纯改表不许挂计费
+    const open = blankNonCode(segOf('function openDedupe(', '\n\n  Views.roles'), true);
+    assert(!/Tasks\.run|billingAction|operationId|COST\.|U\.charge|requireCredits/.test(open),
+      '纯改主体库、零上游零 LLM,不许走计费路径:' + open);
+    assertEq((open.match(/dedupeScan\(/g) || []).length, 2,
+      '预览读一份、落库前按当下那棵树重算一份,两条路都得调同一个扫描(各写一份计算迟早漂):' + open);
+    assertEq((open.match(/Store\.save\(\)/g) || []).length, 1, '写库只许有一处:' + open);
+    assert(open.indexOf('Store.save()') > open.indexOf('[data-x=apply]'),
+      '写库那一句须落在确认按钮的 handler 里(开弹窗即写就把预览那一档吃掉了):' + open);
+    // 入口:露不露、报几位由同一份扫描现算,且两处头部按钮行都挂上
+    const skel = blankNonCode(src, true);
+    assert(/dedupeScan\(p\.subjects\)/.test(skel),
+      '入口露不露、报几位得由同一份扫描现算(另拿一句"看着像重复"的判断顶,页面上那个数就与弹窗里的计划漂开)');
+    assertEq((skel.match(/\$\{dedupeBtn\}/g) || []).length, 2,
+      '入口须在两处头部按钮行都插上(非嵌入页与项目页嵌入版各一处;少一处就有一条进来的路看不见它)');
+    // 删除语义与派生:本槽都没动
+    assert(/p\.subjects = p\.subjects\.filter\(x => x\.id !== s\.id\)/.test(src),
+      '删除语义一字未动:按 id 删主体仍会清掉同 id 的每一位(那是删除语义不是去重语义,本槽不碰它)');
+    const D = require('../js/domain.js');
+    const sb = loadRoles();
+    const rows = [{ id: 'a' }, { id: 'b' }, { id: 'a' }, { id: 'a' }];
+    let n = 0;
+    const ref = D.dupIdScan(rows.map(x => ({ id: x.id })), () => 'new' + (++n));
+    const got = sb.RoleOps.dedupeScan(rows.map(x => ({ id: x.id })));
+    assertEq(got.plan.map(x => x.order + ':' + x.from).join(','), ref.plan.map(x => x.order + ':' + x.from).join(','),
+      '页面这一端算出的"改哪几位、原来是什么 id"须与派生逐条相同,实际:' + JSON.stringify(got.plan));
+    assertEq(JSON.stringify(got.duplicates), JSON.stringify(ref.duplicates.map(d => ({ id: d.id, seats: d.n, keepOrder: d.keepOrder }))),
+      '重复面只该换单位词(n → seats),别的一格都不许改口径,实际:' + JSON.stringify(got.duplicates));
+    assertEq(rows.map(x => x.id).join(','), 'a,b,a,a', '扫描是纯扫描:入参一个字段都不许改(落库由弹窗按计划逐条写)');
   } },
   { name: 'generateVideos 点名重复 id 真跑那一趟:两端回执都说出行数并点名 shots-dedupe(选人闸仍按行筛,一行都不许少跑)', fn: async () => {
     /* 上面三条(导入设闸 / 逃生舱不设闸 / shots-dedupe 是存量出口)管的是表本身,这一条管**生成那一拍**:
@@ -9470,6 +9649,10 @@ const GUARD_TOPICS = [
     why: '两条去重命令(镜头 / 主体)同读一份规则:「首次出现留原 id、后面每处撞车各发一个新 id」收在 Domain.dupIdScan,'
       + '两侧的扫描只注入自己那一端的发号器与单位词——各抄一份就能对同一份脏数据给出两种计划(改哪一位、留哪一位),'
       + '而用户是照 dry-run 那份点头的' },
+  { id: 'dedupe-ui-rule-single', anchors: ['function openDedupe(', 'Domain.dupIdScan('],
+    why: '主体库页面那条去重入口与 CLI 同读一份规则:页面这一端只注入自己的发号器(Store.uid)与单位词,'
+      + '预览与落库同调一个扫描、写库只在确认那一下——把规则抄到页面上行为可以完全一样,'
+      + '而两份计算一旦漂,用户照预览点的那个头就不作数了' },
 ];
 /* ---- 下限、销号台账与花名册:让「撤掉一条登记」这件事非留痕不可 ----
  * 上面那张表只登记"此刻在册"的主题,而撤登记此前只有一个下限数字守着,两种改法都一条不红:
@@ -9483,7 +9666,7 @@ const GUARD_TOPICS = [
  *   3. 销号必须显式落笔——编号搬进 GUARD_TOPICS_CLOSED 并写下闭合理由,锚点原样搬过来,
  *      好让"这道护栏是真没了,还是被别的主题接手了"事后仍判得出来。
  * 有意不禁新登记主题:在册多出花名册没有的号一条不红,加主题照旧只改上面那张表。 */
-const TOPIC_FLOOR = 21;
+const TOPIC_FLOOR = 22;
 const GUARD_TOPICS_CLOSED = [
   /* 形状:{ id: '主题编号', anchors: [原样搬过来], why: '这道护栏原本守什么',
    *        closed: '为什么可以不守了(被守的那一面已不存在 / 判据并进了哪一条)',
@@ -13687,7 +13870,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 701, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+      [['单元测试', 703, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
