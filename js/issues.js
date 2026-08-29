@@ -200,11 +200,14 @@
       emit('episode', 'pre', obj, cache, base);
       if (!c.total) { out.push(Object.assign({}, base, { kind: 'no-shots', sev: EPB['no-shots'], count: 1, label: `「${ep.title}」未生成分镜`, detail: '已有剧本未拆镜,可直接智能分镜', cmd: 'episode.generateStoryboard' })); return; }
       if (st.shotsStale) { out.push(Object.assign({}, base, { kind: 'shots-stale', sev: EPB['shots-stale'], count: 1, label: `「${ep.title}」分镜表基于旧剧本/图谱`, detail: '剧本或事件图谱修订后未重新拆镜', goto: `#/project/${p.id}/episode/${ep.id}` })); return; }
+      /* 明细里的镜号是给人看的序号,取 Domain.shotNo(分镜表实位),不读会与实位漂移的 s.order:
+       * 这条的 shotIds 按 id 精确带出,而人要照明细上的号回分集页找那几镜——两半报同一个号才对得上。
+       * fs 恒取自 ep.shots 的过滤子集,shotNo 回不到 0,故不写表外镜那档 '?' 兜底(下面过期镜同理)。 */
       if (c.failed) {
         const fs = (ep.shots || []).filter(s => s.video && s.video.status === 'failed');
         out.push(Object.assign({}, base, {
           kind: 'failed-shots', sev: EPB['failed-shots'], count: c.failed, label: `「${ep.title}」${c.failed} 镜生成失败`,
-          detail: fs.map(s => `镜头${s.order + 1}:${String(s.video.error || '未知错误').slice(0, 36)}`).slice(0, 4).join(';') + (fs.length > 4 ? '…' : '') + '(失败已退费,可重试)',
+          detail: fs.map(s => `镜头${Domain.shotNo(ep.shots, s)}:${String(s.video.error || '未知错误').slice(0, 36)}`).slice(0, 4).join(';') + (fs.length > 4 ? '…' : '') + '(失败已退费,可重试)',
           cmd: 'episode.generateVideos', shotIds: fs.map(s => s.id),
         }));
       }
@@ -218,7 +221,7 @@
         const sp = Domain.staleShotSplit(p, ep, on);
         const staleIds = new Set(sp.all);
         const ss = (ep.shots || []).filter(s => staleIds.has(s.id));
-        out.push(Object.assign({}, base, { kind: 'stale-shots', sev: EPB['stale-shots'], count: c.stale, label: `「${ep.title}」${c.stale} 镜素材已更新(过期)`, detail: `镜头 ${ss.map(s => s.order + 1).slice(0, 8).join('、')}${ss.length > 8 ? '…' : ''} 生成后输入有变化,建议重生成` + Domain.staleSplitNote(sp.rerun.length, sp.locked.length), goto: `#/project/${p.id}/episode/${ep.id}` }));
+        out.push(Object.assign({}, base, { kind: 'stale-shots', sev: EPB['stale-shots'], count: c.stale, label: `「${ep.title}」${c.stale} 镜素材已更新(过期)`, detail: `镜头 ${ss.map(s => Domain.shotNo(ep.shots, s)).slice(0, 8).join('、')}${ss.length > 8 ? '…' : ''} 生成后输入有变化,建议重生成` + Domain.staleSplitNote(sp.rerun.length, sp.locked.length), goto: `#/project/${p.id}/episode/${ep.id}` }));
       }
       if (c.unconfirmed && !c.generating) out.push(Object.assign({}, base, { kind: 'unconfirmed', sev: EPB['unconfirmed'], count: c.unconfirmed, label: `「${ep.title}」${c.unconfirmed} 镜待确认`, detail: '未确认镜头不参与批量生成,先过确认闸', goto: `#/project/${p.id}/episode/${ep.id}` }));
       /* 审片步骤未完成:kind 就是 Domain 分集级审片门槛 episodeState().reviewGate 归好的那个码,
