@@ -2350,7 +2350,8 @@ function composedCtx(sb, over) {
 /* CLI(headless 那一端)沙箱:cli.js 是脚本不是模块,末尾自调 main();这里只掐掉那一行入口,
  * 其余一字不改地 runInContext——跑的是产品代码本身。EXEC 是 const(不落全局对象),
  * 故在同一 context 里再求一次值取出来。stateGet / withProject / genShotVideo / genImage 是函数声明,
- * 挂在全局对象上,夹具按需换成桩:换掉的只有服务端往返与真实生成,子集过滤与判旧仍是 cli.js 自己那一份 + 真 Domain。 */
+ * 挂在全局对象上,夹具按需换成桩:换掉的只有服务端往返与真实生成,子集过滤与判旧仍是 cli.js 自己那一份 + 真 Domain。
+ * CMD(命令原语表)与 EXEC 同为 const,同样在 context 里再求一次值取出来:gen-episode 这类只在 CMD 上的出口靠它进用例。 */
 function loadCli() {
   const sb = {
     console, setTimeout, clearTimeout, setInterval, clearInterval,
@@ -2368,6 +2369,7 @@ function loadCli() {
   assert(body !== src, 'cli.js 末尾的 main() 入口没找到(入口挪窝就同轮改这里,别让沙箱静默连命令都跑起来)');
   vm.runInContext(body, sb, { filename: 'cli.js' });
   sb.EXEC = vm.runInContext('EXEC', sb);
+  sb.CMD = vm.runInContext('CMD', sb);
   return sb;
 }
 /* CLI 夹具:一集 shots,服务端 state 往返与生成引擎换成桩(引擎只记下收到的镜并写回 done) */
@@ -4001,6 +4003,52 @@ const commandsTests = [
     assertEq(D.landedNote(undefined, 2, '位'), '', '非数回空,不报出 NaN');
     assertEq(D.landedNote(3, null, '行'), '', 'null 不当 0 用(否则空跑那一路会平白多一句)');
     assert(/2 行/.test(D.landedNote(3, 2, '行')) && !/位/.test(D.landedNote(3, 2, '行')), '单位按调用方给的走,镜头侧不许论起"位"来');
+  } },
+  { name: 'CLI gen-episode 回执同样分开报 ok 与 landed:同 id 多行全写在首行时,扣了几笔与到手几行不再混作一个数', fn: async () => {
+    /* `landed` 此前只覆盖 exec 那两条批量(episode.generateVideos / subject.generateImage),
+     * 而 `hujing gen-episode` 是同形的第三条:批量、按行跑、按行计费,每轮回最新树重取那一行。
+     * 差别在它取行用的是 findShot —— 按 id 取首行,同 id 占着三行的一趟三轮全写在首行身上,
+     * 引擎三次都成功、result.ok 照数三次,到手片却只有一份(后一轮盖了前一轮);
+     * 而回执只有 total/ok/failed,读 ok:3 的人会以为三行各有一条片。这里钉的是它把两件事分开说。
+     * 这一条不改写回路径(仍是 findShot 取首行)、不改共位覆盖的退费政策(那几笔都真花了钱),
+     * 只补上"到手几行"这个诚实字段与那一句说法(单源 Domain.landedNote,与 exec 两条同读一份)。 */
+    const pending = { confirm: true, image: 'i.png', video: { status: 'none' } };
+    const runGen = async (shots) => {
+      const sb = loadCli();
+      const fx = cliDisk(sb, { shots });
+      const r = await sb.CMD['gen-episode'](['p1', 'ep1'], {});
+      return { r, fx, engine: sb.__genShots.length };
+    };
+    // ① 同 id 三行 + 一行不重复:四轮全成功,而产物只落到两行(三轮共用了首行)
+    const dup = await runGen([
+      makeShot(0, Object.assign({ id: 'dup', plot: '首行' }, pending)),
+      makeShot(1, Object.assign({ id: 'solo', plot: '不重复的那一镜' }, pending)),
+      makeShot(2, Object.assign({ id: 'dup', plot: '第二行' }, pending)),
+      makeShot(3, Object.assign({ id: 'dup', plot: '第三行' }, pending)),
+    ]);
+    const gotRows = dup.fx.epOf().shots.filter(x => x.video && x.video.status === 'done').length;
+    assertEq(dup.engine, 4, '前提:四行都真下发(四笔视频钱)');
+    assertEq(dup.r.failed.length, 0, '前提:四次调用都成功,一次也没失败');
+    assertEq(dup.r.ok, 4, 'ok 的口径不改:它数的是引擎调用成功次数(计费同口径),不许改成 failed 来凑落库数');
+    assertEq(dup.r.landed, gotRows, 'landed 得等于真出片的行数(实测 ' + gotRows + ' 行)');
+    assertEq(dup.r.landed, 2, '共位那一趟 landed 是 2:三轮写到了同一行上');
+    assert(/产物只落到 2 行/.test(dup.r.note || ''), '两个数岔开时 note 得说清「4 次调用、2 行落库」:' + dup.r.note);
+    assertEq(Object.keys(dup.r.shots).length, 2, 'result.shots 按 id 记本就收不住共位(同 id 只剩一个键),落库数只能看 landed');
+    // ② 各占一行的不同 id:座位键带 id,三行各自到手,landed 不许缩成 1、也不许多那一句
+    const solo = await runGen([
+      makeShot(0, Object.assign({ id: 'a1' }, pending)),
+      makeShot(1, Object.assign({ id: 'a2' }, pending)),
+      makeShot(2, Object.assign({ id: 'a3' }, pending)),
+    ]);
+    assertEq(solo.r.ok + '/' + solo.r.landed, '3/3', '三个不同 id 各占一行:座位只按行内序数记会全记成第 0 行、landed 缩成 1');
+    assertEq(solo.r.note, undefined, '相等时一句不加(重复一遍是废话):' + solo.r.note);
+    // ③ 一镜也没跑那一路照样带 landed:机器读 result.landed 不该拿到 undefined
+    const none = await runGen([makeShot(0, { confirm: false, image: 'i0.png', video: { status: 'none' } })]);
+    assertEq(none.r.total + '/' + none.r.ok, '0/0', '前提:确认闸把这一镜挡在外面,零调用');
+    assertEq(none.r.landed, 0, '空跑回执也得带 landed:0(字段时有时无,调用方就得先判 undefined)');
+    // ④ 与 exec 那条批量同读一份判词:同一组数字两条出口给出逐字相同的说法
+    const D = require('../js/domain.js');
+    assertEq(dup.r.note, D.landedNote(4, 2, '行'), 'gen-episode 不许另造第二份说法(单源 Domain.landedNote,单位是"行")');
   } },
   { name: 'CLI exec produce:点名的轮次钳过即落库,下一轮不带入参跑的就是这个次数(单独调 smartReview 那一端仍不写库)', fn: async () => {
     /* 此前这一端只读不写:`exec episode.produce --args '{"maxRetry":4}'` 当轮真跑 4 轮,
@@ -13242,7 +13290,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 693, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 696, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -13650,7 +13698,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 291;
+    const FLOOR = 292;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
