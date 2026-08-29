@@ -488,12 +488,17 @@ ${(Array.isArray(mem) ? mem : []).map((x, i) => (i + 1) + '. ' + x).join('\n')}`
     if (stale) return '';
     return g.events.map((e, i) => `E${i + 1} [${e.who || '?'}@${e.where || '?'}] ${e.what || ''}${e.result ? ' → ' + e.result : ''}`).join('\n');
   };
-  /* 分镜在全集中的时间码区间(自 review.js 下沉;时长经 Domain.estShotDuration 双端同口径) */
+  /* 分镜在全集中的时间码区间(自 review.js 下沉;时长经 Domain.estShotDuration 双端同口径)。
+   * 起点累到本镜那一行为止,行对位取 Domain.rowIndexOf:同 id 多行时按 id 断在首行,
+   * 后几行的时间码会一律报成首行那一段(报告里的"关键问题定位"因此指错时间)。
+   * 表里找不到这一行时照旧累完全表(与收进本函数之前同形)。 */
   const fmtT = s => String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(Math.floor(s % 60)).padStart(2, '0');
   W.shotTimeRange = function (ep, s) {
+    const rows = (ep && ep.shots) || [];
     const dur = x => (Domain && Domain.estShotDuration ? Domain.estShotDuration(x) : (x.duration || 5));
+    const idx = Domain && Domain.rowIndexOf ? Domain.rowIndexOf(rows, s) : rows.indexOf(s);
     let start = 0;
-    for (const x of ep.shots) { if (x.id === s.id) break; start += dur(x); }
+    for (let i = 0; i < (idx < 0 ? rows.length : idx); i++) start += dur(rows[i]);
     return fmtT(start) + ' - ' + fmtT(start + dur(s));
   };
   /* 文生视频模板填充(settings.tplVideo,雇佣风格专家时被 tpl.tplVideo 覆写):{style}=项目风格 {shot}=本镜内容。

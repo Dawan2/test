@@ -5320,6 +5320,38 @@ const domainTests = [
     assertEq(t3.map(x => x.order).join(','), '1,1,3', '越界那一条退回首行(order 1),不许算出 -1 行把它整条丢掉');
     assertEq(t3.map(x => x.nth).join(','), '0,2,1', 'nth 原样带出:回写侧对 nth=2 同样越界退回首行,两侧落到同一行');
   } },
+  { name: '行对位单源:reviewRows 把逐镜条目落到自己那一行,rowIndexOf 按对象身份定位(拿不到身份才退首行)', fn: () => {
+    const sb = loadDomain();
+    const D = sb.Domain;
+    /* 展示面(整集报告视图、时间码、景别衔接)与编排面(重抽面、写回合并)此前各写各的对位:
+     * 编排面早就按行数了,展示面还在 find 首行——同一份报告在两个面上指的不是同一行。
+     * 两种取法收在这里一份:手上有行对象走 rowIndexOf,只有 perShot 条目走 reviewRows。 */
+    const r0 = { id: 'dup', order: 0 }, r1 = { id: 'solo', order: 1 }, r2 = { id: 'dup', order: 2 };
+    assertEq(D.rowIndexOf([r0, r1, r2], r2), 2, '同 id 的第二行按对象身份定位到实位 2(按 id 取首行时是 0)');
+    assertEq(D.rowIndexOf([r0, r1, r2], { id: 'dup' }), 0, '不是同一棵树上的对象时退回按 id 首行(与 nthShot 的兜底同口径)');
+    assertEq(D.rowIndexOf([r0, r1, r2], { id: 'gone' }), -1, '表里没有这个 id 时如实回 -1,不冒充首行');
+    assertEq(D.rowIndexOf(null, r0), -1, '空表不抛');
+    const ep = { shots: [r0, r1, r2],
+      lastReview: { perShot: [
+        { shotId: 'dup', order: 0, score: 4, reportId: 'rv0' },
+        { shotId: 'solo', order: 1, score: 9, reportId: 'rvS' },
+        { shotId: 'dup', order: 2, score: 5, reportId: 'rv2' },
+        { shotId: 'gone', order: 3, score: 3, reportId: 'rvG' },
+      ] } };
+    const rows = D.reviewRows(ep);
+    assertEq(rows.map(t => t.i).join(','), '0,1,2,-1', '第几条同 id 落第几行同 id;已不在分镜表的那条回 -1');
+    assertEq(rows.map(t => t.nth).join(','), '0,0,1,0', 'nth 在整份 perShot 上数,不在同 id 子集上另数一遍');
+    assertEq(rows.map(t => (t.shot ? t.shot.order : 'x')).join(','), '0,1,2,x', '带回的是那一行本身,消费方不必再 find 一次');
+    assertEq(rows[3].shot, null, '取不到行时给 null(不给首行冒充)');
+    // 行不够数时退回首行:与 nthShot / reviseTargets 的越界口径逐字相同
+    const ep2 = { shots: [r0, r1], lastReview: { perShot: [{ shotId: 'dup' }, { shotId: 'dup' }] } };
+    assertEq(D.reviewRows(ep2).map(t => t.i).join(','), '0,0', '同 id 只剩一行时第二条退回首行,不算出 -1 把它整条丢掉');
+    assertEq(D.reviewRows({}).length, 0, '没有整集报告时回空数组');
+    // 重抽面仍恒等于"在这份对位之上加达标线/交集/定稿三道筛"(编排面与展示面同读一份)
+    const tg = D.reviseTargets(Object.assign({ content: '', contentRev: 0, graphRev: 0 }, ep));
+    assertEq(tg.map(t => [t.order, t.nth, t.reportId].join(':')).join(','), '1:0:rv0,3:1:rv2',
+      '重抽面的实位/序数/报告 id 与 reviewRows 逐格对得上');
+  } },
   { name: 'reviseRetryLimit:收敛次数单源——缺省 2、越界向内钳、小数截整、候选值按优先级择先', fn: () => {
     const sb = loadDomain();
     const D = sb.Domain;
@@ -9400,6 +9432,31 @@ const contractTests = [
       assertEq((src.match(/perShot:\s*reviewed\.map|perShot:\s*newPer/g) || []).length, 0, rel + ' 不许绕过合并直接把本批条目当整表写回');
     });
   } },
+  { name: '审片展示面行对位(源级):整集报告视图与时间码都不许按 id 取首行,两个取法只在 domain.js 一份', fn() {
+    /* 写回侧按行对位收进 WfCore.mergeReviewPerShot 之后,展示面还留着 find 首行那一档:
+     * 同一份报告在编排面上指第三行、在报告视图上指首行。这里钉的是两件事——展示面读的是行对位那一份,
+     * 且"第几条同 id = 第几行同 id"与"按对象身份定位行"两个取法不许在消费方各写一遍。 */
+    const rv = fs.readFileSync(path.join(ROOT, 'js', 'review.js'), 'utf8');
+    const wfc = fs.readFileSync(path.join(ROOT, 'js', 'wf-core.js'), 'utf8');
+    const dom = fs.readFileSync(path.join(ROOT, 'js', 'domain.js'), 'utf8');
+    const i = rv.indexOf('function openEpisodeReport(');
+    assert(i > 0, 'review.js 应有整集报告视图(改名就同轮改这条判据,别把它留成恒真)');
+    const seg = rv.slice(i, rv.indexOf('/* ---- 审片记录列表 ----', i));
+    assert(seg.length > 2000, '整集报告视图那一段截不全(段界字面变了就同轮改这里)');
+    assert(/Domain\.reviewRows\(ep\)/.test(seg), '逐镜条目应经 Domain.reviewRows 落行(与写回侧同一套行对位)');
+    assert(!/ep\.shots\.find\(|shots \|\| \[\]\)\.find\(/.test(seg), '整集报告视图不许再按 shotId find 取行(同 id 后几行会一律指首行)');
+    assert(!/data-jump="\$\{x\.shot\.id\}/.test(seg), '跳转入口不许拿 shotId 当行键(同 id 多行时点哪一镜都跳首行)');
+    assertEq((rv.match(/\.find(?:Index)?\(x => x\.id ===/g) || []).length, 0,
+      'js/review.js 全文不许再有"按 id 取该 id 第一条"的寻址(展示面与库形态同一套行对位)');
+    // 时间码只此一份实现:浏览器委托 wf-core,行对位在里面按 Domain.rowIndexOf 取
+    assertEq((rv.match(/function shotTimeRange/g) || []).length, 0, 'review.js 不该再自留一份时间码实现');
+    assert(/WfCore\.shotTimeRange\(ep, s\)/.test(rv), 'review.js 的时间码应委托 wf-core 那一份');
+    assert(/Domain\.rowIndexOf\(rows, s\)/.test(wfc), 'wf-core 的时间码起点应按行对位取,不按 id 断在首行');
+    assert(/D\.rowIndexOf = function/.test(dom) && /D\.reviewRows = function/.test(dom), '两个取法的定义应在 domain.js 一处');
+    assertEq((dom.match(/const rowsOf = /g) || []).length, 1,
+      'perShot 行对位在 domain.js 只此一处(reviseTargets 不许绕开 reviewRows 另数一遍序数)');
+    assert(/return D\.reviewRows\(ep\)/.test(dom), '重抽面应长在这份对位之上,只加达标线/交集/定稿三道筛');
+  } },
   { name: '修订闭环重抽面单源:server/CLI/助手摘要/问题中心都不自筛低分镜,CLI 不摘回执 lowShots 当 shotIds', fn() {
     /* G-03 这一面钉的是"该重抽哪几镜由编排层派生":判据(达标线 / 报告判旧 / 与分镜表取交集 / 定稿不重抽)
      * 只在 Domain.reviseTargets 一份里,四处消费点谁抄回一份 score < 7 或把回执里的 lowShots 当名单用都红在这里。 */
@@ -12962,7 +13019,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 676, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 680, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -14841,7 +14898,10 @@ const skillsTests = [
     assertEq(rc.checks.length, 0, '干净夹具不产出命中');
     // 只报不拦:命中不进 issues,评分与达标线口径逐字不动(同 id 同提示词 = 同种子)
     assertEq(rd.issues.filter(i => i.code).length, 0, '校验命中不得并入 issues(达标线/重抽/批量优化判定口径不动)');
-    assertEq(JSON.stringify(rd.issues), JSON.stringify(rc.issues), '命中不改关键问题清单');
+    /* 时间码按各自镜长算(dur 取 Domain.estShotDuration,台词长的那镜本就更长),故比对问题正文而不比对时间段:
+     * 两镜时间码此前相同是夹具里 window.SB 没挂 estShotDuration 才有的假象,浏览器实况本就不同 */
+    const issueBody = r => JSON.stringify(r.issues.map(i => [i.type, i.severity, i.analysis, i.suggestion]));
+    assertEq(issueBody(rd), issueBody(rc), '命中不改关键问题清单');
     assertEq(rd.score, rc.score, '命中不参与评分');
     // 计费不新增:两次审片各一次预扣,校验项纯本地零 LLM 零计费
     assertEq(sb.__charges.length, 2, '校验项不新增计费动作');
@@ -14887,6 +14947,66 @@ const skillsTests = [
     assert(body.includes('对白铁律注入与单句长度校验'), '校验项名应取注册表条目名(不在展示层写第二份)');
     assert(body.includes('台词单句 31 字超上限'), '命中应译成人话展示');
     assert(!/未发现关键问题[\s\S]*方法论校验命中[\s\S]*rv-score/.test(body), '命中区应在评分区之后,不改评分版式');
+  } },
+  { name: '整集报告视图按行取报告:同 id 多行各自那份都在列,点某镜跳的是那一行(不是首行那份)', fn() {
+    /* 整集审片按行出报告,同 id 几行就有几条逐镜条目各带各自的 reportId,报告本身也存在各自那一行的
+     * reviews 里。展示面按 shotId find 首行时,后几行的 reportId 一律去首行那一行找——取不回来就报
+     * "原报告已缺失",于是用户看到的是"审了三镜、两镜的报告没了",而首行那份被读成好几镜的结论;
+     * 点进去更是不论点哪一镜都跳首行。写回侧(WfCore.mergeReviewPerShot)早就按行对位,这里补上同一套。 */
+    const sb = loadReview();
+    const modals = [];
+    sb.U.openModal = o => { modals.push(o); };
+    const dim = n => ({ score: n, comment: '评语', suggestion: '建议' });
+    const mk = (id, order, rid, score) => Object.assign(rvShot({ id, order }), {
+      reviews: [{ id: rid, score, model: '本地模拟评审', mode: 'local', time: '2026-08-22 12:00:00',
+        issues: [], checks: [], dimensions: { technical: dim(score), matching: dim(score), directing: dim(score) } }],
+    });
+    const rows = [mk('dup', 0, 'rvA', 9), mk('solo', 1, 'rvS', 8), mk('dup', 2, 'rvB', 4)];
+    const ep = { id: 'ep1', title: '第一集', shots: rows,
+      lastReview: { time: '2026-08-22 12:00:00', avg: 7, common: { summary: '', issues: [] }, cut: null,
+        perShot: [
+          { shotId: 'dup', order: 0, score: 9, reportId: 'rvA' },
+          { shotId: 'solo', order: 1, score: 8, reportId: 'rvS' },
+          { shotId: 'dup', order: 2, score: 4, reportId: 'rvB' },
+        ] } };
+    ep.lastReview.snapshotHash = sb.WfCore.reviewSnapshotHashOf(ep);
+    const p = { id: 'p1', name: '逆袭', style: '漫剧', episodes: [ep], subjects: [] };
+    sb.Review.openEpisodeReport(p, ep, null);
+    assertEq(sb.__toasts.join('/'), '', '三条逐镜条目都该取得回报告,不该退成"暂无整集审片数据"');
+    assertEq(modals.length, 1);
+    const body = modals[0].body;
+    assert(!body.includes('原报告已缺失'), '同 id 后几行的报告在自己那一行里,不该被读成缺失');
+    assertEq((body.match(/rv-bar-row/g) || []).length, 3, '三行各占一条得分行(按 id 取首行时后两行会掉进缺失区)');
+    assertEq([...body.matchAll(/text-align:right;color:[^"]*">([\d.]+)<\/b>/g)].map(x => x[1]).join(','),
+      '9.0,8.0,4.0', '逐行显示的是各自那份报告的分(全指首行时三行都报 9.0)');
+    assert(body.includes('待返工 1 镜'), '待返工计数按行算:第三行 4 分该被数进来');
+    // 跳转入口:行号即清单下标,点第三行开的是第三行那份报告
+    const jumps = [0, 1, 2].map(i => ({ dataset: { jump: String(i) }, onclick: null }));
+    modals[0].onMount({ querySelector: () => ({}), querySelectorAll: sel => (sel === '[data-jump]' ? jumps : []) }, () => {});
+    jumps[2].onclick();
+    assertEq(modals.length, 2, '点某镜应打开该镜完整报告');
+    assert(modals[1].body.includes('4.0'), '打开的应是第三行那份 4 分报告(跳首行时是 9.0)');
+    assert(modals[1].body.includes('视频 #1-3'), '镜号应报第三镜');
+  } },
+  { name: '离线评审按行对位:时间码从本行之前累起,景别衔接比的是本行的上一镜', fn: async () => {
+    /* 本地模拟评审那几条硬检查也是展示面:时间码按 id 断在首行时,同 id 后几行的"关键问题定位"
+     * 一律指到首行那一段;景别衔接同理会拿首行的上一镜来比,报出一条本行并不存在的衔接问题。 */
+    const sb = loadReview();
+    const size = (id, order, shotSize) => rvShot({ id, order, cameraSpec: { shotSize } });
+    const rows = [size('solo', 0, '大全景'), size('dup', 1, '特写'), size('dup', 2, '特写')];
+    const ep = { id: 'ep1', title: '第一集', shots: rows };
+    const p = { id: 'p1', name: '逆袭', style: '漫剧', episodes: [ep], subjects: [] };
+    const rv = await sb.Review.reviewShot(p, ep, rows[2]);
+    assertEq(rv.mode, 'local', '离线应走本地模拟评审');
+    const dur = x => sb.Domain.estShotDuration(x);
+    const f = n => String(Math.floor(n / 60)).padStart(2, '0') + ':' + String(Math.floor(n % 60)).padStart(2, '0');
+    const head = dur(rows[0]) + dur(rows[1]);
+    assertEq(rv.issues.map(i => i.timeRange).filter((v, i, a) => a.indexOf(v) === i).join(','),
+      f(head) + ' - ' + f(head + dur(rows[2])), '时间码起点应累到本行之前(按 id 断在首行时只累了第一镜)');
+    const link = rv.issues.filter(i => /上一镜景别/.test(i.analysis));
+    assertEq(link.length, 1, '景别衔接结论应恰有一条');
+    assert(link[0].analysis.includes('与上一镜景别相同(特写)'),
+      '上一镜是同为特写的第二行,不是首行的上一镜大全景(那会报成两极对切):' + link[0].analysis);
   } },
   { name: '记账对齐:infra 三条的 pending 按实况清空,note 点名仍欠的覆盖余量(不假清未完成面)', fn() {
     const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
