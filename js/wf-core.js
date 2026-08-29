@@ -799,6 +799,29 @@ ${hasImage ? '附图是该分镜当前生成画面,请结合实际画面与 Prom
     for (let i = 0; i < sig.length; i++) h = ((h << 5) + h + sig.charCodeAt(i)) >>> 0;
     return 'r:' + h.toString(36);
   };
+  /* 逐镜审片条目合并(双端单一来源:服务端 /api/wf/smart-review 与浏览器 autoSmartReview 同读这一份)。
+   * prevPerShot 为空 = 整表跑,直接用本轮这一份;非空 = 子集复审,只替换本轮真审到的那几行,其余沿用上一轮。
+   * 对位按镜头行身份(shotId + 全表第几行同 id),不按 shotId 去重:同 id 多行里没进本轮的兄弟行
+   * (已定稿/未出片/在飞)与评审失败的行都不在本轮条目里,只按 id 判"被替换了"会把它们上一轮那条一并抹掉。
+   * shots 是分镜全表(序数在表行上数,不在本轮那一批上数);已不在表里的 shotId 随行丢弃。
+   * reports=[{shot,report}];回执带均分,整集均分按合并后的行算。 */
+  W.mergeReviewPerShot = function (prevPerShot, reports, shots) {
+    const rows = shots || [];
+    const nthOf = new Map();
+    const seen = Object.create(null);
+    rows.forEach(s => { nthOf.set(s, (seen[s.id] = (seen[s.id] || 0) + 1) - 1); });
+    const newPer = reports.map(x => ({ shotId: x.shot.id, order: x.shot.order, score: x.report.score, reportId: x.report.id, videoInputHash: x.report.videoInputHash || '' }));
+    let perShot = newPer;
+    if (prevPerShot) {
+      const newKeys = new Set(reports.map(x => x.shot.id + '#' + nthOf.get(x.shot)));
+      const prevSeen = Object.create(null);
+      perShot = prevPerShot.filter(x => {
+        const nth = (prevSeen[x.shotId] = (prevSeen[x.shotId] || 0) + 1) - 1;
+        return !newKeys.has(x.shotId + '#' + nth) && rows.some(s => s.id === x.shotId);
+      }).concat(newPer).sort((a, b) => a.order - b.order);
+    }
+    return { perShot, avg: perShot.length ? Math.round(perShot.reduce((a, x) => a + x.score, 0) / perShot.length * 10) / 10 : 0 };
+  };
   /* 共性汇总(自 openEpisodeReview 汇总段下沉);ctx={personaNote,memText} 成片板块生效专家方法论与协作记忆 */
   W.buildSumUser = function (reports, ctx) {
     const brief = reports.map(x => ({ 镜号: x.shot.order + 1, 得分: x.report.score, 问题: x.report.issues.map(i => i.type) }));
