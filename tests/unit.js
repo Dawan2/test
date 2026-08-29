@@ -3891,6 +3891,74 @@ const commandsTests = [
         '成功时新图落在点到那一位身上,提示词不动、另一位不动:' + seats(ok.subs()));
     } finally { try { fs.unlinkSync(tmp); } catch (_) {} }
   } },
+  { name: 'CLI subject-image --file 上传回 2xx 却没有 url:照失败抛(exit 5)、落库往返不发,原有的图不许被空串顶掉', fn: async () => {
+    /* 上一条量的是"上传这一步失败了库怎么办",而它三格走的都是**非 2xx**;回执成形但没有 url 那一档此前一格都没量:
+     * `{code:0,data:{}}` 与 `{code:0,data:{url:''}}` 会把空串当成"上传回来的图"落库,把用户原有那张顶掉,
+     * 而命令报的是一次成功(回执里 image 是空串);`{code:0}` 更差——api() 回的 data 是 undefined,
+     * 读它的 .url 抛的是 TypeError,exit 为空,调用方按码分流时落进"未知失败"。
+     * 三档殊途同归到同一句红:回执没有非空 url 就是没上传成功,不许拿它写回。
+     * 桩同样下到 fetch 那一层(不是 api):这三种回执正是 api() 判定为成功、往调用方手里递 data 的那一档,
+     * 桩在 api 上就等于用例自己造了个假回执,判不出产品码到底信不信这一步。
+     * 空白串单独收一格:trim 掉之后同样是没有地址,而 `' '` 落库看起来像有图、渲染时是一张裂图。
+     * 末格对照面不可省——没有它,把命令改成"一律抛"时前四格照样全绿。 */
+    const clone = x => JSON.parse(JSON.stringify(x));
+    const baseSubs = () => [
+      { id: 'sj1', name: '女主', kind: 'character', image: '/uploads/img/old.png', prompt: '旧提示词', description: '设定A' },
+      { id: 'sj2', name: '男主', kind: 'character', image: '/uploads/img/b.png', prompt: '提示词B' },
+    ];
+    const jres = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
+    const fx = upBody => {
+      const sb = loadCli();
+      const disk = { projects: [{ id: 'p1', subjects: baseSubs(), episodes: [] }], settings: {} };
+      const calls = [];
+      sb.fetch = async (url, init) => {
+        const route = init.method + ' ' + String(url).replace('http://t.local', '');
+        calls.push(route);
+        if (route === 'GET /api/state') return jres(200, { code: 0, data: { rev: 3, state: clone(disk) } });
+        if (route === 'POST /api/upload') return jres(200, upBody);
+        if (route === 'PUT /api/state') {
+          const chg = (init.body ? JSON.parse(init.body) : {}).changes || {};
+          for (const pid in (chg.projects || {})) {
+            const i = disk.projects.findIndex(x => x.id === pid);
+            if (i >= 0) disk.projects[i] = clone(chg.projects[pid]);
+          }
+          return jres(200, { code: 0, data: { rev: 4 } });
+        }
+        return jres(404, { code: 1, message: '本条夹具没准备这条往返:' + route });
+      };
+      return { sb, calls, subs: () => disk.projects[0].subjects };
+    };
+    const seats = subs => subs.map(s => s.name + '|' + (s.image || '无图') + '|' + (s.prompt || '无提示词')).join(' , ');
+    const CLEAN = '女主|/uploads/img/old.png|旧提示词 , 男主|/uploads/img/b.png|提示词B';
+    const tmp = path.join(require('os').tmpdir(), 'w319-nourl-' + process.pid + '.png');
+    fs.writeFileSync(tmp, 'fake-png');
+    const flags = { server: 'http://t.local', token: 't', file: tmp };
+    try {
+      for (const [label, body] of [
+        ['data 里没有 url', { code: 0, data: {} }],
+        ['url 是空串', { code: 0, data: { url: '' } }],
+        ['连 data 都没有', { code: 0 }],
+        ['url 只有空白', { code: 0, data: { url: '   ' } }],
+      ]) {
+        const bad = fx(body);
+        let err = null;
+        try { await bad.sb.CMD['subject-image'](['p1', 'sj1'], flags); } catch (e) { err = e; }
+        assert(err, label + ':2xx 而没有 url 必须抛(当成功收下就是一次没有图的成功)');
+        assert(/未回文件地址/.test(err.message), label + ':错话要说清是"没回地址"这件事,不许是读空引发的 TypeError:' + err.message);
+        assertEq(err.exit, 5, label + ':回执不成形归服务端那一族(exit 空的话调用方按码分流时落进未知失败):' + err.exit);
+        assertEq(bad.calls.join(' , '), 'GET /api/state , POST /api/upload',
+          label + ':落库那次 PUT 一次都不许发出去:' + bad.calls.join(' , '));
+        assertEq(seats(bad.subs()), CLEAN, label + ':库里两位的图与提示词逐字段一个都不许被改(原有的图被空串顶掉正是这条守的):' + seats(bad.subs()));
+      }
+      // 对照面:回执带着非空 url 那一趟照旧落库(没有这一格,"一律抛"也能让上面四格全绿)
+      const ok = fx({ code: 0, data: { url: '/uploads/img/new.png' } });
+      const r = await ok.sb.CMD['subject-image'](['p1', 'sj1'], flags);
+      assertEq(r.image, '/uploads/img/new.png', '带 url 的回执照旧写回:' + JSON.stringify(r));
+      assertEq(ok.calls.join(' , '), 'GET /api/state , POST /api/upload , PUT /api/state', '这一趟才发落库那次 PUT:' + ok.calls.join(' , '));
+      assertEq(seats(ok.subs()), '女主|/uploads/img/new.png|旧提示词 , 男主|/uploads/img/b.png|提示词B',
+        '新图落在点到那一位身上,提示词不动、另一位不动:' + seats(ok.subs()));
+    } finally { try { fs.unlinkSync(tmp); } catch (_) {} }
+  } },
   { name: 'CLI subject-image 点名库里没有的主体:照「找不到」出 exit 4(与项目/分集找不到同一档),三个图源都不下发上游、一次落库都不发', fn: async () => {
     /* 那个出口现取抛 CliError(…, 4),而 exit code 是 Agent 分流的唯一依据(4 是"点名的东西不在",
      * 与 2 参数错、5 服务端错各归各);此前树上没有一条用例读过它——把 4 写成 1 或换成 need(…) 出 2,
@@ -15590,8 +15658,8 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-      [['单元测试', 724, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
-      ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
+      [['单元测试', 725, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+      ['集成测试', 155, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
       assert(live >= floor, label + '用例数不得少于 ' + floor + '(实测 ' + live + ');确要删测须同轮说明理由,新增用例时把下限抬到当轮实况');
@@ -15998,7 +16066,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 333;
+    const FLOOR = 334;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接

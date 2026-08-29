@@ -205,6 +205,17 @@ async function uploadFile(file, flags) {
   log('上传 ' + path.basename(abs) + '(' + (st.size / 1024).toFixed(0) + 'KB)…');
   return POST('/api/upload', { name: path.basename(abs), dataBase64: fs.readFileSync(abs).toString('base64') }, flags);
 }
+/* 上传结果要写回库的那一路专用:回执没有非空 url 一律当失败抛,不许拿空串写回顶掉用户原有的图。
+ * 本仓服务端成功分支只发 {url}、失败一律非 2xx,产不出这种回执;挡的是回执反常那一档
+ * (`{code:0,data:{}}` 与 `{code:0,data:{url:''}}` 会把空串落库,`{code:0}` 更是读 .url 抛一个 exit 为空的 TypeError)。
+ * 出 5 与上传端点 5xx 同族——回执不成形错在服务端那一侧,不是用户参数写错。
+ * 只给落库的调用方用:upload 命令与生图参考图那几路拿到的 url 不进库,回执照原样交给调用方。 */
+async function uploadFileUrl(file, flags) {
+  const up = await uploadFile(file, flags);
+  const url = up && typeof up.url === 'string' ? up.url.trim() : '';
+  if (!url) throw new CliError('上传未回文件地址(服务端回执无 url):' + path.basename(path.resolve(file)), 5);
+  return url;
+}
 async function downloadTo(url, outFile, flags) {
   const server = serverOf(flags);
   const full = url.startsWith('http') ? url : server + url;
@@ -680,7 +691,7 @@ CMD['subject-image'] = async (a, f) => {
   need(a[0] && a[1], '用法:hujing subject-image <pid> <主体id|名> (--file f.png | --url /uploads/.. | --gen [--prompt p])');
   return (await withProject(a[0], f, async proj => {
     const sj = findSubject(proj, a[1]);
-    if (f.file) sj.image = (await uploadFile(f.file, f)).url;
+    if (f.file) sj.image = await uploadFileUrl(f.file, f);
     else if (f.url) sj.image = f.url;
     else if (f.gen) {
       const prompt = f.prompt || ((proj.style || '漫剧') + '风格,' + sj.name + ',' + (sj.description || '角色立绘'));
