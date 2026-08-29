@@ -268,12 +268,15 @@
      * 键是镜头行对象、不是 s.id:同 id 多行各有各的片子与分数,按 id 记会被最后一行那份整体盖掉——
      * 逐行分、整集均分与下游按 perShot 派生的重抽名单便全按最后一行那一份算。 */
     const lastRep = new Map();
+    /* 面板上的镜号取 Domain.shotNo(分镜表实位):后台面板与它身后的分镜卡片同屏,
+     * 卡片一直按实位出号,面板这半再读落库字段 s.order,增删镜/换序后同一镜就在同一屏上报两个号。
+     * 表里已没有这一镜时出 ?(0 不是任何一镜的号),与分镜面各处页头同口径。 */
     for (const s of targets) {
       if (dock && dock.cancelled) { say(`⏹ 用户中止审片`); break; }
       let pass = false;
       for (let attempt = 0; attempt <= maxRetry && !pass; attempt++) {
         if (dock && dock.cancelled) break;
-        say(`▶ 镜头 ${s.order + 1} 评审中${attempt ? `(第 ${attempt} 次重生成后)` : ''}…`);
+        say(`▶ 镜头 ${Domain.shotNo(ep.shots, s) || '?'} 评审中${attempt ? `(第 ${attempt} 次重生成后)` : ''}…`);
         const r = await Review.reviewShot(p, ep, s);
         if (!r) { say('&nbsp;&nbsp;积分不足,审片中止'); manualCnt++; break; }
         lastRep.set(s, r);

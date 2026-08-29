@@ -9597,6 +9597,35 @@ const contractTests = [
     assert(/label: '镜头' \+ \(s\.order \+ 1\)/.test(src['sb-batch']),
       'opIds 里的镜头标签是任务留痕,应照旧按 s.order 记');
   } },
+  { name: '生成面展示镜号(源级):量产审片面板取 Domain.shotNo,产线邻面的任务名/退费摘要/留痕文件名照旧留 order', fn() {
+    /* 生成面上"画在屏上"的镜号只有一处:智能审片后台面板逐镜那一行。面板与身后的分镜卡片同屏
+     * (收尾还会 renderShots 重画一遍),卡片一直按实位出号,面板这半此前读落库字段 s.order,
+     * 增删镜/换序后同一镜就在同一屏上报两个号。
+     * 有意留着不动的是产线邻面 batchops 那一族:任务名 / 退费摘要 / 任务中心留痕文件名 / 入库素材名——
+     * 它们是落库文本,与面板这一处有意不同源,顺手一起改成实位号同样当场点名。 */
+    const pr = fs.readFileSync(path.join(ROOT, 'js', 'produce.js'), 'utf8');
+    const bo = fs.readFileSync(path.join(ROOT, 'js', 'batchops.js'), 'utf8');
+    const hit = pr.split('\n').filter(l => l.includes('▶ 镜头 '));
+    assertEq(hit.length, 1, '智能审片面板逐镜那一行按字面锚不到或不止一处(文案变了就同轮改这条判据)');
+    assert(/Domain\.shotNo\(ep\.shots, s\)/.test(hit[0]),
+      '智能审片面板逐镜行的镜号应取 Domain.shotNo(表内实位):' + hit[0].trim().slice(0, 80));
+    /* 往下削:这一面整份文件里一处都不许再按 order 字段出镜号(本面只此一处展示镜号,退回即两号分家) */
+    assertEq((pr.match(/\.order \+ 1/g) || []).length, 0,
+      'js/produce.js 不许再按 order 字段出镜号:' + (pr.split('\n').find(l => /\.order \+ 1/.test(l)) || '').trim().slice(0, 80));
+    /* 往上收:邻面那一族落的是库,顺手改成实位号当场点名 */
+    [
+      [/type: '选帧入库'[^\n]*target: `\$\{ep\.title\}·镜头\$\{s\.order \+ 1\}@/, '选帧入库的任务名'],
+      [/type: '智能修片'[^\n]*target: `\$\{ep\.title\}·镜头\$\{s\.order \+ 1\}`/, '智能修片的任务名'],
+      [/type: '字幕擦除'[^\n]*target: `\$\{ep\.title\}·镜头\$\{s\.order \+ 1\}`/, '字幕擦除的任务名'],
+      [/refundReason = `镜头\$\{s\.order \+ 1\} 修片退费`/, '智能修片的退费摘要'],
+      [/refundReason = `镜头\$\{s\.order \+ 1\} 擦除退费`/, '字幕擦除的退费摘要'],
+      [/filename: `镜头\$\{s\.order \+ 1\}_超清\$\{cfg\.res\}\.mp4`/, '智能修片的任务中心留痕文件名'],
+      [/filename: `镜头\$\{s\.order \+ 1\}_去字幕\.mp4`/, '字幕擦除的任务中心留痕文件名'],
+      [/data-f="kname" value="\$\{U\.esc\(ep\.title\)\}_镜头\$\{s\.order \+ 1\}"/, '选帧入库的素材名'],
+    ].forEach(([re, label]) => {
+      assert(re.test(bo), label + '是要落库的文本,应照旧按 s.order 记(与面板那个实位号有意不同源)');
+    });
+  } },
   { name: '修订闭环重抽面单源:server/CLI/助手摘要/问题中心都不自筛低分镜,CLI 不摘回执 lowShots 当 shotIds', fn() {
     /* G-03 这一面钉的是"该重抽哪几镜由编排层派生":判据(达标线 / 报告判旧 / 与分镜表取交集 / 定稿不重抽)
      * 只在 Domain.reviseTargets 一份里,四处消费点谁抄回一份 score < 7 或把回执里的 lowShots 当名单用都红在这里。 */
@@ -13159,7 +13188,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 691, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 693, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -13567,7 +13596,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 287;
+    const FLOOR = 288;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
@@ -15342,6 +15371,26 @@ const skillsTests = [
     assertEq([...String(modals[3].body).matchAll(/flex:none">镜头 ([^<]*)</g)].map(x => x[1]).join(','), '1,2,3',
       '待确认清单行按实位出(读 order 字段时是 6,10,1)');
     assertEq(sb.__charges.length, 0, '离线宫格不扣费,镜号换取法也不碰计费');
+  } },
+  { name: '量产智能审片面板镜号按实位:面板逐镜行与同屏分镜卡片同报一个号(order 字段漂了也不跟着漂)', fn: async () => {
+    /* 生成面这一条上唯一"画在屏上"的镜号:智能审片后台面板逐镜那一行。面板与分镜卡片同屏,
+     * 卡片一直按实位出「镜头 N」;面板这半读落库字段 s.order 时,三行自称 5/9/0 就报 6/10/1,
+     * 而卡片报 1/2/3——同一镜在同一屏上两个号。这里跑的是真实路径(非 quiet 建面板 →
+     * 逐镜评审 → 面板逐行落字),号从面板真跑出来的那几行上抠,不由测试自己假设。 */
+    const sb = loadProduce();
+    const lines = [];
+    sb.U.bgDock = opt => {
+      lines.push('#' + opt.title);
+      return { say: h => lines.push(String(h)), finish() {}, close() {}, cancelled: false, m: { querySelector: () => null, querySelectorAll: () => [] } };
+    };
+    // order 字段与实位对不上:三行分别自称 5/9/0(实位 1/2/3)
+    const rows = [makeShot(0, { id: 'sh_a', order: 5 }), makeShot(1, { id: 'sh_b', order: 9 }), makeShot(2, { id: 'sh_c', order: 0 })];
+    const ep = makeEp({ shots: rows });
+    sb.__reviewResult = { score: 9, issues: [] }; // 全达标:每镜恰一行面板字
+    await sb.SB.autoSmartReview({ id: 'p1', subjects: [] }, ep, null, ep.shots, false);
+    assertEq([...lines.join('\n').matchAll(/▶ 镜头 ([^ ]*) 评审中/g)].map(x => x[1]).join(','), '1,2,3',
+      '面板逐镜行按分镜表实位出(读 order 字段时是 6,10,1)');
+    assertEq(sb.__charges.length, 0, '镜号换取法不碰计费(审片扣费在 Review.reviewShot 里,本面一处未触)');
   } },
   { name: '离线评审按行对位:时间码从本行之前累起,景别衔接比的是本行的上一镜', fn: async () => {
     /* 本地模拟评审那几条硬检查也是展示面:时间码按 id 断在首行时,同 id 后几行的"关键问题定位"
