@@ -3486,8 +3486,10 @@ const commandsTests = [
      * 它得是**显式**的(用户自己发一条命令,不挂在任何保存路径上偷偷改)且**可撤销口径**的
      * (默认 dry-run 先报哪些 id 重复、会改成什么,一个字不写库;--apply 才落)。
      * 落库口径同那道闸:首行留原 id、撞车行改发新 id,并如实回报 renamedIds。
-     * 引用面一个字不动是现跑量出来的结论,不是省事:lastReview.perShot/uiSel/Domain.reviseTargets
-     * 一律按 find 首行语义解析,而首行留的就是原 id——去重前后落到的是同一行;
+     * 引用面一个字不动是现跑量出来的结论,不是省事:uiSel 按 find 首行语义解析,而首行留的就是原 id;
+     * lastReview.perShot 与 Domain.reviseTargets 走的是行序数对位(第几条同 id = 第几行同 id),
+     * 本条夹具里同 id 只有一条逐镜分,故这三处去重前后量出来落到的都是同一行
+     * (同 id 有几条逐镜分时那几条会在去重后一起退回首行,报告本身照旧一个字不改,回位靠重跑整集审片);
      * 改 id 的只有那些任何引用都指不到的后续行(它们此前正是"钱花了什么也没多出来"的那几行)。
      * 纯改分镜表零上游零 LLM,故不许有人顺手给它套 Tasks.run/扣费(源级钉住)。 */
     const sb = loadCli();
@@ -3502,7 +3504,7 @@ const commandsTests = [
     ];
     const review = { avg: 5, time: 'x', perShot: [{ shotId: 'dup', score: 4 }, { shotId: 'solo', score: 9 }] };
     const { epOf } = cliDisk(sb, { shots: rows, uiSel: 'dup', lastReview: review });
-    // 引用逐条解析成"落到第几行":去重前后拿同一把尺子量(find/findIndex 首行语义)
+    // 引用逐条解析成"落到第几行":去重前后各量一遍(uiSel/perShot 按 findIndex 首行语义,重抽面直接取派生出的实位)
     const refs = ep => ({
       uiSel: (ep.shots || []).findIndex(s => s.id === ep.uiSel),
       perShot: (ep.lastReview.perShot || []).map(x => (ep.shots || []).findIndex(s => s.id === x.shotId)),
@@ -15622,7 +15624,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 317;
+    const FLOOR = 318;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接

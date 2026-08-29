@@ -786,7 +786,7 @@ CMD['shots-import'] = async (a, f) => {
     const base = f.append ? (ep.shots || []).length : 0;
     const norm = arr.map((s, i) => normShot(s, i, base));
     /* 镜头 id 唯一闸:normShot 透传 raw.id(整表导出改完再导回时,视频/审片/确认态按 id 认领原镜),
-     * 但同 id 两行落库后这张表就散了——findShot/shot-set/审片回写全按 id 取首行,第二行再也寻不着,
+     * 但同 id 两行落库后这张表就散了——findShot/shot-set 全按 id 取首行,第二行再也寻不着,
      * 而点名子集是按行筛的(ids.has(s.id)),点名一次两行都跑,一个 id 收两笔视频钱、写回的还是首行。
      * 撞上表内已有或本次已分配的 id 就改发新 id(口径同 Store.trashRestore 的 id 冲突改名),并如实报出改了几镜。 */
     const taken = new Set(f.append ? (ep.shots || []).map(s => s.id) : []);
@@ -820,10 +820,13 @@ const dedupeShotScan = shots => {
 };
 /* 存量重复镜头 id 的显式去重出口:用户主动跑,不挂在任何保存路径上偷偷改。
  * 逃生舱 state-put 与 PUT /api/state 都不设闸(那是刻意的,理由见文件末逃生舱那段),灌进来的同 id 多镜就在库里躺着:
- * findShot/shot-set/审片回写全按 id 取首行,后面几行结构性够不着;而两端选人闸按行筛(ids.has(s.id)),
+ * findShot/shot-set 全按 id 取首行,后面几行结构性够不着;而两端选人闸按行筛(ids.has(s.id)),
  * 点名一个 id 跑一次批量,表里重复几行就登记几笔钱——本命令是把这批存量收拾干净的那条路。
- * 引用面有意一个字不动:lastReview.perShot[].shotId / ep.uiSel / Domain.reviseTargets 一律按 find 首行语义解析,
- * 而首行的 id 本就没改,去重前后落到的是同一行;改 id 的只有那些任何引用都指不到的后续行。
+ * 引用面有意一个字不动,而两类引用去重后的处境不同:ep.uiSel 这类按 id 取镜的是 find 首行语义,
+ * 首行的 id 本就没改,去重前后落到的是同一行;lastReview.perShot 那份整集报告按行出条目,
+ * 行对位走 Domain.reviewRows 的序数(第几条同 id = 第几行同 id,重抽面 Domain.reviseTargets 长在它之上),
+ * 同 id 只剩一行之后落在首行之外的那几条会一起退回首行——本命令只改 id、一个字不改报告,
+ * 要让逐行结论回位就在去重后重跑一次整集审片。改 id 的只有那些按 id 引用都指不到的后续行。
  * 纯改分镜表,零上游零 LLM,故不经 Tasks.run、不扣一分钱。 */
 CMD['shots-dedupe'] = async (a, f) => {
   need(a[0] && a[1], '用法:hujing shots-dedupe <pid> <epid> [--apply](默认 dry-run:只报重复 id 与改名计划,一个字不写库)');
@@ -845,7 +848,8 @@ CMD['shots-dedupe'] = async (a, f) => {
     const ep = findEp(proj, a[1]);
     const scan = dedupeShotScan(ep.shots); // 落库前按取到的最新一份重算(计划以真正要写的那棵树为准)
     scan.plan.forEach(x => { ep.shots[x.order].id = x.to; });
-    log(scan.plan.length + ' 镜的 id 与表内在前的行重复,已改发新 id(首行留原 id;引用按首行解析,故 lastReview/uiSel 一个字未动)');
+    log(scan.plan.length + ' 镜的 id 与表内在前的行重复,已改发新 id(首行留原 id;uiSel 那类按 id 取镜的引用仍落到同一行;'
+      + 'lastReview 一个字未动,但整集报告按行序数对位,落在首行之外的逐镜结论会退回首行——回位请重跑整集审片)');
     return {
       episode: ep.id, total: scan.total, unique: scan.unique, duplicates: scan.duplicates,
       applied: true, renamedIds: scan.plan.length, renamed: scan.plan,
@@ -1811,7 +1815,9 @@ const HELP = `虎鲸漫剧 CLI —— 面向 AI 助手与人工的全链路命�
   shots-dedupe <pid> <epid> [--apply]              存量重复镜头 id 去重(默认 dry-run:报哪些 id 重复、
                                                    会改成什么,一个字不写库;--apply 才落,首行留原 id、
                                                    撞车行改发新 id 并回报 renamedIds,口径同 shots-import 那道闸;
-                                                   零上游零计费,lastReview/uiSel 等引用一律不动——它们按首行解析)
+                                                   零上游零计费,lastReview/uiSel 一个字不动——uiSel 那类按 id
+                                                   取镜的仍落到同一行;整集报告按行序数对位,落在首行之外的
+                                                   逐镜结论会退回首行,回位靠去重后重跑整集审片)
   shot-set <pid> <epid> <sid> --patch '{"prompt":"..."}'   单镜字段补丁
   shot-confirm <pid> <epid> <sid> [--off]          确认闸(批量生成只跑已确认镜)
 
