@@ -12,13 +12,9 @@
   const ISSUE_TYPES = ['时间线错乱/穿帮', '角色情绪/动作不符', '运镜/景别偏差', '主体一致性偏差', '画面质感不足'];
   const EN_FIXES = ["'Empty background initially'", "'Telephoto lens, shallow depth of field'", "'consistent character appearance'", "'soft cinematic lighting'", "'slow push-in camera movement'", "'background characters blurry'"];
 
-  const fmt = s => String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(Math.floor(s % 60)).padStart(2, '0');
-  // 分镜在全集中的时间码区间(按 duration 累计)
-  function shotTimeRange(ep, s) {
-    let start = 0;
-    for (const x of ep.shots) { if (x.id === s.id) break; start += (window.SB && SB.estShotDuration ? SB.estShotDuration(x) : (x.duration || 5)); }
-    return fmt(start) + ' - ' + fmt(start + (window.SB && SB.estShotDuration ? SB.estShotDuration(s) : (s.duration || 5)));
-  }
+  // 分镜在全集中的时间码区间(按 duration 累计):实现在 wf-core.js 一份,
+  // 时长与行对位两端同口径(SB.estShotDuration 本就委托 Domain.estShotDuration)
+  const shotTimeRange = (ep, s) => WfCore.shotTimeRange(ep, s);
 
   /* ================= 评审调用 ================= */
   /* 二十一轮:单镜评审提示词拼装下沉 wf-core.js(双端单一来源,逐字节一致);
@@ -157,7 +153,8 @@
     }
     // KB 景别衔接检查:与上一镜同级/相邻(无递进)或两极对切(缺过渡)记轻微问题;
     // 级差经 WfCore.sizeGap 取自 wf-core.js 景别阶梯(词表单源),六档全覆盖,-1=任一端不在阶梯上不判定
-    const shotIdx = (ep.shots || []).findIndex(x => x.id === s.id);
+    // 上一镜按行对位取(Domain.rowIndexOf):同 id 多行时按 id 取首行,后几行比的一律是首行的上一镜
+    const shotIdx = Domain.rowIndexOf(ep.shots || [], s);
     const prevShot = shotIdx > 0 ? ep.shots[shotIdx - 1] : null;
     const curSize = (s.cameraSpec || {}).shotSize, prevSize = (prevShot && prevShot.cameraSpec || {}).shotSize;
     const gap = WfCore.sizeGap(prevSize, curSize);
@@ -239,7 +236,7 @@
   const chipCls = v => v >= 8 ? '' : v >= 6 ? 'mid' : 'low';
 
   function reportModalHTML(p, ep, s, r) {
-    const epIdx = (p.episodes || []).findIndex(e => e.id === ep.id) + 1;
+    const epIdx = Domain.rowIndexOf(p.episodes || [], ep) + 1; // 集号同按行对位:同 id 多集时按 id 取首集会把集号报成第一集
     const modeName = { vision: '视觉模型连图审', text: '文本模型', local: '本地模拟' }[r.mode] || r.mode;
     return `
     <div class="rv-head">
@@ -614,14 +611,16 @@
   /* ---- 整集报告视图 ---- */
   function openEpisodeReport(p, ep, main, reports) {
     // 八轮:按 reportId 精确恢复参与报告(不再读 s.reviews[0]——镜头重新审片后旧整集报告会混入新单镜报告);
-    // 报告对象已被挤出最近 5 条时,该镜标"原报告已缺失"(得分仍按 perShot 快照展示)
+    // 报告对象已被挤出最近 5 条时,该镜标"原报告已缺失"(得分仍按 perShot 快照展示)。
+    // 逐镜条目落到哪一行取 Domain.reviewRows(与写回侧 WfCore.mergeReviewPerShot 同一套行对位):
+    // 按 shotId find 首行时,同 id 后几行的报告一律去首行那一行的 reviews 里找——各自那份 reportId
+    // 在那儿取不回来,于是几行同报"原报告已缺失",而首行那一条被重复读成好几镜的结论。
     const missing = [];
-    reports = reports || (ep.lastReview ? ep.lastReview.perShot.map(ps => {
-      const s = ep.shots.find(x => x.id === ps.shotId);
-      if (!s) return null;
-      const rep = (s.reviews || []).find(r => r.id === ps.reportId);
-      if (!rep) { missing.push(ps); return null; }
-      return { shot: s, report: rep };
+    reports = reports || (ep.lastReview ? Domain.reviewRows(ep).map(t => {
+      if (!t.shot) return null;
+      const rep = (t.shot.reviews || []).find(r => r.id === t.ps.reportId);
+      if (!rep) { missing.push(t.ps); return null; }
+      return { shot: t.shot, report: rep };
     }).filter(Boolean) : []);
     if (!reports.length || !ep.lastReview) return U.toast('暂无整集审片数据,请先执行整集审片', 'error');
     const lr = ep.lastReview;
@@ -645,8 +644,8 @@
       </div>
       <div class="card" style="margin-top:14px;padding:14px">
         <b>各镜得分</b>
-        ${reports.map(x => `
-        <div class="rv-bar-row" data-jump="${x.shot.id}" data-rid="${x.report.id}">
+        ${reports.map((x, i) => `
+        <div class="rv-bar-row" data-jump="${i}">
           <span class="small" style="width:52px;flex:none">镜头 ${x.shot.order + 1}</span>
           <div class="rv-bar-track"><div class="rv-bar-fill ${x.report.score < Domain.REVIEW_MIN ? 'low' : ''}" style="width:${x.report.score * 10}%"></div></div>
           <b style="width:34px;text-align:right;color:${x.report.score >= 8 ? 'var(--green)' : x.report.score >= Domain.REVIEW_MIN ? 'var(--yellow)' : 'var(--red)'}">${x.report.score.toFixed(1)}</b>
@@ -686,12 +685,13 @@
       onMount(m, close) {
         m.querySelector('[data-x=close]').onclick = close;
         m.querySelectorAll('[data-jump]').forEach(row => row.onclick = () => {
-          const s = ep.shots.find(x => x.id === row.dataset.jump);
-          // 八轮:按整集报告记录的 reportId 打开当时的报告(而非最新一条,防"重新审片后旧整集报告混入新结论")
-          const rep = s && (s.reviews || []).find(r => r.id === row.dataset.rid);
-          if (!rep) return U.toast('该镜原报告已缺失(可能被后续审片挤出最近记录),可重新审片生成', 'error');
+          /* 行号即上面那份清单的下标:哪一行、当时哪一份报告已经按行对位取好了(八轮起就按整集报告
+           * 记录的 reportId 取,而非最新一条,防"重新审片后旧整集报告混入新结论")。
+           * 这里若再按 shotId find 一次,同 id 后几行的入口会一律跳回首行那一镜。 */
+          const x = reports[+row.dataset.jump];
+          if (!x || !x.report) return U.toast('该镜原报告已缺失(可能被后续审片挤出最近记录),可重新审片生成', 'error');
           close();
-          openReport(p, ep, s, main, rep);
+          openReport(p, ep, x.shot, main, x.report);
         });
         m.querySelector('[data-x=export]').onclick = () => {
           const lines = [`整集审片报告 · ${p.name} / ${ep.title}`, '='.repeat(40), `整集均分:${lr.avg}/10 · ${lr.time}`, '',

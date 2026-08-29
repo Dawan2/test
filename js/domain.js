@@ -649,6 +649,32 @@
    * 那是交付前的更严门禁;本常量只管主线推导,双端同值不读 Store) */
   D.REVIEW_MIN = 7;
 
+  /* ---- 同 id 多行的行对位(编排面与展示面同一套序数口径,双端单源) ----
+   * 分镜表里同 id 多行是存量实况(去重另有一条命令收拾),而按 id 取首行的取法会把后几行的
+   * 产物、分数、时间码一律算到首行头上。两种取法在这里定死,消费方不各写一份:
+   *   rowIndexOf(rows, item):手上就是那一行的对象时按对象身份定位(不是同一棵树上的对象时
+   *     退回按 id 首行,与 nthShot 的兜底同口径,不算出 -1 把这一条整个丢掉);
+   *   reviewRows(ep):手上只有 lastReview.perShot 条目时,按"第几条同 id = 第几行同 id"落行,
+   *     序数在整份 perShot 上数(与写回侧 WfCore.mergeReviewPerShot 同一套),同 id 的行不够数时退回首行。
+   * reviewRows 只做对位不做筛选:达标线/判旧/定稿那几道判在 reviseTargets 里,展示面另有自己的取用。 */
+  D.rowIndexOf = function (rows, item) {
+    const list = rows || [];
+    const i = list.indexOf(item);
+    return i >= 0 ? i : list.findIndex(x => x && item && x.id === item.id);
+  };
+  D.reviewRows = function (ep) {
+    const shots = (ep && ep.shots) || [];
+    const rowsOf = Object.create(null); // id → 该 id 各行的实位下标
+    shots.forEach((s, i) => { (rowsOf[s.id] = rowsOf[s.id] || []).push(i); });
+    const seen = Object.create(null);
+    return ((((ep && ep.lastReview) || {}).perShot) || []).map(ps => {
+      const nth = (seen[ps && ps.shotId] = (seen[ps && ps.shotId] || 0) + 1) - 1;
+      const rows = (ps && rowsOf[ps.shotId]) || [];
+      const i = rows.length ? (rows[nth] !== undefined ? rows[nth] : rows[0]) : -1;
+      return { ps, nth, i, shot: i >= 0 ? shots[i] : null };
+    });
+  };
+
   /* 修订循环重抽面(审片修订闭环 SK-25 的编排入参,双端单源):
    * 从整集审片报告推导"下一轮该修订重抽哪几镜"——判据 = 最近一份报告里低于达标线 REVIEW_MIN 的镜,
    * 与当前分镜表取交集(报告写下之后被删掉的镜不出面),已定稿镜不出面(定稿不重抽,与可审镜口径一致)。
@@ -659,24 +685,16 @@
    * 整集审片是按行出报告的,perShot 上同 id 有几条就是几行各自的分与 reportId;
    * 全用 findIndex 首行会让这几条一律指向首行——展示上几镜都报"镜 1",
    * 回写侧(CLI produce 修订)则是几笔优化钱全改首行那一句提示词,后几行的低分片子照旧没人动。
-   * 序数在整份 perShot 上数、不在低分子集上数:只数低分那几条会在"首行达标被筛掉"时整体错位。
-   * 同 id 的行不够数时退回首行(与 nthShot 的越界口径逐字相同)。 */
+   * 行对位取 D.reviewRows(序数在整份 perShot 上数、不在低分子集上数:只数低分那几条会在
+   * "首行达标被筛掉"时整体错位;同 id 的行不够数时退回首行),本处只在其上加达标线/交集/定稿三道筛。 */
   D.reviseTargets = function (ep) {
     if (!ep || !ep.lastReview || D.reviewStaleByScript(ep)) return [];
     const shots = ep.shots || [];
-    const rowsOf = Object.create(null); // id → 该 id 各行的实位下标
-    shots.forEach((s, i) => { (rowsOf[s.id] = rowsOf[s.id] || []).push(i); });
-    const seen = Object.create(null);
-    return (ep.lastReview.perShot || [])
-      .map(x => {
-        const nth = (seen[x && x.shotId] = (seen[x && x.shotId] || 0) + 1) - 1;
-        const rows = (x && rowsOf[x.shotId]) || [];
-        return { x, nth, i: rows.length ? (rows[nth] !== undefined ? rows[nth] : rows[0]) : -1 };
-      })
-      .filter(t => t.x && typeof t.x.score === 'number' && t.x.score < D.REVIEW_MIN)
+    return D.reviewRows(ep)
+      .filter(t => t.ps && typeof t.ps.score === 'number' && t.ps.score < D.REVIEW_MIN)
       .filter(t => t.i >= 0 && !shots[t.i].final)
       .sort((a, b) => a.i - b.i)
-      .map(t => ({ shotId: t.x.shotId, order: t.i + 1, score: t.x.score, reportId: t.x.reportId || '', nth: t.nth }));
+      .map(t => ({ shotId: t.ps.shotId, order: t.i + 1, score: t.ps.score, reportId: t.ps.reportId || '', nth: t.nth }));
   };
   /* 修订循环重抽子集参数:episode.generateVideos / episode.smartReview 的 shotIds 由本函数派生 */
   D.reviseShotIds = ep => D.reviseTargets(ep).map(t => t.shotId);
