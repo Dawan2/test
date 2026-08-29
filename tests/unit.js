@@ -13427,7 +13427,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 277;
+    const FLOOR = 278;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
@@ -15003,7 +15003,7 @@ const skillsTests = [
     const head = dur(rows[0]) + dur(rows[1]);
     assertEq(rv.issues.map(i => i.timeRange).filter((v, i, a) => a.indexOf(v) === i).join(','),
       f(head) + ' - ' + f(head + dur(rows[2])), '时间码起点应累到本行之前(按 id 断在首行时只累了第一镜)');
-    const link = rv.issues.filter(i => /上一镜景别/.test(i.analysis));
+    const link = rv.issues.filter(i => /上一镜/.test(i.analysis));
     assertEq(link.length, 1, '景别衔接结论应恰有一条');
     assert(link[0].analysis.includes('与上一镜景别相同(特写)'),
       '上一镜是同为特写的第二行,不是首行的上一镜大全景(那会报成两极对切):' + link[0].analysis);
