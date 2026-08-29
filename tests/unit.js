@@ -2490,15 +2490,29 @@ function loadRoles() {
   return sb;
 }
 /* 极简 DOM 桩:innerHTML 存渲染产物(页面上长没长出那个按钮就读它),
- * querySelector 惰性造节点(同一选择器取到同一个,handler 绑上就点得着),querySelectorAll 回空
- * ——卡片级那几圈绑定不在本层驱动。弹窗与页面同用这一份。 */
+ * querySelector 惰性造节点(同一选择器取到同一个,handler 绑上就点得着;节点带 scrollIntoView——
+ * 真 DOM 上每个元素都有它,缺了会让定位那一路在 setTimeout 里异步炸),
+ * querySelectorAll 按 innerHTML 现取(与 projDom 同一套:卡片级那几圈绑定由渲染产物自己出节点、
+ * dataset 照标记上写的值填,重渲一遍取到的就是新那一批)。弹窗与页面同用这一份。 */
 function roleDom() {
   const nodes = {};
-  return {
+  const leaf = () => ({ value: '', style: {}, dataset: {}, onclick: null, closest: () => null, scrollIntoView() {} });
+  const dom = {
     innerHTML: '', value: '', style: {}, dataset: {}, onclick: null,
-    querySelector: sel => (nodes[sel] = nodes[sel] || { value: '', style: {}, dataset: {}, onclick: null, closest: () => null }),
-    querySelectorAll: () => [],
+    querySelector: sel => (nodes[sel] = nodes[sel] || leaf()),
+    querySelectorAll(sel) {
+      const m = /^\[data-([a-z-]+)\]$/.exec(sel);
+      if (!m) return [];
+      const key = m[1].replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      return [...String(dom.innerHTML).matchAll(new RegExp('data-' + m[1] + '="([^"]*)"', 'g'))].map(x => {
+        const k = sel + '::' + x[1];
+        const n = (nodes[k] = nodes[k] || leaf());
+        n.dataset[key] = x[1];
+        return n;
+      });
+    },
   };
+  return dom;
 }
 /* 分集工作区 Views.episode:四视图(分镜脚本/分镜视频/节拍板/镜头组)与剪辑台共用集级顶栏那一行,
  * "哪几条进来的路看得见入口"只有真渲一遍才量得出,故把渲染路径上的全局按 index.html 那个顺序补齐;
@@ -3943,6 +3957,85 @@ const commandsTests = [
     assertEq((skel.match(/dupSeatTag\(dupMarks, p\.subjects\.indexOf\(s\)\)/g) || []).length, 1,
       '卡片这一端按"这一位在整库里排第几"取标记(拿 tab 过滤后那张表的下标取就会错位,'
       + '角色 tab 上第 3 位在全库里可能是第 5 位)');
+  } },
+  { name: '主体库卡片那枚小标点得动:后续那几位点自己那枚定位到留原 id 的第 1 位那张卡,第 1 位在别的分类下时先切 tab 再定位(纯跳转零写库)', fn() {
+    /* 上一条把"是哪几张卡撞了"标了出来,而标出来之后用户的下一句是"第 1 位长什么样"——
+     * 按 id 取主体落到的就是那一位,而卡片上看得见的只有名字与设定,撞的那个 id 一个像素都不显。
+     * 小标只报位次的话那一位仍得自己翻:同一分类下要一张张找,分散在别的分类下时压根翻不到
+     * (说明里只提了一句"可能分散在不同分类下")。本条钉的就是那一格——后续那几位的小标点得动、
+     * 落点是留原 id 的第 1 位那张卡,跨分类那一位先切 tab 再定位(不切的话本 tab 上渲不出它)。
+     * 三件分寸一并钉住:落点序号只从同一份位次表上取(与位次同一套序,两份数法一漂就跳到别的一位上,
+     * 而用户以为看的是引用会落到的那一位);第 1 位自己那一枚不挂跳转(跳自己是一句废话);
+     * 纯导航——点几下都不写库、不扣一分钱,收拾存量仍走页头那道预览 + 确认闸。 */
+    const sb = loadRoles();
+    const p = {
+      id: 'p1', name: '脏剧',
+      subjects: [
+        { id: 'dup', name: 'A-场景那一位', kind: 'scene', image: 'a.png' },
+        { id: 'solo', name: 'B-不重复', kind: 'character', image: 'b.png' },
+        { id: 'dup', name: 'C-第二位', kind: 'character', image: 'c.png' },
+        { id: 'dup', name: 'D-第三位', kind: 'character', image: 'd.png' },
+        { id: 'two', name: 'E-同分类首位', kind: 'character', image: 'e.png' },
+        { id: 'two', name: 'F-同分类第二位', kind: 'character', image: 'f.png' },
+      ],
+      episodes: [],
+    };
+    sb.__proj = p;
+    const saves = sb.Store._saves;
+    const main = roleDom();
+    sb.Views.roles(main, 'p1');
+    // ① 落点写在小标上,按整库序号点名:同一组那几位一律指向留原 id 那一位(它在别的分类下也照指)
+    const jumps = [...String(main.innerHTML).matchAll(/data-dupjump="(\d+)"[^>]*>🧹 id 重复 第 (\d+\/\d+) 位/g)]
+      .map(m => m[2] + '→' + m[1]);
+    assertEq(jumps.join(' | '), '2/3→0 | 3/3→0 | 2/2→4',
+      '后续那几位各挂一条跳转、落点是本组留原 id 那一位在整库里的序号(角色 tab 上那两位指的是场景那一位),实际:'
+      + JSON.stringify(jumps));
+    assert(!/data-dupjump="[^"]*"[^>]*>🧹 id 重复 第 1\//.test(main.innerHTML),
+      '留原 id 那一位自己就是落点,它那一枚不许挂跳转(跳到自己身上是一句废话),实际:'
+      + (main.innerHTML.match(/<span class="tag yellow"[^>]*>🧹 id 重复 第 1[^<]*<\/span>/) || [''])[0]);
+    assert(/data-dupjump="0"[^>]*style="cursor:pointer"[^>]*title="[^"]*定位到第 1 位那张卡[^"]*"/.test(main.innerHTML),
+      '点得动这件事得让人看得出来:光标形状与那句说明各说一遍(现网 data-epdup 那几枚同形),实际:'
+      + (main.innerHTML.match(/<span class="tag yellow" data-dupjump[^>]*>/) || [''])[0]);
+    assertEq([...String(main.innerHTML).matchAll(/data-seat="(\d+)"/g)].map(m => m[1]).join(','), '1,2,3,4,5',
+      '卡片上那个落点号按整库算(角色 tab 上渲的是全库第 2–6 位,按 tab 过滤后那张表的下标写就成了 0–4,'
+      + '跳过去落到的是另一张卡),实际:' + JSON.stringify([...String(main.innerHTML).matchAll(/data-seat="(\d+)"/g)].map(m => m[1])));
+    const chip = v => main.querySelectorAll('[data-dupjump]').find(n => n.dataset.dupjump === v);
+    // ② 同分类那一跳:定位到第 1 位那张卡,tab 不换、也不多说一句话
+    let stopped = 0;
+    chip('4').onclick({ stopPropagation() { stopped++; } });
+    assertEq(main.querySelector('[data-seat="4"]').style.outline, '2px solid var(--accent)',
+      '点小标须定位到第 1 位那张卡(短暂高亮 + 滚到屏中),实际:' + JSON.stringify(main.querySelector('[data-seat="4"]').style));
+    assert(/E-同分类首位/.test(main.innerHTML) && !/A-场景那一位/.test(main.innerHTML), '同分类那一跳不许把 tab 换掉');
+    assertEq(sb.__toasts.length, 0, '没换分类就别多一句话(整屏卡片没变,提示是噪音),实际:' + JSON.stringify(sb.__toasts));
+    // ③ 跨分类那一跳:先切到第 1 位所在的分类 tab 再定位,并把"整屏换了一批"说出来
+    chip('0').onclick({ stopPropagation() { stopped++; } });
+    assert(/A-场景那一位/.test(main.innerHTML) && !/C-第二位/.test(main.innerHTML),
+      '第 1 位在「场景」分类下,点小标须先把 tab 切过去(不切的话本 tab 上压根渲不出那张卡,而跨分类那一位翻不到正是这条跳转要收的那一格)');
+    assertEq(main.querySelector('[data-seat="0"]').style.outline, '2px solid var(--accent)', '切完 tab 还得真定位到那张卡上');
+    assert(/第 1\/3 位/.test(main.innerHTML), '落点那张卡上挂的正是同一组的第 1 位(跳的不是别的一位)');
+    assert(sb.__toasts.join(' | ').includes('在「场景」分类下'),
+      '跨分类那一跳得说一句是切到哪个分类(整屏卡片换了一批,不说的话读不出刚才发生了什么),实际:' + JSON.stringify(sb.__toasts));
+    assertEq(stopped, 2, '两次点击都得 stopPropagation:小标坐在卡片那一行上,冒上去会被别的点击口接走,实际:' + stopped);
+    // ④ 纯导航:跳了两趟,一个字没写库、一笔任务一分钱都没有,库里的 id 一个没被顺手改掉
+    assertEq(sb.Store._saves, saves, '跳转是纯导航:点几下都不许写库(收拾存量仍走页头那道预览 + 确认闸)');
+    assertEq(sb.__tasks.length + sb.__charges.length, 0, '跳转零上游零 LLM:不许登记任务也不许扣一分钱,实际:'
+      + JSON.stringify({ tasks: sb.__tasks, charges: sb.__charges }));
+    assertEq(p.subjects.map(s => s.id).join(','), 'dup,solo,dup,dup,two,two', '跳完库里一个 id 都不许变');
+    // ⑤ 源级:落点序号只从同一份位次表上取,定位那一下也只有一处
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'roles.js'), 'utf8');
+    const skel = blankNonCode(src, true);
+    assert(skel.includes('Domain.dupIdKeepOrder('),
+      '落点那个序号须从同一份位次表上现取(Domain.dupIdKeepOrder):页面自己再翻一遍"谁是首位",'
+      + '与位次就是两套算法,跳过去的可能是别的一位');
+    const i = src.indexOf('function dupSeatTag(');
+    assert(i >= 0, 'js/roles.js 找不到「function dupSeatTag(」(挪窝或改名就同轮改这里,别把本条留成恒真)');
+    const tag = blankNonCode(src.slice(i).split('\n  }')[0], true);
+    assertEq((tag.match(/Object\.keys\(|\.find\(|\.filter\(|p\.subjects/g) || []).length, 0,
+      '小标那一段不许自己翻表找首位(位次与落点同读派生那一份):' + tag);
+    assertEq((skel.match(/card\.scrollIntoView\(/g) || []).length, 1,
+      '定位那一下(高亮 + 滚到屏中)只许有一处:分集页主体 tag 那条跳转与小标这条同读它,各写一份迟早两处落点动作不一样');
+    assertEq((skel.match(/data-seat="\$\{p\.subjects\.indexOf\(s\)\}"/g) || []).length, 1,
+      '卡片按"这一位在整库里排第几"认(按 id 认的话,同 id 那几位在本 tab 上取到的永远是最靠前那一张)');
   } },
   { name: '分镜面那条去重入口:四视图与剪辑台共用的集级顶栏上真长出来,点开只预览、确认那一下才改 id(一行不删、零计费;uiSel 与镜头组落到同一行,旧审片报告那几条退回首行只报不改)', fn() {
     /* 镜头侧那条命令此前只在 CLI/MCP 上:同 id 多行在分镜表里与两个不同镜头长得一模一样,
@@ -7509,6 +7602,45 @@ const domainTests = [
     assertEq(JSON.stringify(D.dupIdMarks({ duplicates: [{ id: 'a', n: 2 }], plan: [{ order: 1, from: 'a', to: 'z' }] })), '{}',
       '缺首处序号的那一组数不出位次,整组一处不标(留个 undefined 格子会渲成一枚谁也对不上的小标)');
   } },
+  { name: 'dupIdKeepOrder:留原 id 那一处排在第几号只从位次表上取——按序号升序、取不到回 -1,与扫描那份 keepOrder 逐组相同', fn: () => {
+    /* 位次表按序号取、答的是"这一处是第几处",答不出"第 1 处在哪一格";而卡片那一端读到「第 2/3 位」
+     * 之后要跳的正是第 1 处那一格——按 id 取到的就是那一处,而卡片上看得见的只有名字与设定。
+     * 这一层补的就是那一句,同一份表、同一套序:各页面自己再翻一遍"谁是首位"的话,
+     * 两份数法一漂跳过去的就是别的一处,而用户以为看的是引用会落到的那一位。 */
+    const sb = loadDomain();
+    const D = sb.Domain;
+    let n = 0;
+    const rows = [{ id: 'a' }, { id: 'b' }, { id: 'a' }, { id: 'c' }, { id: 'b' }, { id: 'a' }];
+    const scan = D.dupIdScan(rows, () => 'new' + (++n));
+    const marks = D.dupIdMarks(scan);
+    assertEq(['a', 'b'].map(id => id + ':' + D.dupIdKeepOrder(marks, id)).join(' '), 'a:0 b:1',
+      '每组回的是本组第 1 处那个序号,实际:' + JSON.stringify(marks));
+    assertEq(typeof D.dupIdKeepOrder(marks, 'a'), 'number',
+      '回的得是数字序号:表的键是字符串,原样带出去时调用方拿它与自己那个下标严格比就永远不等(第 1 处那一枚会跟着挂上跳自己的跳转)');
+    // 与扫描那一份 keepOrder 逐组相同:两处不是两套序(位次、计划与落点同一套)
+    scan.duplicates.forEach(d => assertEq(D.dupIdKeepOrder(marks, d.id), d.keepOrder,
+      d.id + ':落点须与扫描里留原 id 那一处是同一号(两套序一漂,卡片上跳过去的就不是预览里留下的那一位)'));
+    assertEq(D.dupIdKeepOrder(marks, 'c'), -1, '没撞车的那一处压根不在表里:回 -1,调用方那一枚小标就不挂跳转');
+    assertEq(D.dupIdKeepOrder(marks, 'zzz'), -1, '表里没有的 id 同样回 -1(不许拿 NaN 或 undefined 当序号带出去)');
+    // 手攒的表里冒出两处第 1 时按序号升序取:落点得是定的,不许跟着对象字面量的写法走
+    assertEq(D.dupIdKeepOrder({ 5: { id: 'a', nth: 1, total: 2 }, 2: { id: 'a', nth: 1, total: 2 } }, 'a'), 2,
+      '同一 id 有两处第 1 时取靠前那一处(按序号升序,不是按写在前面那一处)');
+    // 缺 id 的那几处照同一套取(与 dupIdScan 同口径:第二处缺 id 的也是撞车)
+    let k = 0;
+    const holes = D.dupIdMarks(D.dupIdScan([{}, { id: 'a' }, {}], () => 'h' + (++k)));
+    assertEq(D.dupIdKeepOrder(holes, undefined), 0, 'id 缺着的那一组照同一套取(缺 id 不等于没撞车),实际:' + JSON.stringify(holes));
+    // 脏入参一律回 -1 且不抛(渲染那一层拿到什么都得渲得出来)
+    [undefined, null, 'a', 0, [], { 0: null }, { 0: { id: 'a' } }].forEach(bad => {
+      let out;
+      try { out = D.dupIdKeepOrder(bad, 'a'); }
+      catch (e) { assert(false, '脏入参不许抛:' + JSON.stringify(bad) + ' → ' + e.message); }
+      assertEq(out, -1, '脏入参一律回 -1:' + JSON.stringify(bad));
+    });
+    // 纯派生:入参一个字段都不改(跳转那一路一个字不写库,这一层连传进来的表都不碰)
+    const snap = JSON.stringify(marks);
+    D.dupIdKeepOrder(marks, 'a');
+    assertEq(JSON.stringify(marks), snap, 'dupIdKeepOrder 不许改入参');
+  } },
   { name: 'dupCopy:同 id 重复那句说明只有一份模板——三种形态各按单位词换词,调用方只注入引用面/收拾入口/数', fn: () => {
     /* 上两条钉的是数怎么来的,这一条钉的是那个数怎么说出去。那几枚角标是纯展示,分量全压在悬停那句
      * 说明上——它得说清撞了几处、代价是什么、去哪儿收拾。这句话此前十处各写一份同构句(主体卡片那枚
@@ -10727,6 +10859,10 @@ const GUARD_TOPICS = [
     why: '主体库卡片上那枚「第几位 / 共几位」小标的位次只从页头那一份扫描派生(Domain.dupIdMarks 收下同一个结果),'
       + '页面不再扫第二遍:各扫一遍时卡片上标的第几位与预览里改的那一位就是两套算法,'
       + '而"哪几张卡撞了 id"与"确认那一下改哪几位"正是用户一起读的两句话' },
+  { id: 'dedupe-card-jump-keep', anchors: ['Domain.dupIdKeepOrder(', 'data-dupjump'],
+    why: '主体库卡片那枚小标的跳转落点(留原 id 的第 1 位排在整库第几号)只从同一份位次表上取,'
+      + '页面不再翻一遍"谁是首位":位次、改名计划与落点是同一套序,各数一套时卡片上跳过去的就不是'
+      + '预览里留下的那一位——而"第 1 位长什么样"正是用户读到「第 2/3 位」之后要问的下一句' },
   { id: 'dedupe-shot-card-mark', anchors: ['Domain.dupIdMarks(dupScan)', 'function dupRowTag('],
     why: '分镜卡片上那枚「第几行 / 共几行」小标的位次只从顶栏那一份扫描派生(Domain.dupIdMarks 收下同一个结果),'
       + '整页只扫一遍分镜表:各扫一遍时卡片上标的第几行与预览里改的那一行就是两套算法,'
@@ -10764,7 +10900,7 @@ const GUARD_TOPICS = [
  *   3. 销号必须显式落笔——编号搬进 GUARD_TOPICS_CLOSED 并写下闭合理由,锚点原样搬过来,
  *      好让"这道护栏是真没了,还是被别的主题接手了"事后仍判得出来。
  * 有意不禁新登记主题:在册多出花名册没有的号一条不红,加主题照旧只改上面那张表。 */
-const TOPIC_FLOOR = 28;
+const TOPIC_FLOOR = 29;
 const GUARD_TOPICS_CLOSED = [
   /* 形状:{ id: '主题编号', anchors: [原样搬过来], why: '这道护栏原本守什么',
    *        closed: '为什么可以不守了(被守的那一面已不存在 / 判据并进了哪一条)',
@@ -14968,7 +15104,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-      [['单元测试', 715, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+      [['单元测试', 717, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -15376,7 +15512,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 313;
+    const FLOOR = 314;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接

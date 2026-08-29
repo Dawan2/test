@@ -295,7 +295,10 @@
    * 那一份模板(四屏那几枚角标同读它),这一层只注入单位词(位)、引用的是主体库这一面与收拾入口。
    * 共几位是全库口径:同 id 那几位分散在不同分类 tab 下时,本 tab 上只看得见其中几张而总数照全库报。
    * 模板回的是纯文本(它不认识 DOM),故整句在这里转义一次——id 是用户数据,原样进 title 就是个注入口。
-   * 纯展示,不改任何字段:收拾它仍走页头那道预览 + 确认闸。 */
+   * 后续那几位的小标还兼一条跳转:点它定位到留原 id 的第 1 位那张卡(按 id 取主体落到的就是那一位,
+   * 而卡片上看得见的只有名字与设定,撞的那个 id 看不见)。第 1 位自己那一枚不挂跳转(它就是落点),
+   * 落点序号只从同一份位次表上取(Domain.dupIdKeepOrder),这一层不另攒一份"谁是首位"的记账。
+   * 纯展示 + 纯导航,不改任何字段:收拾它仍走页头那道预览 + 确认闸。 */
   function dupSeatTag(marks, seat) {
     const mk = marks[seat];
     if (!mk) return '';
@@ -304,7 +307,10 @@
       scope: '主体库', scopeNote: '(可能分散在不同分类下,本页只看得见其中几位)',
       entry: '页头「🧹 主体 id 去重」',
     });
-    return `<span class="tag yellow" title="${U.esc(c.title)}">${c.label}</span>`;
+    const keep = Domain.dupIdKeepOrder(marks, mk.id);
+    const jump = keep >= 0 && keep !== seat;
+    const hint = jump ? c.title + '点这枚小标定位到第 1 位那张卡(在别的分类下就先切过去),纯跳转不改任何字段。' : c.title;
+    return `<span class="tag yellow"${jump ? ` data-dupjump="${keep}" style="cursor:pointer"` : ''} title="${U.esc(hint)}">${c.label}</span>`;
   }
   /* 去重弹窗:开弹窗只预览(算出计划,一个字不写库),按下确认那一下才落库——与 CLI 的 dry-run / --apply 两档同形。
    * 落库前按当下那棵树重算一遍(计划以真要写的这一份为准,新 id 现发,故预览里那批只是示意值)。
@@ -364,6 +370,17 @@
       const f = p.subjects.find(x => x.id === window.__roleFocus);
       if (f) tab = f.kind;
     }
+    /* 定位到整库第 seat 位那张卡:短暂高亮 + 滚到屏中。两条跳转同读这一处(分集页主体 tag 那条、
+     * 卡片小标"跳到第 1 位"那条),落点动作不各写一份;卡片按 data-seat 认(同 id 那几位的 id 撞在一起,
+     * 按 id 取只取得到本 tab 里最靠前那张)。那一位不在当前分类 tab 时取不到卡片,由调用方先切 tab。 */
+    function focusSeat(seat) {
+      const card = main.querySelector(`[data-seat="${seat}"]`);
+      if (!card) return;
+      card.style.outline = '2px solid var(--accent)';
+      card.style.boxShadow = '0 0 0 4px rgba(124,92,255,.18)';
+      setTimeout(() => { card.style.outline = ''; card.style.boxShadow = ''; }, 2200);
+      setTimeout(() => card.scrollIntoView({ behavior: 'smooth', block: 'center' }), 60);
+    }
 
     function render() {
       const list = p.subjects.filter(s => s.kind === tab);
@@ -421,7 +438,7 @@
             const vm = currentViewMode(s);
             const img = viewImg(s, vm);
             return `
-          <div class="card subj-card">
+          <div class="card subj-card" data-seat="${p.subjects.indexOf(s)}">
             <div class="imgbox" data-imgbox="${s.id}" style="cursor:pointer" title="点击打开主体编辑页(精修/配音/定稿)">${img ? `<img src="${U.thumb(img)}" ${vm === 'sheet' ? 'class="sheet"' : ''}>` : '<span class="muted small">未生成图片</span>'}</div>
             <div class="row" style="gap:4px;margin-bottom:8px">
               ${VIEW_MODES.map(m => `<button class="btn ghost sm ${vm === m.key ? 'primary' : ''}" style="flex:1;padding:2px 0;font-size:11px" data-vmode="${s.id}:${m.key}" title="${m.desc}">${m.label}</button>`).join('')}
@@ -448,15 +465,24 @@
       if (window.__roleFocus) {
         const fid = window.__roleFocus;
         window.__roleFocus = null;
-        const box = main.querySelector(`[data-imgbox="${fid}"]`);
-        const card = box && box.closest('.subj-card');
-        if (card) {
-          card.style.outline = '2px solid var(--accent)';
-          card.style.boxShadow = '0 0 0 4px rgba(124,92,255,.18)';
-          setTimeout(() => { card.style.outline = ''; card.style.boxShadow = ''; }, 2200);
-          setTimeout(() => card.scrollIntoView({ behavior: 'smooth', block: 'center' }), 60);
-        }
+        focusSeat(p.subjects.findIndex(x => x.id === fid));
       }
+      /* 卡片小标那条跳转:后续那几位点自己那枚小标,定位到留原 id 的第 1 位那张卡
+       * (按 id 取主体落到的就是那一位)。第 1 位在别的分类下时先切 tab 再定位——不切的话
+       * 本 tab 上压根渲不出那张卡,而"跨分类那一位翻不到"正是这条跳转要收的那一格。
+       * 纯导航:一个字不写库、不扣一分钱,收拾仍走页头那道预览 + 确认闸。 */
+      main.querySelectorAll('[data-dupjump]').forEach(t => t.onclick = e => {
+        e.stopPropagation();
+        const seat = Number(t.dataset.dupjump);
+        const target = p.subjects[seat];
+        if (!target) return;
+        if (target.kind !== tab) {
+          tab = target.kind;
+          render();
+          U.toast(`第 1 位「${target.name}」在「${KIND_NAME[tab]}」分类下,已切过去`, 'info');
+        }
+        focusSeat(seat);
+      });
       /* 从资产库导入主体(与「存入资产库」构成双向流通) */
       main.querySelector('[data-x=importlib]').onclick = () => {
         const lib = Store.myAssets();
