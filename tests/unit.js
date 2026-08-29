@@ -3694,6 +3694,77 @@ const commandsTests = [
     assert(/subjects-dedupe/.test(cliSrc.slice(cliSrc.indexOf('/* ---- 逃生舱'), cliSrc.indexOf("CMD['state-get']"))),
       '逃生舱那段注释须把主体这一侧的收拾办法也点出来(不设闸的那条路得说清两张表各收拾走哪儿)');
   } },
+  { name: 'CLI subject-copy 按 id 点名取的是第 1 位:同 id 多位时源落首位、后几位按 id 够不着(按名字够得着),副本一律重发新 id', fn: async () => {
+    /* 上一条把"按 id 那几处一律 find 首位语义"当成引用面的前提用了,而这条跨项目复制此前树上一条判据都没有:
+     * 取源改成按第几位取、或副本沿用源 id,现跑一条都不红。本条只钉现跑语义、一个字不改它——
+     * 「按 id 点名单位取首位」与批量补图那两档「逐位各跑各的」是两件事(点名一个 id 只复制一位、没有多花的钱,
+     * 见 subject.generateImage 同 id 多位那条),后面几位要点得到,现成的路是按各自的名字点。
+     * 副本重发新 id 这一格同样要钉:沿用源 id 就是把源库那份同 id 多位一路带进目标库,
+     * 而"副本与原件互不牵连"正是这条命令许下的话,形态 id 一并重发才算数。
+     * 落库面读的是 clone 语义的 disk 夹具,PUT /api/state 的桩按服务端那份增量合并口径写
+     * (changes.projects 按 id 覆盖):命令只在自己手里那份快照上改一改也会看起来"落库了",共享同一个对象量不出真假。 */
+    const clone = x => JSON.parse(JSON.stringify(x));
+    const dupSubs = () => [
+      { id: 'dup', name: 'A-首位', kind: 'character', image: '/uploads/img/a.png', prompt: '提示词A', description: '设定A',
+        forms: [{ id: 'fm_a', name: '战损', image: '/uploads/img/fa.png', time: '第3集' }] },
+      { id: 'solo', name: 'B-不重复', kind: 'character', image: '/uploads/img/b.png', prompt: '提示词B' },
+      { id: 'dup', name: 'C-第二位', kind: 'character', image: '/uploads/img/c.png', prompt: '提示词C', description: '设定C' },
+      { id: 'dup', name: 'D-第三位', kind: 'character', image: '/uploads/img/d.png', prompt: '提示词D' },
+    ];
+    const seats = subs => subs.map(s => s.name + '|' + (s.image || '无图')).join(' , ');
+    const twoProj = subs => {
+      const sb = loadCli();
+      const disk = { projects: [{ id: 'p1', subjects: subs, episodes: [] }, { id: 'p2', subjects: [], episodes: [] }], settings: {} };
+      sb.stateGet = async () => ({ rev: 0, state: clone(disk) });
+      sb.api = async (method, url, body) => {
+        assertEq(method + ' ' + url, 'PUT /api/state', 'subject-copy 走的就是这条增量落库端点');
+        const chg = (body && body.changes && body.changes.projects) || {};
+        for (const pid in chg) {
+          const i = disk.projects.findIndex(x => x.id === pid);
+          if (i >= 0) disk.projects[i] = clone(chg[pid]); else disk.projects.push(clone(chg[pid]));
+        }
+        return { rev: 1 };
+      };
+      return { sb, subsOf: pid => (disk.projects.find(x => x.id === pid) || {}).subjects || [] };
+    };
+    // ① 按 id 点名 dup:取到的源是第 1 位,内容逐字段随它走(只对上名字、图却取了后几位这种错法接不住)
+    const fx = twoProj(dupSubs());
+    const r = await fx.sb.CMD['subject-copy'](['p1', 'dup', 'p2'], {});
+    const got = fx.subsOf('p2');
+    assertEq(got.length, 1, '一次点名只落一位到目标库,实际:' + seats(got));
+    assertEq(r.name, 'A-首位', '回执报的源就是第 1 位(findSubject 首位语义),实际:' + JSON.stringify(r));
+    assertEq(got.map(s => s.name + '|' + s.image + '|' + s.prompt + '|' + s.description).join(''),
+      'A-首位|/uploads/img/a.png|提示词A|设定A',
+      '图/提示词/描述都得是第 1 位那一份,不许名字取首位而内容取了后几位,实际:' + JSON.stringify(got));
+    assertEq((got[0].forms || []).map(f => f.name + '|' + f.image).join(','), '战损|/uploads/img/fa.png',
+      '形态随第 1 位那一份走(后几位没有形态,取错位这里就空了):' + JSON.stringify(got[0].forms));
+    assertEq(r.forms, 1, '回执报的形态数与落库那份对得上:' + JSON.stringify(r));
+    // ② 副本是新发的 id:既不沿用源 id,也不与源库任何一位撞车;形态 id 一并重发;源库一个字未动
+    assert(r.id !== 'dup' && /^sj_/.test(r.id),
+      '副本得重发一个新 id(沿用源 id 就是把源库那份同 id 多位一路带进目标库):' + JSON.stringify(r));
+    assertEq(got[0].id, r.id, '回执报的 id 就是落库那位的 id');
+    assert(!fx.subsOf('p1').some(s => s.id === got[0].id),
+      '新 id 不许与源库任何一位撞车(撞上就等于两个项目共用一个寻址键):' + JSON.stringify(fx.subsOf('p1').map(s => s.id)));
+    assert(got[0].forms[0].id !== 'fm_a' && /^fm_/.test(got[0].forms[0].id),
+      '形态 id 同样重发,副本与原件才算互不牵连:' + JSON.stringify(got[0].forms));
+    assertEq(JSON.stringify(fx.subsOf('p1')), JSON.stringify(dupSubs()),
+      '这是复制不是搬家:源库四位逐字段一个都不许被改,实际:' + JSON.stringify(fx.subsOf('p1')));
+    // ③ 后面几位按 id 够不着、按名字够得着:这是现成的绕路,不是缺陷(点名 C 拿到的就是 C 那一份)
+    const fx2 = twoProj(dupSubs());
+    const r2 = await fx2.sb.CMD['subject-copy'](['p1', 'C-第二位', 'p2'], {});
+    assertEq(seats(fx2.subsOf('p2')), 'C-第二位|/uploads/img/c.png',
+      '按名字点名得能取到第 2 位(按名引用那一路不许被收成只认 id),实际:' + seats(fx2.subsOf('p2')));
+    assert(r2.id !== 'dup' && /^sj_/.test(r2.id), '按名点名那一路同样重发新 id:' + JSON.stringify(r2));
+    // ④ 首位缺图、后几位有图时取的仍是第 1 位:选的是"第一位",不是"第一位有图的"
+    const bare = dupSubs();
+    delete bare[0].image;
+    delete bare[0].forms;
+    const fx3 = twoProj(bare);
+    const r3 = await fx3.sb.CMD['subject-copy'](['p1', 'dup', 'p2'], {});
+    assertEq(r3.name, 'A-首位', '首位没图也照旧取首位(挑一个有图的位来复制是另一种语义):' + JSON.stringify(r3));
+    assertEq(seats(fx3.subsOf('p2')), 'A-首位|无图',
+      '取到的既然是没图那一位,副本就得如实没图,不许顺手替用户捡后几位的图:' + seats(fx3.subsOf('p2')));
+  } },
   { name: '两条去重命令同读一份规则:镜头侧与主体侧的扫描都委托 Domain.dupIdScan,首位留原 id 那套口径不许两端各抄一份', fn() {
     /* 主体侧那条出口是照镜头那条写的,而「首次出现留原 id、后面每处撞车各发一个新 id」这套规则一旦各抄一份,
      * 两条命令迟早对同一份脏数据给出两种计划(改哪一位、留哪一位),而用户是照 dry-run 那份点头的。
@@ -15277,7 +15348,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-      [['单元测试', 719, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+      [['单元测试', 720, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -15685,7 +15756,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 325;
+    const FLOOR = 326;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
