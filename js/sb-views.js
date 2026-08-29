@@ -1,6 +1,9 @@
 /* ============ sb-views.js 分集工作区四视图:中栏/右栏 HTML 与交互绑定(拆自 storyboard.js) ============
  * 加载顺序:storyboard.js 之后、sb-gen.js 之前;共享常量/辅助顶部经 window.SB 解构,
- * 生成链路函数(shotVersions/estShotDuration/syncFrames 等)运行时经 window.SBGen 调用。 */
+ * 生成链路函数(shotVersions/estShotDuration/syncFrames 等)运行时经 window.SBGen 调用。
+ * 各弹窗页头上的镜号是给人看的,一律取 Domain.shotNo(ep.shots, s)(分镜表实位),不读会与实位漂移的 s.order;
+ * 故 openPromptHistory/saveShotAsForm/saveShotAsAsset/openMoreTools 都要拿到 ep。
+ * 落库文本(资产入库的默认主体名、便捷工具预填名)与下载名仍按 s.order 记,不随展示面改。 */
 (function () {
   const { blankShot, buildShotPrompt, onEpPage, genAudio, snapshotShot, renderShots, VOICES, PROMPT5_SECS, TRANSITIONS, STRATEGIES } = window.SB;
 
@@ -747,13 +750,13 @@
         AgentRefs.add({ kind: 'shot', pid: p.id, eid: ep.id, id: sel.id, label: `@镜头${selIdx + 1}${sel.name ? '·' + String(sel.name).slice(0, 8) : ''}` });
         if (!ep.agentOpen) { ep.agentOpen = true; Store.save(); Views.episode(main, p.id, ep.id); }
       }
-      else if (act === 'more') openMoreTools(p, sel);
+      else if (act === 'more') openMoreTools(p, ep, sel);
       else if (act === 'artsuffix') openArtSuffix(p, ep, main);
       else if (act === 'bigprompt') openPromptPanel(p, ep, sel, main, true);
       else if (act === 'atref') openAssetPicker(p, ep, sel, main);
       else if (act === 'smartref') smartLinkAssets(p, ep, sel, main);
       else if (act === 'fav') favPrompt(p, ep, sel);
-      else if (act === 'hist') openPromptHistory(sel);
+      else if (act === 'hist') openPromptHistory(ep, sel);
       else if (act === 'vers') SBGen.openVersions(p, ep, sel, main);
       else if (act === 'ptool') openPromptTool(sel, main, p, ep);
       else if (act === 'review') Review.openReport(p, ep, sel, main);
@@ -888,7 +891,7 @@
     const KIND_TXT = { character: '角色', scene: '场景', prop: '道具' };
     let changed = false;
     U.openModal({
-      title: '＠ 引用资产 · 镜头' + (sel.order + 1),
+      title: '＠ 引用资产 · 镜头' + (Domain.shotNo(ep.shots, sel) || '?'),
       wide: true,
       body: `
       <div class="hint" style="margin:0 0 10px">点击资产:名称以「@名称」注入提示词,并关联为该镜参考素材(多图融合策略自动使用;含形态资产)。</div>
@@ -932,7 +935,7 @@
   /* ================= 提示词面板 ================= */
   function openPromptPanel(p, ep, s, main, big) {
     U.openModal({
-      title: (big ? '大屏编辑 · ' : '') + '分镜提示词(镜头 ' + (s.order + 1) + ')',
+      title: (big ? '大屏编辑 · ' : '') + '分镜提示词(镜头 ' + (Domain.shotNo(ep.shots, s) || '?') + ')',
       wide: !big, xl: big,
       body: `
       <label class="field"><span>剧情内容</span><textarea class="input" data-f="plot" rows="${big ? 3 : 2}">${U.esc(s.plot)}</textarea></label>
@@ -991,7 +994,7 @@
           U.toast('已按五段式结构组合,保存后生效', 'success');
         };
         m.querySelector('[data-x=fav]').onclick = () => favPrompt(p, ep, s);
-        m.querySelector('[data-x=hist]').onclick = () => openPromptHistory(s);
+        m.querySelector('[data-x=hist]').onclick = () => openPromptHistory(ep, s);
         m.querySelector('[data-x=tool]').onclick = () => openPromptTool(s, main, p, ep);
         m.querySelector('[data-x=cancel]').onclick = close;
         m.querySelector('[data-x=ok]').onclick = () => {
@@ -1018,10 +1021,10 @@
     U.toast('已收藏到我的收藏', 'success');
   }
 
-  function openPromptHistory(s) {
+  function openPromptHistory(ep, s) {
     const hist = s.promptHistory || [];
     U.openModal({
-      title: '历史提示词(镜头 ' + (s.order + 1) + ')',
+      title: '历史提示词(镜头 ' + (Domain.shotNo(ep.shots, s) || '?') + ')',
       body: hist.length ? hist.map((h, i) => `
         <div class="card" style="margin-bottom:10px;padding:12px">
           <div class="small muted" style="margin-bottom:5px">#${hist.length - i} · ${h.time}</div>
@@ -1090,7 +1093,7 @@
     if (!API.isReady()) return U.toast('按指令改需要配置 LLM(改写提示词),请先登录后端或在「API 设置」配置直连', 'error');
     const cur = (s.video && s.video.status === 'done' && s.video.frame) || s.image || '';
     U.openModal({
-      title: '按指令改 · 镜头' + (s.order + 1),
+      title: '按指令改 · 镜头' + (Domain.shotNo(ep.shots, s) || '?'),
       body: `
       <div class="hint" style="margin-bottom:10px">说一句要改成什么样(如「把背景换成雨夜」「人物换成红裙」「镜头拉远成全景」),AI 结合当前提示词与镜头上下文改写;确认新提示词后可立即重新生成。</div>
       ${cur && !String(cur).startsWith('data:') ? `<div class="ws-thumb-img" style="width:220px;aspect-ratio:16/9;margin-bottom:10px"><img src="${U.thumb(cur)}"></div>` : ''}
@@ -1141,12 +1144,12 @@
 
   /* ================= 更多工具 ================= */
   /* 分镜画面沉淀为主体新形态(素材反哺):某镜出图效果好→挂为主体形态,分镜按「名-形态」全称引用 */
-  function saveShotAsForm(p, s) {
+  function saveShotAsForm(p, ep, s) {
     const src = (s.video && s.video.status === 'done' && s.video.frame) || s.image;
     if (!src || String(src).startsWith('data:')) return U.toast('该分镜暂无真实画面(占位图不能作形态图),请先生成', 'error');
     if (!(p.subjects || []).length) return U.toast('项目还没有主体,请先到「主体」创建', 'error');
     U.openModal({
-      title: '存为主体形态 · 镜头' + (s.order + 1),
+      title: '存为主体形态 · 镜头' + (Domain.shotNo(ep.shots, s) || '?'),
       body: `
       <div class="row" style="gap:12px;align-items:flex-start">
         <div class="ws-thumb-img" style="width:150px;flex:none;aspect-ratio:16/9"><img src="${U.thumb(src)}"></div>
@@ -1179,12 +1182,12 @@
   }
 
   /* 分镜画面沉淀为资产库主体(与便捷工具融合入库同规:名称/类型/标签/分组 + 入库自动报白) */
-  function saveShotAsAsset(p, s) {
+  function saveShotAsAsset(p, ep, s) {
     const src = (s.video && s.video.status === 'done' && s.video.frame) || s.image;
     if (!src || String(src).startsWith('data:')) return U.toast('该分镜暂无真实画面(占位图不能入库),请先生成', 'error');
     const groups = Store.myGroups();
     U.openModal({
-      title: '存入资产库 · 镜头' + (s.order + 1),
+      title: '存入资产库 · 镜头' + (Domain.shotNo(ep.shots, s) || '?'),
       body: `
       <div class="row" style="gap:12px;align-items:flex-start;margin-bottom:10px">
         <div class="ws-thumb-img" style="width:150px;flex:none;aspect-ratio:16/9"><img src="${U.thumb(src)}"></div>
@@ -1227,7 +1230,7 @@
     });
   }
 
-  function openMoreTools(p, s) {
+  function openMoreTools(p, ep, s) {
     const tools = [
       ['✂', '视频剪辑', '对视频进行裁剪、分割与拼接。'],
       ['🎬', '视频编辑', '基于提示词对视频内容进行编辑(人物替换/背景替换)。'],
@@ -1237,14 +1240,14 @@
       ['🗂', '存入资产库', '把本镜画面沉淀为资产库主体,跨项目复用(入库自动报白)。'],
     ];
     U.openModal({
-      title: '更多工具(镜头 ' + (s.order + 1) + ')',
+      title: '更多工具(镜头 ' + (Domain.shotNo(ep.shots, s) || '?') + ')',
       body: tools.map(t => `<div class="check-line" data-tool="${t[1]}"><span style="font-size:16px">${t[0]}</span><div><div>${t[1]}</div><div class="hint" style="margin:0">${t[2]}</div></div></div>`).join(''),
       onMount(m, close) {
         m.querySelectorAll('[data-tool]').forEach(c => c.onclick = () => {
           const name = c.dataset.tool;
           close();
-          if (name === '存为主体形态') { saveShotAsForm(p, s); return; }
-          if (name === '存入资产库') { saveShotAsAsset(p, s); return; }
+          if (name === '存为主体形态') { saveShotAsForm(p, ep, s); return; }
+          if (name === '存入资产库') { saveShotAsAsset(p, ep, s); return; }
           // 视频超分/视频去字幕:跳转便捷工具页的真功能(带分镜素材预填),不再占位
           if (name === '视频超分' || name === '视频去字幕') {
             const src = (s.video && s.video.status === 'done' && s.video.frame) || s.image;
