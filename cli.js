@@ -721,6 +721,51 @@ CMD['subject-copy'] = async (a, f) => {
     } catch (e) { if (e.exit === 7 && attempt < 2) { log('rev 冲突,重试(' + (attempt + 2) + '/3)…'); continue; } throw e; }
   }
 };
+/* 存量重复主体 id 的扫描与改名计划:规则与镜头侧同读 Domain.dupIdScan 那一份,
+ * 这里注入的只有 Node 侧的新 id 发号器(前缀对齐 newSubject)与主体侧的单位词(位)。 */
+const dedupeSubjectScan = subs => {
+  const scan = Domain.dupIdScan(subs, taken => {
+    let nid;
+    do { nid = 'sj_' + Date.now().toString(36) + '_' + crypto.randomBytes(4).toString('hex'); } while (taken.has(nid));
+    return nid;
+  });
+  return Object.assign({}, scan, { duplicates: scan.duplicates.map(d => ({ id: d.id, seats: d.n, keepOrder: d.keepOrder })) });
+};
+/* 存量重复主体 id 的显式去重出口:与镜头侧 shots-dedupe 同一套规则、同一副形状(默认 dry-run、--apply 才写),
+ * 用户主动跑,不挂在任何保存路径上偷偷改。
+ * 逃生舱 state-put 与 PUT /api/state 都不设闸(那是刻意的,理由见文件末逃生舱那段),灌进来的同 id 多位就在库里躺着:
+ * findSubject/subject-image/subject-copy 全按 id 取首位,后面几位结构性够不着;而两端选人闸按位筛(ids.has(s.id)),
+ * 点名一个 id 跑一次批量补图,库里重复几位就登记几笔生图钱——本命令是把这批存量收拾干净的那条路。
+ * 引用面有意一个字不动:分镜按**名字**引用主体(Domain.findSubject 解析全名/曾用名/形态),按 id 的那几处
+ * (findSubject / 资产库保存 / 卡片定位)一律 find 首位语义,而首位的 id 本就没改,去重前后落到的是同一位;
+ * 改 id 的只有那些任何引用都指不到的后续位。也不替用户删位——同 id 那几位各有各的名字与设定,
+ * 而主体库的删除按 id 匹配(js/roles.js 那一句 filter(x => x.id !== s.id))会把它们一并删光。
+ * 纯改主体库,零上游零 LLM,故不经 Tasks.run、不扣一分钱。 */
+CMD['subjects-dedupe'] = async (a, f) => {
+  need(a[0], '用法:hujing subjects-dedupe <pid> [--apply](默认 dry-run:只报重复 id 与改名计划,一个字不写库)');
+  const { state } = await stateGet(f);
+  const p0 = (state.projects || []).find(x => x.id === a[0]);
+  if (!p0) throw new CliError('项目不存在:' + a[0], 4);
+  const pre = dedupeSubjectScan(p0.subjects);
+  if (!f.apply || !pre.plan.length) {
+    return {
+      project: p0.id, total: pre.total, unique: pre.unique, duplicates: pre.duplicates,
+      applied: false, willRename: pre.plan.length, plan: pre.plan,
+      note: pre.plan.length
+        ? 'dry-run:一个字没写库,加 --apply 才落。哪几位改、哪一位留原 id 是定的;新 id 每次现发,--apply 那一趟发出的与这份预览不是同一批。'
+        : '主体库里没有重复的主体 id,无需去重(带 --apply 也不会发出任何写入)。',
+    };
+  }
+  return (await withProject(a[0], f, async proj => {
+    const scan = dedupeSubjectScan(proj.subjects); // 落库前按取到的最新一份重算(计划以真正要写的那棵树为准)
+    scan.plan.forEach(x => { proj.subjects[x.order].id = x.to; });
+    log(scan.plan.length + ' 位主体的 id 与库里在前的位重复,已改发新 id(首位留原 id;分镜按名字引用、按 id 那几处按首位解析,故一处引用未动)');
+    return {
+      project: proj.id, total: scan.total, unique: scan.unique, duplicates: scan.duplicates,
+      applied: true, renamedIds: scan.plan.length, renamed: scan.plan,
+    };
+  })).ret;
+};
 
 /* ---- 分镜层 ---- */
 CMD.shots = async (a, f) => {
@@ -761,26 +806,17 @@ CMD['shots-import'] = async (a, f) => {
     return { episode: ep.id, imported: norm.length, total: ep.shots.length, replaced: !f.append, renamedIds: renamed };
   })).ret;
 };
-/* 存量重复镜头 id 的扫描与改名计划:口径同 shots-import 那道写入闸——
- * 首次出现的那一行留原 id,后面撞车的行改发新 id(与 Store.trashRestore 的 id 冲突改名同形)。
+/* 存量重复镜头 id 的扫描与改名计划:规则本身下沉 Domain.dupIdScan(主体侧那条命令同读一份,两侧不各写一份),
+ * 口径同 shots-import 那道写入闸——首次出现的那一行留原 id,后面撞车的行改发新 id
+ * (与 Store.trashRestore 的 id 冲突改名同形)。这里注入的只有 Node 侧的新 id 发号器与镜头侧的单位词(行)。
  * 扫描与落库共用这一处,dry-run 报的与 --apply 写的就是同一份计算。 */
 const dedupeShotScan = shots => {
-  const rows = shots || [];
-  const seen = new Map(); // id → 首次出现的行号(留原 id 的那一行)
-  const dups = new Map();
-  const taken = new Set();
-  const plan = [];
-  rows.forEach((s, i) => {
-    if (!taken.has(s.id)) { taken.add(s.id); seen.set(s.id, i); return; }
-    const d = dups.get(s.id) || { id: s.id, rows: 1, keepOrder: seen.get(s.id) };
-    d.rows++;
-    dups.set(s.id, d);
+  const scan = Domain.dupIdScan(shots, taken => {
     let nid;
     do { nid = 'sh_' + Date.now().toString(36) + '_' + crypto.randomBytes(4).toString('hex'); } while (taken.has(nid));
-    plan.push({ order: i, from: s.id, to: nid });
-    taken.add(nid);
+    return nid;
   });
-  return { total: rows.length, unique: new Set(rows.map(s => s.id)).size, duplicates: [...dups.values()], plan };
+  return Object.assign({}, scan, { duplicates: scan.duplicates.map(d => ({ id: d.id, rows: d.n, keepOrder: d.keepOrder })) });
 };
 /* 存量重复镜头 id 的显式去重出口:用户主动跑,不挂在任何保存路径上偷偷改。
  * 逃生舱 state-put 与 PUT /api/state 都不设闸(那是刻意的,理由见文件末逃生舱那段),灌进来的同 id 多镜就在库里躺着:
@@ -1719,7 +1755,9 @@ CMD.memory = async (a, f) => {
  * 有意不在此设闸:这条路写的是整棵树,改一个镜头 id 就得连带改 lastReview.perShot/uiSel/groupId 那些引用它的地方,
  * 那是迁移不是闸;而拒收会让"照原样恢复一份备份"这件逃生舱唯一的活干不成。
  * 递进来的重复 id 要收拾,shots-dedupe 是那条显式出口(默认 dry-run 报计划、--apply 才写);
- * 整表重导 shots-import(改发新 id 并回报 renamedIds)或自己改完再灌一次同样可以。 */
+ * 整表重导 shots-import(改发新 id 并回报 renamedIds)或自己改完再灌一次同样可以。
+ * 主体那一侧同理(整树原样落库,同 id 多位就在库里,点名一次几位都跑而只有首位寻得着),
+ * 出口是同形的 subjects-dedupe;两条命令同读 Domain.dupIdScan 那一套规则。 */
 CMD['state-get'] = async (_, f) => {
   const { rev, state } = await stateGet(f);
   if (f.out) { fs.writeFileSync(path.resolve(f.out), JSON.stringify({ rev, state }, null, 2), 'utf8'); return { rev, saved: path.resolve(f.out) }; }
@@ -1762,6 +1800,10 @@ const HELP = `虎鲸漫剧 CLI —— 面向 AI 助手与人工的全链路命�
   subject-add <pid> --name 女主 [--kind character] [--desc 描] [--gen-image]
   subject-image <pid> <id|名> (--file f.png|--url u|--gen)  上传/生成主体图并回填
   subject-copy <源pid> <id|名> <目标pid>              跨项目复制主体(重新发 id;同名同类覆盖)
+  subjects-dedupe <pid> [--apply]                  存量重复主体 id 去重(与 shots-dedupe 同形:默认 dry-run 报
+                                                   哪些 id 重复、会改成什么,一个字不写库;--apply 才落,首位留
+                                                   原 id、撞车位改发新 id 并回报 renamedIds;零上游零计费,
+                                                   分镜按名字引用主体故一处引用不动——按 id 那几处按首位解析)
 
 分镜层
   shots <pid> <epid>                               分镜表(全字段 JSON)
@@ -1816,7 +1858,7 @@ ${CmdRegistry.META.map(m => '  exec ' + (m.name + (CmdRegistry.usageOf(m) ? ' ' 
   state-get [--out f.json] | state-put --file f.json --force           裸状态读写(逃生舱:整树原样落库,
                                                    不做领域校验也不过 shots-import 那道写入闸——
                                                    镜头 id 唯一性由调用方自己保证,灌进去的重复 id 就在库里,
-                                                   要收拾用 shots-dedupe)
+                                                   要收拾用 shots-dedupe / 主体那一侧用 subjects-dedupe)
 
 exit code:0 成功 | 1 通用 | 2 参数 | 3 未登录 | 4 不存在 | 5 服务端/上游 | 6 积分不足 | 7 冲突`;
 
