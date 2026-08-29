@@ -434,6 +434,7 @@
 
   /* 多镜审片汇总 */
   function openReviewSummary(p, ep, reports, main) {
+    // 镜号取 Domain.shotNo(分镜表实位),与整集报告视图同一套:shot.order 是落库字段,增删镜后与实位漂移
     const avg = Math.round(reports.reduce((a, x) => a + x.report.score, 0) / reports.length * 10) / 10;
     U.openModal({
       title: `一键审片汇总(${reports.length} 镜)`,
@@ -450,7 +451,7 @@
       <div class="card" style="margin-top:14px;padding:14px">
         ${reports.map((x, i) => `
         <div class="rv-bar-row" data-jump="${i}">
-          <span class="small" style="width:52px;flex:none">镜头 ${x.shot.order + 1}</span>
+          <span class="small" style="width:52px;flex:none">镜头 ${Domain.shotNo(ep.shots, x.shot) || '?'}</span>
           <div class="rv-bar-track"><div class="rv-bar-fill ${x.report.score < Domain.REVIEW_MIN ? 'low' : ''}" style="width:${x.report.score * 10}%"></div></div>
           <b style="width:34px;text-align:right;color:${x.report.score >= 8 ? 'var(--green)' : x.report.score >= Domain.REVIEW_MIN ? 'var(--yellow)' : 'var(--red)'}">${x.report.score.toFixed(1)}</b>
         </div>`).join('')}

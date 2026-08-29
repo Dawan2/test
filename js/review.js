@@ -615,11 +615,12 @@
     // 逐镜条目落到哪一行取 Domain.reviewRows(与写回侧 WfCore.mergeReviewPerShot 同一套行对位):
     // 按 shotId find 首行时,同 id 后几行的报告一律去首行那一行的 reviews 里找——各自那份 reportId
     // 在那儿取不回来,于是几行同报"原报告已缺失",而首行那一条被重复读成好几镜的结论。
+    // 镜号一律取 Domain.shotNo(分镜表实位),不读 shot.order / perShot.order 这两个会与实位漂移的字段。
     const missing = [];
     reports = reports || (ep.lastReview ? Domain.reviewRows(ep).map(t => {
       if (!t.shot) return null;
       const rep = (t.shot.reviews || []).find(r => r.id === t.ps.reportId);
-      if (!rep) { missing.push(t.ps); return null; }
+      if (!rep) { missing.push(t); return null; }
       return { shot: t.shot, report: rep };
     }).filter(Boolean) : []);
     if (!reports.length || !ep.lastReview) return U.toast('暂无整集审片数据,请先执行整集审片', 'error');
@@ -646,15 +647,15 @@
         <b>各镜得分</b>
         ${reports.map((x, i) => `
         <div class="rv-bar-row" data-jump="${i}">
-          <span class="small" style="width:52px;flex:none">镜头 ${x.shot.order + 1}</span>
+          <span class="small" style="width:52px;flex:none">镜头 ${Domain.shotNo(ep.shots, x.shot) || '?'}</span>
           <div class="rv-bar-track"><div class="rv-bar-fill ${x.report.score < Domain.REVIEW_MIN ? 'low' : ''}" style="width:${x.report.score * 10}%"></div></div>
           <b style="width:34px;text-align:right;color:${x.report.score >= 8 ? 'var(--green)' : x.report.score >= Domain.REVIEW_MIN ? 'var(--yellow)' : 'var(--red)'}">${x.report.score.toFixed(1)}</b>
         </div>`).join('')}
-        ${missing.map(ps => `
+        ${missing.map(t => `
         <div class="rv-bar-row" style="opacity:.55" title="原报告已被后续审片挤出最近记录,得分按当时快照展示">
-          <span class="small" style="width:52px;flex:none">镜头 ${(ps.order || 0) + 1}</span>
-          <div class="rv-bar-track"><div class="rv-bar-fill low" style="width:${ps.score * 10}%"></div></div>
-          <b style="width:34px;text-align:right;color:var(--yellow)">${(+ps.score || 0).toFixed(1)}</b>
+          <span class="small" style="width:52px;flex:none">镜头 ${Domain.shotNo(ep.shots, t.shot) || '?'}</span>
+          <div class="rv-bar-track"><div class="rv-bar-fill low" style="width:${t.ps.score * 10}%"></div></div>
+          <b style="width:34px;text-align:right;color:var(--yellow)">${(+t.ps.score || 0).toFixed(1)}</b>
           <span class="small muted" style="margin-left:8px">原报告已缺失</span>
         </div>`).join('')}
         <div class="hint" style="margin-top:6px">点击某镜查看该镜完整审片报告</div>
@@ -695,7 +696,7 @@
         });
         m.querySelector('[data-x=export]').onclick = () => {
           const lines = [`整集审片报告 · ${p.name} / ${ep.title}`, '='.repeat(40), `整集均分:${lr.avg}/10 · ${lr.time}`, '',
-            ...reports.map(x => `镜头${x.shot.order + 1}:${x.report.score.toFixed(1)} 分(技术${x.report.dimensions.technical.score} 匹配${x.report.dimensions.matching.score} 导演${x.report.dimensions.directing.score})${x.report.issues.length ? ' 问题:' + x.report.issues.map(i => i.type).join('/') : ''}`),
+            ...reports.map(x => `镜头${Domain.shotNo(ep.shots, x.shot) || '?'}:${x.report.score.toFixed(1)} 分(技术${x.report.dimensions.technical.score} 匹配${x.report.dimensions.matching.score} 导演${x.report.dimensions.directing.score})${x.report.issues.length ? ' 问题:' + x.report.issues.map(i => i.type).join('/') : ''}`),
             '', '整集共性问题:', (lr.common && lr.common.summary) || '（无）',
             ...(((lr.common && lr.common.issues) || []).map(i => `- ${i.type}:${i.detail} → ${i.suggestion}`)),
             ...(lr.cut ? ['', '四维成片评审:', ...CUT_DIMS.map(([k, name]) => `${name}:${lr.cut[k].score.toFixed(1)} 分 — ${lr.cut[k].comment}`), lr.cut.overall || ''] : [])];
@@ -710,7 +711,7 @@
           for (const x of unoptimized) {
             const okk = await optimizeShot(p, ep, x.shot, x.report, null, true);
             if (okk) done++;
-            U.toast(`批量优化进度 ${done}/${unoptimized.length}(镜头 ${x.shot.order + 1})`, 'info', 1500);
+            U.toast(`批量优化进度 ${done}/${unoptimized.length}(镜头 ${Domain.shotNo(ep.shots, x.shot) || '?'})`, 'info', 1500);
           }
           U.toast(`批量一键优化完成,${done} 镜提示词已更新`, 'success', 3000);
           if (main) renderShotsRef(main, p, ep);
