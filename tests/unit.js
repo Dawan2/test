@@ -4025,6 +4025,113 @@ const commandsTests = [
     assert(/ep\.shots = ep\.shots\.filter\(x => x\.id !== sel\.id\)/.test(fs.readFileSync(path.join(ROOT, 'js', 'sb-views.js'), 'utf8')),
       '删除语义一字未动:单镜删除仍按 id 匹配、会清掉同 id 的每一行(那是删除语义不是去重语义,本槽不碰它,只在预览里说清)');
   } },
+  { name: '分镜卡片自己认得出撞了 id:撞车的每一行在自己那张卡上挂一枚「第几行 / 共几行」小标,五档挂点逐档量过(渲得出分镜行的三档都挂上),位次只读同一份扫描派生、一个字不写库', fn() {
+    /* 顶栏那条入口收的是"页面上有没有路收拾存量",而"是哪几行撞了"至今只有点开弹窗一条路:
+     * 分镜卡片按 ep.shots 逐行渲,同 id 那几行在卡片上与几个不同镜头长得一模一样(画面、提示词、出片状态
+     * 各是各的,撞的只是那个看不见的 id),故读到「要改 2 行」的人仍得逐张卡去猜。
+     * 本条钉的是那一格,并把「挂在哪一处才五档都看得见」逐档量出来:分镜视频与剪辑台共用一张缩略图卡、
+     * 镜头组那条分镜时间线另一处,三档各真渲一遍;分镜脚本与节拍板渲的是场次节拍与五段节拍、一行分镜都不渲,
+     * 那两档上看得见的仍是顶栏那条入口(源级另有一句钉住"那两档确实没有分镜行"——哪天长出来就得同轮挂上)。
+     * 另钉三件分寸:留原 id 那一行也标(它是"引用会落到哪一行"的答案)、共几行按全表算而顶栏数的是要改几行、
+     * 纯展示一个字不写库(收拾它仍走顶栏那道预览 + 确认闸)。 */
+    const sb = loadEpisodeWs();
+    /* 中栏那几个桩换成真件:挂点这件事只有把卡片真渲一遍才量得出来。右栏与控件绑定仍留桩——
+     * 本条量的是中栏那张分镜卡片,右栏那一路另有自己的套件。 */
+    loadFile(sb, 'sb-views.js');
+    loadFile(sb, 'shotgroups.js');
+    Object.assign(sb.SBViews, { rightHTML: () => '', cutRightHTML: () => '', bindCenter() {}, bindRight() {} });
+    const mkShot = (id, name) => ({ id, order: 0, name, plot: name, camera: '固定镜头', duration: 5,
+      characters: [], props: [], scene: '', prompt: '', confirm: true, video: { status: 'none' }, history: [] });
+    const p = { id: 'p1', name: '脏剧', style: '漫剧', subjects: [], episodes: [{
+      id: 'ep1', title: '第一集', content: '正文', sbConfig: {}, uiSel: 'dup', groups: [],
+      shots: [mkShot('dup', 'A-首行'), mkShot('solo', 'B-不重复'), mkShot('dup', 'C-第二行'), mkShot('dup', 'D-第三行')],
+    }] };
+    const ep = p.episodes[0];
+    sb.__proj = p;
+    const saves = sb.Store._saves;
+    const tagsOf = html => (String(html).match(/🧹 id 重复 第 \d+\/\d+ 行/g) || []);
+    /* 一档一渲:节拍板与镜头组渲进中栏那个容器(整页 innerHTML 之外),故两处一并取回来。
+     * 那两档是页内挂载、渲完还要往容器里绑控件,故惰性节点这里要能一层套一层(epDom 的叶子节点绑不动)。 */
+    const deepDom = () => {
+      const nodes = {};
+      return {
+        innerHTML: '', value: '', style: {}, dataset: {}, onclick: null, onchange: null, closest: () => null,
+        querySelector: sel => (nodes[sel] = nodes[sel] || deepDom()),
+        querySelectorAll: () => [],
+      };
+    };
+    let main = null;
+    const renderAt = vmode => {
+      sb.Store.state.settings.epViewMode = vmode;
+      main = deepDom();
+      sb.Views.episode(main, 'p1', 'ep1');
+      return String(main.innerHTML) + String(main.querySelector('[data-sgview]').innerHTML)
+        + String(main.querySelector('[data-bbview]').innerHTML);
+    };
+    // ① 渲得出分镜行的三档:撞车那三行各挂一枚,不重复的那一行一枚不挂
+    ['shots', 'cut', 'groups'].forEach(vmode => {
+      const html = renderAt(vmode);
+      assertEq(tagsOf(html).join(' | '), '🧹 id 重复 第 1/3 行 | 🧹 id 重复 第 2/3 行 | 🧹 id 重复 第 3/3 行',
+        '视图 ' + vmode + ' 上撞车的每一行得在自己那张卡上报出「第几行 / 共几行」,不重复的那一行不许挂'
+        + '(挂漏一处就有一档进来看不见),实际:' + JSON.stringify(tagsOf(html)));
+      assert(/<span class="tag yellow"[^>]*title="[^"]+">🧹 id 重复 第 1\/3 行<\/span>/.test(html),
+        '视图 ' + vmode + ' 上那枚小标得沿用现网 tag yellow 那一套并带一句说明,实际:'
+        + (html.match(/<span class="tag yellow"[^>]*>🧹[^<]*<\/span>/) || [''])[0]);
+      assert(/共 3 行镜头共用 id「dup」/.test(html) && /按 id 取镜的地方只找得到第 1 行/.test(html),
+        '视图 ' + vmode + ' 上那句说明得把"共几行共用哪个 id、这一行是第几行、按 id 只找得到第 1 行"说清'
+        + '(光标个数字读不出代价:批量生成按行逐行计费)');
+      assert(/data-x="shotdedupe"/.test(html), '视图 ' + vmode + ' 上顶栏那条去重入口照旧在(卡片这几枚不替它)');
+    });
+    // ② 单位词是「行」,不是主体侧那个「位」(分镜表里没有"位")
+    const shotsHtml = renderAt('shots');
+    assertEq((shotsHtml.match(/id 重复 第 \d+\/\d+ 位/g) || []).length, 0,
+      '镜头侧的单位词是"行":照抄主体侧那个"位"即红');
+    // ③ 顶栏那个数与卡片上那几枚是两个口径,同源而不同数:顶栏数要改几行(首行不改),卡片标撞了 id 的每一行
+    assert(/镜头 id 去重\(2\)/.test(shotsHtml), '顶栏照旧报要改几行(首行留原 id 不算在内),实际:'
+      + (shotsHtml.match(/[^>]*去重[^<]*/) || [''])[0]);
+    assert(/第 1\/3 行/.test(shotsHtml), '留原 id 的首行同样得标(它是"引用会落到哪一行"的答案,漏标就读不出留谁)');
+    assertEq(tagsOf(shotsHtml).length, 3, '共几行按全表算:全表 4 行里撞了 id 的是 3 行,标的就是这 3 行');
+    // ④ 卡片上原有的东西没被顶掉:确认态那条状态条与新挂的这枚小标同卡共存
+    assert(/待确认|✓ 已确认/.test(shotsHtml), '卡片上原有的状态条不许被这枚小标顶掉(夹具四行都已确认)');
+    // ⑤ 纯展示:渲两遍一个字不写库、一笔任务一分钱都没有,表里的 id 一个没被顺手改掉
+    renderAt('shots');
+    assertEq(sb.Store._saves, saves, '标记是纯展示:渲染这一路不许写库(它不是"顺手替用户去重")');
+    assertEq(sb.__tasks.length + sb.__charges.length, 0, '标记零上游零 LLM:不许登记任务也不许扣一分钱,实际:'
+      + JSON.stringify({ tasks: sb.__tasks, charges: sb.__charges }));
+    assertEq(ep.shots.map(s => s.id).join(','), 'dup,solo,dup,dup', '渲染之后表里一个 id 都不许变');
+    // ⑥ 收拾干净之后小标跟着消失(与顶栏那个入口同一下)
+    main.querySelector('[data-x=shotdedupe]').onclick();
+    sb.__modals[sb.__modals.length - 1].m.querySelector('[data-x=apply]').onclick();
+    assertEq(tagsOf(main.innerHTML).length, 0, '去重落库之后卡片上一枚小标都不该留(表里没有重复了),实际:'
+      + JSON.stringify(tagsOf(main.innerHTML)));
+    assert(!/data-x="shotdedupe"/.test(main.innerHTML), '顶栏那个入口同样跟着消失(两处读同一份扫描)');
+    // ⑦ 源级:位次只读派生那一份,整页只扫一遍分镜表;两处挂点各一处
+    const sbv = fs.readFileSync(path.join(ROOT, 'js', 'sb-views.js'), 'utf8');
+    const i = sbv.indexOf('function dupRowTag(');
+    assert(i >= 0, 'js/sb-views.js 找不到「function dupRowTag(」(挪窝或改名就同轮改这里,别把本条留成恒真)');
+    const tag = blankNonCode(sbv.slice(i).split('\n  }')[0], true);
+    assert(tag.length > 100, '「function dupRowTag(」那一段取不到(同上),实测 ' + tag.length + ' 字');
+    assertEq((tag.match(/Domain\.dupIdScan\(|dedupeShotScan\(|new Map\(|new Set\(|\.filter\(|\.forEach\(/g) || []).length, 0,
+      '标记那一段不许自己扫一遍表或再攒一份"谁是首行"的记账:位次只读派生现成的那一份(抄一份到这里,'
+      + '卡片上标的第几行与预览里改的那一行就是两套算法):' + tag);
+    const sky = blankNonCode(fs.readFileSync(path.join(ROOT, 'js', 'storyboard.js'), 'utf8'), true);
+    assert(sky.includes('Domain.dupIdMarks(dupScan)'),
+      '逐张卡那枚小标的位次须由顶栏那一份扫描现派生(Domain.dupIdMarks 收下同一个 dupScan);另扫一遍就有两份计划');
+    assertEq((sky.match(/dedupeShotScan\(ep\.shots\)/g) || []).length, 1,
+      '整页只许扫一遍分镜表:顶栏那个数与卡片上那几枚小标同读这一份(扫两遍迟早给出两种计划)');
+    assertEq((blankNonCode(sbv, true).match(/dupRowTag\(marks, \(ep\.shots \|\| \[\]\)\.indexOf\(s\)\)/g) || []).length, 1,
+      '卡片这一端按"这一行在全表里排第几"取标记(拿视图里那张表的局部下标取就会错位)');
+    assertEq((blankNonCode(fs.readFileSync(path.join(ROOT, 'js', 'shotgroups.js'), 'utf8'), true)
+      .match(/SBViews\.dupRowTag\(dupMarks, ep\.shots\.indexOf\(s\)\)/g) || []).length, 1,
+      '镜头组那条分镜时间线是这一档唯一渲得出分镜行的地方,标记只该挂那一处、同样按全表实位取');
+    // ⑧ 另两档确实没有分镜行可挂(哪天长出来,本条先红:那一档进来就看不见标记了)
+    ['sb-board.js', 'beatboard.js'].forEach(rel => {
+      const code = blankNonCode(fs.readFileSync(path.join(ROOT, 'js', rel), 'utf8'), true);
+      assertEq((code.match(/ep\.shots\.map\(/g) || []).length, 0,
+        'js/' + rel + ' 长出了逐行渲分镜的地方(分镜脚本/节拍板此前渲的是场次节拍与五段节拍):'
+        + '那一档现在也该挂上同 id 重复标记,挂完同轮改这条判据');
+    });
+  } },
   { name: 'generateVideos 点名重复 id 真跑那一趟:两端回执都说出行数并点名 shots-dedupe(选人闸仍按行筛,一行都不许少跑)', fn: async () => {
     /* 上面三条(导入设闸 / 逃生舱不设闸 / shots-dedupe 是存量出口)管的是表本身,这一条管**生成那一拍**:
      * 存量重复表上点名一个 id,选人闸按行筛出三行,三行都真跑、三笔视频钱,而回执只报 total=3——
@@ -5772,6 +5879,36 @@ const sbViewsTests = [
     const done = makeShot(1, { reviews: [{ score: 8 }] });
     const hd = sb.SBViews.shotThumbHTML({ id: 'p1' }, ep, done, 1, done);
     assert(hd.includes('✓ 已出片 · 审 8.0') && !hd.includes('ws-gen'), '非生成中走归一状态条');
+  } },
+  { name: 'dupRowTag:同 id 那几行各报「第几行 / 共几行」,单位词是行;干净表与脏入参一枚不挂,缩略图卡按全表实位取标记', fn() {
+    /* 卡片这一层只做两件事:把派生给的数字换上镜头侧的单位词,再挑一枚 tag yellow 挂上去。
+     * 位次一个都不许自己算(顶栏那份扫描派生的 marks 直接读),故这里逐格钉的是"读得对、说得清、
+     * 没标记时一枚不挂"——干净表上多挂一枚等于给用户平白报一次假重复。 */
+    const sb = loadSbViews();
+    const marks = { 0: { id: 'dup', nth: 1, total: 3 }, 2: { id: 'dup', nth: 2, total: 3 }, 3: { id: 'dup', nth: 3, total: 3 } };
+    const t0 = sb.SBViews.dupRowTag(marks, 0);
+    assert(/^<span class="tag yellow"/.test(t0) && /🧹 id 重复 第 1\/3 行<\/span>$/.test(t0),
+      '小标沿用现网 tag yellow 那一套,报出「第几行 / 共几行」,实际:' + t0);
+    assert(/共 3 行镜头共用 id「dup」/.test(t0) && /这是其中第 1 行,这一行留原 id/.test(t0),
+      '首行那一枚得说明它留原 id(引用会落到哪一行,答案就在这一句上),实际:' + t0);
+    assert(/这是其中第 2 行,去重时这一行改发新 id/.test(sb.SBViews.dupRowTag(marks, 2)),
+      '后续行那一枚得说明它改发新 id、画面与提示词不动');
+    assert(/按 id 取镜的地方只找得到第 1 行/.test(t0) && /逐行计费/.test(t0) && /镜头 id 去重/.test(t0),
+      '那句说明得把代价与收拾存量的去处一并说清(顶栏那条入口),实际:' + t0);
+    assertEq((t0.match(/第 \d+\/\d+ 位/g) || []).length, 0, '镜头侧的单位词是"行":照抄主体侧那个"位"即红');
+    assertEq(sb.SBViews.dupRowTag(marks, 1), '', '不重复的那一行一枚不挂');
+    [undefined, null, {}, 0].forEach(m => assertNoThrow(() => assertEq(sb.SBViews.dupRowTag(m, 0), ''),
+      '干净表/空表/没给表一律不挂也不抛(干净表压根不派生标记,而卡片这一层照旧要渲),实际入参:' + JSON.stringify(m)));
+    assert(/&lt;b&gt;/.test(sb.SBViews.dupRowTag({ 0: { id: '<b>', nth: 1, total: 2 } }, 0)), 'id 进说明文案须转义');
+    // 缩略图卡按全表实位取:同 id 那几行在表里是各自的对象,卡片上标的就是自己那一行
+    const ep = makeEp({ shots: [makeShot(0), makeShot(1), makeShot(2), makeShot(3)] });
+    const h = sb.SBViews.shotThumbHTML({ id: 'p1' }, ep, ep.shots[2], 2, ep.shots[0], false, marks);
+    assert(/🧹 id 重复 第 2\/3 行/.test(h) && /3\. 镜头3/.test(h),
+      '第三行那张卡上标的是同一组的第 2 行(标记与卡片上那个镜号取的是同一个实位),实际:' + h);
+    assertEq((sb.SBViews.shotThumbHTML({ id: 'p1' }, ep, ep.shots[1], 1, ep.shots[0], false, marks)
+      .match(/🧹 id 重复/g) || []).length, 0, '不重复那一行的卡片上一枚不挂');
+    assertEq((sb.SBViews.shotThumbHTML({ id: 'p1' }, ep, ep.shots[2], 2, ep.shots[0], false).match(/🧹 id 重复/g) || []).length, 0,
+      '没给标记表时(干净表压根不派生)卡片照旧一枚不挂,也不许抛');
   } },
   { name: 'rightHTML 防废片「出场主体缺图」:判据现取 Domain.subjectRefImage(桩换派生即改口,内联拷贝拿不到桩)', fn() {
     /* 本档提醒答的是「这一镜生成时带不带得上主体参考图」,与真实发包同一个判据。
@@ -10017,6 +10154,10 @@ const GUARD_TOPICS = [
     why: '主体库卡片上那枚「第几位 / 共几位」小标的位次只从页头那一份扫描派生(Domain.dupIdMarks 收下同一个结果),'
       + '页面不再扫第二遍:各扫一遍时卡片上标的第几位与预览里改的那一位就是两套算法,'
       + '而"哪几张卡撞了 id"与"确认那一下改哪几位"正是用户一起读的两句话' },
+  { id: 'dedupe-shot-card-mark', anchors: ['Domain.dupIdMarks(dupScan)', 'function dupRowTag('],
+    why: '分镜卡片上那枚「第几行 / 共几行」小标的位次只从顶栏那一份扫描派生(Domain.dupIdMarks 收下同一个结果),'
+      + '整页只扫一遍分镜表:各扫一遍时卡片上标的第几行与预览里改的那一行就是两套算法,'
+      + '而挂点是量出来的两处(缩略图卡 + 镜头组时间线),少挂一处就有一档进来看不见' },
   { id: 'dedupe-shots-ui-single', anchors: ['function openShotDedupe(', 'Domain.reviewRows('],
     why: '分镜面那条去重入口与 CLI 同读一份规则(页面只注入 Store.uid 那个发号器与镜头侧单位词),'
       + '而预览里那句「旧审片报告会塌几条」只许拿 Domain.reviewRows 在两棵表上各跑一遍现算——'
@@ -10035,7 +10176,7 @@ const GUARD_TOPICS = [
  *   3. 销号必须显式落笔——编号搬进 GUARD_TOPICS_CLOSED 并写下闭合理由,锚点原样搬过来,
  *      好让"这道护栏是真没了,还是被别的主题接手了"事后仍判得出来。
  * 有意不禁新登记主题:在册多出花名册没有的号一条不红,加主题照旧只改上面那张表。 */
-const TOPIC_FLOOR = 24;
+const TOPIC_FLOOR = 25;
 const GUARD_TOPICS_CLOSED = [
   /* 形状:{ id: '主题编号', anchors: [原样搬过来], why: '这道护栏原本守什么',
    *        closed: '为什么可以不守了(被守的那一面已不存在 / 判据并进了哪一条)',
@@ -14239,7 +14380,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-      [['单元测试', 707, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+      [['单元测试', 709, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -14647,7 +14788,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 305;
+    const FLOOR = 306;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
