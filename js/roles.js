@@ -288,6 +288,21 @@
     });
     return Object.assign({}, scan, { duplicates: scan.duplicates.map(d => ({ id: d.id, seats: d.n, keepOrder: d.keepOrder })) });
   }
+  /* 卡片上那枚重复标记:同 id 那几位在主体库里与几个不同主体长得一模一样(名字与设定各是各的,
+   * 撞的只是那个看不见的 id),故页头那个总数之外,撞车的每一位自己也在名字旁挂一枚小标报出
+   * 「第几位 / 共几位」——不然"有 N 位要改"落到卡片上仍是"哪几张卡不知道"。
+   * 位次只读同一份扫描派生(Domain.dupIdMarks),页面不再扫第二遍;单位词(位)在这一层换上。
+   * 共几位是全库口径:同 id 那几位分散在不同分类 tab 下时,本 tab 上只看得见其中几张而总数照全库报。
+   * 纯展示,不改任何字段:收拾它仍走页头那道预览 + 确认闸。 */
+  function dupSeatTag(marks, seat) {
+    const mk = marks[seat];
+    if (!mk) return '';
+    const fate = mk.nth === 1 ? '这一位留原 id' : '去重时这一位改发新 id,名字与设定一个字不动';
+    return `<span class="tag yellow" title="主体库里共 ${mk.total} 位主体共用 id「${U.esc(mk.id)}」`
+      + `(可能分散在不同分类下,本页只看得见其中几位):这是其中第 ${mk.nth} 位,${fate}。`
+      + `按 id 取主体只找得到第 1 位,而批量补图按位逐位跑、逐位计费;收拾存量走页头「🧹 主体 id 去重」`
+      + `(先看计划,确认才改)。">🧹 id 重复 第 ${mk.nth}/${mk.total} 位</span>`;
+  }
   /* 去重弹窗:开弹窗只预览(算出计划,一个字不写库),按下确认那一下才落库——与 CLI 的 dry-run / --apply 两档同形。
    * 落库前按当下那棵树重算一遍(计划以真要写的这一份为准,新 id 现发,故预览里那批只是示意值)。
    * 一位不删(同 id 那几位各有各的名字与设定,而主体库的删除按 id 匹配会把它们一并删光),内容一字不动;
@@ -353,8 +368,12 @@
       const genAllBtn = needGen.length ? `<button class="btn sm primary" data-x="genall" title="为全部缺图主体一键 AI 生图(每张 -${COST.image} 积分,逐张扣费,余额不足即停)">✨ 补齐主体图(${needGen.length})</button>` : '';
       const newSubjBtn = `<button class="btn sm" data-x="newsubj" title="手动新建主体(角色/场景/道具),不经剧本解析">＋ 新建主体</button>`;
       const batchVoiceBtn = p.subjects.some(s => s.kind === 'character') ? `<button class="btn sm" data-x="bvoice" title="AI 按人设为全部角色推荐音色,试听确认后批量绑定">✨ 批量配音色</button>` : '';
-      /* 存量重复 id 的入口:同 id 多位在卡片上与两个不同主体长得一样,故只在库里真有重复时露出来并报出位数 */
-      const dupSeats = dedupeScan(p.subjects).plan.length;
+      /* 存量重复 id 的入口:只在库里真有重复时露出来并报出要改几位;
+       * 逐张卡那枚「第几位 / 共几位」小标读的是同一份扫描(页面不另扫一遍),
+       * 故页头那个数与卡片上标的那几位永远同源——页头数的是要改几位(首位不改),卡片标的是撞了 id 的每一位 */
+      const dupScan = dedupeScan(p.subjects);
+      const dupSeats = dupScan.plan.length;
+      const dupMarks = Domain.dupIdMarks(dupScan);
       const dedupeBtn = dupSeats ? `<button class="btn sm" data-x="dedupe" title="库里有 ${dupSeats} 位主体与在前的位共用同一个 id(按 id 只找得到首位、批量补图却逐位计费);点开先看计划,确认才改 id,一位不删、零积分">🧹 主体 id 去重(${dupSeats})</button>` : '';
       main.innerHTML = `
       <div class="page">
@@ -399,9 +418,12 @@
             <div class="row" style="gap:4px;margin-bottom:8px">
               ${VIEW_MODES.map(m => `<button class="btn ghost sm ${vm === m.key ? 'primary' : ''}" style="flex:1;padding:2px 0;font-size:11px" data-vmode="${s.id}:${m.key}" title="${m.desc}">${m.label}</button>`).join('')}
             </div>
-            <div class="row" style="justify-content:space-between;margin-bottom:8px">
+            <div class="row wrap" style="justify-content:space-between;margin-bottom:8px">
               <b data-sname="${s.id}" style="cursor:pointer" title="点击打开主体编辑页">${U.esc(s.name)}</b>
-              ${s.isSubject ? '<span class="tag green" title="已定稿:当前形象已锁定为该主体权威参考,生成时优先按主体级参考使用">✓ 已定稿</span>' : ''}
+              <span class="row" style="gap:4px">
+                ${dupSeatTag(dupMarks, p.subjects.indexOf(s))}
+                ${s.isSubject ? '<span class="tag green" title="已定稿:当前形象已锁定为该主体权威参考,生成时优先按主体级参考使用">✓ 已定稿</span>' : ''}
+              </span>
             </div>
             ${!s.image ? `<button class="btn sm primary" style="width:100%;margin-bottom:6px" data-genone="${s.id}" title="AI 生成主体图(-${COST.image}积分,直接写入权威参考图)">✨ AI 生图</button>` : ''}
             <div class="row" style="gap:4px">
@@ -568,6 +590,6 @@
 
   /* 主体编辑页(精修/配音/设定/资产/定稿大弹窗)与场景画板已拆至 role-editor.js(window.RoleEditor)。
    * 共享操作经 window.RoleOps 桥接供其消费(加载顺序:本文件在前)。 */
-  window.RoleOps = { KIND_NAME, formWord, VIEW_MODES, currentViewMode, viewImg, modePrompt, genMainImage, replaceMainImage, genModeImage, touchImage, setVoice, recommendVoice, bindRefAudio, openForms, toggleFinalize, dedupeScan, openDedupe };
+  window.RoleOps = { KIND_NAME, formWord, VIEW_MODES, currentViewMode, viewImg, modePrompt, genMainImage, replaceMainImage, genModeImage, touchImage, setVoice, recommendVoice, bindRefAudio, openForms, toggleFinalize, dedupeScan, dupSeatTag, openDedupe };
 })();
 

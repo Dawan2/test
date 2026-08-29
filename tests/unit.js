@@ -3771,6 +3771,86 @@ const commandsTests = [
       '重复面只该换单位词(n → seats),别的一格都不许改口径,实际:' + JSON.stringify(got.duplicates));
     assertEq(rows.map(x => x.id).join(','), 'a,b,a,a', '扫描是纯扫描:入参一个字段都不许改(落库由弹窗按计划逐条写)');
   } },
+  { name: '主体库卡片自己认得出撞了 id:撞车的每一位在名字旁挂一枚「第几位 / 共几位」小标(共几位按全库算),位次只读同一份扫描派生、一个字不写库', fn() {
+    /* 入口那两槽收的是"页面上有没有路收拾存量",而"页面级发现"至今只有页头那一个总数:
+     * 卡片按 p.subjects 逐条渲染,同 id 那几位在卡片上与几个不同主体长得一模一样(名字与设定各是各的,
+     * 撞的只是那个看不见的 id),故读到「要改 2 位」的人仍得逐张卡去猜是哪几张。
+     * 本条钉的就是那一格:撞车的每一位自己挂一枚小标报出「第几位 / 共几位」,不重复的那一位一枚不挂。
+     * 三件分寸一并钉住——共几位是全库口径(同 id 那几位分散在不同分类 tab 下时,本 tab 只看得见其中几张
+     * 而总数照全库报,不然两个 tab 各报一个数);位次只读页头那一份扫描派生(页面再扫一遍就有两份计划,
+     * 卡片上标的第几位与预览里改的那一位对不上);纯展示不写一个字(收拾它仍走那道预览 + 确认闸)。 */
+    const sb = loadRoles();
+    const p = {
+      id: 'p1', name: '脏剧',
+      subjects: [
+        { id: 'dup', name: 'A-首位', kind: 'character', image: 'a.png' },
+        { id: 'solo', name: 'B-不重复', kind: 'character', image: 'b.png' },
+        { id: 'dup', name: 'C-第二位', kind: 'character', image: 'c.png', isSubject: true },
+        { id: 'dup', name: 'D-场景那一位', kind: 'scene', image: 'd.png' },
+        { id: 'lone', name: 'E-只此一位', kind: 'scene', image: 'e.png' },
+      ],
+      episodes: [],
+    };
+    sb.__proj = p;
+    // ① 角色 tab:撞车那两位各挂一枚,不重复的那一位一枚不挂
+    const saves = sb.Store._saves;
+    const main = roleDom();
+    sb.Views.roles(main, 'p1');
+    const tagsOf = html => (html.match(/🧹 id 重复 第 \d+\/\d+ 位/g) || []);
+    assertEq(tagsOf(main.innerHTML).join(' | '), '🧹 id 重复 第 1/3 位 | 🧹 id 重复 第 2/3 位',
+      '撞车的每一位得在自己那张卡上报出「第几位 / 共几位」,不重复的那一位不许挂(B-不重复 混进来即红),实际:'
+      + JSON.stringify(tagsOf(main.innerHTML)));
+    assert(/<span class="tag yellow" title="[^"]+">🧹 id 重复 第 1\/3 位<\/span>/.test(main.innerHTML),
+      '小标沿用现网 chip/tag 那一套(tag yellow,与弹窗里点名重复 id 的那一枚同形)并带一句说明,实际:'
+      + (main.innerHTML.match(/<span class="tag yellow"[^>]*>[^<]*<\/span>/) || [''])[0]);
+    assert(/共 3 位主体共用 id「dup」/.test(main.innerHTML) && /按 id 取主体只找得到第 1 位/.test(main.innerHTML),
+      '小标那句说明得把"共几位共用哪个 id、这一位是第几位、按 id 只找得到第 1 位"说清(光标个数字读不出代价)');
+    // ② 页头那个总数与卡片上标的那几位是两个口径,同源而不同数:页头数要改几位(首位不改),卡片标撞了 id 的每一位
+    assert(/主体 id 去重\(2\)/.test(main.innerHTML), '页头照旧报要改几位(首位留原 id 不算在内),实际:'
+      + (main.innerHTML.match(/[^>]*去重[^<]*/) || [''])[0]);
+    assert(/第 1\/3 位/.test(main.innerHTML), '留原 id 的首位同样得标(它是"引用会落到哪一位"的答案,漏标就读不出留谁)');
+    // ③ 共几位按全库算:同 id 的第三位在场景 tab 下,本 tab 一张卡也看不见它,而总数照旧报 3
+    assert(!/D-场景那一位/.test(main.innerHTML), '夹具前提:同 id 那三位里有一位是场景,角色 tab 上渲不出它');
+    const scene = roleDom();
+    sb.__roleFocus = 'lone'; // 分集页 tag 跳转那条路预定位到场景 tab(卡片绑定不在本层驱动,只借它换 tab)
+    sb.Views.roles(scene, 'p1');
+    assert(/D-场景那一位/.test(scene.innerHTML) && /E-只此一位/.test(scene.innerHTML), '夹具前提:场景 tab 上渲的是那两位');
+    assertEq(tagsOf(scene.innerHTML).join(' | '), '🧹 id 重复 第 3/3 位',
+      '场景 tab 上那一位是同一组的第 3 位、总数照全库报 3(按本 tab 数就成了"第 1/1 位",两个 tab 各报一个数),实际:'
+      + JSON.stringify(tagsOf(scene.innerHTML)));
+    // ④ 与已定稿那枚小标同排共存:两枚都在同一张卡的名字旁,新挂的这枚不许把旧的顶掉
+    assert(/🧹 id 重复 第 2\/3 位[\s\S]{0,220}✓ 已定稿/.test(main.innerHTML),
+      '同一张卡上两枚小标同排共存(夹具里 C-第二位 既撞了 id 又已定稿),实际:'
+      + (main.innerHTML.match(/第 2\/3 位[\s\S]{0,220}/) || [''])[0]);
+    // ⑤ 纯展示:渲两遍一个字不写库、一笔任务一分钱都没有,库里的 id 一个没被顺手改掉
+    assertEq(sb.Store._saves, saves, '标记是纯展示:渲染这一路不许写库(它不是"顺手替用户去重")');
+    assertEq(sb.__tasks.length + sb.__charges.length, 0, '标记零上游零 LLM:不许登记任务也不许扣一分钱,实际:'
+      + JSON.stringify({ tasks: sb.__tasks, charges: sb.__charges }));
+    assertEq(p.subjects.map(s => s.id).join(','), 'dup,solo,dup,dup,lone', '渲染之后库里一个 id 都不许变');
+    // ⑥ 收拾干净之后小标跟着消失(与页头那个入口同一下):去重那一下重渲,卡片上再没有可标的
+    main.querySelector('[data-x=dedupe]').onclick();
+    sb.__modals[sb.__modals.length - 1].m.querySelector('[data-x=apply]').onclick();
+    assertEq(tagsOf(main.innerHTML).length, 0, '去重落库之后卡片上一枚小标都不该留(库里没有重复了),实际:'
+      + JSON.stringify(tagsOf(main.innerHTML)));
+    assert(!/data-x="dedupe"/.test(main.innerHTML), '页头那个入口同样跟着消失(两处读同一份扫描)');
+    // ⑦ 源级:位次只读派生那一份,页面不再扫第二遍
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'roles.js'), 'utf8');
+    const i = src.indexOf('function dupSeatTag(');
+    assert(i >= 0, 'js/roles.js 找不到「function dupSeatTag(」(挪窝或改名就同轮改这里,别把本条留成恒真)');
+    const tag = blankNonCode(src.slice(i).split('\n  }')[0], true);
+    assert(tag.length > 100, '「function dupSeatTag(」那一段取不到(同上),实测 ' + tag.length + ' 字');
+    assertEq((tag.match(/Domain\.dupIdScan\(|dedupeScan\(|new Map\(|new Set\(|\.filter\(|\.forEach\(/g) || []).length, 0,
+      '标记那一段不许自己扫一遍表或再攒一份"谁是首位"的记账:位次只读派生现成的那一份(抄一份到这里,'
+      + '卡片上标的第几位与预览里改的那一位就是两套算法):' + tag);
+    const skel = blankNonCode(src, true);
+    assert(skel.includes('Domain.dupIdMarks(dupScan)'),
+      '逐张卡那枚小标的位次须由页头那一份扫描现派生(Domain.dupIdMarks 收下同一个 dupScan);另扫一遍就有两份计划');
+    assertEq((skel.match(/dedupeScan\(p\.subjects\)/g) || []).length, 1,
+      '整页只许扫一遍主体库:页头那个数与卡片上那几枚小标同读这一份(扫两遍迟早给出两种计划)');
+    assertEq((skel.match(/dupSeatTag\(dupMarks, p\.subjects\.indexOf\(s\)\)/g) || []).length, 1,
+      '卡片这一端按"这一位在整库里排第几"取标记(拿 tab 过滤后那张表的下标取就会错位,'
+      + '角色 tab 上第 3 位在全库里可能是第 5 位)');
+  } },
   { name: '分镜面那条去重入口:四视图与剪辑台共用的集级顶栏上真长出来,点开只预览、确认那一下才改 id(一行不删、零计费;uiSel 与镜头组落到同一行,旧审片报告那几条退回首行只报不改)', fn() {
     /* 镜头侧那条命令此前只在 CLI/MCP 上:同 id 多行在分镜表里与两个不同镜头长得一模一样,
      * 页面上要发现它只剩批量生成那句 note 一条路。本条钉的是页面上这条入口,与主体库那条逐格同形
@@ -6797,6 +6877,52 @@ const domainTests = [
     let k = 0;
     const holes = sb.Domain.dupIdScan([{}, { id: 'a' }, {}], () => 'h' + (++k));
     assertEq(holes.plan.map(x => x.order + '→' + x.to).join(','), '2→h1', '第二处缺 id 的同样算撞车,得给它发一个新 id:' + JSON.stringify(holes.plan));
+  } },
+  { name: 'dupIdMarks:同 id 那几处各自的位次只从 dupIdScan 的结果派生——首处算第 1、计划里第 k 条算第 k+1,单位词不进这一层', fn: () => {
+    /* 上一条钉的是规则本身(改哪一处、留哪一处),这一条钉的是同一份结果的逐处投影:
+     * 整组口径说得出"这个 id 有几处要改",说不出"是哪几张卡撞了"——卡片那一端要的是逐张一句
+     * 「这一张是第几处、共几处」。位次与"改哪一处、留哪一处"是同一套序,故收在这里而不是各页面自己数一遍:
+     * 两份数法一漂,卡片上标的第几位就与预览里改的那一位对不上,而用户是照那两处一起读的。 */
+    const sb = loadDomain();
+    const D = sb.Domain;
+    let n = 0;
+    const rows = [{ id: 'a' }, { id: 'b' }, { id: 'a' }, { id: 'c' }, { id: 'b' }, { id: 'a' }];
+    const scan = D.dupIdScan(rows, () => 'new' + (++n));
+    const marks = D.dupIdMarks(scan);
+    const fmt = mk => (mk ? mk.id + ':' + mk.nth + '/' + mk.total : '-');
+    assertEq([0, 1, 2, 3, 4, 5].map(i => fmt(marks[i])).join(' '), 'a:1/3 b:1/2 a:2/3 - b:2/2 a:3/3',
+      '逐处报"第几处 / 共几处",序按表里的位置;不重复的那一处一个格子都不许有,实际:' + JSON.stringify(marks));
+    // 位次与计划是同一套序:首处那一处正是计划碰不到的那一处,后面每一处在计划里各有自己那一条
+    assertEq(Object.keys(marks).length, scan.plan.length + scan.duplicates.length,
+      '标出来的处数 = 计划条数 + 重复的 id 数(每组多标的恰是留原 id 那一处),实际:' + JSON.stringify(marks));
+    scan.duplicates.forEach(d => assertEq(marks[d.keepOrder].nth, 1, d.id + ':留原 id 那一处得算第 1 处(它才是引用解析落到的那一处)'));
+    scan.plan.forEach(x => {
+      assertEq(marks[x.order].id, x.from, '计划里第 ' + x.order + ' 条改的那一处,标记上报的 id 须是它改之前的那个');
+      assert(marks[x.order].nth >= 2, '计划里那几条一律是首处之外的后续处,位次不许还是第 1 处:' + JSON.stringify(marks[x.order]));
+    });
+    // 单位词不进这一层:两端各自换上「位 / 行」,派生只出数字
+    assertEq(Object.keys(marks[0]).join(','), 'id,nth,total', '标记只出 id 与两个数字(位 / 行由调用方在展示那一层换上)');
+    // 换过单位词的扫描结果照样读得动:两端把 n 改名成 seats / rows 之后,位次这一层不该跟着认两个名字
+    const seatsShape = Object.assign({}, scan, { duplicates: scan.duplicates.map(d => ({ id: d.id, seats: d.n, keepOrder: d.keepOrder })) });
+    assertEq(JSON.stringify(D.dupIdMarks(seatsShape)), JSON.stringify(marks),
+      '主体侧那份换过单位词的结果(n → seats)须派生出逐字相同的位次:处数从计划现推,不读那个会改名的字段');
+    // 干净表 / 空表 / 脏入参:一处都不标,也不许抛
+    const nomint = () => { assert(false, '没有撞车时不许发号'); };
+    assertEq(JSON.stringify(D.dupIdMarks(D.dupIdScan([{ id: 'a' }, { id: 'b' }], nomint))), '{}', '干净的表:一张卡都不标');
+    [undefined, null, 'a', 0, {}, { duplicates: 'x', plan: 'y' }].forEach(bad => {
+      let out;
+      try { out = D.dupIdMarks(bad); }
+      catch (e) { assert(false, '脏入参不许抛(渲染那一层拿到什么都得渲得出来):' + JSON.stringify(bad) + ' → ' + e.message); }
+      assertEq(JSON.stringify(out), '{}', '脏入参一律回空表:' + JSON.stringify(bad));
+    });
+    // 缺 id 的那几处照同一套算(与 dupIdScan 同口径:第二处缺 id 的也是撞车)
+    let k = 0;
+    const holes = D.dupIdMarks(D.dupIdScan([{}, { id: 'a' }, {}], () => 'h' + (++k)));
+    assertEq([0, 1, 2].map(i => (holes[i] ? holes[i].nth + '/' + holes[i].total : '-')).join(' '), '1/2 - 2/2',
+      '缺 id 的那两处照同一套数(id 缺着不等于没撞车),实际:' + JSON.stringify(holes));
+    // 手攒的重复面缺了首处序号时整组不标:不许留一个按 undefined 取的格子(那个格子会标到"第 NaN 位"上去)
+    assertEq(JSON.stringify(D.dupIdMarks({ duplicates: [{ id: 'a', n: 2 }], plan: [{ order: 1, from: 'a', to: 'z' }] })), '{}',
+      '缺首处序号的那一组数不出位次,整组一处不标(留个 undefined 格子会渲成一枚谁也对不上的小标)');
   } },
 ];
 
@@ -9887,6 +10013,10 @@ const GUARD_TOPICS = [
     why: '主体库页面那条去重入口与 CLI 同读一份规则:页面这一端只注入自己的发号器(Store.uid)与单位词,'
       + '预览与落库同调一个扫描、写库只在确认那一下——把规则抄到页面上行为可以完全一样,'
       + '而两份计算一旦漂,用户照预览点的那个头就不作数了' },
+  { id: 'dedupe-card-mark-derive', anchors: ['Domain.dupIdMarks(', 'function dupSeatTag('],
+    why: '主体库卡片上那枚「第几位 / 共几位」小标的位次只从页头那一份扫描派生(Domain.dupIdMarks 收下同一个结果),'
+      + '页面不再扫第二遍:各扫一遍时卡片上标的第几位与预览里改的那一位就是两套算法,'
+      + '而"哪几张卡撞了 id"与"确认那一下改哪几位"正是用户一起读的两句话' },
   { id: 'dedupe-shots-ui-single', anchors: ['function openShotDedupe(', 'Domain.reviewRows('],
     why: '分镜面那条去重入口与 CLI 同读一份规则(页面只注入 Store.uid 那个发号器与镜头侧单位词),'
       + '而预览里那句「旧审片报告会塌几条」只许拿 Domain.reviewRows 在两棵表上各跑一遍现算——'
@@ -9905,7 +10035,7 @@ const GUARD_TOPICS = [
  *   3. 销号必须显式落笔——编号搬进 GUARD_TOPICS_CLOSED 并写下闭合理由,锚点原样搬过来,
  *      好让"这道护栏是真没了,还是被别的主题接手了"事后仍判得出来。
  * 有意不禁新登记主题:在册多出花名册没有的号一条不红,加主题照旧只改上面那张表。 */
-const TOPIC_FLOOR = 23;
+const TOPIC_FLOOR = 24;
 const GUARD_TOPICS_CLOSED = [
   /* 形状:{ id: '主题编号', anchors: [原样搬过来], why: '这道护栏原本守什么',
    *        closed: '为什么可以不守了(被守的那一面已不存在 / 判据并进了哪一条)',
@@ -14109,7 +14239,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-      [['单元测试', 705, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+      [['单元测试', 707, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
