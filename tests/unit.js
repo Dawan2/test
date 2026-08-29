@@ -234,7 +234,8 @@ function loadProduce() {
       sb.__called.push('reviewShot');
       const issues = sb.__reviewIssues || [];
       const seq = sb.__reviewSeq && sb.__reviewSeq[s.id];
-      if (seq) { const n = sb.__reviewCalls[s.id] || 0; sb.__reviewCalls[s.id] = n + 1; return { score: seq[Math.min(n, seq.length - 1)], issues }; }
+      // 同 id 多行共用一条序列,按调用次序取:第 n 次评审拿第 n 个分,报告 id 也带上次序(逐行归属可辨)
+      if (seq) { const n = sb.__reviewCalls[s.id] || 0; sb.__reviewCalls[s.id] = n + 1; return { id: 'rv#' + n, score: seq[Math.min(n, seq.length - 1)], issues }; }
       return sb.__reviewResult === undefined ? { score: 8, issues } : sb.__reviewResult;
     },
     optimizeShot: async (p, ep, s, r, main, autoApply) => { // 重抽前消费 issues 修订提示词(produce 质量闭环)
@@ -1952,6 +1953,44 @@ const produceTests = [
     assertEq(moved.r.pass, 0, '达标线挪高一格后,原压线分不再达标');
     assert(!moved.ep.shots[0].confirm, '达标线挪高后不许还按旧线替用户确认');
     assert(!selfContradicts(moved.ep), '达标线挪一格后闭环与分集状态仍须是同一条结论');
+  } },
+  { name: 'autoSmartReview:同 id 多行逐行记报告——后一行不许盖掉前一行的分与 reportId', fn: async () => {
+    /* 分镜表允许同 id 多行(去重那一路有意不动引用面),而闭环此前把每镜报告按 s.id 记在一个字典里:
+     * 同 id 的后一行一写就把前一行那份覆盖掉。收尾写回 ep.lastReview 时逐行条目条数并不少——
+     * 每行仍出一条,只是 score/reportId/videoInputHash 全是最后一行那一份。后果有三层:
+     *   1. 整集均分按最后一行那一分乘以行数算(此例真分 5/9 应为 7,覆盖后报 9);
+     *   2. 逐行低分被抹平,按 perShot 派生的重抽名单要么整体空掉、要么把达标行一起拉进去重抽烧钱;
+     *   3. reportId 指错行,整集报告页按它回取原报告时几行读到同一份。
+     * 判据不看"条数对不对"(覆盖时条数一直是对的),看逐行的分与 reportId 各归各行。 */
+    const sb = loadProduce();
+    const rows = [makeShot(0, { id: 'dup' }), makeShot(1, { id: 'dup' })];
+    const ep = makeEp({ content: '剧本正文', composed: false, shots: rows, sbConfig: { maxRetry: 1 } });
+    sb.__reviewSeq = { dup: [5, 5, 9] }; // 行1:首评 5 → 重抽后仍 5 → 转人工;行2:9 达标
+    const r = await sb.SB.autoSmartReview({ id: 'p1', subjects: [] }, ep, null, ep.shots, true);
+    assertEq(r.pass, 1); assertEq(r.manual, 1, '行1 恒不达标应转人工');
+    assertEq(JSON.stringify(ep.shots.map(s => !!s.confirm)), '[false,true]', '只有达标那一行被替用户确认');
+    const per = ep.lastReview.perShot;
+    assertEq(per.length, 2, '两行各出一条(perShot 是按行的,同 id 不合并)');
+    assertEq(JSON.stringify(per.map(x => x.score)), '[5,9]', '逐行分各归各行:行1 那份 5 分不许被行2 的 9 分盖掉');
+    assertEq(new Set(per.map(x => x.reportId)).size, 2, '两行的 reportId 须各是各的(整集报告页按它回取原报告)');
+    assertEq(ep.lastReview.avg, 7, '整集均分按逐行真分算((5+9)/2),不是最后一行那一分');
+    /* 与修订面派生对得上:低分那一行按行序数落到自己那一行,达标行不进重抽名单 */
+    const tg = sb.Domain.reviseTargets(ep);
+    assertEq(JSON.stringify(tg.map(t => [t.order, t.score, t.nth])), '[[1,5,0]]',
+      '重抽名单只该有行1(实位 1、5 分、同 id 第 0 行);覆盖时这里要么空、要么两行全在');
+  } },
+  { name: 'autoSmartReview:同 id 里没审成的那一行不许挂上兄弟行的报告', fn: async () => {
+    /* 按 id 记还有一个反向后果:行1 审过、行2 积分不足一分未评时,收尾那句 `targets.filter(有报告)`
+     * 按 id 查也判行2"有报告",于是行2 凭空多出一条按行1 那份分算的条目——
+     * 一次没审的行在整集报告里成了达标行,发布门与均分都按它放行。 */
+    const sb = loadProduce();
+    const rows = [makeShot(0, { id: 'dup' }), makeShot(1, { id: 'dup' })];
+    const ep = makeEp({ content: '剧本正文', composed: false, shots: rows, sbConfig: { maxRetry: 1 } });
+    let n = 0;
+    sb.Review.reviewShot = async () => (n++ ? null : { id: 'rv0', score: 9, issues: [] }); // 第二次调用起积分不足
+    await sb.SB.autoSmartReview({ id: 'p1', subjects: [] }, ep, null, ep.shots, true);
+    assertEq(ep.lastReview.perShot.length, 1, '只有真审过的那一行出条目');
+    assertEq(ep.lastReview.perShot[0].order, 0, '出条目的是行1(order 0),不是没审成的行2');
   } },
   { name: 'autoSmartReview:quiet 不建 dock;非 quiet 建 dock', fn: async () => {
     const sb = loadProduce();
@@ -12846,7 +12885,7 @@ action 二选一:
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
     [['单元测试', 671, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
-      ['集成测试', 148, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
+      ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
       assert(live >= floor, label + '用例数不得少于 ' + floor + '(实测 ' + live + ');确要删测须同轮说明理由,新增用例时把下限抬到当轮实况');
