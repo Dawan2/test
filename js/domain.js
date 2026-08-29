@@ -662,6 +662,13 @@
     const i = list.indexOf(item);
     return i >= 0 ? i : list.findIndex(x => x && item && x.id === item.id);
   };
+  /* 展示面镜号(1 起,只管"给人看的序号"):按行对位取分镜表内实位,不读 s.order。
+   * order 是落库字段,增删镜/换序后与实位漂移,展示上就会出现两镜同号或跳号;
+   * 表里已经没有这一镜时回 0(0 不是任何一镜的镜号,展示面据此按"未知"出)。 */
+  D.shotNo = function (rows, shot) {
+    const i = D.rowIndexOf(rows, shot);
+    return i >= 0 ? i + 1 : 0;
+  };
   D.reviewRows = function (ep) {
     const shots = (ep && ep.shots) || [];
     const rowsOf = Object.create(null); // id → 该 id 各行的实位下标

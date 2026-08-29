@@ -5352,6 +5352,20 @@ const domainTests = [
     assertEq(tg.map(t => [t.order, t.nth, t.reportId].join(':')).join(','), '1:0:rv0,3:1:rv2',
       '重抽面的实位/序数/报告 id 与 reviewRows 逐格对得上');
   } },
+  { name: '展示面镜号单源:shotNo 取表内实位,不读会漂移的 order 字段(表里没这一镜时回 0)', fn: () => {
+    const sb = loadDomain();
+    const D = sb.Domain;
+    /* 镜号是"给人看的序号",此前展示面一律读 s.order + 1:order 是落库字段,插镜/删镜/换序后
+     * 没人重排它就与实位漂移——同一张表上会出现两镜同号或跳号,点进第三行的报告说的却是"镜头 1"。
+     * 这里钉的是取法本身:镜号长在 rowIndexOf 那一套行对位上,不再各处读字段。 */
+    const r0 = { id: 'dup', order: 5 }, r1 = { id: 'solo', order: 5 }, r2 = { id: 'dup', order: 0 };
+    const rows = [r0, r1, r2];
+    assertEq(rows.map(s => D.shotNo(rows, s)).join(','), '1,2,3', '镜号按实位逐行出(读 order 字段时是 6,6,1)');
+    assertEq(D.shotNo(rows, r2), 3, '同 id 的第二行报自己那一行的号(按 id 取首行时报 1)');
+    assertEq(D.shotNo(rows, { id: 'dup' }), 1, '不是同一棵树上的对象时与 rowIndexOf 同兜底:退回按 id 首行');
+    assertEq(D.shotNo(rows, { id: 'gone' }), 0, '表里已没有这一镜时回 0,不拿首行的号冒充');
+    assertEq(D.shotNo(null, r0), 0, '空表不抛');
+  } },
   { name: 'reviseRetryLimit:收敛次数单源——缺省 2、越界向内钳、小数截整、候选值按优先级择先', fn: () => {
     const sb = loadDomain();
     const D = sb.Domain;
@@ -9476,6 +9490,29 @@ const contractTests = [
     assertEq((bo.match(/\.find(?:Index)?\(x => x\.id ===/g) || []).length, 0,
       'js/batchops.js 全文不许再有"按 id 取该 id 第一条"的寻址(与展示面同一套行对位)');
   } },
+  { name: '审片展示面镜号(源级):整集报告视图与批量汇总面都按 Domain.shotNo 取实位,段内零 order + 1', fn() {
+    /* 镜号是给人看的序号,读 order 字段就会随插镜/删镜/换序漂移。两块展示面是同一条面上的两半,
+     * 只收一半就会出现"同一批镜在汇总面报一个号、在整集报告里报另一个号",故两段一起钉;
+     * 取法本身长在 rowIndexOf 那一套行对位上,不许在展示层另抄一份对位。 */
+    const rv = fs.readFileSync(path.join(ROOT, 'js', 'review.js'), 'utf8');
+    const bo = fs.readFileSync(path.join(ROOT, 'js', 'batchops.js'), 'utf8');
+    const dom = fs.readFileSync(path.join(ROOT, 'js', 'domain.js'), 'utf8');
+    const i = rv.indexOf('function openEpisodeReport(');
+    assert(i > 0, 'review.js 应有整集报告视图(改名就同轮改这条判据,别把它留成恒真)');
+    const seg = rv.slice(i, rv.indexOf('/* ---- 审片记录列表 ----', i));
+    const j = bo.indexOf('function openReviewSummary(');
+    assert(j > 0, 'batchops.js 应有多镜审片汇总面(改名就同轮改这条判据)');
+    const seg2 = bo.slice(j, bo.indexOf('window.BatchOps = ', j));
+    assert(seg.length > 2000 && seg2.length > 800, '两段有一段截不全(段界字面变了就同轮改这里)');
+    [['整集报告视图', seg], ['批量审片汇总面', seg2]].forEach(([label, s]) => {
+      assert(/Domain\.shotNo\(ep\.shots, /.test(s), label + '的镜号应取 Domain.shotNo(表内实位)');
+      assertEq((s.match(/\.order \+ 1/g) || []).length, 0, label + '不许再按 order 字段出镜号(增删镜后与实位漂移)');
+      assertEq((s.match(/\.order \|\| 0\) \+ 1/g) || []).length, 0, label + '缺失行同样不许读 perShot 里记的旧位');
+    });
+    assert(/D\.shotNo = function/.test(dom), '镜号取法的定义应在 domain.js 一处(双端同读)');
+    assert(/D\.shotNo = function[\s\S]{0,200}D\.rowIndexOf\(rows, shot\)/.test(dom),
+      'shotNo 应长在 rowIndexOf 之上,不在展示层或 domain 里另抄一份对位');
+  } },
   { name: '修订闭环重抽面单源:server/CLI/助手摘要/问题中心都不自筛低分镜,CLI 不摘回执 lowShots 当 shotIds', fn() {
     /* G-03 这一面钉的是"该重抽哪几镜由编排层派生":判据(达标线 / 报告判旧 / 与分镜表取交集 / 定稿不重抽)
      * 只在 Domain.reviseTargets 一份里,四处消费点谁抄回一份 score < 7 或把回执里的 lowShots 当名单用都红在这里。 */
@@ -13038,7 +13075,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 682, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 686, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -15047,6 +15084,71 @@ const skillsTests = [
     assert(jumped[0].report === batch[2], '开的应是本批第三行那一份报告(取 s.reviews[0] 时是后来那条 9.9 分的)');
     assertEq(modals.length, 3, '报告页应开出来');
     assert(modals[2].body.includes('视频 #1-3'), '报告页镜号应报第三镜');
+  } },
+  { name: '整集报告视图镜号按实位:order 字段漂了也逐行报自己的号(缺失那一行同口径,导出文本同一份号)', fn: () => {
+    /* 报告视图上的"镜头 N"此前取 s.order + 1、缺失行取 perShot.order + 1:两者都是落库字段,
+     * 插镜/删镜/换序后没人重排它就与实位对不上——一份三镜报告能报出"镜头 8/8/1",点第三行进去
+     * 又按实位显示第三镜。镜号改取 Domain.shotNo(表内实位)后,清单、缺失行、导出文本报的是同一个号。 */
+    const sb = loadReview();
+    const modals = [];
+    sb.U.openModal = o => { modals.push(o); };
+    const dl = [];
+    sb.U.downloadText = (name, text) => { dl.push(text); };
+    const dim = n => ({ score: n, comment: '评语', suggestion: '建议' });
+    const mk = (id, order, rid, score) => Object.assign(rvShot({ id, order }), {
+      reviews: rid ? [{ id: rid, score, model: '本地模拟评审', mode: 'local', time: '2026-08-22 12:00:00',
+        issues: [], checks: [], dimensions: { technical: dim(score), matching: dim(score), directing: dim(score) } }] : [],
+    });
+    // order 字段一律与实位对不上:两行同报 8、第三行报 1、末行报 10(实位是 1/2/3/4)
+    const rows = [mk('a', 7, 'rvA', 9), mk('b', 7, 'rvB', 8), mk('c', 0, 'rvC', 4), mk('d', 9, '', 0)];
+    const ep = { id: 'ep1', title: '第一集', shots: rows,
+      lastReview: { time: '2026-08-22 12:00:00', avg: 7, common: { summary: '', issues: [] }, cut: null,
+        perShot: [
+          { shotId: 'a', order: 7, score: 9, reportId: 'rvA' },
+          { shotId: 'b', order: 7, score: 8, reportId: 'rvB' },
+          { shotId: 'c', order: 0, score: 4, reportId: 'rvC' },
+          { shotId: 'd', order: 9, score: 3, reportId: 'rvGone' }, // 报告已被挤出最近 5 条:走缺失那一档
+        ] } };
+    ep.lastReview.snapshotHash = sb.WfCore.reviewSnapshotHashOf(ep);
+    const p = { id: 'p1', name: '逆袭', style: '漫剧', episodes: [ep], subjects: [] };
+    sb.Review.openEpisodeReport(p, ep, null);
+    assertEq(modals.length, 1);
+    const body = modals[0].body;
+    assertEq([...body.matchAll(/flex:none">镜头 ([^<]*)</g)].map(x => x[1]).join(','), '1,2,3,4',
+      '四行镜号按分镜表实位出(读 order 字段时是 8,8,1,10)');
+    assert(body.includes('原报告已缺失'), '夹具前提:末行的报告确实取不回来(走的是缺失那一档)');
+    assert(body.includes('3.0'), '缺失行的得分仍按 perShot 快照展示(镜号换取法不动分)');
+    // 导出文本与屏幕上那份清单同一个号(此前两处各读一次 order,同漂但也同错)
+    const btns = {};
+    modals[0].onMount({ querySelector: sel => (btns[sel] = btns[sel] || { onclick: null }), querySelectorAll: () => [] }, () => {});
+    btns['[data-x=export]'].onclick();
+    assertEq(dl.length, 1, '导出应产出一份文本');
+    assertEq((dl[0].match(/镜头(\d+):/g) || []).join(','), '镜头1:,镜头2:,镜头3:', '导出文本的镜号同取实位');
+  } },
+  { name: '批量审片汇总镜号按实位:order 字段漂了也逐行报自己的号(与整集报告视图同一套)', fn: async () => {
+    /* 汇总面与整集报告视图是同一条展示面上的两块:一处改一处不改,同一批镜在两块上报的号会不一样。
+     * 这里跑的是真实路径(选择模式 → 确认 → 批量审片 → 汇总面),镜号从渲染产物上取。 */
+    const sb = loadReview();
+    loadFile(sb, 'batchops.js');
+    // order 字段与实位对不上:三行分别自称 5/9/0(实位 1/2/3)
+    const rows = [rvShot({ id: 'sh_a', order: 5, prompt: '五官稳定不变形,首行' }),
+      rvShot({ id: 'sh_b', order: 9, prompt: '五官稳定不变形,第二行' }),
+      rvShot({ id: 'sh_c', order: 0, prompt: '五官稳定不变形,第三行' })];
+    const ep = { id: 'ep1', title: '第一集', shots: rows };
+    const p = { id: 'p1', name: '逆袭', style: '漫剧', episodes: [ep], subjects: [] };
+    let uid = 0;
+    sb.Store.uid = pre => pre + '_u' + (++uid);
+    const modals = [];
+    sb.U.openModal = o => { modals.push(o); };
+    sb.BatchOps.enter(p, ep, null, 'review');
+    rows.forEach(s => sb.BatchOps.toggle(s.id, p, ep, null));
+    sb.BatchOps.confirm(p, ep, null);
+    const nodes = {};
+    modals[0].onMount({ querySelector: sel => (nodes[sel] = nodes[sel] || { onclick: null }), querySelectorAll: () => [] }, () => {});
+    await nodes['[data-x=ok]'].onclick();
+    assertEq(modals.length, 2, '多镜审完应弹汇总面');
+    assertEq([...String(modals[1].body).matchAll(/flex:none">镜头 ([^<]*)</g)].map(x => x[1]).join(','), '1,2,3',
+      '汇总面镜号按分镜表实位出(读 order 字段时是 6,10,1)');
   } },
   { name: '离线评审按行对位:时间码从本行之前累起,景别衔接比的是本行的上一镜', fn: async () => {
     /* 本地模拟评审那几条硬检查也是展示面:时间码按 id 断在首行时,同 id 后几行的"关键问题定位"
