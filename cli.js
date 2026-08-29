@@ -927,14 +927,24 @@ CMD['gen-episode'] = async (a, f) => {
     if (!f['include-unconfirmed'] && !s.confirm) return false; // 确认闸(与前端批量规则一致)
     return true;
   });
-  if (!todo.length) return { episode: ep.id, total: 0, ok: 0, failed: [], skipped: '无可生成镜头(确认闸/已出片/终稿)' };
+  if (!todo.length) return { episode: ep.id, total: 0, ok: 0, landed: 0, failed: [], skipped: '无可生成镜头(确认闸/已出片/终稿)' };
   log('整集生成:' + todo.length + ' 镜待处理(串行,服务端限流)…');
-  const result = { episode: ep.id, total: todo.length, ok: 0, failed: [], shots: {} };
+  const result = { episode: ep.id, total: todo.length, ok: 0, landed: 0, failed: [], shots: {} };
+  /* 本轮那条片真落到哪一行(id + 它在同 id 那几行里排第几):这一端每轮回最新树按 findShot 取,
+   * 取的是首行——同 id 占着三行的一趟会把三份产物全写在首行身上,引擎三次都成功、result.ok 照数三次,
+   * 而到手片只有一份(后一轮盖了前一轮)。ok 的口径不改(它记的是引擎调用成功次数,计费同口径,
+   * 这几次都真花了钱,改成 failed 就是拿假失败掩盖真扣费),回执另报 landed = 真落到几行。
+   * 座位键得带 id:只记行内序数时,一趟里各占一行的不同 id 会全记成第 0 行、landed 缩成 1。
+   * 座位现算而不是抄 result.ok:哪天这一端也改成按序数重取,两个数会自己跟着岔开。
+   * result.shots 按 id 记同样收不住这件事(同 id 几行只剩一个键),故落库数只看 landed。 */
+  const seats = new Set();
   for (const s of todo) {
+    let seat = '';
     try {
       const r = await withProject(a[0], f, async (projLive) => {
         const epLive = findEp(projLive, a[1]);
         const sLive = findShot(epLive, s.id);
+        seat = sLive.id + '#' + (epLive.shots || []).filter(x => x.id === sLive.id).indexOf(sLive);
         if (!sLive.image && !f['no-image']) { // 缺底图先补(廉价文生图,失败即停该镜不碰视频)
           const img = await genImage(sLive.prompt || sLive.plot || ('镜头' + sLive.order), f, {});
           sLive.image = img.url;
@@ -949,6 +959,7 @@ CMD['gen-episode'] = async (a, f) => {
       });
       if (r.ret) throw r.ret;
       result.ok++;
+      seats.add(seat);
       result.shots[s.id] = 'done';
       log('镜 ' + s.id + ' ✓ (' + result.ok + '/' + todo.length + ')');
     } catch (e) {
@@ -957,6 +968,10 @@ CMD['gen-episode'] = async (a, f) => {
       log('镜 ' + s.id + ' ✗ ' + e.message);
     }
   }
+  result.landed = seats.size;
+  /* ok 与 landed 岔开(几轮共用了同一行)时把差在哪说出来,与 exec 两条批量、前端 digest 同读 Domain.landedNote 一份 */
+  const landedNote = Domain.landedNote(result.ok, result.landed, '行');
+  if (landedNote) { result.note = landedNote; log(landedNote); }
   return result;
 };
 CMD.wait = async (a, f) => {
