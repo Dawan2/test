@@ -291,6 +291,22 @@ async function main() {
   const upClean = await req('POST', '/api/upload', { name: 'clean.png', dataBase64: PNG1 }, token2);
   report('超 1 小时 tmp_ 残留被上传顺带清理', upClean.status === 200 && !fs.existsSync(path.join(dir2, 'tmp_craftresidue')), 'HTTP ' + upClean.status);
 
+  /* ============ 测试 13.1(W319):上传端点回执形状——成功一律带非空 url,拒收一律非 2xx ============
+   * 落库那一路(CLI subject-image --file)把「2xx 却没有 url」当失败抛,那道闸只在回执反常时才起作用;
+   * 这里从服务端这一侧钉住反常本身产不出来:成功分支只发 {url} 且非空,拒收分支一律非 2xx、回执里没有 url。
+   * 两面一起判才说得出那道闸是纯防御——只判成功面的话,把某个拒收分支改成 200 空回执照旧全绿,
+   * 而客户端一旦信了那种回执,用户原有的图就被空串顶掉。 */
+  const upShape = await req('POST', '/api/upload', { name: 'shape.png', dataBase64: PNG1 }, token);
+  report('上传成功回执带非空 url(落库那一路认的就是这一个字段)',
+    upShape.status === 200 && upShape.code === 0 && typeof (upShape.data || {}).url === 'string' && String(upShape.data.url).trim().length > 0,
+    'HTTP ' + upShape.status + ' ' + JSON.stringify(upShape.data));
+  const upNoData = await req('POST', '/api/upload', { name: 'empty.png', dataBase64: '' }, token);
+  report('缺文件数据一律非 2xx 且回执无 url(2xx 空回执会让客户端拿空串顶掉原有的图)',
+    upNoData.status >= 400 && !((upNoData.data || {}).url), 'HTTP ' + upNoData.status + ' ' + JSON.stringify(upNoData.data || upNoData.msg));
+  const upBadExt = await req('POST', '/api/upload', { name: 'evil.svg', dataBase64: PNG1 }, token);
+  report('不支持的文件类型一律非 2xx 且回执无 url(同上,拒收不许走成功分支)',
+    upBadExt.status >= 400 && !((upBadExt.data || {}).url), 'HTTP ' + upBadExt.status + ' ' + JSON.stringify(upBadExt.data || upBadExt.msg));
+
   /* ============ 测试 14(R19):audit.jsonl 只追加审计——资金变动逐行落盘可对账 ============ */
   const auditFile = path.join(TMP, 'data', 'audit.jsonl');
   const auditLines = fs.existsSync(auditFile) ? fs.readFileSync(auditFile, 'utf8').trim().split('\n').map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean) : [];
