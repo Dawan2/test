@@ -192,7 +192,8 @@
     /* 十六轮:视频生成中的分镜直接拦截(扣费前)——画面未定型,审出来的报告绑定空 inputHash,
      * 视频落片瞬间即判旧版,等于花钱买过时报告;整集审片路径已在 openEpisodeReview 预过滤,不会走到这 */
     if (!opt.free && s.video && s.video.status === 'generating') {
-      U.toast(`镜头${s.order + 1} 视频仍在生成中,请生成完成后再审片`, 'error', 3000);
+      // 拦截提示里的镜号是给人看的,取 Domain.shotNo(分镜表实位);下面的任务名/扣费摘要是落库文本,仍按 s.order 记
+      U.toast(`镜头${Domain.shotNo(ep.shots, s) || '?'} 视频仍在生成中,请生成完成后再审片`, 'error', 3000);
       return null;
     }
     const tk = Tasks.start({ type: '一键审片', model: API.isReady() ? '审片LLM' : '本地模拟评审', target: `${ep.title}·镜头${s.order + 1}`, cost: opt.free ? 0 : COST.review, projectId: p.id, episodeId: ep.id, shotId: s.id });
@@ -237,13 +238,14 @@
 
   function reportModalHTML(p, ep, s, r) {
     const epIdx = Domain.rowIndexOf(p.episodes || [], ep) + 1; // 集号同按行对位:同 id 多集时按 id 取首集会把集号报成第一集
+    const shotNo = Domain.shotNo(ep.shots, s) || '?'; // 镜号同按行对位取表内实位,不读会与实位漂移的 s.order
     const modeName = { vision: '视觉模型连图审', text: '文本模型', local: '本地模拟' }[r.mode] || r.mode;
     return `
     <div class="rv-head">
       <div>
         <div class="rv-score-label">审核得分</div>
         <div class="rv-score">${r.score.toFixed(1)} <small>/ 10</small></div>
-        <div class="hint" style="margin-top:4px">视频 #${epIdx}-${s.order + 1} · 审片结果预览 · ${U.esc(r.time)}<span class="rv-mode">${modeName} · ${U.esc(r.model)}</span>${r.optimized ? '<span class="tag green" style="margin-left:6px">已一键优化</span>' : ''}</div>
+        <div class="hint" style="margin-top:4px">视频 #${epIdx}-${shotNo} · 审片结果预览 · ${U.esc(r.time)}<span class="rv-mode">${modeName} · ${U.esc(r.model)}</span>${r.optimized ? '<span class="tag green" style="margin-left:6px">已一键优化</span>' : ''}</div>
       </div>
       <div class="rv-chips">
         ${DIMS.map(([k, name]) => `<span class="rv-chip ${chipCls(r.dimensions[k].score)}">${name} ${r.dimensions[k].score.toFixed(1)}</span>`).join('')}
@@ -343,9 +345,11 @@
   }
 
   function exportReport(p, ep, s, r) {
+    // 抬头与文件名同一个镜号:都是给人看的、都不进归档对照(downloadText 只是瞬时下载),同取表内实位
+    const shotNo = Domain.shotNo(ep.shots, s) || '?';
     const lines = [
       '一键审片报告 · 虎鲸漫剧', '='.repeat(40),
-      `项目:${p.name} · 分集:${ep.title} · 镜头:${s.order + 1}`,
+      `项目:${p.name} · 分集:${ep.title} · 镜头:${shotNo}`,
       `审核得分:${r.score.toFixed(1)} / 10(${r.model} · ${r.time})`, '',
       ...DIMS.map(([k, name]) => `【${name} ${r.dimensions[k].score.toFixed(1)}】\n评语:${r.dimensions[k].comment}\n建议:${r.dimensions[k].suggestion}\n`),
       '关键问题定位:',
@@ -353,7 +357,7 @@
       '', '方法论校验命中(本地判据,只提醒不拦生成,不计入评分):',
       ...(r.checks.length ? r.checks.map(c => `- ${checkName(c)}(${c.level})\n  ${c.hits.map(checkLine).join(';')}`) : ['无']),
     ].join('\n');
-    U.downloadText(`审片报告_${p.name}_${ep.title}_镜头${s.order + 1}.txt`, lines);
+    U.downloadText(`审片报告_${p.name}_${ep.title}_镜头${shotNo}.txt`, lines);
     U.toast('报告已导出', 'success');
   }
 
@@ -724,7 +728,7 @@
   function openReviewHistory(p, ep, s, main) {
     const list = (s.reviews || []).map(normReview); // 结构兜底:旧记录可能缺 dimensions/issues
     U.openModal({
-      title: `审片记录 · 镜头 ${s.order + 1}(${list.length})`,
+      title: `审片记录 · 镜头 ${Domain.shotNo(ep.shots, s) || '?'}(${list.length})`,
       body: list.length ? list.map((r, i) => `
         <div class="card" style="margin-bottom:10px;padding:12px;cursor:pointer" data-rv="${i}">
           <div class="row" style="justify-content:space-between">
