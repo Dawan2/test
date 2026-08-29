@@ -5487,6 +5487,67 @@ const commandsTests = [
     assertEq(none.r.total + '/' + none.r.ok, '0/0', '前提:确认闸把这一镜挡在外面,零调用');
     assertEq(none.r.landed, 0, '空跑回执也得带 landed:0(字段时有时无,调用方就得先判 undefined)');
   } },
+  { name: 'CLI gen-episode 补底图那一步同样落到本轮那一行:同 id 多行各补各的底图,不许几张全写在首行身上', fn: async () => {
+    /* 上一条钉的是视频那台引擎,而 gen-episode 这一路串着**两台**:缺底图的镜先补一张文生图再生视频。
+     * 补图那一步的写回同样得落到本轮那一行——按 id 取首行的话,同 id 三行缺图的一趟三张图全写在首行身上,
+     * 扣三笔生图钱只有一行到手图,后两行仍是无图、下一轮照旧判"缺底图"再补一遍;
+     * 而视频那半边的判据一条不红(片照旧逐行落,只是拿无图的镜去生的)。
+     * 取数那一侧同形:提示词若也按 id 取首行,三行拿到的是同一段内容生出来的图,各行自己的剧情压根没进过引擎。
+     * 落库面读 clone 语义的 disk 夹具(编排层只在自己手里那份快照上改一改也会看起来"落库了");
+     * 生图桩按下发次序给各不相同的图,并把收到的提示词原样带进 url——"写回哪一行"与"提示词取哪一行"
+     * 两件事各自造得出红。exec episode.generateVideos 走的是同一段补图逻辑,末档一并钉住。 */
+    const bare = { confirm: true, video: { status: 'none' } }; // 有意不给 image:这一趟得先补底图
+    const dupRows = () => [
+      makeShot(0, Object.assign({ id: 'dup', plot: '首行', prompt: '首行提示词' }, bare)),
+      makeShot(1, Object.assign({ id: 'solo', plot: '不重复的那一镜', prompt: '不重复提示词' }, bare)),
+      makeShot(2, Object.assign({ id: 'dup', plot: '第二行', prompt: '第二行提示词' }, bare)),
+      makeShot(3, Object.assign({ id: 'dup', plot: '第三行', prompt: '第三行提示词' }, bare)),
+    ];
+    const pics = ss => ss.map(s => s.plot + ':' + (s.image || '无图')).join(' | ');
+    const withPic = ss => ss.filter(s => s.image);
+    const ownPic = ss => ss.map(s => (s.image || '').includes(s.prompt)).join(',');
+    const run = async (shots, viaExec) => {
+      const sb = loadCli();
+      const fx = cliDisk(sb, { shots });
+      const prompts = [];
+      /* 序号保证每张图各不相同,提示词原样带进 url:取错行时图片内容就跟着错行(光看"有没有图"看不出来) */
+      sb.genImage = async (prompt) => { prompts.push(prompt); return { url: '/uploads/img/i' + prompts.length + '-' + prompt + '.png' }; };
+      sb.genShotVideo = async (proj, epLive, s) => {
+        sb.__genShots.push(s.id);
+        s.video = { status: 'done', url: '/uploads/gen/v' + sb.__genShots.length + '.mp4' };
+        return s;
+      };
+      const r = viaExec
+        ? (await sb.EXEC['episode.generateVideos'].run({ pid: 'p1', epid: 'ep1' }, {})).result
+        : await sb.CMD['gen-episode'](['p1', 'ep1'], {});
+      return { r, prompts, rows: fx.epOf().shots };
+    };
+    // ① 同 id 三行 + 一行不重复,四行都缺底图:四笔生图钱四行到手图,四张各不相同且各按各行的提示词生
+    const g = await run(dupRows());
+    assertEq(g.prompts.length, 4, '前提:四行都缺底图,四行都真下发到生图引擎(四笔生图钱)');
+    assertEq(g.r.failed.length, 0, '前提:四轮都成功,一次也没失败:' + JSON.stringify(g.r.failed));
+    assertEq(withPic(g.rows).length, 4,
+      '扣了四笔生图钱就得有四行到手底图,不能几张全写在首行身上(后两行仍无图,下一轮照旧判"缺底图"再补一遍),实际:' + pics(g.rows));
+    assertEq(new Set(withPic(g.rows).map(s => s.image)).size, 4,
+      '四行手里得是四张不同的图(同一张写几遍等于只买到一张):' + pics(g.rows));
+    assertEq(ownPic(g.rows), 'true,true,true,true',
+      '每一行补的图得是按它自己那一行的提示词生的(提示词按 id 取首行时后两行拿到的是首行那段内容):' + pics(g.rows));
+    assertEq(g.r.ok + '/' + g.r.landed, '4/4', '补过底图的这一趟照旧按行计:四笔视频钱四行落库');
+    // ② 首行本来就有底图:补图这一步同样按序数认行,已有那张一个字不许被后面几行盖掉
+    const pre = dupRows();
+    pre[0].image = 'old.png';
+    const keep = await run(pre);
+    assertEq(keep.prompts.length, 3, '前提:已有底图的首行不进生图引擎,只补剩下三行');
+    assertEq(keep.rows[0].image, 'old.png',
+      '已有底图的首行这一趟一个字不许被改写(补图按 id 取首行时它先被第二行那张盖掉):' + pics(keep.rows));
+    assertEq(withPic(keep.rows).length, 4, '三笔生图钱补上三行,连同原有那行共四行到手底图:' + pics(keep.rows));
+    // ③ exec episode.generateVideos 走的是同一段补图逻辑:两条批量路径得落到同一个结果上
+    const e = await run(dupRows(), true);
+    assertEq(e.prompts.length, 4, '前提:exec 整集那一路同样四行全补');
+    assertEq(withPic(e.rows).length, 4, 'exec 那条批量同形:四行各补各的底图:' + pics(e.rows));
+    assertEq(ownPic(e.rows), 'true,true,true,true', 'exec 那条批量的提示词同样逐行取:' + pics(e.rows));
+    assertEq(pics(e.rows), pics(g.rows), '两条批量路径得落到同一个结果上(哪一行拿到哪张图逐行相同)');
+  } },
   { name: '座位只在本轮引擎真成功之后才登记:取行/取位成功而本轮生成失败的那一轮,ok 不计、landed 也不占这个座位', fn: async () => {
     /* 上面两条钉的是「产物落到哪一行/哪一位」与「ok 与 landed 各说一件事」,而它们跑到失败轮的那几档
      * 失败都出在**取行/取位**那一步(同 id 一行不剩时 nthShot 委托回 findShot 当场抛「镜头不存在」),
@@ -15216,7 +15277,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-      [['单元测试', 718, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+      [['单元测试', 719, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -15624,7 +15685,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 323;
+    const FLOOR = 324;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
