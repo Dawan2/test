@@ -9567,7 +9567,7 @@ const contractTests = [
       ['sb-views', "'更多工具(镜头 '", '更多工具弹窗页头'],
       ['sb-gen', '`历史版本 · 镜头 ', '历史版本弹窗页头'],
       ['sb-gen', '`首帧海选 · 镜头', '首帧海选弹窗页头'],
-      ['sb-gen', '镜头 ${Domain.shotNo(ep.shots, f.s)', '批量生成结果的失败清单行'],
+      ['sb-gen', 'flex:none">镜头 ', '批量生成结果的失败清单行'],
       ['sb-batch', 'flex:none">镜头 ', 'sb-batch 待确认清单行'],
     ];
     sites.forEach(([file, anchor, label]) => {
@@ -9583,7 +9583,7 @@ const contractTests = [
     /* 往下削的方向:剩下的 order 读法里一处都不许是弹窗页头或清单行标签 */
     ['sb-views', 'sb-gen', 'sb-batch'].forEach(n => {
       src[n].split('\n').filter(l => /\.order \+ 1/.test(l)).forEach(l => {
-        assert(!/title:|tag cyan">镜头/.test(l),
+        assert(!/title:|class="tag cyan"/.test(l),
           'js/' + n + '.js 的弹窗页头与清单行标签不许退回读 order:' + l.trim().slice(0, 80));
       });
     });
