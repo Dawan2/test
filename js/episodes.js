@@ -28,6 +28,25 @@
   /* 剧本解析/主体提取/分集工具域(启发式解析、LLM 提取、规范文本信息提取、LLM 分集)
    * 已拆至 episode-util.js,经 window.EpisodeUtil 调用;执行侧入口由 proj-upload.js 增补 */
 
+  /* 项目详情面那两枚同 id 重复角标(主体库撞 id 报"位"、各集分镜表撞 id 报"行")。
+   * 存量重复此前只在主体库那一页与分集工作区顶栏露得出来:整树导入/恢复写进来的重复 id,
+   * 得先走到那两页才发现得了,而项目详情面正是每条进来的路都要过的那一屏。
+   * 扫描一律现取两侧已有那一份(RoleOps.dedupeScan / SB.dedupeShotScan——规则本身在
+   * Domain.dupIdScan 一份,两侧只注入自己那一端的发号器与单位词),本模块不认识去重规则、
+   * 也不替它们再数一遍谁是首位/首行;项目详情面自己只扫一遍,tab 行那两枚与分集卡片上那几枚
+   * 同读这一份(嵌进「主体」tab 的主体库那一页照旧自己扫自己那一份,供它自己的入口与卡片小标用)。
+   * 报的数与那两页各自入口上那个数同口径:要改几位 / 要改几行(首位、首行不算)。
+   * 纯展示:零写库、零任务、零扣费,收拾仍走那两页各自那道预览 + 确认闸。 */
+  function dupIdBadges(p) {
+    const seats = window.RoleOps && RoleOps.dedupeScan ? RoleOps.dedupeScan(p.subjects || []).plan.length : 0;
+    const eps = [];
+    (p.episodes || []).forEach(ep => {
+      const rows = window.SB && SB.dedupeShotScan ? SB.dedupeShotScan(ep.shots || []).plan.length : 0;
+      if (rows) eps.push({ id: ep.id, title: ep.title, rows });
+    });
+    return { seats, eps, rows: eps.reduce((n, x) => n + x.rows, 0) };
+  }
+
   /* ---------- 分集管理页 ---------- */
   Views.projectDetail = function (main, pid) {
     const p = Store.getProject(pid);
@@ -64,6 +83,9 @@
       if (window.Pipeline && Pipeline.calc) Pipeline.calc(p).forEach(s => { stepDone[s.key] = s.done; });
       const TAB_STEP = { 制片: 'prod', 剧本: 'script', 导演: 'director', 主体: 'subjects', 分集: 'eps', 成片库: 'film', 剧壳: 'shell', 切片: 'clips' };
       const pm = (p.shell && p.shell.prodMode) || '分镜表';
+      /* 同 id 重复角标:整页只扫这一遍,tab 行那两枚与分集卡片上那几枚同读它。
+       * 挂在 tab 行(八个 tab 共用它),故八个 tab 上都看得见——各 tab 自己那个头部不用再挂。 */
+      const dup = dupIdBadges(p);
       main.innerHTML = `
       <div class="page">
         <div class="crumb" onclick="location.hash='#/projects'">‹ 返回项目管理</div>
@@ -79,12 +101,14 @@
           ${window.Issues ? `<button class="btn ghost sm" data-x="pissues" data-pid="${p.id}" style="flex:none" title="问题中心:全项目待处理问题聚合(失败镜/过期/未分镜/低分/待确认/缺图),可一键处置">🩺 问题${(n => n ? ` <b style="color:var(--red)">${n}</b>` : '')(Issues.count(p))}</button>` : ''}
           ${window.Plans ? `<button class="btn ghost sm" data-x="pplan" style="flex:none" title="制作计划:跨会话持久的推进步骤清单,步骤映射统一领域命令">📋 计划${((sm => sm ? (sm.pending ? ` ${sm.done}/${sm.total}` : ' ✓') : ''))(Plans.summary(p))}</button>` : ''}
           ${window.Release ? Release.badgeHTML(p) : ''}
+          ${dup.seats ? `<span class="tag yellow" data-x="pdupsubj" style="flex:none;align-self:center;cursor:pointer" title="主体库里有 ${dup.seats} 位主体与在前的位共用同一个 id(按 id 只找得到首位、批量补图却逐位计费)。点这里到「主体」页,那边页头有「🧹 主体 id 去重」(先看计划,确认才改 id,一位不删、零积分),撞车的每一位卡片上另有一枚小标">🧹 主体 id 重复 ${dup.seats} 位</span>` : ''}
+          ${dup.rows ? `<span class="tag yellow" data-x="pdupshot" style="flex:none;align-self:center;cursor:pointer" title="${dup.eps.length} 集的分镜表里共有 ${dup.rows} 行镜头与在前的行共用同一个 id(按 id 只取得到首行、批量生成却逐行计费):${dup.eps.map(x => U.esc(x.title) + ' ' + x.rows + ' 行').join('、')}。${dup.eps.length === 1 ? '点这里直接进那一集的工作区' : '点这里到「分集」列表(清掉搜索词回第 1 页),撞车那几集的卡片上各有一枚角标可点进去'},那边顶栏有「🧹 镜头 id 去重」(先看计划,确认才改 id,一行不删、零积分)">🧹 镜头 id 重复 ${dup.rows} 行(${dup.eps.length} 集)</span>` : ''}
           <span class="grow"></span>
           ${tab === '分集' ? `
           <select class="select small" data-x="sort" style="width:auto;flex:none"><option value="asc" ${asc ? 'selected' : ''}>排序:正序</option><option value="desc" ${!asc ? 'selected' : ''}>排序:倒序</option></select>
           <input class="input" data-x="search" placeholder="搜索分集名称(回车搜索)" value="${U.esc(search)}" style="width:190px;flex:none">` : ''}
         </div>
-        ${tab === '导演' ? renderConcept() : tab === '剧本' ? renderScript() : tab === '分集' ? renderEpisodes(shown, eps, pages) : tab === '主体' ? '<div data-roles-host></div>' : tab === '制片' ? renderProduction() : tab === '成片库' ? ProjTabs.films.render(p) : tab === '剧壳' ? ProjTabs.shell.render(p) : tab === '切片' ? ProjTabs.clips.render(p) : ''}
+        ${tab === '导演' ? renderConcept() : tab === '剧本' ? renderScript() : tab === '分集' ? renderEpisodes(shown, eps, pages, dup) : tab === '主体' ? '<div data-roles-host></div>' : tab === '制片' ? renderProduction() : tab === '成片库' ? ProjTabs.films.render(p) : tab === '剧壳' ? ProjTabs.shell.render(p) : tab === '切片' ? ProjTabs.clips.render(p) : ''}
       </div>`;
 
       main.querySelectorAll('[data-tab]').forEach(t => t.onclick = () => openTab(t.dataset.tab));
@@ -95,6 +119,16 @@
       if (planBtn) planBtn.onclick = () => window.Workbench ? Workbench.openModal(p, main, 'plans') : (window.Plans && Plans.openModal(p, main));
       const releaseBtn = main.querySelector('[data-x=prelease]');
       if (releaseBtn) releaseBtn.onclick = () => window.Workbench ? Workbench.openModal(p, main, 'gate') : (window.Release && Release.openModal(p, main));
+      /* 两枚重复角标点过去对应那一页:主体库那道闸在「主体」页页头,镜头那道在分集工作区顶栏。
+       * 只有一集撞车时直接进那一集(不必再在列表里找);多集时回「分集」列表并清掉搜索词与页码
+       * ——不清就可能整屏都被过滤掉,那几集的卡片角标一枚也看不见。本槽只导航,一个字不写库。 */
+      const dupSubjBtn = main.querySelector('[data-x=pdupsubj]');
+      if (dupSubjBtn) dupSubjBtn.onclick = () => openTab('主体');
+      const dupShotBtn = main.querySelector('[data-x=pdupshot]');
+      if (dupShotBtn) dupShotBtn.onclick = () => {
+        if (dup.eps.length === 1) { location.hash = `#/project/${p.id}/episode/${dup.eps[0].id}`; return; }
+        search = ''; page = 1; openTab('分集');
+      };
       // Bus 订阅:问题/计划/交付角标随主线事件实时刷新(项目页不切换不重建 render,避免每事件整页刷新)
       // 二十轮:订阅本体在模块级只注册一次,此处仅更新当前页上下文
       badgeCtx = { main, p };
@@ -135,7 +169,11 @@
     }
 
     /* ---- 分集管理内容 ---- */
-    function renderEpisodes(shown, eps, pages) {
+    function renderEpisodes(shown, eps, pages, dup) {
+      /* 逐集撞车行数只读 tab 行那一份扫描(dup 由 render 传进来,本函数不再扫第二遍):
+       * tab 行那一枚报的是全项目共几行、几集,分集卡片这一枚报的是"这一集几行"并点进那一集 */
+      const dupRowsOf = {};
+      (dup && dup.eps || []).forEach(x => { dupRowsOf[x.id] = x.rows; });
       return `
       ${p.subjects.length ? [
         ['角色', 'character', 'cyan'],
@@ -182,6 +220,7 @@
               ${gCnt ? `<span class="tag purple">镜头组 ${gCnt} 组</span>` : shots.length ? '<span class="tag">镜头组 未分组</span>' : `<span class="tag" title="按约 4 镜一组预估,自动分组后以实际为准">镜头组 预估${estG} 组</span>`}
               ${shots.length ? `<span class="tag ${vTag}">视频 ${vDone}/${shots.length}</span>` : ''}
               ${Store.epComposedReady(ep) ? '<span class="tag green">已合成</span>' : (ep.composedUrl ? '<span class="tag yellow" title="合成输入已变化(调序/裁剪/换素材/改转场等),旧成片保留可看,重新合成后恢复">成片待更新</span>' : '')}
+              ${dupRowsOf[ep.id] ? `<span class="tag yellow" data-epdup="${ep.id}" style="cursor:pointer" title="本集有 ${dupRowsOf[ep.id]} 行镜头与在前的行共用同一个 id(按 id 只取得到首行、批量生成却逐行计费)。点这里进本集工作区,顶栏有「🧹 镜头 id 去重」(先看计划,确认才改 id,一行不删、零积分),撞车的每一行卡片上另有一枚小标">🧹 id 重复 ${dupRowsOf[ep.id]} 行</span>` : ''}
             </div>
             <div class="row" style="margin-top:8px;gap:6px">
               <button class="btn sm" data-enter="board:${ep.id}" title="分镜表模式:逐镜精修(分镜脚本/分镜视频)">📋 分镜表</button>
@@ -210,6 +249,11 @@
         e.stopPropagation();
         window.__roleFocus = t.dataset.subj;
         openTab('主体');
+      });
+      // 分集卡片那枚重复角标:点进本集工作区(顶栏那道预览 + 确认闸在那里),纯导航不写库
+      main.querySelectorAll('[data-epdup]').forEach(t => t.onclick = e => {
+        e.stopPropagation();
+        location.hash = `#/project/${p.id}/episode/${t.dataset.epdup}`;
       });
       main.querySelector('[data-x=sort]').onchange = e => { asc = e.target.value === 'asc'; render(); };
       main.querySelector('[data-x=search]').onkeydown = e => { if (e.key === 'Enter') { search = e.target.value; page = 1; render(); } };

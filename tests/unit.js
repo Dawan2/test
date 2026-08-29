@@ -2541,6 +2541,83 @@ function loadEpisodeWs() {
   sb.SBGen = { estShotDuration: () => 5 };
   return sb;
 }
+/* 项目详情面 Views.projectDetail:八个 tab 共用 tab 行那一条,"哪几个 tab 进来看得见角标"只有逐 tab
+ * 真渲一遍才量得出,故把渲染路径上的全局按 index.html 那个顺序补齐;两侧那份去重扫描要的是真的
+ * (RoleOps.dedupeScan / SB.dedupeShotScan 现取 roles.js 与 storyboard.js 自己那一份,不摆桩),
+ * 各 tab 内容体与主体库那一页是别的套件的活、按桩接(本套件只驱动 tab 行与分集卡片)。 */
+function loadProjDetail() {
+  const sb = makeSandbox();
+  installCommon(sb);
+  sb.document.removeEventListener = () => {};
+  sb.COST = new Proxy({}, { get: () => 2 });
+  sb.MODELS = new Proxy({}, { get: () => ['prov,模型'] });
+  sb.Voice = { NARRATOR_PRESETS: ['旁白·沉稳'], label: () => '音色', norm: () => ({ voice: '音色' }) };
+  sb.styleOf = p => p.style || '漫剧';
+  sb.negOf = () => '';
+  sb.U.thumb = f => f;
+  sb.U.hashColor = () => 0;
+  sb.EpisodeUtil = { buildSubjectPrompt: () => '提示词', deriveScriptMeta: () => ({ title: '剧', logline: '', synopsis: '', outline: '' }), openUploadScript() {}, openRip() {} };
+  sb.RoleEditor = { openSubjectEdit() {} };
+  sb.Exporter = { dropdown() {} };
+  sb.ProjTabs = {
+    films: { render: () => '<div>成片库</div>', play() {} },
+    shell: { render: () => '<div>剧壳</div>', bind() {} },
+    clips: { render: () => '<div>切片</div>', bind() {} },
+  };
+  sb.__modals = [];
+  sb.U.openModal = opt => {
+    const m = projDom();
+    const rec = { opt, m, closed: 0 };
+    const close = () => { rec.closed++; };
+    sb.__modals.push(rec);
+    if (opt.onMount) opt.onMount(m, close);
+    return close;
+  };
+  let seq = 0;
+  sb.Store.uid = pre => pre + '_u' + (++seq);
+  sb.Store.getProject = id => (sb.__proj && sb.__proj.id === id ? sb.__proj : null);
+  sb.Store.getToken = () => null; // fillCostLine 不打网(未登录静默跳过)
+  sb.Store.myAssets = () => [];
+  sb.Store.credits = () => 999;
+  Object.assign(sb.Store, {
+    shotsStale: () => false, understandingStale: () => false, epComposedReady: () => false,
+    composedStaleByScript: () => false, reviewStaleByScript: () => false, shotVideoStale: () => false,
+  });
+  loadFile(sb, 'domain.js');
+  loadFile(sb, 'roles.js');      // window.RoleOps.dedupeScan:主体那一侧的扫描(项目页现取它,不另抄一份)
+  loadFile(sb, 'prompts.js');
+  loadFile(sb, 'knowledge.js');
+  loadFile(sb, 'wf-core.js');
+  loadFile(sb, 'storyboard.js'); // window.SB.dedupeShotScan:镜头那一侧的扫描(同上)
+  loadFile(sb, 'episodes.js');
+  return sb;
+}
+/* 比 epDom 多一层:querySelectorAll 现从已渲出的 innerHTML 里按 data-* 取,取到几个就是几个节点、
+ * dataset 带上真值——分集卡片上那几枚角标是按卡渲的,惰性回空表的桩驱动不动它们。
+ * 同一个 data-* 值取到的永远是同一个节点(重渲后 handler 由那一轮重新挂上):每次现造新对象的话,
+ * 用例手里拿的那个节点上挂的是上一轮的 handler,点下去驱动的是已经作废的那一次渲染。 */
+function projDom() {
+  const nodes = {};
+  const dom = {
+    innerHTML: '', value: '', style: {}, dataset: {}, isConnected: true,
+    onclick: null, onchange: null, onkeydown: null,
+    classList: { toggle() {}, add() {}, remove() {} },
+    closest: () => null, scrollIntoView() {},
+    querySelector: sel => (nodes[sel] = nodes[sel] || projDom()),
+    querySelectorAll(sel) {
+      const m = /^\[data-([a-z-]+)\]$/.exec(sel);
+      if (!m) return [];
+      const key = m[1].replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      return [...String(dom.innerHTML).matchAll(new RegExp('data-' + m[1] + '="([^"]*)"', 'g'))].map(x => {
+        const k = sel + '::' + x[1];
+        const n = (nodes[k] = nodes[k] || projDom());
+        n.dataset[key] = x[1];
+        return n;
+      });
+    },
+  };
+  return dom;
+}
 /* 比 roleDom 多一层:顶栏那几个下拉要在惰性节点上再 querySelectorAll 一次(菜单项绑定) */
 function epDom() {
   const nodes = {};
@@ -4131,6 +4208,169 @@ const commandsTests = [
         'js/' + rel + ' 长出了逐行渲分镜的地方(分镜脚本/节拍板此前渲的是场次节拍与五段节拍):'
         + '那一档现在也该挂上同 id 重复标记,挂完同轮改这条判据');
     });
+  } },
+  { name: '项目详情面认得出存量重复 id:主体库撞 id 与各集分镜撞 id 各报一枚角标,八个 tab 都看得见、点过去落到对应那一页,纯展示零写库', fn() {
+    /* W287/W289/W291 把去重入口与逐位/逐行小标补齐之后,"发现存量重复"这件事仍得先走到主体库那一页
+     * 或分集工作区顶栏:项目详情面(每条进来的路都要过的那一屏)上一枚角标都没有,整树导入/恢复
+     * 与 state-put 写进来的重复 id,在这一屏上与干净项目长得一模一样。
+     * 本条钉的就是这一屏:两枚角标各报一个数(主体库要改几位 / 各集分镜合计要改几行、摊在几集上)、
+     * 撞车那几集的卡片上各一枚报自己那一集几行、点过去落到能收拾它的那一页,而一个字不写库。 */
+    const sb = loadProjDetail();
+    const p = {
+      id: 'p1', name: '脏剧', script: '正文', shell: {},
+      subjects: [
+        { id: 'dup', name: 'A-首位', kind: 'character', image: 'a.png' },
+        { id: 'solo', name: 'B-不重复', kind: 'character', image: 'b.png' },
+        { id: 'dup', name: 'C-第二位', kind: 'character' },
+        { id: 'dup', name: 'D-第三位', kind: 'character' },
+      ],
+      episodes: [
+        { id: 'ep1', order: 0, title: '第一集', content: '正文一', shots: [{ id: 'dup' }, { id: 'solo' }, { id: 'dup' }, { id: 'dup' }] },
+        { id: 'ep2', order: 1, title: '第二集', content: '正文二', shots: [{ id: 'sh1' }, { id: 'sh2' }] },
+        { id: 'ep3', order: 2, title: '第三集', content: '正文三', shots: [{ id: 'x' }, { id: 'x' }] },
+      ],
+    };
+    sb.__proj = p;
+    /* 主体库那一页是别的套件的活,这里只观测"点那枚角标真到了它":页内嵌那一版由项目页调起 */
+    sb.__roles = [];
+    sb.Views.roles = (host, pid, embedded) => { sb.__roles.push(pid + '/' + embedded); host.innerHTML = '<div>主体库</div>'; };
+    const main = projDom();
+    const saves = sb.Store._saves;
+    sb.Views.projectDetail(main, 'p1');
+    // ① 两枚角标:各报一个数,单位词各按自己那一侧(主体是"位"、分镜是"行"),并说清摊在几集上
+    assert(/<span class="tag yellow"[^>]*data-x="pdupsubj"[^>]*title="[^"]+">🧹 主体 id 重复 2 位<\/span>/.test(main.innerHTML),
+      '主体库撞 id 得在项目详情面上报出要改几位(沿用现网 tag yellow 那一套并带一句说明),实际:'
+      + (main.innerHTML.match(/<span class="tag yellow"[^>]*>🧹[^<]*<\/span>/) || [''])[0]);
+    assert(/<span class="tag yellow"[^>]*data-x="pdupshot"[^>]*title="[^"]+">🧹 镜头 id 重复 3 行\(2 集\)<\/span>/.test(main.innerHTML),
+      '各集分镜撞 id 得合计报出要改几行、摊在几集上(ep1 两行 + ep3 一行,ep2 干净),实际:'
+      + JSON.stringify((main.innerHTML.match(/🧹 镜头[^<]*/g) || [])));
+    assert(/共用同一个 id/.test(main.innerHTML) && /逐位计费/.test(main.innerHTML) && /逐行计费/.test(main.innerHTML),
+      '两句说明各得说清代价(按 id 只取得到首位/首行,而批量补图与批量生成逐位/逐行计费),不然光一个数读不出为什么要收拾');
+    assert(/主体 id 去重/.test(main.innerHTML) && /镜头 id 去重/.test(main.innerHTML),
+      '两句说明各得点名去哪儿收拾(只报警不给活路等于没说)');
+    assertEq((main.innerHTML.match(/主体 id 重复 \d+ 行|镜头 id 重复 \d+ 位/g) || []).length, 0,
+      '两侧单位词不许对调:主体库数"位"、分镜表数"行"');
+    // ② 分集卡片:撞车那几集各一枚报自己那一集几行,干净那一集一枚不挂
+    const epTags = [...String(main.innerHTML).matchAll(/data-epdup="([^"]*)"[^>]*>🧹 id 重复 (\d+) 行/g)].map(m => m[1] + ':' + m[2]);
+    assertEq(epTags.join(' | '), 'ep1:2 | ep3:1',
+      '分集列表上撞车那几集各得挂一枚报自己那一集要改几行(干净的那一集一枚不挂),实际:' + JSON.stringify(epTags));
+    // ③ 八个 tab 都看得见:角标挂在 tab 行(八个 tab 共用它),不是挂在某个 tab 的内容体里
+    const tabs = ['制片', '剧本', '导演', '主体', '分集', '成片库', '剧壳', '切片'];
+    tabs.forEach(t => {
+      main.querySelectorAll('[data-tab]').find(n => n.dataset.tab === t).onclick();
+      assert(/data-x="pdupsubj"/.test(main.innerHTML) && /data-x="pdupshot"/.test(main.innerHTML),
+        'tab「' + t + '」上两枚角标都得在(挂漏一处就有一条进来的路看不见存量重复)');
+    });
+    // ④ 点过去:主体那枚到「主体」页(页内嵌那一版自带去重入口与逐位小标)
+    sb.__roles.length = 0; // 上面逐 tab 走过一遍,这里数的是这一次点击带来的那一趟
+    main.querySelector('[data-x=pdupsubj]').onclick();
+    assertEq(sb.__roles.join(','), 'p1/true', '点主体那枚角标须到「主体」页(页内嵌那一版),实际:' + JSON.stringify(sb.__roles));
+    // ⑤ 点过去:多集撞车时回「分集」列表,并清掉搜索词与页码(不清就可能整屏被过滤光,那几枚卡片角标一枚也看不见)
+    main.querySelectorAll('[data-tab]').find(n => n.dataset.tab === '分集').onclick();
+    main.querySelector('[data-x=search]').onkeydown({ key: 'Enter', target: { value: '第九集' } });
+    assert(/没有匹配的分集/.test(main.innerHTML), '夹具前提:搜"第九集"应把整屏过滤光');
+    main.querySelector('[data-x=pdupshot]').onclick();
+    assertEq(sb.location.hash, '', '两集撞车时不许直接跳某一集(跳哪一集都是猜)');
+    assertEq([...String(main.innerHTML).matchAll(/data-epdup="([^"]*)"/g)].map(m => m[1]).join(','), 'ep1,ep3',
+      '点镜头那枚角标须回到「分集」列表并清掉搜索词与页码,撞车那几集的卡片角标当场看得见');
+    // ⑥ 分集卡片那枚点过去本集工作区(顶栏那道预览 + 确认闸在那里)
+    main.querySelectorAll('[data-epdup]').find(n => n.dataset.epdup === 'ep3').onclick({ stopPropagation() {} });
+    assertEq(sb.location.hash, '#/project/p1/episode/ep3', '点某一集那枚角标须进那一集的工作区,实际:' + sb.location.hash);
+    // ⑦ 只有一集撞车时直接进那一集(不必再在列表里找)
+    sb.location.hash = '';
+    const p2 = { id: 'p2', name: '单集脏', script: '', shell: {}, subjects: [], episodes: [{ id: 'e9', order: 0, title: '独一集', content: '正文', shots: [{ id: 'z' }, { id: 'z' }] }] };
+    sb.__proj = p2;
+    const main2 = projDom();
+    sb.Views.projectDetail(main2, 'p2');
+    assert(/🧹 镜头 id 重复 1 行\(1 集\)/.test(main2.innerHTML), '一集撞车时照样报数,实际:'
+      + JSON.stringify((main2.innerHTML.match(/🧹[^<]*/g) || [])));
+    assert(!/data-x="pdupsubj"/.test(main2.innerHTML), '主体库干净时那一枚一个字都不许露(空角标等于假警报)');
+    main2.querySelector('[data-x=pdupshot]').onclick();
+    assertEq(sb.location.hash, '#/project/p2/episode/e9', '只有一集撞车时点角标直接进那一集,实际:' + sb.location.hash);
+    // ⑧ 纯展示:渲了这么多遍,一个字没写库、一笔任务一分钱都没有,两棵树里的 id 一个没被顺手改掉
+    assertEq(sb.Store._saves, saves, '角标是纯展示:渲染这一路不许写库(它不是"顺手替用户去重")');
+    assertEq(sb.__tasks.length + sb.__charges.length, 0, '角标零上游零 LLM:不许登记任务也不许扣一分钱,实际:'
+      + JSON.stringify({ tasks: sb.__tasks, charges: sb.__charges }));
+    assertEq(p.subjects.map(s => s.id).join(',') + '/' + p.episodes.map(e => e.shots.map(s => s.id).join('')).join(','),
+      'dup,solo,dup,dup/dupsolodupdup,sh1sh2,xx', '渲染之后两棵树里一个 id 都不许变');
+    // ⑨ 收拾干净之后角标跟着消失:主体那枚走主体库那道确认闸,镜头那枚随各集分镜表实况
+    sb.__proj = p;
+    sb.RoleOps.openDedupe(p, () => {});
+    sb.__modals[sb.__modals.length - 1].m.querySelector('[data-x=apply]').onclick();
+    p.episodes[2].shots[1].id = 'y'; // ep3 那一行改掉之后只剩 ep1 撞车
+    sb.Views.projectDetail(main, 'p1');
+    assert(!/data-x="pdupsubj"/.test(main.innerHTML), '主体库收拾干净后那一枚跟着消失(项目页读的就是那一页同一份扫描)');
+    assert(/🧹 镜头 id 重复 2 行\(1 集\)/.test(main.innerHTML), '镜头那枚随实况现算:ep3 干净之后只剩 ep1 两行,实际:'
+      + JSON.stringify((main.innerHTML.match(/🧹[^<]*/g) || [])));
+    assertEq([...String(main.innerHTML).matchAll(/data-epdup="([^"]*)"/g)].map(m => m[1]).join(','), 'ep1',
+      'ep3 那一枚卡片角标同样跟着消失');
+  } },
+  { name: '项目详情面那两枚角标不许另抄一份规则:只读两侧现成那份扫描、整页各扫一遍,报的数与那两页入口逐字同口径;干净项目一枚不挂', fn() {
+    /* 行为面那条钉的是"角标在、点得过去";这一条钉它凭什么与那两页一致——去重规则在 Domain.dupIdScan
+     * 一份、两侧的扫描(RoleOps.dedupeScan / SB.dedupeShotScan)各注入自己的发号器与单位词,
+     * 项目页这一屏一个字都不许再抄:抄一份到这里行为可以完全一样,而两份计算一旦漂,
+     * 这一屏报的数就与用户点开那两页看到的数对不上,"发现"这件事本身就不可信了。 */
+    const sb = loadProjDetail();
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'episodes.js'), 'utf8');
+    const code = blankNonCode(src, true);
+    // 扫描:只读两侧现成那一份,自己不认识规则、不再攒一份"谁是首位/首行"的记账
+    const i = src.indexOf('function dupIdBadges(');
+    assert(i >= 0, 'js/episodes.js 找不到「function dupIdBadges(」(挪窝或改名就同轮改这里,别把本条留成恒真)');
+    const seg = blankNonCode(src.slice(i).split('\n  }')[0], true);
+    assert(seg.length > 100, '「function dupIdBadges(」那一段取不到(同上),实测 ' + seg.length + ' 字');
+    assert(/RoleOps\.dedupeScan\(/.test(seg) && /SB\.dedupeShotScan\(/.test(seg),
+      '两枚角标的数须现取两侧已有那份扫描(它们各自委托 Domain.dupIdScan、只注入自己那一端的发号器与单位词):' + seg);
+    assertEq((seg.match(/Domain\.dupIdScan\(|new Map\(|new Set\(|keepOrder/g) || []).length, 0,
+      '这一段不许自己认识去重规则、也不许再攒一份"谁是首位/首行"的记账(抄一份到这里,'
+      + '项目页报的数迟早与那两页对不上):' + seg);
+    assert(!/Store\.save\(|Tasks\.run|U\.charge|requireCredits|COST\./.test(seg),
+      '纯展示:这一段不许写库、不许登记任务、不许碰计费:' + seg);
+    // 整页各扫一遍:两枚角标与分集卡片上那几枚同读这一份(渲染面不许再扫第二遍)
+    assertEq((code.match(/RoleOps\.dedupeScan\(/g) || []).length, 1, '主体库那份扫描整页只许调一次');
+    assertEq((code.match(/SB\.dedupeShotScan\(/g) || []).length, 1, '各集分镜那份扫描整页只许调一次(逐集循环在这一处之内)');
+    assertEq((code.match(/= dupIdBadges\(p\)/g) || []).length, 1,
+      '整页只许算这一份角标数据:tab 行那两枚与分集卡片上那几枚同读它(各算一遍就能报出两个数)');
+    const epsSeg = blankNonCode(src.slice(src.indexOf('function renderEpisodes(')).split('\n    }')[0], true);
+    assertEq((epsSeg.match(/dedupeScan\(|dupIdBadges\(/g) || []).length, 0,
+      '分集列表那一段不许自己再扫一遍:逐集行数由 render 传进来的那一份现取:' + epsSeg);
+    // 挂点:角标在 tab 行那一条上,不在某个 tab 的内容体里(内容体里挂就只有那一个 tab 看得见)
+    const tpl = code.slice(code.indexOf('main.innerHTML = `'), code.indexOf("tab === '导演' ?"));
+    assert(/data-x="pdupsubj"/.test(tpl) && /data-x="pdupshot"/.test(tpl),
+      '两枚角标须插在 tab 行那一条上(八个 tab 共用它);挂进某个 tab 的内容体就只有那一个 tab 看得见');
+    /* 项目详情面只有这一份模板:各处进来的路(路由 + 各处重渲)调的都是它,故挂一处就一条路不漏 */
+    assertEq((code.match(/Views\.projectDetail = function/g) || []).length, 1, '项目详情面模板只该有一份');
+    const callers = fs.readdirSync(path.join(ROOT, 'js')).filter(f => /\.js$/.test(f))
+      .filter(f => /Views\.projectDetail\(/.test(fs.readFileSync(path.join(ROOT, 'js', f), 'utf8'))).sort();
+    assertEq(callers.join(','), 'app.js,episode-util.js,episodes.js,proj-planner.js,proj-upload.js',
+      '进项目详情面的路变了就同轮重量一遍挂点(那几处调的都是同一份模板,多一处调用点不必多挂一处角标;'
+      + '真长出第二份模板时这条先红),实际:' + callers.join(','));
+    assert(/#\\\/project\\\/\(\[\^\/\]\+\)\$|Views\.projectDetail\(main, pd\[1\]\)/.test(fs.readFileSync(path.join(ROOT, 'js', 'app.js'), 'utf8')),
+      'app.js 那条 #/project/<pid> 路由须仍落到 Views.projectDetail(改了路由形状就同轮改这里)');
+    // 口径:报的数与那两页各自入口上那个数逐字同一个(要改几位 / 要改几行,首位与首行都不算)
+    const p = {
+      id: 'p1', name: '脏剧', script: '', shell: {},
+      subjects: [{ id: 'dup', name: 'A', kind: 'character' }, { id: 'dup', name: 'B', kind: 'character' }, { id: 'dup', name: 'C', kind: 'character' }],
+      episodes: [{ id: 'ep1', order: 0, title: '第一集', content: '正文', shots: [{ id: 'd' }, { id: 'd' }, { id: 'd' }] }],
+    };
+    sb.__proj = p;
+    const main = projDom();
+    sb.Views.projectDetail(main, 'p1');
+    assertEq(sb.RoleOps.dedupeScan(p.subjects).plan.length, 2, '夹具前提:三位同 id → 留首位、改后两位');
+    assertEq(sb.SB.dedupeShotScan(p.episodes[0].shots).plan.length, 2, '夹具前提:三行同 id → 留首行、改后两行');
+    assert(/🧹 主体 id 重复 2 位/.test(main.innerHTML) && /🧹 镜头 id 重复 2 行\(1 集\)/.test(main.innerHTML),
+      '两枚角标报的是"要改几位 / 要改几行"(留原 id 的首位与首行不算在内),与那两页入口上那个数同口径,实际:'
+      + JSON.stringify((main.innerHTML.match(/🧹[^<]*/g) || [])));
+    const host = projDom();
+    sb.Views.roles(host, 'p1', true); // 主体库那一页(页内嵌那一版)自己报的数:两处逐字同一个
+    assert(/主体 id 去重\(2\)/.test(host.innerHTML),
+      '主体库那一页页头报的数得与项目页那枚角标逐字相同(两处读的是同一份扫描),实际:'
+      + (host.innerHTML.match(/[^>]*去重[^<]*/) || [''])[0]);
+    // 干净项目与空表:一枚不挂,也不许抛
+    const clean = { id: 'p9', name: '干净', script: '', shell: {}, subjects: [{ id: 'sj1', name: 'A', kind: 'character' }], episodes: [{ id: 'e1', order: 0, title: '一', content: '正文', shots: [{ id: 's1' }] }, { id: 'e2', order: 1, title: '二', content: '正文' }] };
+    sb.__proj = clean;
+    const main9 = projDom();
+    assertNoThrow(() => sb.Views.projectDetail(main9, 'p9'), '没有分镜表那一集(shots 缺字段)不许抛');
+    assertEq((main9.innerHTML.match(/🧹/g) || []).length, 0, '干净项目上一枚角标都不许挂(假警报比没有角标更糟)');
   } },
   { name: 'generateVideos 点名重复 id 真跑那一趟:两端回执都说出行数并点名 shots-dedupe(选人闸仍按行筛,一行都不许少跑)', fn: async () => {
     /* 上面三条(导入设闸 / 逃生舱不设闸 / shots-dedupe 是存量出口)管的是表本身,这一条管**生成那一拍**:
@@ -10158,6 +10398,10 @@ const GUARD_TOPICS = [
     why: '分镜卡片上那枚「第几行 / 共几行」小标的位次只从顶栏那一份扫描派生(Domain.dupIdMarks 收下同一个结果),'
       + '整页只扫一遍分镜表:各扫一遍时卡片上标的第几行与预览里改的那一行就是两套算法,'
       + '而挂点是量出来的两处(缩略图卡 + 镜头组时间线),少挂一处就有一档进来看不见' },
+  { id: 'dedupe-proj-badge-derive', anchors: ['function dupIdBadges(', 'RoleOps.dedupeScan('],
+    why: '项目详情面那两枚同 id 重复角标只读两侧现成那份扫描(RoleOps.dedupeScan / SB.dedupeShotScan,'
+      + '规则本身仍在 Domain.dupIdScan 一份),这一屏一个字都不许再抄:抄一份到这里行为可以完全一样,'
+      + '而两份计算一旦漂,这一屏报的数就与用户点开那两页看到的数对不上——"发现存量重复"这件事全部分量都压在那个数报得准上' },
   { id: 'dedupe-shots-ui-single', anchors: ['function openShotDedupe(', 'Domain.reviewRows('],
     why: '分镜面那条去重入口与 CLI 同读一份规则(页面只注入 Store.uid 那个发号器与镜头侧单位词),'
       + '而预览里那句「旧审片报告会塌几条」只许拿 Domain.reviewRows 在两棵表上各跑一遍现算——'
@@ -10176,7 +10420,7 @@ const GUARD_TOPICS = [
  *   3. 销号必须显式落笔——编号搬进 GUARD_TOPICS_CLOSED 并写下闭合理由,锚点原样搬过来,
  *      好让"这道护栏是真没了,还是被别的主题接手了"事后仍判得出来。
  * 有意不禁新登记主题:在册多出花名册没有的号一条不红,加主题照旧只改上面那张表。 */
-const TOPIC_FLOOR = 25;
+const TOPIC_FLOOR = 26;
 const GUARD_TOPICS_CLOSED = [
   /* 形状:{ id: '主题编号', anchors: [原样搬过来], why: '这道护栏原本守什么',
    *        closed: '为什么可以不守了(被守的那一面已不存在 / 判据并进了哪一条)',
@@ -14380,7 +14624,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-      [['单元测试', 709, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+      [['单元测试', 711, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -14788,7 +15032,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 307;
+    const FLOOR = 308;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
