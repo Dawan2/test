@@ -786,8 +786,10 @@ CMD['shots-import'] = async (a, f) => {
     const base = f.append ? (ep.shots || []).length : 0;
     const norm = arr.map((s, i) => normShot(s, i, base));
     /* 镜头 id 唯一闸:normShot 透传 raw.id(整表导出改完再导回时,视频/审片/确认态按 id 认领原镜),
-     * 但同 id 两行落库后这张表就散了——findShot/shot-set 全按 id 取首行,第二行再也寻不着,
-     * 而点名子集是按行筛的(ids.has(s.id)),点名一次两行都跑,一个 id 收两笔视频钱、写回的还是首行。
+     * 但同 id 两行落库后这张表就散了——findShot/shot-set 全按 id 取首行,第二行按 id 再也寻不着,
+     * 而点名子集是按行筛的(ids.has(s.id)),点名一次两行都跑、一个 id 收两笔视频钱
+     * (那两笔各落各的行:两条批量路径 gen-episode 与 exec episode.generateVideos 都按 nthShot 逐行写回;
+     * 按 id 点名单镜的 gen-shot-video / shot.generateVideo 仍走 findShot,写回的只有首行)。
      * 撞上表内已有或本次已分配的 id 就改发新 id(口径同 Store.trashRestore 的 id 冲突改名),并如实报出改了几镜。 */
     const taken = new Set(f.append ? (ep.shots || []).map(s => s.id) : []);
     let renamed = 0;

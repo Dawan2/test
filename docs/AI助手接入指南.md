@@ -84,7 +84,8 @@ node cli.js export $PID <epid> --out ./dist                # 下载 mp4+srt
 - 状态写走 rev 乐观锁:409 冲突 CLI 自动重取回放补丁重试(≤3 次),不会重做收费调用。
 - 不要绕过 CLI 直接 PUT state 做生成类操作(会丢计费/幂等);`state-get/state-put` 是逃生舱,仅限调试。
 - 逃生舱与 `PUT /api/state` 都是**整树原样落库、不做领域校验**:镜头 id 唯一性由调用方自己保证,
-  灌进去的同 id 两镜就在库里(点名一次两行都跑、各收一笔视频钱,而只有首行寻得着)。要收拾就整表重导
+  灌进去的同 id 两镜就在库里(点名一次两行都跑、各收一笔视频钱;`gen-episode` 与 `exec episode.generateVideos`
+  两条批量路径按行写回、两行各得一段片,而按 id 点名单镜的 `gen-shot-video`/`shot.generateVideo` 与 `shot-set` 仍只落首行)。要收拾就整表重导
   `shots-import`(撞 id 改发新 id 并回报 `renamedIds`),别指望这条路上有闸。
 - 两张表各有一条显式去重出口:`shots-dedupe <pid> <epid>` / `subjects-dedupe <pid>`(同形)。
   默认 dry-run 只报「哪些 id 重复、几行/几位、哪一行留原 id、会改成什么」而一个字不写库,`--apply` 才落:
