@@ -448,8 +448,8 @@
         </div>
       </div>
       <div class="card" style="margin-top:14px;padding:14px">
-        ${reports.map(x => `
-        <div class="rv-bar-row" data-jump="${x.shot.id}">
+        ${reports.map((x, i) => `
+        <div class="rv-bar-row" data-jump="${i}">
           <span class="small" style="width:52px;flex:none">镜头 ${x.shot.order + 1}</span>
           <div class="rv-bar-track"><div class="rv-bar-fill ${x.report.score < Domain.REVIEW_MIN ? 'low' : ''}" style="width:${x.report.score * 10}%"></div></div>
           <b style="width:34px;text-align:right;color:${x.report.score >= 8 ? 'var(--green)' : x.report.score >= Domain.REVIEW_MIN ? 'var(--yellow)' : 'var(--red)'}">${x.report.score.toFixed(1)}</b>
@@ -460,9 +460,13 @@
       onMount(m, close) {
         m.querySelector('[data-x=close]').onclick = close;
         m.querySelectorAll('[data-jump]').forEach(row => row.onclick = () => {
-          const s = ep.shots.find(x => x.id === row.dataset.jump);
+          /* 行号即上面那份清单的下标:哪一行、本批刚跑出来的哪一份报告都在 reports 里对好了。
+           * 这里若再按 shotId find 一次,同 id 后几行的入口会一律跳回首行那一镜;
+           * 报告若回该行 reviews 的最近一条,拿到的也不是本批这一份。 */
+          const x = reports[+row.dataset.jump];
+          if (!x || !x.report) return;
           close();
-          Review.openReport(p, ep, s, main, s.reviews[0]);
+          Review.openReport(p, ep, x.shot, main, x.report);
         });
       },
     });

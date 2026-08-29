@@ -9457,6 +9457,25 @@ const contractTests = [
       'perShot 行对位在 domain.js 只此一处(reviseTargets 不许绕开 reviewRows 另数一遍序数)');
     assert(/return D\.reviewRows\(ep\)/.test(dom), '重抽面应长在这份对位之上,只加达标线/交集/定稿三道筛');
   } },
+  { name: '批量审片汇总行对位(源级):汇总面不拿 shotId 当行键、不回 s.reviews[0] 取报告', fn() {
+    /* 整集报告视图收进行对位之后,批量一键审片的汇总面还留着同一档,而且比那处多一手:
+     * 行键存 shotId 再 find 一次(同 id 后几行点进去一律跳首行)、报告取 s.reviews[0](那一行最近一条,
+     * 不是本批刚跑出来的那一份)。这两处都不必再算一遍行——清单与报告都在闭包里,行号就是行键,
+     * 故这里既不该出现按 id 的寻址,也不该出现第二份对位。 */
+    const bo = fs.readFileSync(path.join(ROOT, 'js', 'batchops.js'), 'utf8');
+    const i = bo.indexOf('function openReviewSummary(');
+    assert(i > 0, 'batchops.js 应有多镜审片汇总面(改名就同轮改这条判据,别把它留成恒真)');
+    const seg = bo.slice(i, bo.indexOf('window.BatchOps = ', i));
+    assert(seg.length > 800, '汇总面那一段截不全(段界字面变了就同轮改这里)');
+    assert(/data-jump="\$\{i\}"/.test(seg), '行键应是清单行号');
+    assert(!/data-jump="\$\{x\.shot\.id\}/.test(seg), '跳转入口不许拿 shotId 当行键(同 id 多行时点哪一镜都跳首行)');
+    assert(!/ep\.shots\.find\(/.test(seg), '汇总面不许再按 shotId find 取行');
+    assert(/Review\.openReport\(p, ep, x\.shot, main, x\.report\)/.test(seg), '开的应是清单里对好的那一行与那一份报告');
+    assertEq((bo.match(/reviews\[0\]/g) || []).length, 0,
+      'js/batchops.js 不许回 s.reviews[0] 取报告(那是该行最近一条,本批之后该行被单独重审过就混进新结论)');
+    assertEq((bo.match(/\.find(?:Index)?\(x => x\.id ===/g) || []).length, 0,
+      'js/batchops.js 全文不许再有"按 id 取该 id 第一条"的寻址(与展示面同一套行对位)');
+  } },
   { name: '修订闭环重抽面单源:server/CLI/助手摘要/问题中心都不自筛低分镜,CLI 不摘回执 lowShots 当 shotIds', fn() {
     /* G-03 这一面钉的是"该重抽哪几镜由编排层派生":判据(达标线 / 报告判旧 / 与分镜表取交集 / 定稿不重抽)
      * 只在 Domain.reviseTargets 一份里,四处消费点谁抄回一份 score < 7 或把回执里的 lowShots 当名单用都红在这里。 */
@@ -13019,7 +13038,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 680, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 682, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -13427,7 +13446,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 279;
+    const FLOOR = 280;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
@@ -14987,6 +15006,47 @@ const skillsTests = [
     assertEq(modals.length, 2, '点某镜应打开该镜完整报告');
     assert(modals[1].body.includes('4.0'), '打开的应是第三行那份 4 分报告(跳首行时是 9.0)');
     assert(modals[1].body.includes('视频 #1-3'), '镜号应报第三镜');
+  } },
+  { name: '批量审片汇总按行取报告:点哪一镜跳哪一行,开的是本批那一份(不是该行最近一条)', fn: async () => {
+    /* 汇总面的清单就是本批刚跑出来的 reports——行与报告都已在闭包里对好。行键存 shotId 再 find 一次时,
+     * 同 id 后几行点进去一律跳首行;报告取 s.reviews[0] 时拿到的是那一行最近一条,该行事后被单独重审过
+     * 就把新结论混进这份汇总。两处取数都不必再算一遍行:行号就是行键。 */
+    const sb = loadReview();
+    loadFile(sb, 'batchops.js');
+    const rows = [rvShot({ id: 'dup', order: 0, prompt: '五官稳定不变形,首行' }),
+      rvShot({ id: 'solo', order: 1, prompt: '五官稳定不变形,独行' }),
+      rvShot({ id: 'dup', order: 2, prompt: '五官稳定不变形,同 id 第二行' })];
+    const ep = { id: 'ep1', title: '第一集', shots: rows };
+    const p = { id: 'p1', name: '逆袭', style: '漫剧', episodes: [ep], subjects: [] };
+    let uid = 0;
+    sb.Store.uid = pre => pre + '_u' + (++uid); // 报告 id 逐份不同(公共桩恒回同一个,报告分不出彼此)
+    const modals = [];
+    sb.U.openModal = o => { modals.push(o); };
+    const jumped = [];
+    const realOpen = sb.Review.openReport;
+    sb.Review.openReport = (pp, ee, s, main, rep) => { jumped.push({ shot: s, report: rep }); return realOpen(pp, ee, s, main, rep); };
+    sb.BatchOps.enter(p, ep, null, 'review');
+    [...new Set(rows.map(s => s.id))].forEach(id => sb.BatchOps.toggle(id, p, ep, null)); // 选择态按 id 记,同 id 两行一并进批
+    sb.BatchOps.confirm(p, ep, null);
+    assertEq(modals.length, 1, '确认弹窗应先弹');
+    const nodes = {};
+    modals[0].onMount({ querySelector: sel => (nodes[sel] = nodes[sel] || { onclick: null }), querySelectorAll: () => [] }, () => {});
+    await nodes['[data-x=ok]'].onclick();
+    assertEq(modals.length, 2, '多镜审完应弹汇总面');
+    const batch = rows.map(s => s.reviews[0]);
+    assertEq(new Set(batch.map(r => r.id)).size, 3, '三行各出一份报告(夹具前提:同 id 两行的报告各存各的)');
+    // 汇总面开着时该行又被单独审了一次:它的 reviews[0] 从此不是本批那一份
+    rows[2].reviews.unshift(Object.assign({}, batch[2], { id: 'rv_later', score: 9.9 }));
+    const keys = [...String(modals[1].body).matchAll(/data-jump="([^"]*)"/g)].map(m => m[1]);
+    assertEq(keys.join(','), '0,1,2', '行键应是清单行号(存 shotId 时同 id 两行点哪个都跳首行)');
+    const jumps = keys.map(v => ({ dataset: { jump: v }, onclick: null }));
+    modals[1].onMount({ querySelector: () => ({}), querySelectorAll: sel => (sel === '[data-jump]' ? jumps : []) }, () => {});
+    jumps[2].onclick();
+    assertEq(jumped.length, 1, '点某镜应打开该镜完整报告');
+    assert(jumped[0].shot === rows[2], '点第三行开的应是第三行那一镜(按 id find 时跳的是首行)');
+    assert(jumped[0].report === batch[2], '开的应是本批第三行那一份报告(取 s.reviews[0] 时是后来那条 9.9 分的)');
+    assertEq(modals.length, 3, '报告页应开出来');
+    assert(modals[2].body.includes('视频 #1-3'), '报告页镜号应报第三镜');
   } },
   { name: '离线评审按行对位:时间码从本行之前累起,景别衔接比的是本行的上一镜', fn: async () => {
     /* 本地模拟评审那几条硬检查也是展示面:时间码按 id 断在首行时,同 id 后几行的"关键问题定位"
