@@ -3921,10 +3921,10 @@ const commandsTests = [
         calls.length = 0;
         const err = await grabErr(() => sb.CMD['subject-image'](['p1', '没这人'], Object.assign({}, flags, extra)));
         assert(err, label + ':点名库里没有的主体必须抛,不许静默当成一次成功');
-        assertEq(err.message, '主体不存在:没这人', label + ':错话须点名用户给的那个串(照抄一句不带串的话,用户不知道自己点错了谁):' + err.message);
-        assertEq(err.exit, 4, label + ':「点名的东西不在」照 4 出码(写成 1 或改走 need 出 2 都是把它并进了别的族):' + err.exit);
         assertEq(calls.join(' , '), 'GET /api/state',
           label + ':取位失败在取图之前,上游与落库两次往返都不许发(挪到取图之后就是钱花了人没找到):' + calls.join(' , '));
+        assertEq(err.message, '主体不存在:没这人', label + ':错话须点名用户给的那个串(照抄一句不带串的话,用户不知道自己点错了谁):' + err.message);
+        assertEq(err.exit, 4, label + ':「点名的东西不在」照 4 出码(写成 1 或改走 need 出 2 都是把它并进了别的族):' + err.exit);
       }
       assertEq(JSON.stringify(disk.projects[0].subjects[0]),
         JSON.stringify({ id: 'sj1', name: '女主', kind: 'character', image: '/uploads/img/old.png', prompt: '旧提示词' }),
