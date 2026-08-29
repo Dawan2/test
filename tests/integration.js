@@ -444,6 +444,53 @@ async function main() {
     const rvNone = await req('POST', '/api/wf/smart-review', { pid: demoPid, epid: 'ep_c1' }, token);
     report('wf/smart-review 无已出片镜 400', rvNone.status === 400, 'HTTP ' + rvNone.status);
 
+    /* 21b. 子集复审的 perShot 合并遇上同 id 多行:shotIds 是按 id 点名的,同 id 里进不了本轮 targets 的
+     * 兄弟行(已定稿/未出片/在飞)不在本轮报告里。合并侧只按 shotId 判"这一条被本轮替换了"时,
+     * 那一行上次的条目会被一并抹掉——整集报告凭空少一行,均分按剩下的行算。合并须按行序数对位。 */
+    const dupPid = 'it_p_dupreview';
+    const dupShot = (order, id) => ({ id, order, name: '', plot: '第' + (order + 1) + '镜剧情', prompt: 'q' + order,
+      camera: '固定镜头', duration: 5, characters: [], scene: '', props: [],
+      video: { status: 'done', url: '/uploads/gen/dv' + order + '.mp4', inputHash: 'dh' + order, frame: null }, history: [] });
+    const sD0 = await req('GET', '/api/state', null, token);
+    const putD0 = await req('PUT', '/api/state', { rev: +(sD0.data && sD0.data.rev || 0), changes: { projects: { [dupPid]: {
+      id: dupPid, name: '同 id 多行项目', style: '漫剧', subjects: [], episodes: [{ id: 'ep_d1', title: '第1集',
+        content: '女主在宴会上被当众羞辱,转身立誓复仇。', contentRev: 0, graphRev: 0,
+        shots: [dupShot(0, 'dup'), dupShot(1, 'dup'), dupShot(2, 'solo')] }] } } } }, token);
+    report('同 id 多行项目种子 PUT 成功', putD0.status === 200, 'HTTP ' + putD0.status);
+    await sleep(1100);
+    const rvFull = await req('POST', '/api/wf/smart-review', { pid: dupPid, epid: 'ep_d1', operationId: 'it.wf.rvd1' }, token);
+    const sD1 = await req('GET', '/api/state', null, token);
+    const epD1 = (sD1.data.state.projects.find(x => x.id === dupPid) || {}).episodes[0];
+    const perD1 = (epD1.lastReview || {}).perShot || [];
+    report('整集审片:同 id 两行各出一条 perShot 且 reportId 各是各的',
+      rvFull.status === 200 && rvFull.data.reviewed === 3 && perD1.length === 3 && new Set(perD1.map(x => x.reportId)).size === 3,
+      'HTTP ' + rvFull.status + ' ' + JSON.stringify(perD1).slice(0, 200));
+    /* 行0(同 id 首行)定稿 → 不可审,本轮只审得到行1;逐行分手工摆成 6 / 9 / 8,再对 dup 做子集复审。
+     * 定稿的挑首行不挑次行:序数若在"本轮报告"上数而不在分镜表行上数,行1 会被当成同 id 第 0 行,
+     * 于是换掉的是行0 那条、行1 的旧条目反倒留着——两种错法在这一档上给出的缺件各不相同。 */
+    const sD2 = await req('GET', '/api/state', null, token);
+    const projD2 = sD2.data.state.projects.find(x => x.id === dupPid);
+    projD2.episodes[0].shots[0].final = true;
+    projD2.episodes[0].lastReview.perShot = [
+      { shotId: 'dup', order: 0, score: 6, reportId: 'q0', videoInputHash: 'dh0' },
+      { shotId: 'dup', order: 1, score: 9, reportId: 'q1', videoInputHash: 'dh1' },
+      { shotId: 'solo', order: 2, score: 8, reportId: 'q2', videoInputHash: 'dh2' },
+    ];
+    projD2.episodes[0].lastReview.avg = 7.7;
+    await req('PUT', '/api/state', { rev: +(sD2.data && sD2.data.rev || 0), changes: { projects: { [dupPid]: projD2 } } }, token);
+    await sleep(1100);
+    const rvSub = await req('POST', '/api/wf/smart-review', { pid: dupPid, epid: 'ep_d1', shotIds: ['dup'], operationId: 'it.wf.rvd2' }, token);
+    const sD3 = await req('GET', '/api/state', null, token);
+    const epD3 = (sD3.data.state.projects.find(x => x.id === dupPid) || {}).episodes[0];
+    const perD3 = (epD3.lastReview || {}).perShot || [];
+    const kept = perD3.filter(x => x.reportId === 'q0');
+    report('子集复审只换被复审那一行:同 id 里已定稿的兄弟行条目原样留着(合并按行序数对位)',
+      rvSub.status === 200 && rvSub.data.reviewed === 1 && perD3.length === 3 && kept.length === 1 && kept[0].score === 6,
+      'HTTP ' + rvSub.status + ' reviewed=' + (rvSub.data || {}).reviewed + ' ' + JSON.stringify(perD3).slice(0, 220));
+    report('子集复审后整集均分按合并后的三行算(不是抹掉一行后的两行)',
+      perD3.length === 3 && epD3.lastReview.avg === Math.round(perD3.reduce((a, x) => a + x.score, 0) / 3 * 10) / 10,
+      'avg=' + (epD3.lastReview || {}).avg + ' ' + JSON.stringify(perD3.map(x => x.score)));
+
     // 22. 提取主体(项目级工作流):无分集正文项目走 p.script;只出候选不写回 state
     await sleep(1100);
     const ex = await req('POST', '/api/wf/extract-subjects', { pid: wfPid, operationId: 'it.wf.ex1' }, token);
