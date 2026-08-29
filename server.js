@@ -3611,10 +3611,20 @@ const server = http.createServer(async (req, res) => {
             cut = WfCore.normalizeCut(r.parsed);
           } catch (e) { cutErr = e.message; }
         }
-        // 逐镜分合并:子集复审只替换被复审镜的条目,其余沿用上次(整集均分按合并后口径)
+        /* 逐镜分合并:子集复审只替换被复审那几行的条目,其余沿用上次(整集均分按合并后口径)。
+         * 同 id 多行按行对位(nth = 第几条同 id = 第几行同 id,序数口径同 Domain.reviseTargets):
+         * shotIds 是按 id 点名的,同 id 里没进本轮 targets 的兄弟行(已定稿/未出片/在飞)与评审失败的行
+         * 都不在 newPer 里;只按 id 判"这一条被本轮替换了"会把它们上次那条一并抹掉——报告凭空少一行。 */
+        const rowNth = new Map();
+        (() => { const seen = Object.create(null); (ep.shots || []).forEach(s => { rowNth.set(s, (seen[s.id] = (seen[s.id] || 0) + 1) - 1); }); })();
         const newPer = reports.map(x => ({ shotId: x.shot.id, order: x.shot.order, score: x.report.score, reportId: x.report.id, videoInputHash: x.report.videoInputHash || '' }));
+        const newKeys = new Set(reports.map(x => x.shot.id + '#' + rowNth.get(x.shot)));
+        const prevSeen = Object.create(null);
         const perShot = prev
-          ? (prev.perShot || []).filter(x => !newPer.some(y => y.shotId === x.shotId) && (ep.shots || []).some(s2 => s2.id === x.shotId)).concat(newPer).sort((a, b2) => a.order - b2.order)
+          ? (prev.perShot || []).filter(x => {
+            const nth = (prevSeen[x.shotId] = (prevSeen[x.shotId] || 0) + 1) - 1;
+            return !newKeys.has(x.shotId + '#' + nth) && (ep.shots || []).some(s2 => s2.id === x.shotId);
+          }).concat(newPer).sort((a, b2) => a.order - b2.order)
           : newPer;
         const avg = Math.round(perShot.reduce((a, x) => a + x.score, 0) / perShot.length * 10) / 10;
         // lastReview 与浏览器 openEpisodeReview 同构(快照哈希/sourceRev/graphRev 同口径判旧)
