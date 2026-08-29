@@ -3922,6 +3922,8 @@ const commandsTests = [
     assertEq((open.match(/dedupeShotScan\(/g) || []).length, 2,
       '预览读一份、落库前按当下那棵树重算一份,两条路都得调同一个扫描(各写一份计算迟早漂):' + open);
     assertEq((open.match(/Store\.save\(\)/g) || []).length, 1, '写库只许有一处:' + open);
+    assert(open.includes('[data-x=apply]'),
+      '确认按钮那个 handler 取不到(改名或摘掉它就同轮改这里:下一句比的是两处先后,少了它会退化成恒真):' + open);
     assert(open.indexOf('Store.save()') > open.indexOf('[data-x=apply]'),
       '写库那一句须落在确认按钮的 handler 里(开弹窗即写就把预览那一档吃掉了):' + open);
     assert(!/lastReview\s*=|perShot\s*=|perShot\.forEach|uiSel\s*=/.test(open),
