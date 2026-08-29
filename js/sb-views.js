@@ -52,7 +52,9 @@
   /* ---- 分镜卡片上那枚同 id 重复标记:同 id 那几行在卡片上与几个不同镜头长得一模一样(画面、提示词、
    * 出片状态各是各的,撞的只是那个看不见的 id),故顶栏那个总数之外,撞车的每一行自己也报出「第几行 / 共几行」
    * ——不然"有 N 行要改"落到卡片上仍是"哪几张卡不知道"。
-   * 位次只读同一份扫描派生(Domain.dupIdMarks 收下顶栏那个数同读的扫描),页面不再扫第二遍;单位词(行)在这一层换上。
+   * 位次只读同一份扫描派生(Domain.dupIdMarks 收下顶栏那个数同读的扫描),页面不再扫第二遍;
+   * 那句说明现取 Domain.dupCopy 那一份模板(四屏那几枚角标同读它),这一层只注入单位词(行)、
+   * 引用的是本集分镜表这一面与收拾入口;模板回纯文本,故整句在这里转义一次(id 是用户数据)。
    * 共几行是全表口径:视图里当下渲出来几行不影响这个数。
    * 五档视图里渲得出分镜行的是三档,故挂两处:分镜视频与剪辑台共用下面这张缩略图卡,镜头组那条分镜时间线
    * 另挂一处(js/shotgroups.js);分镜脚本渲的是场次与节拍、节拍板渲的是五段节拍,两档一行分镜都不渲,
@@ -61,11 +63,11 @@
   function dupRowTag(marks, row) {
     const mk = marks && marks[row];
     if (!mk) return '';
-    const fate = mk.nth === 1 ? '这一行留原 id' : '去重时这一行改发新 id,画面与提示词一个字不动';
-    return `<span class="tag yellow" style="margin-top:3px;font-size:10px;padding:1px 7px" title="本集分镜表里共 ${mk.total} 行镜头共用 id「${U.esc(mk.id)}」:`
-      + `这是其中第 ${mk.nth} 行,${fate}。`
-      + `按 id 取镜的地方只找得到第 1 行,而批量生成按行逐行跑、逐行计费;收拾存量走顶栏「🧹 镜头 id 去重」`
-      + `(先看计划,确认才改)。">🧹 id 重复 第 ${mk.nth}/${mk.total} 行</span>`;
+    const c = Domain.dupCopy({
+      shape: 'mark', unit: '行', mark: mk,
+      scope: '本集分镜表', entry: '顶栏「🧹 镜头 id 去重」',
+    });
+    return `<span class="tag yellow" style="margin-top:3px;font-size:10px;padding:1px 7px" title="${U.esc(c.title)}">${c.label}</span>`;
   }
 
   /* ---- 单镜缩略图块(分镜视频/剪辑两视图共用;column 时补 width:100% 撑满竖列) ---- */

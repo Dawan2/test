@@ -291,17 +291,20 @@
   /* 卡片上那枚重复标记:同 id 那几位在主体库里与几个不同主体长得一模一样(名字与设定各是各的,
    * 撞的只是那个看不见的 id),故页头那个总数之外,撞车的每一位自己也在名字旁挂一枚小标报出
    * 「第几位 / 共几位」——不然"有 N 位要改"落到卡片上仍是"哪几张卡不知道"。
-   * 位次只读同一份扫描派生(Domain.dupIdMarks),页面不再扫第二遍;单位词(位)在这一层换上。
+   * 位次只读同一份扫描派生(Domain.dupIdMarks),页面不再扫第二遍;那句说明现取 Domain.dupCopy
+   * 那一份模板(四屏那几枚角标同读它),这一层只注入单位词(位)、引用的是主体库这一面与收拾入口。
    * 共几位是全库口径:同 id 那几位分散在不同分类 tab 下时,本 tab 上只看得见其中几张而总数照全库报。
+   * 模板回的是纯文本(它不认识 DOM),故整句在这里转义一次——id 是用户数据,原样进 title 就是个注入口。
    * 纯展示,不改任何字段:收拾它仍走页头那道预览 + 确认闸。 */
   function dupSeatTag(marks, seat) {
     const mk = marks[seat];
     if (!mk) return '';
-    const fate = mk.nth === 1 ? '这一位留原 id' : '去重时这一位改发新 id,名字与设定一个字不动';
-    return `<span class="tag yellow" title="主体库里共 ${mk.total} 位主体共用 id「${U.esc(mk.id)}」`
-      + `(可能分散在不同分类下,本页只看得见其中几位):这是其中第 ${mk.nth} 位,${fate}。`
-      + `按 id 取主体只找得到第 1 位,而批量补图按位逐位跑、逐位计费;收拾存量走页头「🧹 主体 id 去重」`
-      + `(先看计划,确认才改)。">🧹 id 重复 第 ${mk.nth}/${mk.total} 位</span>`;
+    const c = Domain.dupCopy({
+      shape: 'mark', unit: '位', mark: mk,
+      scope: '主体库', scopeNote: '(可能分散在不同分类下,本页只看得见其中几位)',
+      entry: '页头「🧹 主体 id 去重」',
+    });
+    return `<span class="tag yellow" title="${U.esc(c.title)}">${c.label}</span>`;
   }
   /* 去重弹窗:开弹窗只预览(算出计划,一个字不写库),按下确认那一下才落库——与 CLI 的 dry-run / --apply 两档同形。
    * 落库前按当下那棵树重算一遍(计划以真要写的这一份为准,新 id 现发,故预览里那批只是示意值)。
@@ -370,11 +373,16 @@
       const batchVoiceBtn = p.subjects.some(s => s.kind === 'character') ? `<button class="btn sm" data-x="bvoice" title="AI 按人设为全部角色推荐音色,试听确认后批量绑定">✨ 批量配音色</button>` : '';
       /* 存量重复 id 的入口:只在库里真有重复时露出来并报出要改几位;
        * 逐张卡那枚「第几位 / 共几位」小标读的是同一份扫描(页面不另扫一遍),
-       * 故页头那个数与卡片上标的那几位永远同源——页头数的是要改几位(首位不改),卡片标的是撞了 id 的每一位 */
+       * 故页头那个数与卡片上标的那几位永远同源——页头数的是要改几位(首位不改),卡片标的是撞了 id 的每一位。
+       * 按钮上那句说明与四屏那几枚角标同一份模板(Domain.dupCopy),这一层只注入引用面与"点开就是计划"这一段 */
       const dupScan = dedupeScan(p.subjects);
       const dupSeats = dupScan.plan.length;
       const dupMarks = Domain.dupIdMarks(dupScan);
-      const dedupeBtn = dupSeats ? `<button class="btn sm" data-x="dedupe" title="库里有 ${dupSeats} 位主体与在前的位共用同一个 id(按 id 只找得到首位、批量补图却逐位计费);点开先看计划,确认才改 id,一位不删、零积分">🧹 主体 id 去重(${dupSeats})</button>` : '';
+      const dupNote = Domain.dupCopy({
+        shape: 'count', unit: '位', n: dupSeats, scope: '库里',
+        cta: ';点开' + Domain.dupGateNote('位'),
+      }).title;
+      const dedupeBtn = dupSeats ? `<button class="btn sm" data-x="dedupe" title="${U.esc(dupNote)}">🧹 主体 id 去重(${dupSeats})</button>` : '';
       main.innerHTML = `
       <div class="page">
         ${embedded ? '' : `

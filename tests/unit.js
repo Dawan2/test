@@ -7501,6 +7501,131 @@ const domainTests = [
     assertEq(JSON.stringify(D.dupIdMarks({ duplicates: [{ id: 'a', n: 2 }], plan: [{ order: 1, from: 'a', to: 'z' }] })), '{}',
       '缺首处序号的那一组数不出位次,整组一处不标(留个 undefined 格子会渲成一枚谁也对不上的小标)');
   } },
+  { name: 'dupCopy:同 id 重复那句说明只有一份模板——三种形态各按单位词换词,调用方只注入引用面/收拾入口/数', fn: () => {
+    /* 上两条钉的是数怎么来的,这一条钉的是那个数怎么说出去。那几枚角标是纯展示,分量全压在悬停那句
+     * 说明上——它得说清撞了几处、代价是什么、去哪儿收拾。这句话此前十处各写一份同构句(主体卡片那枚
+     * 逐位小标、分镜卡片那枚逐行小标、主体库页头与分集顶栏两条入口按钮、项目详情面 tab 行两枚、
+     * 分集卡片一枚、项目列表卡片两枚与列表页头那一枚),逐句只差单位词、引用的是哪一面与收拾入口:
+     * 改一句代价的说法要挨着改十处,漏一处那一面上说的代价就与别处不是一句话。
+     * 本条钉收成一份之后三种形态各出什么,尤其钉住"单位词一换连带换掉的四件事"——数的是主体还是镜头、
+     * 按 id 取到的是首位还是首行、哪个批量动作逐个计费、改 id 时哪些内容一个字不动。 */
+    const sb = loadDomain();
+    const D = sb.Domain;
+    // ① 逐位/逐行那枚小标:两侧同一份模板,差的就是单位词那一串
+    const seat = D.dupCopy({
+      shape: 'mark', unit: '位', mark: { id: 'sj1', nth: 2, total: 3 },
+      scope: '主体库', scopeNote: '(可能分散在不同分类下,本页只看得见其中几位)', entry: '页头「🧹 主体 id 去重」',
+    });
+    assertEq(seat.label, '🧹 id 重复 第 2/3 位', '小标上报的是"第几位 / 共几位",实际:' + seat.label);
+    assertEq(seat.title, '主体库里共 3 位主体共用 id「sj1」(可能分散在不同分类下,本页只看得见其中几位):'
+      + '这是其中第 2 位,去重时这一位改发新 id,名字与设定一个字不动。按 id 取主体只找得到第 1 位,'
+      + '而批量补图按位逐位跑、逐位计费;收拾存量走页头「🧹 主体 id 去重」(先看计划,确认才改)。',
+      '主体侧那句说明与收编前逐字相同(收编不许顺手改口径),实际:' + seat.title);
+    const row = D.dupCopy({
+      shape: 'mark', unit: '行', mark: { id: 'sh1', nth: 2, total: 3 },
+      scope: '本集分镜表', entry: '顶栏「🧹 镜头 id 去重」',
+    });
+    assertEq(row.label, '🧹 id 重复 第 2/3 行', '镜头侧只差单位词,实际:' + row.label);
+    assertEq(row.title, '本集分镜表里共 3 行镜头共用 id「sh1」:这是其中第 2 行,去重时这一行改发新 id,'
+      + '画面与提示词一个字不动。按 id 取镜的地方只找得到第 1 行,而批量生成按行逐行跑、逐行计费;'
+      + '收拾存量走顶栏「🧹 镜头 id 去重」(先看计划,确认才改)。',
+      '镜头侧那句说明与收编前逐字相同,实际:' + row.title);
+    // 首处那一枚说的是"留原 id"(改发新 id 只落在后续那几处上,与计划口径同一套)
+    const first = D.dupCopy({ shape: 'mark', unit: '行', mark: { id: 'sh1', nth: 1, total: 3 }, scope: '本集分镜表', entry: '顶栏「🧹 镜头 id 去重」' });
+    assert(first.title.includes('这是其中第 1 行,这一行留原 id。') && !first.title.includes('改发新 id,'),
+      '首处那一枚只说它留原 id(它才是引用解析落到的那一处),实际:' + first.title);
+    // ② 报总数那一枚:引用面、逐集清单、收拾入口那一段由调用方注入,代价那一句在模板里
+    const cnt = D.dupCopy({
+      shape: 'count', unit: '位', n: 2, scope: '主体库里', marks: true,
+      cta: '。点这里到「主体」页,那边页头有「🧹 主体 id 去重」(' + D.dupGateNote('位') + ')',
+    });
+    assertEq(cnt.label, '🧹 主体 id 重复 2 位', '角标上带着数的是什么(主体 / 镜头),实际:' + cnt.label);
+    assertEq(cnt.title, '主体库里有 2 位主体与在前的位共用同一个 id(按 id 只找得到首位、批量补图却逐位计费)。'
+      + '点这里到「主体」页,那边页头有「🧹 主体 id 去重」(先看计划,确认才改 id,一位不删、零积分),'
+      + '撞车的每一位卡片上另有一枚小标',
+      '报总数那一句与收编前逐字相同,实际:' + cnt.title);
+    const eps = D.dupCopy({
+      shape: 'count', unit: '行', n: 3, eps: 2, scope: '2 集的分镜表里', list: '第一集 2 行、第三集 1 行',
+      cta: '。点这里直接进那一集的工作区',
+    });
+    assertEq(eps.label, '🧹 镜头 id 重复 3 行(2 集)', '摊在几集上写在角标里,实际:' + eps.label);
+    assertEq(eps.title, '2 集的分镜表里共有 3 行镜头与在前的行共用同一个 id(按 id 只取得到首行、批量生成却逐行计费):'
+      + '第一集 2 行、第三集 1 行。点这里直接进那一集的工作区',
+      '给了逐集清单就改说"共有"并把清单缀在代价之后,实际:' + eps.title);
+    const short = D.dupCopy({ shape: 'count', unit: '行', n: 2, short: true, scope: '本集', cta: '' });
+    assertEq(short.label, '🧹 id 重复 2 行', 'short 档给上下文已明的地方(分集卡片本就在这一集上),实际:' + short.label);
+    assert(!short.title.includes('另有一枚小标'), '没给 marks 位就不许说"另有一枚小标"(那一面上真没挂):' + short.title);
+    // ③ 跨单位那一枚(项目列表页头):两侧一起报,四件连带换掉的词按单位词表逐个摊开
+    const roll = D.dupCopy({
+      shape: 'rollup', unit: ['位', '行'], total: 12, n: 2, list: '脏剧 主体 2 位',
+      scopeNote: '这个数按全量项目算', cta: '点这里直接进那个项目',
+    });
+    assertEq(roll.label, '🧹 2 个项目有重复 id', '页头那一枚数的是项目个数,实际:' + roll.label);
+    assertEq(roll.title, '全部 12 个项目里有 2 个存着同 id 的主体或镜头(这个数按全量项目算):脏剧 主体 2 位。'
+      + '按 id 只取得到首位/首行,而批量补图逐位计费、批量生成逐行计费。点这里直接进那个项目',
+      '跨单位那一枚的"数的是什么 / 取到的是哪一处 / 哪个批量逐个计费"三段一律按单位词表摊开(页面不写第二份),实际:' + roll.title);
+    // ④ 那道闸怎么说各处逐字同一句,单位词换上
+    assertEq(D.dupGateNote('位') + ' / ' + D.dupGateNote('行'),
+      '先看计划,确认才改 id,一位不删、零积分 / 先看计划,确认才改 id,一行不删、零积分',
+      '闸的承诺(先看计划、确认才改、一位/一行不删、零积分)不许各写一份');
+    // ⑤ 脏入参:单位词不在表里、没给标记,一个字都不编(角标跟着整个不露,而不是渲出一句 undefined)
+    [{ shape: 'mark', unit: '个', mark: { id: 'a', nth: 1, total: 2 } }, { shape: 'count', unit: undefined, n: 1 },
+      { shape: 'mark', unit: '位' }, { shape: 'rollup', unit: [] }, {}].forEach(bad => {
+      let out;
+      try { out = D.dupCopy(bad); }
+      catch (e) { assert(false, '脏入参不许抛(渲染那一层拿到什么都得渲得出来):' + JSON.stringify(bad) + ' → ' + e.message); }
+      assertEq(out.label + '|' + out.title, '|', '认不出单位词/没给标记时一个字都不编:' + JSON.stringify(bad));
+    });
+    assertNoThrow(() => D.dupCopy(), '一个参数都不给同样不许抛');
+    // ⑥ 纯派生:入参一个字段都不改(角标那一路一个字不写库,这一层连传进来的对象都不碰)
+    const arg = { shape: 'mark', unit: '位', mark: { id: 'a', nth: 1, total: 2 }, scope: '主体库', entry: '页头' };
+    const snap = JSON.stringify(arg);
+    D.dupCopy(arg);
+    assertEq(JSON.stringify(arg), snap, 'dupCopy 不许改入参');
+  } },
+  { name: 'dupCopy 是唯一那一份:五个页面文件不许再各写一份同构句,十处调用逐处点名', fn: () => {
+    /* 上一条钉的是模板出什么,这一条钉的是"页面上真没有第二份"。行为可以完全一样而句子各写一份——
+     * 那正是收编前的实况:十句同构句散在五个文件里,改口径要挨着改十处。判据不看句子长什么样,
+     * 只看那几段不变的字面此刻只在 domain.js 一处:页面上再冒出一句,它当场落在这条判据上。
+     * 调用处数逐文件点名而不是只判"总数大于零":某一面被改回内联时那一格当场对不上(总数那种判法
+     * 会被"另一面多调一次"补平)。 */
+    const FRAGS = [
+      ['共用同一个 id(按 id ', '报总数那一枚的头一句(撞了几处 + 代价)'],
+      ['共用 id「', '逐位/逐行那枚小标的头一句'],
+      ['id 重复 第 ', '小标上那几个字'],
+      ['卡片上另有一枚小标', '"撞车的每一处卡片上另有一枚小标"那一段'],
+      ['确认才改 id,一', '那道预览 + 确认闸的承诺'],
+    ];
+    const codeOf = rel => blankNonCode(fs.readFileSync(path.join(ROOT, 'js', rel), 'utf8'), true);
+    const dom = codeOf('domain.js');
+    FRAGS.forEach(([f, what]) => assertEq(dom.split(f).length - 1, 1,
+      '「' + f + '」(' + what + ')须在 js/domain.js 恰好一处(挪窝或改写就同轮改这条判据,别把它留成恒真)'));
+    /* 消费面:五个文件各调几次逐格点名,合起来正是模板收编的那十句 */
+    const HOSTS = { 'roles.js': 2, 'sb-views.js': 1, 'storyboard.js': 1, 'episodes.js': 3, 'projects.js': 3 };
+    Object.keys(HOSTS).forEach(rel => assertEq(codeOf(rel).split('Domain.dupCopy(').length - 1, HOSTS[rel],
+      'js/' + rel + ' 那几处说明须现取 Domain.dupCopy(该文件登记 ' + HOSTS[rel] + ' 处;'
+      + '真改了挂点数就同轮改这张表并写清哪一面变了)'));
+    assertEq(Object.keys(HOSTS).reduce((n, k) => n + HOSTS[k], 0), 10,
+      '十处调用 = 收编的那十句(逐位小标 / 逐行小标 / 两条入口 / 详情面两枚 / 分集卡片一枚 / 列表两枚 + 页头一枚)');
+    // 全树只有 domain.js 一处写得出那几段字面,别的 js 文件一处都不许有
+    const all = fs.readdirSync(path.join(ROOT, 'js')).filter(f => /\.js$/.test(f) && f !== 'domain.js').sort();
+    const leaked = [];
+    all.forEach(rel => FRAGS.forEach(([f]) => {
+      if (codeOf(rel).includes(f)) leaked.push('js/' + rel + ':「' + f + '」');
+    }));
+    assertEq(leaked.join(' / '), '',
+      '页面上又写了一份同构句:那句说明现取 Domain.dupCopy(单位词、引用面、收拾入口与数由调用方注入),'
+      + '不然改一句代价的说法要挨着改十处、漏一处那一面上说的代价就与别处不是一句话');
+    // 渲那几枚的文件恰是这五个:第六处冒出来时先红在这里(那一面得跟着收进模板)
+    const hosts = all.concat('domain.js').filter(rel => /Domain\.dupCopy\(/.test(codeOf(rel))).sort();
+    assertEq(hosts.join(','), 'episodes.js,projects.js,roles.js,sb-views.js,storyboard.js',
+      '渲同 id 重复角标的文件变了就同轮重量一遍这张表,实际:' + hosts.join(','));
+    // 闸那句话同样只有一份:七处经 dupGateNote 取(mark 那一档说的是短一句、跨单位那一枚两说合一句,都不经它)
+    const gateHosts = {};
+    all.forEach(rel => { const n = codeOf(rel).split('Domain.dupGateNote(').length - 1; if (n) gateHosts[rel] = n; });
+    assertEq(JSON.stringify(gateHosts), JSON.stringify({ 'episodes.js': 3, 'projects.js': 2, 'roles.js': 1, 'storyboard.js': 1 }),
+      '那道闸的承诺一律现取 Domain.dupGateNote(改了取数处就同轮改这张表),实际:' + JSON.stringify(gateHosts));
+  } },
 ];
 
 /* ================= 套件 12:bus.js(管线事件总线,第三阶段) ================= */
@@ -10607,6 +10732,12 @@ const GUARD_TOPICS = [
       + '这一屏一个字都不许再抄;另钉两件量出来的事——扫的是内存里那棵树(不为角标逐项目打网)、'
       + '扫的是全量项目(只扫当前那一页的话,被搜索词筛掉与翻页翻过去的撞车项目一个都报不出来,'
       + '而那正是页头那一枚存在的理由)' },
+  { id: 'dedupe-copy-single', anchors: ['dupCopy(', 'dupGateNote('], hosts: 2,
+    why: '同 id 重复那句说明只在 Domain.dupCopy 一份模板:十句逐句同构(逐位/逐行小标、两条去重入口、'
+      + '项目详情面两枚、分集卡片一枚、项目列表两枚与列表页头那一枚),只差单位词、引用的是哪一面与收拾入口,'
+      + '而那几枚角标是纯展示、分量全压在这句话上——各写一份时改一句代价的说法要挨着改十处,'
+      + '漏一处那一面上说的代价就与别处不是一句话(两处承载:一处钉模板三种形态各出什么,'
+      + '一处钉页面上真没有第二份、十处调用逐格点名)' },
   { id: 'dedupe-shots-ui-single', anchors: ['function openShotDedupe(', 'Domain.reviewRows('],
     why: '分镜面那条去重入口与 CLI 同读一份规则(页面只注入 Store.uid 那个发号器与镜头侧单位词),'
       + '而预览里那句「旧审片报告会塌几条」只许拿 Domain.reviewRows 在两棵表上各跑一遍现算——'
@@ -10625,7 +10756,7 @@ const GUARD_TOPICS = [
  *   3. 销号必须显式落笔——编号搬进 GUARD_TOPICS_CLOSED 并写下闭合理由,锚点原样搬过来,
  *      好让"这道护栏是真没了,还是被别的主题接手了"事后仍判得出来。
  * 有意不禁新登记主题:在册多出花名册没有的号一条不红,加主题照旧只改上面那张表。 */
-const TOPIC_FLOOR = 27;
+const TOPIC_FLOOR = 28;
 const GUARD_TOPICS_CLOSED = [
   /* 形状:{ id: '主题编号', anchors: [原样搬过来], why: '这道护栏原本守什么',
    *        closed: '为什么可以不守了(被守的那一面已不存在 / 判据并进了哪一条)',
@@ -14829,7 +14960,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-      [['单元测试', 713, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+      [['单元测试', 715, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {

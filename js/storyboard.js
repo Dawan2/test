@@ -143,11 +143,16 @@
      * 挂在集级顶栏这一行(四视图与剪辑台共用它),故只此一处四视图都看得见——各视图自己那个中栏头部不用再挂。
      * 整页只扫一遍分镜表:顶栏这个数与分镜卡片上那几枚「第几行 / 共几行」小标同读这一份扫描,
      * 逐行位次由 Domain.dupIdMarks 从它现派生(页面不再扫第二遍,也不再自己数一遍谁是首行);
-     * 顶栏数的是要改几行(首行不算),卡片标的是撞了 id 的每一行。 */
+     * 顶栏数的是要改几行(首行不算),卡片标的是撞了 id 的每一行。
+     * 按钮上那句说明与四屏那几枚角标同一份模板(Domain.dupCopy),这一层只注入引用面与"点开就是计划"这一段。 */
     const dupScan = dedupeShotScan(ep.shots);
     const dupRows = dupScan.plan.length;
     const dupMarks = Domain.dupIdMarks(dupScan);
-    const dedupeBtn = dupRows ? `<button class="btn sm" data-x="shotdedupe" title="本集有 ${dupRows} 行镜头与在前的行共用同一个 id(按 id 只取得到首行、批量生成却逐行计费);点开先看计划,确认才改 id,一行不删、零积分">🧹 镜头 id 去重(${dupRows})</button>` : '';
+    const dupNote = Domain.dupCopy({
+      shape: 'count', unit: '行', n: dupRows, scope: '本集',
+      cta: ';点开' + Domain.dupGateNote('行'),
+    }).title;
+    const dedupeBtn = dupRows ? `<button class="btn sm" data-x="shotdedupe" title="${U.esc(dupNote)}">🧹 镜头 id 去重(${dupRows})</button>` : '';
 
     main.innerHTML = `
     <div class="page" style="max-width:none">
