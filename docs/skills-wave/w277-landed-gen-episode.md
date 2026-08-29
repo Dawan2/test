@@ -4,7 +4,7 @@ W254 给回执补出 `landed` 时只收了两条批量命令,W257 原样传下�
 
 - 起手支:`cursor/w276-integration-3f7c`,现取 tip `49033fbec14dd1a478efd1052ddadbb891cad0d5`(交接自称 `49033fb`,现取与自称逐字节相同)
 - 本槽支:`cursor/w277-landed-audit-ec5d`
-- 产品面 diff:`cli.js` +17/−2;判据 `tests/unit.js` +49/−1(净 +1 条用例,另含一处夹具与两处棘轮字面);根 `README.md` 三处
+- 产品面 diff:`cli.js` +17/−2;判据 `tests/unit.js` +51/−3(净 +1 条用例,另含一处夹具口子与两处棘轮字面);根 `README.md` +2/−2(两行,三处字面:用例数 / `gen-episode` 用法行 / `commands.js` 覆盖段);索引 `docs/skills-wave/README.md` +2/−1
 
 `master` 没合、没开 PR、没跑 `e2e.js`;`state-put` 闸、`shots-dedupe` 主体侧、SK-04、`gaps()` 键、镜号那一族、`common`/`cut`、`openEpisodeReview` 一律没碰。
 
