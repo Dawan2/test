@@ -78,14 +78,27 @@
    * 数由 EpisodeOps.dupIdBadges 现取(它再读两侧已有的 RoleOps.dedupeScan / SB.dedupeShotScan,
    * 规则本身仍在 Domain.dupIdScan 一份):这一屏不认识去重规则,也不再数一遍谁是首位/首行,
    * 报的数与项目详情面 tab 行那两枚逐字同一个(要改几位 / 要改几行,首位与首行不算)。
+   * 两句说明与另三屏那几枚同一份模板(Domain.dupCopy),这一屏只注入单位词、引用的是哪一面
+   * 与点过去落在哪儿;模板回纯文本,故整句在这里转义一次(项目名与集名都是用户数据)。
    * 只在这个项目真有重复时才多长这一行,干净项目的卡片一个像素都不动。 */
   function dupCardTags(p, d) {
     if (!d || (!d.seats && !d.rows)) return '';
-    const epNote = d.eps.map(x => U.esc(x.title) + ' ' + x.rows + ' 行').join('、');
+    const subj = d.seats ? Domain.dupCopy({
+      shape: 'count', unit: '位', n: d.seats, scope: '这个项目的主体库里',
+      cta: '。点这里进这个项目的「主体」页,那边页头有「🧹 主体 id 去重」(' + Domain.dupGateNote('位') + ')',
+    }) : null;
+    const shot = d.rows ? Domain.dupCopy({
+      shape: 'count', unit: '行', n: d.rows, eps: d.eps.length,
+      scope: '这个项目 ' + d.eps.length + ' 集的分镜表里',
+      list: d.eps.map(x => x.title + ' ' + x.rows + ' 行').join('、'),
+      cta: '。' + (d.eps.length === 1 ? '点这里直接进那一集的工作区'
+        : '点这里进这个项目的「分集」列表,撞车那几集的卡片上各有一枚角标可点进去')
+        + ',那边顶栏有「🧹 镜头 id 去重」(' + Domain.dupGateNote('行') + ')',
+    }) : null;
     return `
               <div class="row wrap" style="margin-top:8px;gap:6px">
-                ${d.seats ? `<span class="tag yellow" data-dupsubj="${p.id}" style="cursor:pointer" title="这个项目的主体库里有 ${d.seats} 位主体与在前的位共用同一个 id(按 id 只找得到首位、批量补图却逐位计费)。点这里进这个项目的「主体」页,那边页头有「🧹 主体 id 去重」(先看计划,确认才改 id,一位不删、零积分)">🧹 主体 id 重复 ${d.seats} 位</span>` : ''}
-                ${d.rows ? `<span class="tag yellow" data-dupshot="${p.id}" style="cursor:pointer" title="这个项目 ${d.eps.length} 集的分镜表里共有 ${d.rows} 行镜头与在前的行共用同一个 id(按 id 只取得到首行、批量生成却逐行计费):${epNote}。${d.eps.length === 1 ? '点这里直接进那一集的工作区' : '点这里进这个项目的「分集」列表,撞车那几集的卡片上各有一枚角标可点进去'},那边顶栏有「🧹 镜头 id 去重」(先看计划,确认才改 id,一行不删、零积分)">🧹 镜头 id 重复 ${d.rows} 行(${d.eps.length} 集)</span>` : ''}
+                ${subj ? `<span class="tag yellow" data-dupsubj="${p.id}" style="cursor:pointer" title="${U.esc(subj.title)}">${subj.label}</span>` : ''}
+                ${shot ? `<span class="tag yellow" data-dupshot="${p.id}" style="cursor:pointer" title="${U.esc(shot.title)}">${shot.label}</span>` : ''}
               </div>`;
   }
 
@@ -113,9 +126,17 @@
         const d = window.EpisodeOps && EpisodeOps.dupIdBadges ? EpisodeOps.dupIdBadges(p) : null;
         if (d && (d.seats || d.rows)) { dupOf[p.id] = d; dirty.push(p); }
       });
-      const dirtyNote = dirty.slice(0, 5).map(x => U.esc(x.name) + ' '
+      const dirtyNote = dirty.slice(0, 5).map(x => x.name + ' '
         + [dupOf[x.id].seats ? '主体 ' + dupOf[x.id].seats + ' 位' : '', dupOf[x.id].rows ? '镜头 ' + dupOf[x.id].rows + ' 行' : ''].filter(Boolean).join('、')).join(';')
         + (dirty.length > 5 ? ` 等 ${dirty.length} 个` : '');
+      /* 页头那一枚跨着两侧报(一屏之内主体与镜头一起数),故走模板的跨单位那一档:
+       * 单位词收下一张表,代价那一句与去哪儿收拾照旧由模板与本层各出自己那一段 */
+      const dirtyNoteTag = dirty.length ? Domain.dupCopy({
+        shape: 'rollup', unit: ['位', '行'], total: all.length, n: dirty.length, list: dirtyNote,
+        scopeNote: '这个数按全量项目算,不受搜索词与页码影响——被筛掉或翻过去的那几个,卡片上那枚角标一枚也看不见',
+        cta: '点这里' + (dirty.length === 1 ? '直接进那个项目' : '清掉搜索词、翻到第一个撞车项目那一页')
+          + ',收拾走「🧹 主体 id 去重」/「🧹 镜头 id 去重」那道预览 + 确认闸(一位不删、一行不删,零积分)',
+      }) : null;
 
       main.innerHTML = `
       <div class="page">
@@ -123,7 +144,7 @@
           <div style="width:340px;max-width:50vw">
             <input class="input" data-f="search" placeholder="🔍 搜索项目名称" value="${U.esc(search)}">
           </div>
-          ${dirty.length ? `<span class="tag yellow" data-x="dupall" style="align-self:center;cursor:pointer" title="全部 ${all.length} 个项目里有 ${dirty.length} 个存着同 id 的主体或镜头(这个数按全量项目算,不受搜索词与页码影响——被筛掉或翻过去的那几个,卡片上那枚角标一枚也看不见):${dirtyNote}。按 id 只取得到首位/首行,而批量补图逐位计费、批量生成逐行计费。点这里${dirty.length === 1 ? '直接进那个项目' : '清掉搜索词、翻到第一个撞车项目那一页'},收拾走「🧹 主体 id 去重」/「🧹 镜头 id 去重」那道预览 + 确认闸(一位不删、一行不删,零积分)">🧹 ${dirty.length} 个项目有重复 id</span>` : ''}
+          ${dirtyNoteTag ? `<span class="tag yellow" data-x="dupall" style="align-self:center;cursor:pointer" title="${U.esc(dirtyNoteTag.title)}">${dirtyNoteTag.label}</span>` : ''}
           <button class="btn primary" data-x="new">＋ 新建项目</button>
         </div>
         <div class="card" style="margin-bottom:14px;padding:14px 16px;border-color:var(--accent);cursor:pointer" data-x="goprod">

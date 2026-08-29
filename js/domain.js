@@ -387,6 +387,67 @@
       + '两条路都先报计划、确认/--apply 才写:首位留原 id、撞车位改发新 id);也可回主体库自己把多出来的那几位删掉或改 id'
       + '(删除按 id 匹配、同 id 那几位一并删光,先确认要留哪一位)。';
   };
+  /* 同 id 重复那套展示文案的唯一模板(浏览器四屏与两条去重入口同读这一份)。
+   * 这几句此前各处各写一份:主体卡片那枚逐位小标、分镜卡片那枚逐行小标、主体库页头与分集顶栏
+   * 那两条入口按钮、项目详情面 tab 行两枚、分集卡片一枚、项目列表卡片两枚与列表页头那一枚
+   * ——十句逐句同构,只差单位词(位 / 行)、引用的是哪一面、收拾走哪个入口,以及 k/n 或 N 位/N 行 这类数。
+   * 各写一份的代价是改一句要挨着改十处:漏一处,那一面上说的代价与别处就不是一句话,
+   * 而用户正是照这句话决定要不要收拾(纯展示的角标,全部分量都在这句说明上)。
+   * 单位词一换,连带换掉的还有数的是什么(主体 / 镜头)、按 id 取到的是哪一处(首位 / 首行)、
+   * 哪个批量动作逐个计费(批量补图 / 批量生成)、改 id 时哪些内容一个字不动(名字与设定 / 画面与提示词)
+   * ——这张对照表收在下面,调用方只注入单位词本身。
+   * 纯文本:HTML 转义与角标外观归调用方那一层(本模块不认识 DOM),故 id 与逐集清单原样带出、
+   * 由调用方整句转义;单位词不在对照表里时一个字都不编(角标跟着整个不露)。 */
+  D.DUP_UNITS = {
+    '位': { thing: '主体', first: '首位', take: '只找得到首位', lookup: '按 id 取主体', batch: '批量补图', intact: '名字与设定' },
+    '行': { thing: '镜头', first: '首行', take: '只取得到首行', lookup: '按 id 取镜的地方', batch: '批量生成', intact: '画面与提示词' },
+  };
+  /* 那道预览 + 确认闸怎么说,各处逐字同一句(单位词换上):去哪儿收拾由调用方注入(各面路不同),
+   * 而闸本身的承诺(先看计划、确认才改、一位/一行不删、零积分)不许各写一份。 */
+  D.dupGateNote = unit => '先看计划,确认才改 id,一' + unit + '不删、零积分';
+  /* 三种形态共用上面那张对照表,回 { label 角标上那几个字, title 悬停那句说明 }:
+   *   mark   逐位/逐行那枚小标——报「第几位 / 共几位」,注入 mark(Domain.dupIdMarks 的一格)与引用面、入口;
+   *   count  报总数那一枚——报「N 位 / N 行」,注入数、引用面、逐集清单 list、收拾入口那一段 cta;
+   *          marks 位说明"撞车的每一位卡片上另有一枚小标"(只有真挂了小标的那两面给),
+   *          short 位给分集卡片那种上下文已明的地方(角标上不再重复"主体/镜头"二字);
+   *   rollup 跨单位那一枚(项目列表页头:一屏之内主体与镜头两侧一起报)——单位词收下一张表。 */
+  D.dupCopy = function (o) {
+    const c = o || {};
+    const units = Array.isArray(c.unit) ? c.unit : [c.unit];
+    const vs = units.map(u => D.DUP_UNITS[u]);
+    if (!units.length || vs.some(v => !v)) return { label: '', title: '' };
+    const u = units[0], v = vs[0];
+    if (c.shape === 'mark') {
+      const mk = c.mark;
+      if (!mk) return { label: '', title: '' };
+      const fate = mk.nth === 1 ? '这一' + u + '留原 id'
+        : '去重时这一' + u + '改发新 id,' + v.intact + '一个字不动';
+      return {
+        label: '🧹 id 重复 第 ' + mk.nth + '/' + mk.total + ' ' + u,
+        title: c.scope + '里共 ' + mk.total + ' ' + u + v.thing + '共用 id「' + mk.id + '」' + (c.scopeNote || '')
+          + ':这是其中第 ' + mk.nth + ' ' + u + ',' + fate + '。'
+          + v.lookup + '只找得到第 1 ' + u + ',而' + v.batch + '按' + u + '逐' + u + '跑、逐' + u + '计费;'
+          + '收拾存量走' + c.entry + '(先看计划,确认才改)。',
+      };
+    }
+    if (c.shape === 'rollup') {
+      return {
+        label: '🧹 ' + c.n + ' 个项目有重复 id',
+        title: '全部 ' + c.total + ' 个项目里有 ' + c.n + ' 个存着同 id 的' + vs.map(x => x.thing).join('或')
+          + '(' + (c.scopeNote || '') + '):' + (c.list || '') + '。'
+          + '按 id 只取得到' + vs.map(x => x.first).join('/') + ',而'
+          + units.map((x, i) => vs[i].batch + '逐' + x + '计费').join('、') + '。' + (c.cta || ''),
+      };
+    }
+    return {
+      label: '🧹 ' + (c.short ? '' : v.thing + ' ') + 'id 重复 ' + c.n + ' ' + u
+        + (c.eps ? '(' + c.eps + ' 集)' : ''),
+      title: c.scope + (c.list ? '共有 ' : '有 ') + c.n + ' ' + u + v.thing
+        + '与在前的' + u + '共用同一个 id(按 id ' + v.take + '、' + v.batch + '却逐' + u + '计费)'
+        + (c.list ? ':' + c.list : '') + (c.cta || '')
+        + (c.marks ? ',撞车的每一' + u + '卡片上另有一枚小标' : ''),
+    };
+  };
   /* 同 id 多位/多行的去重扫描与改名计划(双端单源:主体库与分镜表共用这一套规则,两侧不各写一份)。
    * 规则一句话:首次出现的那一位/行留原 id,后面每一处撞车各发一个新 id——
    * 与 shots-import 那道写入闸、Store.trashRestore 的 id 冲突改名同形。
