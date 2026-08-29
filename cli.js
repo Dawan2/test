@@ -930,12 +930,15 @@ CMD['gen-episode'] = async (a, f) => {
   if (!todo.length) return { episode: ep.id, total: 0, ok: 0, landed: 0, failed: [], skipped: '无可生成镜头(确认闸/已出片/终稿)' };
   log('整集生成:' + todo.length + ' 镜待处理(串行,服务端限流)…');
   const result = { episode: ep.id, total: todo.length, ok: 0, landed: 0, failed: [], shots: {} };
-  /* 本轮那条片真落到哪一行(id + 它在同 id 那几行里排第几):这一端每轮回最新树按 findShot 取,
-   * 取的是首行——同 id 占着三行的一趟会把三份产物全写在首行身上,引擎三次都成功、result.ok 照数三次,
-   * 而到手片只有一份(后一轮盖了前一轮)。ok 的口径不改(它记的是引擎调用成功次数,计费同口径,
-   * 这几次都真花了钱,改成 failed 就是拿假失败掩盖真扣费),回执另报 landed = 真落到几行。
+  /* 各行在快照全表里排第几行同 id:每轮回最新树上重取时按同序定位本轮那一行(见 nthShot);
+   * 序数得在全表上数,只数待跑清单会在「首行已出片被跳过」时整体错位(首行被覆盖、末行补不上) */
+  const nthOf = new Map();
+  const seenIds = Object.create(null);
+  (ep.shots || []).forEach(s => { const n = seenIds[s.id] || 0; seenIds[s.id] = n + 1; nthOf.set(s, n); });
+  /* 本轮那条片真落到哪一行(id + 它在同 id 那几行里排第几):并发改表时序数越界会按兜底退回首行,
+   * 两轮写到同一行身上,而 result.ok 数的是引擎调用成功次数、数不出这件事(那几笔都真花了钱,
+   * 改成 failed 就是拿假失败掩盖真扣费),回执另报 landed = 真落到几行。
    * 座位键得带 id:只记行内序数时,一趟里各占一行的不同 id 会全记成第 0 行、landed 缩成 1。
-   * 座位现算而不是抄 result.ok:哪天这一端也改成按序数重取,两个数会自己跟着岔开。
    * result.shots 按 id 记同样收不住这件事(同 id 几行只剩一个键),故落库数只看 landed。 */
   const seats = new Set();
   for (const s of todo) {
@@ -943,7 +946,7 @@ CMD['gen-episode'] = async (a, f) => {
     try {
       const r = await withProject(a[0], f, async (projLive) => {
         const epLive = findEp(projLive, a[1]);
-        const sLive = findShot(epLive, s.id);
+        const sLive = nthShot(epLive, s.id, nthOf.get(s) || 0);
         seat = sLive.id + '#' + (epLive.shots || []).filter(x => x.id === sLive.id).indexOf(sLive);
         if (!sLive.image && !f['no-image']) { // 缺底图先补(廉价文生图,失败即停该镜不碰视频)
           const img = await genImage(sLive.prompt || sLive.plot || ('镜头' + sLive.order), f, {});
