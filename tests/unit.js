@@ -9513,6 +9513,38 @@ const contractTests = [
     assert(/D\.shotNo = function[\s\S]{0,200}D\.rowIndexOf\(rows, shot\)/.test(dom),
       'shotNo 应长在 rowIndexOf 之上,不在展示层或 domain 里另抄一份对位');
   } },
+  { name: '单镜审片展示面镜号(源级):报告页头/导出抬头与文件名/记录列表/生成中拦截都取 Domain.shotNo,order 只留在任务名与扣费摘要', fn() {
+    /* 上一条钉的是整集那两块面,单镜这条路上还有四处"给人看的镜号":报告弹窗页头 `视频 #N-M`
+     * (集号早就按行对位取了,镜号这一半此前还读 order)、导出报告的抬头与文件名(同源同一个号)、
+     * 审片记录列表标题、生成中拦截提示。这四处与整集那两块是同一条审片面,报的号不许分家。
+     * 另一半有意留着不动:任务名与扣费摘要是落库文本(任务中心与积分流水里的历史记录),
+     * 换取法等于改已落库那批记录的可读性对照,故本槽只收展示面——文件里剩下的 order 读法
+     * 恰是那四行计费/任务名,后续槽真要收编它们就同轮改这条判据,别让它静静漂移。 */
+    const rv = fs.readFileSync(path.join(ROOT, 'js', 'review.js'), 'utf8');
+    const seg = (from, to, label) => {
+      const a = rv.indexOf(from), b = rv.indexOf(to, a + 1);
+      assert(a > 0 && b > a, label + '段截不全(段界字面变了就同轮改这里,别把本条留成恒真)');
+      return rv.slice(a, b);
+    };
+    [['function reportModalHTML(', '/* 评审记录结构兜底', '报告弹窗页头'],
+      ['function exportReport(', '/* ================= 一键优化', '单镜报告导出'],
+      ['function openReviewHistory(', '// storyboard.js 的 renderShots', '审片记录列表'],
+    ].forEach(([from, to, label]) => {
+      const s = seg(from, to, label);
+      assert(/Domain\.shotNo\(ep\.shots, s\)/.test(s), label + '的镜号应取 Domain.shotNo(表内实位)');
+      assertEq((s.match(/\.order \+ 1/g) || []).length, 0, label + '不许再按 order 字段出镜号(增删镜后与实位漂移)');
+    });
+    assert(/视频 #\$\{epIdx\}-\$\{shotNo\}/.test(rv), '报告页头的集号与镜号两半都应取行对位派生值');
+    assert(/审片报告_\$\{p\.name\}_\$\{ep\.title\}_镜头\$\{shotNo\}\.txt/.test(rv),
+      '导出文件名与抬头同取一个 shotNo(瞬时下载名,不进归档对照;两处各取一次就会出现"文件名报 8、抬头报 3")');
+    const toastLines = rv.split('\n').filter(l => l.includes('视频仍在生成中'));
+    assertEq(toastLines.length, 1, '生成中拦截提示应只此一处(改名或复制一份就同轮改这里)');
+    assert(/Domain\.shotNo\(ep\.shots, s\)/.test(toastLines[0]), '拦截提示里的镜号也是给人看的,应取表内实位');
+    const left = rv.split('\n').filter(l => /\.order \+ 1/.test(l));
+    assertEq(left.length, 4, 'js/review.js 里读 order 出号的应恰剩 4 行(一键审片与一键优化各自的任务名与扣费摘要)');
+    left.forEach(l => assert(/Tasks\.start\(|U\.charge\(/.test(l),
+      '剩下的 order 读法只许在任务名与扣费摘要这类落库文本上,展示面一处都不许留:' + l.trim().slice(0, 60)));
+  } },
   { name: '修订闭环重抽面单源:server/CLI/助手摘要/问题中心都不自筛低分镜,CLI 不摘回执 lowShots 当 shotIds', fn() {
     /* G-03 这一面钉的是"该重抽哪几镜由编排层派生":判据(达标线 / 报告判旧 / 与分镜表取交集 / 定稿不重抽)
      * 只在 Domain.reviseTargets 一份里,四处消费点谁抄回一份 score < 7 或把回执里的 lowShots 当名单用都红在这里。 */
@@ -15149,6 +15181,46 @@ const skillsTests = [
     assertEq(modals.length, 2, '多镜审完应弹汇总面');
     assertEq([...String(modals[1].body).matchAll(/flex:none">镜头 ([^<]*)</g)].map(x => x[1]).join(','), '1,2,3',
       '汇总面镜号按分镜表实位出(读 order 字段时是 6,10,1)');
+  } },
+  { name: '单镜审片四处展示面镜号按实位:报告页头、导出抬头与文件名、记录列表标题、生成中拦截提示同报一个号', fn: async () => {
+    /* 整集那两块面收过之后,单镜这条路上还剩四处"镜头 N"读 order:点开第三行的报告,页头写着
+     * 「视频 #1-1」(order 自称 0)、导出的文件名与抬头也是那个自称号、审片记录标题同理,
+     * 而同一份报告在整集清单里报的是「镜头 3」——同一镜在同一条面上报两个号比两处都报错更难查。
+     * 四处一起取 Domain.shotNo 后,屏幕、标题、导出文本与文件名报的是同一个实位号。 */
+    const sb = loadReview();
+    const modals = [];
+    sb.U.openModal = o => { modals.push(o); };
+    const dl = [];
+    sb.U.downloadText = (name, text) => { dl.push({ name, text }); };
+    const dim = n => ({ score: n, comment: '评语', suggestion: '建议' });
+    // order 字段与实位对不上:三行分别自称 5/9/0(实位 1/2/3),取的是末行(自称第一镜)
+    const rows = [rvShot({ id: 'sh_a', order: 5 }), rvShot({ id: 'sh_b', order: 9 }), rvShot({ id: 'sh_c', order: 0 })];
+    const ep = { id: 'ep1', title: '第一集', shots: rows };
+    const p = { id: 'p1', name: '逆袭', style: '漫剧', episodes: [ep], subjects: [] };
+    const r = { id: 'rvC', score: 4, model: '本地模拟评审', mode: 'local', time: '2026-08-22 12:00:00',
+      issues: [], checks: [], dimensions: { technical: dim(4), matching: dim(4), directing: dim(4) } };
+    rows[2].reviews = [r];
+    sb.Review.openReport(p, ep, rows[2], null, r);
+    await Promise.resolve();
+    assertEq(modals.length, 1, '带现成报告开弹窗不该再跑一次审片');
+    assert(String(modals[0].body).includes('视频 #1-3'), '报告页头的镜号应报第三镜(读 order 字段时是 #1-1)');
+    // 导出:抬头与文件名同一个号(此前两处各读一次 order,同漂但也同错)
+    const btns = {};
+    modals[0].onMount({ querySelector: sel => (btns[sel] = btns[sel] || { onclick: null }), querySelectorAll: () => [] }, () => {});
+    btns['[data-x=export]'].onclick();
+    assertEq(dl.length, 1, '导出应产出一份文本');
+    assert(dl[0].text.includes('镜头:3'), '导出抬头的镜号应报第三镜,实际:' + dl[0].text.split('\n')[2]);
+    assert(dl[0].name.includes('镜头3.txt'), '导出文件名与抬头同源同号,实际:' + dl[0].name);
+    // 审片记录列表标题
+    sb.Review.openReviewHistory(p, ep, rows[2], null);
+    assertEq(modals.length, 2, '审片记录弹窗应开出来');
+    assertEq(modals[1].title, '审片记录 · 镜头 3(1)', '记录列表标题的镜号应报第三镜');
+    // 生成中拦截提示:给人看的镜号同口径,且这一路照旧拦在扣费之前
+    rows[2].video = { status: 'generating' };
+    sb.__toasts.length = 0;
+    assertEq(await sb.Review.reviewShot(p, ep, rows[2]), null, '生成中的镜头照旧拦住不审');
+    assertEq(sb.__toasts.join('/'), '镜头3 视频仍在生成中,请生成完成后再审片', '拦截提示的镜号应报第三镜');
+    assertEq(sb.__charges.length, 0, '拦截仍在扣费之前(镜号换取法不碰计费)');
   } },
   { name: '离线评审按行对位:时间码从本行之前累起,景别衔接比的是本行的上一镜', fn: async () => {
     /* 本地模拟评审那几条硬检查也是展示面:时间码按 id 断在首行时,同 id 后几行的"关键问题定位"
