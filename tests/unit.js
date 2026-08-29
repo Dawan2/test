@@ -4013,6 +4013,66 @@ const commandsTests = [
         '三选一都没给仍是参数错 exit 2:「找不到」与「参数错」得分得开:' + (noSource && noSource.exit + ' / ' + noSource.message));
     } finally { try { fs.unlinkSync(tmp); } catch (_) {} }
   } },
+  { name: 'CLI 点名分镜表里没有的镜头:findShot 那个出口照「找不到」出 exit 4(与主体/项目/分集同一档),六条点名入口逐条同形、上游一次不下发', fn: async () => {
+    /* 主体那一条(上一条)钉的是 findSubject 那个出口,而镜头侧 findShot 那个出口的**退出码**至今一条判据都没有:
+     * 树上只有两条批量用例读它的**错话**(同 id 一行不剩时 nthShot 委托回它,failed[0].error 里带「镜头不存在」),
+     * 而错话与退出码是两件事——把 CliError(…, 4) 写成 1、或改走 need(…) 出 2,那两条照旧全绿,
+     * 而 exit code 是 Agent 分流的唯一依据(4 是"点名的东西不在",与 2 参数错、5 服务端错各归各):
+     * 从此调用方把"这一镜不在表里"当成了自己参数写错或服务端故障,重试与报错都走错分支。
+     * 六条点名入口一起量的是同一件事的另一半:取行在取图/取片/抽帧**之前**,故点错镜时一分钱的上游都不许下发——
+     * 把 findShot 挪到 genImage / genShotVideo 之后,退出码仍是 4 而钱已经花掉,只有往返清单读得出来。
+     * 「同一档」这一格读的是同一棵树上真跑出来的码(项目 / 分集 / 主体不存在),不是源码字面:
+     * 哪天有人把这一族分叉成两个码,先红在这里。findShot 只认 id 这一点本条不判(两侧有意不同形,不代补按名兜底)。 */
+    const clone = x => JSON.parse(JSON.stringify(x));
+    const jres = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
+    const SHOT = { id: 's1', order: 1, prompt: '提示词1', confirm: true, video: { status: 'done', url: '/uploads/gen/v1.mp4' } };
+    const disk = { projects: [{ id: 'p1', subjects: [{ id: 'sj1', name: '女主', kind: 'character' }],
+      episodes: [{ id: 'ep1', title: '第一集', content: '正文', shots: [clone(SHOT)] }] }], settings: {} };
+    const sb = loadCli();
+    const calls = [];
+    sb.fetch = async (url, init) => {
+      const route = init.method + ' ' + String(url).replace('http://t.local', '');
+      calls.push(route);
+      if (route === 'GET /api/state') return jres(200, { code: 0, data: { rev: 3, state: clone(disk) } });
+      return jres(500, { code: 1, message: '这条往返本轮压根不该发:' + route });
+    };
+    const flags = { server: 'http://t.local', token: 't' };
+    const grabErr = async fn => { try { await fn(); return null; } catch (e) { return e; } };
+    // ① 六条按 id 点名单镜的入口逐条同形:错话点名那个串、exit 4、GET 之外一次往返都没有
+    const entries = [
+      ['shot-set', () => sb.CMD['shot-set'](['p1', 'ep1', '没这镜'], Object.assign({}, flags, { patch: '{"prompt":"新词"}' }))],
+      ['shot-confirm', () => sb.CMD['shot-confirm'](['p1', 'ep1', '没这镜'], flags)],
+      ['gen-shot-image', () => sb.CMD['gen-shot-image'](['p1', 'ep1', '没这镜'], flags)],
+      ['gen-shot-video', () => sb.CMD['gen-shot-video'](['p1', 'ep1', '没这镜'], flags)],
+      ['review-frames', () => sb.CMD['review-frames'](['p1', 'ep1', '没这镜'], flags)],
+      ['review-note', () => sb.CMD['review-note'](['p1', 'ep1', '没这镜'], Object.assign({}, flags, { score: 8 }))],
+    ];
+    for (const [label, fn] of entries) {
+      calls.length = 0;
+      const err = await grabErr(fn);
+      assert(err, label + ':点名分镜表里没有的镜头必须抛,不许静默当成一次成功');
+      assertEq(calls.join(' , '), 'GET /api/state',
+        label + ':取行失败在取图/取片/抽帧之前,上游与落库两次往返都不许发(挪到取图之后就是钱花了镜没找到):' + calls.join(' , '));
+      assertEq(err.message, '镜头不存在:没这镜', label + ':错话须点名用户给的那个串(照抄一句不带串的话,用户不知道自己点错了哪一镜):' + err.message);
+      assertEq(err.exit, 4, label + ':「点名的东西不在」照 4 出码(写成 1 或改走 need 出 2 都是把它并进了别的族):' + err.exit);
+    }
+    assertEq(JSON.stringify(disk.projects[0].episodes[0].shots), JSON.stringify([SHOT]),
+      '库里那一行逐字段未动:' + JSON.stringify(disk.projects[0].episodes[0].shots));
+    // ② 同一档:同一棵树上别的「找不到」出口现跑也是 4(这一族不许在镜头这一条上分叉)
+    const sameFamily = [
+      ['项目不存在', () => sb.CMD['shot-confirm'](['pX', 'ep1', 's1'], flags)],
+      ['分集不存在', () => sb.CMD['shot-confirm'](['p1', 'epX', 's1'], flags)],
+      ['主体不存在', () => sb.CMD['subject-image'](['p1', '没这人'], Object.assign({}, flags, { url: '/u/a.png' }))],
+    ];
+    for (const [label, fn] of sameFamily) {
+      const err = await grabErr(fn);
+      assert(err && err.exit === 4, label + ':同一族「找不到」现跑也须是 4(本条 ① 的量尺就是它):' + (err && err.exit + ' / ' + err.message));
+    }
+    // ③ 参数错那一族仍是 2:没有这一格,把 4 与 2 并成一个码时 ① 只需跟着改数字就能过
+    const noPatch = await grabErr(() => sb.CMD['shot-set'](['p1', 'ep1', 's1'], flags));
+    assert(noPatch && noPatch.exit === 2 && /--patch/.test(noPatch.message),
+      '缺 --patch 仍是参数错 exit 2:「找不到」与「参数错」得分得开:' + (noPatch && noPatch.exit + ' / ' + noPatch.message));
+  } },
   { name: '两条去重命令同读一份规则:镜头侧与主体侧的扫描都委托 Domain.dupIdScan,首位留原 id 那套口径不许两端各抄一份', fn() {
     /* 主体侧那条出口是照镜头那条写的,而「首次出现留原 id、后面每处撞车各发一个新 id」这套规则一旦各抄一份,
      * 两条命令迟早对同一份脏数据给出两种计划(改哪一位、留哪一位),而用户是照 dry-run 那份点头的。
@@ -15658,7 +15718,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-      [['单元测试', 725, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+      [['单元测试', 726, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 155, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
