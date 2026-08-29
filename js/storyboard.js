@@ -28,6 +28,88 @@
     { k: 'neg', t: '5.负面提示词', h: '如禁止出现 BGM、字幕、水印等' },
   ];
 
+  /* ---- 存量重复镜头 id 去重(浏览器这一端的入口,与 CLI shots-dedupe 同一套规则) ----
+   * 规则本身(首行留原 id、后面每处撞车各发一个新 id)只在 Domain.dupIdScan 一份,
+   * 这里注入的只有浏览器那一端的发号器(Store.uid,前缀对齐新建镜头)与镜头侧的单位词(行);
+   * 纯扫描不改任何字段,落库由调用方按 plan 逐条写。 */
+  function dedupeShotScan(shots) {
+    const scan = Domain.dupIdScan(shots, taken => {
+      let nid;
+      do { nid = Store.uid('sh'); } while (taken.has(nid));
+      return nid;
+    });
+    return Object.assign({}, scan, { duplicates: scan.duplicates.map(d => ({ id: d.id, rows: d.n, keepOrder: d.keepOrder })) });
+  }
+  /* 旧审片报告的行对位在去重后会不会塌:同一份 Domain.reviewRows 在「当下这棵表」与「按计划改过 id 的表」
+   * 上各跑一遍,落行不同的那几条就是去重后会退回首行的 perShot 条目。
+   * 整集审片是按行出条目的(同 id 有几行就有几条),行对位靠「第几条同 id = 第几行同 id」;
+   * 同 id 只剩一行之后那套序数就数不出后几行了。本入口只把这个数报给用户,一个字不改报告。 */
+  function reviewCollapseCnt(ep, plan) {
+    if (!ep.lastReview || !plan.length) return 0;
+    const after = ep.shots.map(s => ({ id: s.id }));
+    plan.forEach(x => { after[x.order].id = x.to; });
+    const now = Domain.reviewRows(ep).map(t => t.i);
+    const post = Domain.reviewRows({ shots: after, lastReview: ep.lastReview }).map(t => t.i);
+    return now.filter((i, k) => i !== post[k]).length;
+  }
+  /* 去重弹窗:开弹窗只预览(算出计划,一个字不写库),按下确认那一下才落库——与 CLI 的 dry-run / --apply 两档同形。
+   * 落库前按当下那棵树重算一遍(计划以真要写的这一份为准,新 id 现发,故预览里那批只是示意值)。
+   * 一行不删(同 id 那几行各有各的画面与提示词,而单镜删除按 id 匹配会把它们一并删光),内容一个字不动。
+   * 引用面按 id 解析的那几处一律落到首行,而首行留的就是原 id:当前选中镜(ep.uiSel)去重前后是同一行;
+   * 镜头组的归属记在镜头行自己的 groupId 上、指的是组 id 不是镜头 id,改镜头 id 碰不到它。
+   * 只有 ep.lastReview.perShot 那份旧报告例外(它按行出条目、行对位靠同 id 的序数),
+   * 会塌几条现算现报在预览里——本槽只报不改,审片合入照旧。
+   * 纯改分镜表、零上游零 LLM,不经 Tasks.run、不扣一分钱。 */
+  function openShotDedupe(p, ep, main) {
+    const shots = ep.shots || [];
+    const pre = dedupeShotScan(shots);
+    const collapse = reviewCollapseCnt(ep, pre.plan);
+    const rowOf = i => `第 ${i + 1} 镜「${U.esc((shots[i] || {}).name || (shots[i] || {}).plot || '未命名')}」`;
+    U.openModal({
+      title: '🧹 镜头 id 去重',
+      wide: true,
+      body: `
+      <div class="hint" style="margin:0 0 10px">本集共 ${shots.length} 镜,其中 ${pre.plan.length} 行与在前的行共用同一个 id(整树导入/恢复容易留下这种重复)。
+        按 id 取镜的地方只找得到首行、后面几行结构性够不着,而批量生成按行逐行跑、逐行计费——同一个 id 存几行就收几笔视频钱。
+        去重只改 id:首行留原 id、撞车行各改发一个新 id,<b>一行不删、画面与提示词一个字不动</b>。
+        要"少几行"仍请自己删(删除按 id 匹配,同 id 那几行会一并删光,先想清留哪一行)。</div>
+      ${pre.duplicates.map(d => `
+      <div class="card row" style="padding:8px 12px;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+        <span class="tag yellow">${U.esc(d.id)}</span>
+        <b class="small">${d.rows} 行</b>
+        <span class="small muted grow">留 ${rowOf(d.keepOrder)} 的原 id,其余各发新 id</span>
+      </div>`).join('')}
+      <div class="small" style="margin:10px 0 6px"><b>改名计划(${pre.plan.length} 行)</b></div>
+      <div style="max-height:34vh;overflow:auto;display:flex;flex-direction:column;gap:6px">
+        ${pre.plan.map(x => `
+        <div class="row small" style="gap:8px;align-items:center;flex-wrap:wrap">
+          <span style="min-width:170px">${rowOf(x.order)}</span>
+          <span class="tag">${U.esc(x.from)}</span>
+          <span class="muted">→</span>
+          <span class="tag green">${U.esc(x.to)}</span>
+        </div>`).join('')}
+      </div>
+      <div class="hint" style="margin:10px 0 0">引用面:当前选中镜、按 id 取镜的那几处都按首行解析,而首行留的就是原 id,去重前后落到同一行;
+        镜头组的归属记在镜头行自己身上(指的是组 id、不是镜头 id),一处都不用改。</div>
+      ${collapse ? `<div class="hint" style="margin:8px 0 0;border-color:var(--yellow);color:var(--yellow)">⚠ 本集那份整集审片报告有 ${collapse} 条逐镜结论现在落在首行之外的行上:
+        它按行出条目、行对位靠"第几条同 id = 第几行同 id",同 id 只剩一行之后这 ${collapse} 条会一起退回首行——
+        整集报告上的镜号与按低分派生的重抽名单都跟着按首行算。去重不动这份报告(只改 id);要让逐行结论回位,去重后重跑一次整集审片(按当下这棵表重新出条目)。</div>` : ''}
+      <div class="hint" style="margin:8px 0 0">这一屏还没写库。新 id 在按下确认那一下现发,与上面这批示意值不是同一批;哪几行改、哪一行留原 id 是定的。</div>`,
+      footer: `<button class="btn" data-x="cancel">取消</button><button class="btn primary" data-x="apply">✓ 确认去重(改 ${pre.plan.length} 行的 id)</button>`,
+      onMount(m, close) {
+        m.querySelector('[data-x=cancel]').onclick = close;
+        m.querySelector('[data-x=apply]').onclick = () => {
+          const scan = dedupeShotScan(ep.shots || []);
+          if (!scan.plan.length) { close(); return U.toast('本集分镜表里已经没有重复的镜头 id 了', 'info'); }
+          scan.plan.forEach(x => { ep.shots[x.order].id = x.to; });
+          Store.save(); close();
+          U.toast(`已为 ${scan.plan.length} 镜改发新 id(首行留原 id,一行没删、画面与提示词没动)`, 'success', 4000);
+          Views.episode(main, p.id, ep.id);
+        };
+      },
+    });
+  }
+
   /* ================= 分集工作区(三栏布局,对齐 3.png) ================= */
   Views.episode = function (main, pid, eid) {
     const p = Store.getProject(pid);
@@ -57,6 +139,10 @@
     const prevTail = prevEpTail(p, ep);
     const f0 = ep.shots[0];
     const inheritPrevOn = !!(ep.sbConfig.inheritPrevEp && prevTail && f0 && (!f0.firstFrame || f0.__inheritPrevEp));
+    /* 存量重复镜头 id 的入口:同 id 多行在分镜表里与两个不同镜头长得一样,故只在表里真有重复时露出来并报出行数。
+     * 挂在集级顶栏这一行(四视图与剪辑台共用它),故只此一处四视图都看得见——各视图自己那个中栏头部不用再挂。 */
+    const dupRows = dedupeShotScan(ep.shots).plan.length;
+    const dedupeBtn = dupRows ? `<button class="btn sm" data-x="shotdedupe" title="本集有 ${dupRows} 行镜头与在前的行共用同一个 id(按 id 只取得到首行、批量生成却逐行计费);点开先看计划,确认才改 id,一行不删、零积分">🧹 镜头 id 去重(${dupRows})</button>` : '';
 
     main.innerHTML = `
     <div class="page" style="max-width:none">
@@ -67,6 +153,7 @@
         <button class="btn sm primary" data-x="dd-sb" title="一键智能拆镜(含本集理解前置;可在参数配置开启「生成后自动评审修订」)">🧠 智能分镜</button>
         ${(ep.sbPlans || []).length > 1 ? `<button class="btn sm" data-x="sb-plans" title="上次智能分镜的 ${ep.sbPlans.length} 套候选拆镜方案,可重新对比并切换采用">🆚 方案对比(${ep.sbPlans.length})</button>` : ''}
         ${(ep.shotHistory || []).length ? `<button class="btn sm" data-x="sb-his" title="分镜表版本历史:整表覆盖前自动留档(近 ${ep.shotHistory.length} 版),可预览与回滚">🕘 历史(${ep.shotHistory.length})</button>` : ''}
+        ${dedupeBtn}
         <button class="btn sm" data-x="quickedit" title="抽屉批量修改剧情/运镜">✏ 快速编辑</button>
         <button class="btn sm" data-x="genv" title="批量生成视频(每镜 5 积分)">🎬 生成视频</button>
         <button class="btn sm" data-x="epreview" title="全镜 AI 审片(每镜 5 积分)">🎬 整集审片</button>
@@ -266,6 +353,8 @@
     if (plansBtn) plansBtn.onclick = () => SB.openPlanCompare(p, ep, main);
     const hisBtn = main.querySelector('[data-x=sb-his]');
     if (hisBtn) hisBtn.onclick = () => SB.openShotHistory(p, ep, main);
+    const ddBtn = main.querySelector('[data-x=shotdedupe]');
+    if (ddBtn) ddBtn.onclick = () => openShotDedupe(p, ep, main);
     // 顶栏一级横排按钮(无下拉):各自直达原下拉项处理逻辑
     main.querySelector('[data-x=genv]').onclick = () => SB.runBatchOp(p, ep, main, 'video');
     main.querySelector('[data-x=epreview]').onclick = () => Review.openEpisodeReview(p, ep, main);
@@ -694,7 +783,7 @@
   /* window.SB 透出(批次 E 拆分):本地成员 + 共享给 sb-views.js/sb-gen.js 的常量与辅助;
    * 拆分前成员 syncFrames/framePH/batchGenVideos/shotVersions/estShotDuration 已移入 sb-gen.js,
    * 由 sb-gen.js 末尾 Object.assign 回挂 window.SB,外部调用点(sb-io/produce/timeline 等)不变。 */
-  window.SB = { blankShot, buildShotPrompt, tplVideoOf, CAMERAS, renderShots, defaultSBConfig, snapshotShot, prevEpTail, onEpPage, ttsShot, genAudio, markOfflineAudio, TRANSITIONS, VOICES, PROMPT5_SECS, SPLIT_RULES, PROMPT5, STRATEGIES };
+  window.SB = { blankShot, buildShotPrompt, tplVideoOf, CAMERAS, renderShots, defaultSBConfig, snapshotShot, prevEpTail, onEpPage, ttsShot, genAudio, markOfflineAudio, dedupeShotScan, openShotDedupe, TRANSITIONS, VOICES, PROMPT5_SECS, SPLIT_RULES, PROMPT5, STRATEGIES };
   window.STRATEGIES = STRATEGIES; // 供 agent.js 等板块读取(单一来源,不再硬编码拷贝)
   window.CAMERAS = CAMERAS;
 })();
