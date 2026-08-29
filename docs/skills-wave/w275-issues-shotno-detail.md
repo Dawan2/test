@@ -166,6 +166,10 @@ M9 与 W271 §五 M7 / W272 §三 / W273 §五 M4 / W274 §四 M4 形状相同:�
 - `node tests/unit.js issues` **22/22**(基线现跑 21);
 - `node tests/integration.js` **152/152**(`env -u HUJING_SERVER` 及 `MV_*` 隔离;未加测,
   服务端与 CLI 一个字没动,全绿本身是"没搬坏"的判据);
+- `node tests/cli.smoke.js` **单独整跑**、`env -u HUJING_SERVER -u MV_API_KEY -u MV_BASE -u MV_MODEL -u MV_IMG_MODEL -u MV_VIDEO_MODEL`:
+  **115/117**,两条失败现取 `未登录 whoami → exit 3 | exit=1` 与 `llm --json mock 链路 | undefined`,
+  与 W274 §七 记的两条**同名同表现**(那两条与 `master` 同名,按明令允许)。
+  跑它是因为 `cli.js` 的 `issues` 命令消费的正是本槽改的这份投影、明细原样进它的输出;
 - 不跑 `tests/e2e.js`(按明令);
 - `node --check`:`js/issues.js`、`tests/unit.js` 均过。
 
