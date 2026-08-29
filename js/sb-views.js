@@ -59,7 +59,10 @@
    * 五档视图里渲得出分镜行的是三档,故挂两处:分镜视频与剪辑台共用下面这张缩略图卡,镜头组那条分镜时间线
    * 另挂一处(js/shotgroups.js);分镜脚本渲的是场次与节拍、节拍板渲的是五段节拍,两档一行分镜都不渲,
    * 那两档上看得见的仍是顶栏那条去重入口。
-   * 纯展示,不改任何字段:收拾它仍走顶栏那道预览 + 确认闸。 ---- */
+   * 后续那几行的小标还兼一条跳转:点它定位到留原 id 的第 1 行那张卡(按 id 取镜落到的就是那一行,
+   * 而卡片上看得见的只有画面与提示词,撞的那个 id 看不见)。第 1 行自己那一枚不挂跳转(它就是落点),
+   * 落点序号只从同一份位次表上取(Domain.dupIdKeepOrder),这一层不另攒一份"谁是首行"的记账。
+   * 纯展示 + 纯导航,不改任何字段:收拾它仍走顶栏那道预览 + 确认闸。 ---- */
   function dupRowTag(marks, row) {
     const mk = marks && marks[row];
     if (!mk) return '';
@@ -67,7 +70,27 @@
       shape: 'mark', unit: '行', mark: mk,
       scope: '本集分镜表', entry: '顶栏「🧹 镜头 id 去重」',
     });
-    return `<span class="tag yellow" style="margin-top:3px;font-size:10px;padding:1px 7px" title="${U.esc(c.title)}">${c.label}</span>`;
+    const keep = Domain.dupIdKeepOrder(marks, mk.id);
+    const jump = keep >= 0 && keep !== row;
+    const hint = jump ? c.title + '点这枚小标定位到第 1 行那张卡(就在这一档里,不换视图也不换选中镜),纯跳转不改任何字段。' : c.title;
+    return `<span class="tag yellow"${jump ? ` data-dupjump="${keep}"` : ''} style="margin-top:3px;font-size:10px;padding:1px 7px${jump ? ';cursor:pointer' : ''}" title="${U.esc(hint)}">${c.label}</span>`;
+  }
+  /* 上面那枚小标的落点动作:滚到第 root 里第 row 行那张卡并短暂高亮。
+   * 渲得出分镜行的三档各把自己那个容器交进来(分镜视频/剪辑台是中栏那条缩略图带、镜头组是那条分镜时间线),
+   * 而三档渲的都是整张分镜表(不像主体库按分类 tab 过滤),故落点那一行永远就在同一档里——
+   * 不切视图、不换选中镜,也不多说一句话。落点按 data-row 认全表实位:同 id 那几行的 id 撞在一起,
+   * 按 id 取到的永远是最靠前那一张。三档同读这一处,定位动作不各写一份。
+   * 纯导航:一个字不写库(卡片自己那圈点击会切选中镜并落库,故这一下先 stopPropagation)。 */
+  function bindDupJump(root) {
+    root.querySelectorAll('[data-dupjump]').forEach(t => t.onclick = e => {
+      e.stopPropagation();
+      const card = root.querySelector(`[data-row="${Number(t.dataset.dupjump)}"]`);
+      if (!card) return;
+      card.style.outline = '2px solid var(--accent)';
+      card.style.boxShadow = '0 0 0 4px rgba(124,92,255,.18)';
+      setTimeout(() => { card.style.outline = ''; card.style.boxShadow = ''; }, 2200);
+      setTimeout(() => card.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' }), 60);
+    });
   }
 
   /* ---- 单镜缩略图块(分镜视频/剪辑两视图共用;column 时补 width:100% 撑满竖列) ---- */
@@ -81,7 +104,7 @@
     const vstat = (s.video && s.video.status) || 'none';
     const isSelMode = sm && sm.selected.has(s.id);
     return `
-      <div class="ws-thumb shot-card ${s.id === sel.id ? 'sel' : ''} ${sm ? 'sel-mode' : ''} ${isSelMode ? 'sel-on' : ''} ${vstat === 'generating' ? 'gen' : ''}" data-shot="${s.id}" draggable="${sm ? 'false' : 'true'}" title="点击切换 · 拖动调序"${col ? ' style="width:100%"' : ''}>
+      <div class="ws-thumb shot-card ${s.id === sel.id ? 'sel' : ''} ${sm ? 'sel-mode' : ''} ${isSelMode ? 'sel-on' : ''} ${vstat === 'generating' ? 'gen' : ''}" data-shot="${s.id}" data-row="${(ep.shots || []).indexOf(s)}" draggable="${sm ? 'false' : 'true'}" title="点击切换 · 拖动调序"${col ? ' style="width:100%"' : ''}>
         <div class="ws-thumb-img">
           ${sm ? `<div class="sel-check ${isSelMode ? 'on' : ''}">✓</div>` : ''}
           ${useVideoThumb
@@ -1381,5 +1404,5 @@
     });
   }
 
-  window.SBViews = { scriptTrackHTML, scriptRefHTML, shotThumbHTML, shotStatusHTML, dupRowTag, playerBlockHTML, progressBlockHTML, versCardHTML, centerHTML, rightHTML, cutHTML, cutRightHTML, openTransPicker, bindCenter, bindRight, openPromptPanel, favPrompt, openPromptHistory, openPromptTool, openAssetPicker, smartLinkAssets, attachAssetName, assetChipsHTML, assetsInText, assetNamesOf, recognizedRefs, openMoreTools, openQuickEdit, openArtSuffix, artSuffixOf, artSuffixApp, downloadShot };
+  window.SBViews = { scriptTrackHTML, scriptRefHTML, shotThumbHTML, shotStatusHTML, dupRowTag, bindDupJump, playerBlockHTML, progressBlockHTML, versCardHTML, centerHTML, rightHTML, cutHTML, cutRightHTML, openTransPicker, bindCenter, bindRight, openPromptPanel, favPrompt, openPromptHistory, openPromptTool, openAssetPicker, smartLinkAssets, attachAssetName, assetChipsHTML, assetsInText, assetNamesOf, recognizedRefs, openMoreTools, openQuickEdit, openArtSuffix, artSuffixOf, artSuffixApp, downloadShot };
 })();
