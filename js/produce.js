@@ -264,7 +264,10 @@
     }
     const say = h => { if (dock) dock.say(h); };
     let passCnt = 0, retryCnt = 0, manualCnt = 0;
-    const lastRep = {}; // 每镜最后一次审片报告(重抽后再审会覆盖),用于收尾写回整集 lastReview
+    /* 每行最后一次审片报告(重抽后再审会覆盖),用于收尾写回整集 lastReview。
+     * 键是镜头行对象、不是 s.id:同 id 多行各有各的片子与分数,按 id 记会被最后一行那份整体盖掉——
+     * 逐行分、整集均分与下游按 perShot 派生的重抽名单便全按最后一行那一份算。 */
+    const lastRep = new Map();
     for (const s of targets) {
       if (dock && dock.cancelled) { say(`⏹ 用户中止审片`); break; }
       let pass = false;
@@ -273,7 +276,7 @@
         say(`▶ 镜头 ${s.order + 1} 评审中${attempt ? `(第 ${attempt} 次重生成后)` : ''}…`);
         const r = await Review.reviewShot(p, ep, s);
         if (!r) { say('&nbsp;&nbsp;积分不足,审片中止'); manualCnt++; break; }
-        lastRep[s.id] = r;
+        lastRep.set(s, r);
         if (r.score >= Domain.REVIEW_MIN) { pass = true; passCnt++; s.confirm = true; say(`&nbsp;&nbsp;✅ <b style="color:var(--green)">${r.score.toFixed(1)}</b> 分,达标(已自动确认)`); } // 审片达标 = 系统替你确认(镜头确认闸联动);达标线取 Domain.REVIEW_MIN 单源,与 episodeState/主线审片步骤同一份
         else if (attempt < maxRetry) {
           retryCnt++;
@@ -305,15 +308,15 @@
     /* 写回整集审片记录(与 review.js openEpisodeReview / 服务端 wf smart-review 同构):
      * 此前全程只写单镜 s.reviews/s.confirm,ep.lastReview 缺失 → 发布门 G3 判"无审片记录"、
      * 问题中心/分集页均分不更新;snapshotHash 用 wf-core 同口径(重抽后按最新视频状态计算) */
-    const reviewed = targets.filter(s => lastRep[s.id]);
+    const reviewed = targets.filter(s => lastRep.has(s));
     if (reviewed.length) {
       ep.lastReview = {
         time: Store.now(),
-        avg: Math.round(reviewed.reduce((a, s) => a + lastRep[s.id].score, 0) / reviewed.length * 10) / 10,
+        avg: Math.round(reviewed.reduce((a, s) => a + lastRep.get(s).score, 0) / reviewed.length * 10) / 10,
         snapshotHash: window.WfCore && WfCore.reviewSnapshotHashOf ? WfCore.reviewSnapshotHashOf(ep) : undefined,
         sourceRev: ep.contentRev || 0,
         graphRev: ep.graphRev || 0,
-        perShot: reviewed.map(s => ({ shotId: s.id, order: s.order, score: lastRep[s.id].score, reportId: lastRep[s.id].id, videoInputHash: lastRep[s.id].videoInputHash || '' })),
+        perShot: reviewed.map(s => ({ shotId: s.id, order: s.order, score: lastRep.get(s).score, reportId: lastRep.get(s).id, videoInputHash: lastRep.get(s).videoInputHash || '' })),
         common: { summary: '', issues: [] }, // 闭环不做整集共性汇总/四维评审(结构规整,整集报告页防空指针)
         cut: null,
       };
