@@ -4004,37 +4004,80 @@ const commandsTests = [
     assertEq(D.landedNote(3, null, '行'), '', 'null 不当 0 用(否则空跑那一路会平白多一句)');
     assert(/2 行/.test(D.landedNote(3, 2, '行')) && !/位/.test(D.landedNote(3, 2, '行')), '单位按调用方给的走,镜头侧不许论起"位"来');
   } },
-  { name: 'CLI gen-episode 回执同样分开报 ok 与 landed:同 id 多行全写在首行时,扣了几笔与到手几行不再混作一个数', fn: async () => {
-    /* `landed` 此前只覆盖 exec 那两条批量(episode.generateVideos / subject.generateImage),
-     * 而 `hujing gen-episode` 是同形的第三条:批量、按行跑、按行计费,每轮回最新树重取那一行。
-     * 差别在它取行用的是 findShot —— 按 id 取首行,同 id 占着三行的一趟三轮全写在首行身上,
-     * 引擎三次都成功、result.ok 照数三次,到手片却只有一份(后一轮盖了前一轮);
-     * 而回执只有 total/ok/failed,读 ok:3 的人会以为三行各有一条片。这里钉的是它把两件事分开说。
-     * 这一条不改写回路径(仍是 findShot 取首行)、不改共位覆盖的退费政策(那几笔都真花了钱),
-     * 只补上"到手几行"这个诚实字段与那一句说法(单源 Domain.landedNote,与 exec 两条同读一份)。 */
+  { name: 'CLI gen-episode 同 id 多行:每一轮的片落到本轮那一行,回执的 ok 与 landed 各说一件事', fn: async () => {
+    /* `hujing gen-episode` 与 exec 那两条批量同形:批量、按行跑、按行计费,每轮回最新树重取那一行。
+     * 取行按 nthShot 数「这一行在快照全表里排第几行同 id」,同 id 占着三行的一趟三行各得一段片;
+     * 按 id 取首行则是三份产物全写在首行身上——扣三笔视频钱只有一行出片,回执照报 ok:3 failed:[],
+     * 第二、三行下轮仍判"未就绪"再扣一遍。落库面一律读 clone 语义的 disk 夹具:
+     * 编排层只在自己手里那份快照上改一改也会看起来"落库了"。
+     * 回执把两件事分开说的口径与 exec 两条批量一致:ok 数引擎调用成功次数(计费同口径,
+     * 那几笔都真花了钱,改成 failed 就是拿假失败掩盖真扣费),landed 数产物真落到几行;
+     * 表没被别处改过时两个数相等,并发改表让序数越界退回首行时才岔开,
+     * 岔开那一句说法单源 Domain.landedNote,与 exec 两条批量同读一份。 */
     const pending = { confirm: true, image: 'i.png', video: { status: 'none' } };
-    const runGen = async (shots) => {
-      const sb = loadCli();
-      const fx = cliDisk(sb, { shots });
-      const r = await sb.CMD['gen-episode'](['p1', 'ep1'], {});
-      return { r, fx, engine: sb.__genShots.length };
-    };
-    // ① 同 id 三行 + 一行不重复:四轮全成功,而产物只落到两行(三轮共用了首行)
-    const dup = await runGen([
+    const dupRows = () => [
       makeShot(0, Object.assign({ id: 'dup', plot: '首行' }, pending)),
       makeShot(1, Object.assign({ id: 'solo', plot: '不重复的那一镜' }, pending)),
       makeShot(2, Object.assign({ id: 'dup', plot: '第二行' }, pending)),
       makeShot(3, Object.assign({ id: 'dup', plot: '第三行' }, pending)),
-    ]);
-    const gotRows = dup.fx.epOf().shots.filter(x => x.video && x.video.status === 'done').length;
+    ];
+    const vids = ss => ss.map(s => s.plot + ':' + ((s.video && s.video.url) || '无片')).join(' | ');
+    const filmed = ss => ss.filter(s => s.video && s.video.status === 'done');
+    const runGen = async (shots, seed) => {
+      const sb = loadCli();
+      const fx = cliDisk(sb, { shots });
+      /* 引擎桩按下发次序给各不相同的片:cliDisk 那份默认按 s.id 命名,同 id 三行会撞成同一个 url */
+      sb.genShotVideo = async (proj, epLive, s) => {
+        sb.__genShots.push(s.id);
+        s.video = { status: 'done', url: '/uploads/gen/v' + sb.__genShots.length + '.mp4' };
+        return s;
+      };
+      const origWp = sb.withProject;
+      let round = 0;
+      sb.withProject = async (pid, flags, fn) => {
+        if (seed && ++round === 3) seed(fx); // 末轮开跑前别处改了表
+        return origWp(pid, flags, fn);
+      };
+      const r = await sb.CMD['gen-episode'](['p1', 'ep1'], {});
+      return { r, fx, rows: fx.epOf().shots, engine: sb.__genShots.length };
+    };
+    // ① 同 id 三行 + 一行不重复:四笔钱四行出片,四段各不相同(同一段写四遍也是只买到一段)
+    const dup = await runGen(dupRows());
     assertEq(dup.engine, 4, '前提:四行都真下发(四笔视频钱)');
     assertEq(dup.r.failed.length, 0, '前提:四次调用都成功,一次也没失败');
+    assertEq(filmed(dup.rows).length, 4,
+      '扣了四笔就得有四行出片,不能三轮全写在首行身上(回执照报 ok:4 failed:[],下一轮那两行仍判未就绪再扣一遍),实际:' + vids(dup.rows));
+    assertEq(new Set(filmed(dup.rows).map(s => s.video.url)).size, 4,
+      '四行手里得是四段不同的片(同一段写几遍等于只买到一段):' + vids(dup.rows));
     assertEq(dup.r.ok, 4, 'ok 的口径不改:它数的是引擎调用成功次数(计费同口径),不许改成 failed 来凑落库数');
-    assertEq(dup.r.landed, gotRows, 'landed 得等于真出片的行数(实测 ' + gotRows + ' 行)');
-    assertEq(dup.r.landed, 2, '共位那一趟 landed 是 2:三轮写到了同一行上');
-    assert(/产物只落到 2 行/.test(dup.r.note || ''), '两个数岔开时 note 得说清「4 次调用、2 行落库」:' + dup.r.note);
-    assertEq(Object.keys(dup.r.shots).length, 2, 'result.shots 按 id 记本就收不住共位(同 id 只剩一个键),落库数只能看 landed');
-    // ② 各占一行的不同 id:座位键带 id,三行各自到手,landed 不许缩成 1、也不许多那一句
+    assertEq(dup.r.landed, filmed(dup.rows).length, 'landed 得等于真出片的行数(实测 ' + filmed(dup.rows).length + ' 行)');
+    assertEq(dup.r.ok + '/' + dup.r.landed, '4/4', '表没被别处改过的一趟两个数相等(与 exec 两条批量同口径)');
+    assertEq(dup.r.note, undefined, '相等时一句不加(重复一遍是废话):' + dup.r.note);
+    assertEq(Object.keys(dup.r.shots).length, 2, 'result.shots 按 id 记本就收不住同 id 几行(只剩一个键),落库数只能看 landed');
+    // ② 首行已出片被断点续跑跳过的那一趟:序数得在全表上数,只数待跑清单会整体错位(首行被覆盖、末行补不上)
+    const pre = dupRows();
+    pre[0].video = { status: 'done', url: '/uploads/gen/old.mp4' };
+    const skip = await runGen(pre);
+    assertEq(skip.engine, 3, '前提:已出片的首行被跳过,只补剩下三行');
+    assertEq(skip.rows[0].video.url, '/uploads/gen/old.mp4', '已出片的首行这一趟一个字不许被改写:' + vids(skip.rows));
+    assertEq(filmed(skip.rows).length, 4, '三笔钱补上三行,连同原有那行共四行出片:' + vids(skip.rows));
+    assertEq(skip.r.ok + '/' + skip.r.landed, '3/3', '三轮各坐各的座位:' + vids(skip.rows));
+    // ③ 并发改表(跑到一半别处删了行):序数越界退回首行,两轮共位——ok 与 landed 就在这里岔开
+    const gone1 = await runGen(dupRows(), fx => { fx.epOf().shots = fx.epOf().shots.filter(s => s.plot !== '第三行'); });
+    assertEq(gone1.r.failed.length, 0,
+      '序数越界得退回首行(原行为),不许让 undefined.image 把这一趟炸成失败:' + JSON.stringify(gone1.r.failed));
+    assertEq(gone1.r.ok, 4, '四次调用都成功:ok 照数四次(这几笔都真花了钱)');
+    assertEq(gone1.r.landed, filmed(gone1.rows).length, 'landed 得等于真出片的行数(实测 ' + filmed(gone1.rows).length + ' 行)');
+    assertEq(gone1.r.landed, 3, '共位那一趟 landed 比 ok 少一行:末轮退回首行,盖掉了首轮那一段');
+    assert(/产物只落到 3 行/.test(gone1.r.note || ''), '两个数岔开时 note 得说清「4 次调用、3 行落库」:' + gone1.r.note);
+    const D = require('../js/domain.js');
+    assertEq(gone1.r.note, D.landedNote(4, 3, '行'), 'gen-episode 不许另造第二份说法(单源 Domain.landedNote,单位是"行")');
+    // ④ 同 id 一行不剩:如实进 failed,走的仍是 findShot 那个出口,不静默丢产物
+    const gone2 = await runGen(dupRows(), fx => { fx.epOf().shots = fx.epOf().shots.filter(s => s.id !== 'dup'); });
+    assertEq(gone2.r.failed.length, 2, '同 id 一行不剩时剩下那两轮如实失败(退费口在 Tasks/服务端),不许静默丢产物');
+    assert(/镜头不存在/.test(gone2.r.failed[0].error),
+      '走的仍是 findShot 那个出口,不另造第二个错误说法:' + JSON.stringify(gone2.r.failed[0]));
+    // ⑤ 各占一行的不同 id:座位键带 id,三行各自到手,landed 不许缩成 1、也不许多那一句
     const solo = await runGen([
       makeShot(0, Object.assign({ id: 'a1' }, pending)),
       makeShot(1, Object.assign({ id: 'a2' }, pending)),
@@ -4042,13 +4085,10 @@ const commandsTests = [
     ]);
     assertEq(solo.r.ok + '/' + solo.r.landed, '3/3', '三个不同 id 各占一行:座位只按行内序数记会全记成第 0 行、landed 缩成 1');
     assertEq(solo.r.note, undefined, '相等时一句不加(重复一遍是废话):' + solo.r.note);
-    // ③ 一镜也没跑那一路照样带 landed:机器读 result.landed 不该拿到 undefined
+    // ⑥ 一镜也没跑那一路照样带 landed:机器读 result.landed 不该拿到 undefined
     const none = await runGen([makeShot(0, { confirm: false, image: 'i0.png', video: { status: 'none' } })]);
     assertEq(none.r.total + '/' + none.r.ok, '0/0', '前提:确认闸把这一镜挡在外面,零调用');
     assertEq(none.r.landed, 0, '空跑回执也得带 landed:0(字段时有时无,调用方就得先判 undefined)');
-    // ④ 与 exec 那条批量同读一份判词:同一组数字两条出口给出逐字相同的说法
-    const D = require('../js/domain.js');
-    assertEq(dup.r.note, D.landedNote(4, 2, '行'), 'gen-episode 不许另造第二份说法(单源 Domain.landedNote,单位是"行")');
   } },
   { name: 'CLI exec produce:点名的轮次钳过即落库,下一轮不带入参跑的就是这个次数(单独调 smartReview 那一端仍不写库)', fn: async () => {
     /* 此前这一端只读不写:`exec episode.produce --args '{"maxRetry":4}'` 当轮真跑 4 轮,
@@ -13698,7 +13738,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 293;
+    const FLOOR = 294;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
