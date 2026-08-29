@@ -71,6 +71,7 @@ N1/N2/N5 与 `w175-guard-enroll.md` §6.1 登记的残留形状逐字相符(那�
 | `dedupe-card-mark-derive` | W289 | 主体库卡片上那枚「第几位 / 共几位」小标的位次只从页头那一份扫描派生(`Domain.dupIdMarks`),页面不再扫第二遍 |
 | `dedupe-shot-card-mark` | W291 | 分镜卡片上那枚「第几行 / 共几行」小标的位次只从顶栏那一份扫描派生,整页只扫一遍分镜表;挂点是量出来的两处(缩略图卡 + 镜头组时间线) |
 | `dedupe-proj-badge-derive` | W293 | 项目详情面那两枚同 id 重复角标只读两侧现成那份扫描(`RoleOps.dedupeScan` / `SB.dedupeShotScan`),这一屏不再抄一份规则——两份计算一漂,这一屏报的数就与那两页对不上 |
+| `dedupe-proj-list-badge` | W295 | 项目管理列表那几枚同 id 重复角标只现取 `EpisodeOps.dupIdBadges`,另钉两件量出来的事:扫的是内存里那棵树(不为角标逐项目打网)、扫的是全量项目(只扫当前那一页的话,被筛掉与翻过去的撞车项目一个都报不出来) |
 
 前十条是 `c2acb4d` 上现取的在册编号(`w158-rename-vs-delete.md` 那一线陆续登记,到那个 HEAD 为止一条没撤);
 接下来七条是 W174 / W175 两槽在集成线上补登记的源级护栏(本槽从 `c2acb4d` 叉出时看不见它们,合入 W182 集成线时按并集补进花名册);

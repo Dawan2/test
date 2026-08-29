@@ -74,6 +74,21 @@
     };
   }
 
+  /* ---- 项目卡片上那一两枚同 id 重复角标 ----
+   * 数由 EpisodeOps.dupIdBadges 现取(它再读两侧已有的 RoleOps.dedupeScan / SB.dedupeShotScan,
+   * 规则本身仍在 Domain.dupIdScan 一份):这一屏不认识去重规则,也不再数一遍谁是首位/首行,
+   * 报的数与项目详情面 tab 行那两枚逐字同一个(要改几位 / 要改几行,首位与首行不算)。
+   * 只在这个项目真有重复时才多长这一行,干净项目的卡片一个像素都不动。 */
+  function dupCardTags(p, d) {
+    if (!d || (!d.seats && !d.rows)) return '';
+    const epNote = d.eps.map(x => U.esc(x.title) + ' ' + x.rows + ' 行').join('、');
+    return `
+              <div class="row wrap" style="margin-top:8px;gap:6px">
+                ${d.seats ? `<span class="tag yellow" data-dupsubj="${p.id}" style="cursor:pointer" title="这个项目的主体库里有 ${d.seats} 位主体与在前的位共用同一个 id(按 id 只找得到首位、批量补图却逐位计费)。点这里进这个项目的「主体」页,那边页头有「🧹 主体 id 去重」(先看计划,确认才改 id,一位不删、零积分)">🧹 主体 id 重复 ${d.seats} 位</span>` : ''}
+                ${d.rows ? `<span class="tag yellow" data-dupshot="${p.id}" style="cursor:pointer" title="这个项目 ${d.eps.length} 集的分镜表里共有 ${d.rows} 行镜头与在前的行共用同一个 id(按 id 只取得到首行、批量生成却逐行计费):${epNote}。${d.eps.length === 1 ? '点这里直接进那一集的工作区' : '点这里进这个项目的「分集」列表,撞车那几集的卡片上各有一枚角标可点进去'},那边顶栏有「🧹 镜头 id 去重」(先看计划,确认才改 id,一行不删、零积分)">🧹 镜头 id 重复 ${d.rows} 行(${d.eps.length} 集)</span>` : ''}
+              </div>`;
+  }
+
   Views.projects = function (main) {
     const u = Store.currentUser();
     let search = '', page = 1;
@@ -86,12 +101,29 @@
       page = Math.min(page, pages);
       const shown = list.slice((page - 1) * PER, page * PER);
 
+      /* 同 id 重复角标:整屏只扫这一遍,页头那一枚与卡片上那几枚同读它。
+       * 扫的是内存里那棵树(Store.myProjects() 回的就是 state.projects 上那几个对象,整树随 /api/state
+       * 一次拉齐),逐项目一次线性过 id、一次网都不打;为角标去逐项目打网是不必要的。
+       * 有意按全量项目扫而不是只扫这一页:卡片角标被搜索词筛掉或翻页翻过去时一枚也看不见,
+       * 页头那一枚正是为那一路留的(它报的数不受搜索词与页码影响)。
+       * 纯展示:零写库、零任务、零扣费,收拾仍走那两页各自那道预览 + 确认闸。 */
+      const dupOf = {};
+      const dirty = [];
+      all.forEach(p => {
+        const d = window.EpisodeOps && EpisodeOps.dupIdBadges ? EpisodeOps.dupIdBadges(p) : null;
+        if (d && (d.seats || d.rows)) { dupOf[p.id] = d; dirty.push(p); }
+      });
+      const dirtyNote = dirty.slice(0, 5).map(x => U.esc(x.name) + ' '
+        + [dupOf[x.id].seats ? '主体 ' + dupOf[x.id].seats + ' 位' : '', dupOf[x.id].rows ? '镜头 ' + dupOf[x.id].rows + ' 行' : ''].filter(Boolean).join('、')).join(';')
+        + (dirty.length > 5 ? ` 等 ${dirty.length} 个` : '');
+
       main.innerHTML = `
       <div class="page">
         <div class="page-head">
           <div style="width:340px;max-width:50vw">
             <input class="input" data-f="search" placeholder="🔍 搜索项目名称" value="${U.esc(search)}">
           </div>
+          ${dirty.length ? `<span class="tag yellow" data-x="dupall" style="align-self:center;cursor:pointer" title="全部 ${all.length} 个项目里有 ${dirty.length} 个存着同 id 的主体或镜头(这个数按全量项目算,不受搜索词与页码影响——被筛掉或翻过去的那几个,卡片上那枚角标一枚也看不见):${dirtyNote}。按 id 只取得到首位/首行,而批量补图逐位计费、批量生成逐行计费。点这里${dirty.length === 1 ? '直接进那个项目' : '清掉搜索词、翻到第一个撞车项目那一页'},收拾走「🧹 主体 id 去重」/「🧹 镜头 id 去重」那道预览 + 确认闸(一位不删、一行不删,零积分)">🧹 ${dirty.length} 个项目有重复 id</span>` : ''}
           <button class="btn primary" data-x="new">＋ 新建项目</button>
         </div>
         <div class="card" style="margin-bottom:14px;padding:14px 16px;border-color:var(--accent);cursor:pointer" data-x="goprod">
@@ -137,7 +169,7 @@
               <div class="row" style="margin-top:10px;justify-content:space-between">
                 <span class="small muted">📅 ${U.esc(p.createdAt)}</span>
                 ${p.shell && p.shell.prodMode === '一键跑批' ? '<span class="tag cyan">🏭 一键跑批</span>' : ''}
-              </div>
+              </div>${dupCardTags(p, dupOf[p.id])}
               <div class="row" style="margin-top:8px;justify-content:space-between">
                 <span class="small muted">${(p.episodes || []).length} 集 · ${(p.subjects || []).length} 主体</span>
                 <button class="btn ghost sm danger btn-del" data-del="${p.id}">删除</button>
@@ -171,6 +203,27 @@
       };
       const pv = main.querySelector('[data-x=prev]'); if (pv) pv.onclick = () => { page--; render(); };
       const nx = main.querySelector('[data-x=next]'); if (nx) nx.onclick = () => { page++; render(); };
+      /* 三枚重复角标各点到能收拾它的那一处(stopPropagation:卡片本身那次跳转只进默认 tab,会盖掉落点)。
+       * 主体 → 那个项目的「主体」页;镜头 → 只有一集撞车时直接进那一集的工作区,多集进「分集」列表;
+       * 页头那一枚 → 只有一个撞车项目时直接进去,多个则清掉搜索词并翻到第一个撞车项目那一页
+       * ——不清就可能整屏都被过滤掉,卡片那几枚角标一枚也看不见。本槽只导航,一个字不写库。 */
+      main.querySelectorAll('[data-dupsubj]').forEach(t => t.onclick = e => {
+        e.stopPropagation();
+        window.__projTab = '主体';
+        location.hash = '#/project/' + t.dataset.dupsubj;
+      });
+      main.querySelectorAll('[data-dupshot]').forEach(t => t.onclick = e => {
+        e.stopPropagation();
+        const d = dupOf[t.dataset.dupshot];
+        if (d && d.eps.length === 1) { location.hash = `#/project/${t.dataset.dupshot}/episode/${d.eps[0].id}`; return; }
+        window.__projTab = '分集';
+        location.hash = '#/project/' + t.dataset.dupshot;
+      });
+      const dupAllBtn = main.querySelector('[data-x=dupall]');
+      if (dupAllBtn) dupAllBtn.onclick = () => {
+        if (dirty.length === 1) { location.hash = '#/project/' + dirty[0].id; return; }
+        search = ''; page = Math.floor(all.indexOf(dirty[0]) / PER) + 1; render();
+      };
       main.querySelectorAll('.proj-card').forEach(c => {
         c.onclick = e => {
           if (e.target.closest('.btn-del')) return;

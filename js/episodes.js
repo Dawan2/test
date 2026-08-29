@@ -1282,4 +1282,8 @@ ${(ep.content || '').slice(0, 8000)}` }],
 
   /* 上传剧本/主体确认+AI 生图/生成分集(doSplit)已拆至 proj-upload.js,
    * 入口经 window.EpisodeUtil 调用(openUploadScript/genSubjectImage/openSubjectConfirm/doSplit) */
+
+  /* 项目管理列表那一屏(js/projects.js)现取 dupIdBadges 出这一份数,不另写一份:
+   * 卡片角标与项目详情面 tab 行那两枚因此报的是同一个数(两处一起读两侧那份扫描)。 */
+  window.EpisodeOps = { dupIdBadges };
 })();
