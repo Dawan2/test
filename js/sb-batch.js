@@ -1,7 +1,9 @@
 /* ============ sb-batch.js 批量操作 + 失败任务重试(自 storyboard.js 拆分) ============
  * runBatchOp(批量生成视频/音频/合成音视频/全删)/ openConfirmGateModal(镜头确认闸)/ jumpToShot /
  * window.__retryShotTask(任务监控页 ↻ 重试入口)。
- * 加载顺序:storyboard.js 之后、sb-gen.js 之前(openConfirmGateModal 挂回 window.SB 供其解构)。 */
+ * 加载顺序:storyboard.js 之后、sb-gen.js 之前(openConfirmGateModal 挂回 window.SB 供其解构)。
+ * 待确认清单行上的镜号是给人看的,取 Domain.shotNo(ep.shots, s)(分镜表实位);
+ * 任务名/扣费退费摘要/留痕文件名/opIds 标签是落库文本,仍按 s.order 记。 */
 (function () {
   const { renderShots, onEpPage, ttsShot, markOfflineAudio } = window.SB;
 
@@ -48,7 +50,7 @@
       <div style="max-height:40vh;overflow-y:auto">
         ${unconfirmed.map(s => `
         <div class="row" style="gap:10px;align-items:center;padding:7px 10px;border:1px solid var(--border2);border-radius:10px;margin-bottom:6px">
-          <span class="tag cyan" style="flex:none">镜头 ${s.order + 1}</span>
+          <span class="tag cyan" style="flex:none">镜头 ${Domain.shotNo(ep.shots, s) || '?'}</span>
           <span class="small grow" style="line-height:1.5">${U.esc((s.plot || '(未填写剧情)').slice(0, 60))}</span>
           <span class="tag" style="flex:none">待确认</span>
         </div>`).join('')}
@@ -149,7 +151,7 @@
           <div style="max-height:32vh;overflow-y:auto">
             ${unconfirmed.map(s => `
             <div class="row" style="gap:10px;align-items:center;padding:7px 10px;border:1px solid var(--border2);border-radius:10px;margin-bottom:6px">
-              <span class="tag cyan" style="flex:none">镜头 ${s.order + 1}</span>
+              <span class="tag cyan" style="flex:none">镜头 ${Domain.shotNo(ep.shots, s) || '?'}</span>
               <span class="small grow" style="line-height:1.5">${U.esc((s.plot || '(未填写剧情)').slice(0, 60))}</span>
               <span class="tag" style="flex:none">待确认</span>
             </div>`).join('')}

@@ -1,6 +1,8 @@
 /* ============ sb-gen.js 分镜视频生成链路:单镜/批量生成、首尾帧、历史版本、连抽(拆自 storyboard.js) ============
  * 加载顺序:storyboard.js、sb-views.js 之后,sb-io.js 之前;共享常量/辅助顶部经 window.SB 解构,
- * 美术后缀 SBViews.artSuffixApp 运行时解析。拆分前 window.SB 成员在末尾回挂,外部调用点不变。 */
+ * 美术后缀 SBViews.artSuffixApp 运行时解析。拆分前 window.SB 成员在末尾回挂,外部调用点不变。
+ * 弹窗页头与批量结果清单行上的镜号是给人看的,取 Domain.shotNo(ep.shots, s)(分镜表实位);
+ * 任务名/扣费退费摘要/留痕与上传文件名/占位图标注是落库文本或素材内容,仍按 s.order 记。 */
 (function () {
   const { onEpPage, prevEpTail, ttsShot, markOfflineAudio, openConfirmGateModal, autoSmartReview, snapshotShot, renderShots, STRATEGIES } = window.SB;
 
@@ -20,7 +22,7 @@
     let selIdx = 0;
     let onKey = null;
     U.openModal({
-      title: `历史版本 · 镜头 ${s.order + 1}(${vers.length} 版)`,
+      title: `历史版本 · 镜头 ${Domain.shotNo(ep.shots, s) || '?'}(${vers.length} 版)`,
       wide: true,
       body: (vers.length ? `<div class="hint" style="margin:0 0 10px">⌨ ↑↓ 切换分镜 · ←→ 选择版本 · Enter 应用此版</div>` : '') + (vers.length ? vers.map((v, i) => `
       <div class="card" style="margin-bottom:10px;padding:12px" data-vcard="${i}">
@@ -258,7 +260,7 @@
       /* 4 选 1:点选格 → 上传 → 回填首帧(覆盖前留档可回滚) */
       let picked = -1;
       U.openModal({
-        title: `首帧海选 · 镜头${s.order + 1}(4 选 1)`,
+        title: `首帧海选 · 镜头${Domain.shotNo(ep.shots, s) || '?'}(4 选 1)`,
         wide: true,
         body: `
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
@@ -802,7 +804,7 @@
       <div style="margin-bottom:12px"><b style="color:var(--green)">${okCnt}/${total} 成功</b><span class="muted">,</span> <b style="color:var(--red)">${failed.length} 项失败</b><span class="hint" style="display:inline;margin:0 0 0 8px">${failHint}</span></div>
       ${failed.map((f, i) => `
       <div class="row" style="gap:10px;align-items:center;padding:8px 10px;border:1px solid var(--border2);border-radius:10px;margin-bottom:8px" data-frow="${i}">
-        <span class="tag cyan" style="flex:none">镜头 ${f.s.order + 1}</span>
+        <span class="tag cyan" style="flex:none">镜头 ${Domain.shotNo(ep.shots, f.s) || '?'}</span>
         <span class="small grow" style="line-height:1.5;word-break:break-all" data-fmsg>${U.esc(errOf(f.err))}</span>
         <button class="btn sm primary" data-fre="${i}" style="flex:none">↻ 重试</button>
       </div>`).join('')}`,
