@@ -2500,6 +2500,57 @@ function roleDom() {
     querySelectorAll: () => [],
   };
 }
+/* 分集工作区 Views.episode:四视图(分镜脚本/分镜视频/节拍板/镜头组)与剪辑台共用集级顶栏那一行,
+ * "哪几条进来的路看得见入口"只有真渲一遍才量得出,故把渲染路径上的全局按 index.html 那个顺序补齐;
+ * 中栏各视图与生成链路是别的套件的活,按桩接(本套件只驱动顶栏)。
+ * 弹窗桩与主体库那条入口同一份契约:开的那一下就 onMount(节点, close)。 */
+function loadEpisodeWs() {
+  const sb = makeSandbox();
+  installCommon(sb);
+  sb.document.removeEventListener = () => {}; // 整页重渲时先摘掉上一轮的快捷键 handler
+  sb.Voice = { NARRATOR_PRESETS: ['旁白·沉稳'], label: () => '音色', norm: () => ({ voice: '音色' }) };
+  sb.styleOf = p => p.style || '漫剧';
+  sb.negOf = () => '';
+  sb.MODELS = new Proxy({}, { get: () => ['prov,模型'] });
+  sb.COST = new Proxy({}, { get: () => 5 });
+  sb.U.thumb = f => f;
+  sb.U.hashColor = () => 0;
+  sb.__modals = [];
+  sb.U.openModal = opt => {
+    const m = epDom();
+    const rec = { opt, m, closed: 0 };
+    const close = () => { rec.closed++; };
+    sb.__modals.push(rec);
+    if (opt.onMount) opt.onMount(m, close);
+    return close;
+  };
+  let seq = 0;
+  sb.Store.uid = pre => pre + '_u' + (++seq);
+  sb.Store.getProject = id => (sb.__proj && sb.__proj.id === id ? sb.__proj : null);
+  Object.assign(sb.Store, {
+    shotsStale: () => false, understandingStale: () => false, epComposedReady: () => false,
+    composedStaleByScript: () => false, reviewStaleByScript: () => false, shotVideoStale: () => false,
+  });
+  loadFile(sb, 'domain.js');
+  loadFile(sb, 'prompts.js');
+  loadFile(sb, 'knowledge.js');
+  loadFile(sb, 'wf-core.js');
+  loadFile(sb, 'storyboard.js'); // window.SB 由它建出来,故中栏那几个桩要在它之后挂
+  Object.assign(sb.SB, { scriptBoardHTML: () => '<div>脚本层</div>', bindScriptBoard() {}, deriveBoard: () => ({ scenes: [] }) });
+  sb.SBViews = { centerHTML: () => '', rightHTML: () => '', cutHTML: () => '', cutRightHTML: () => '', bindCenter() {}, bindRight() {}, openQuickEdit() {} };
+  sb.SBGen = { estShotDuration: () => 5 };
+  return sb;
+}
+/* 比 roleDom 多一层:顶栏那几个下拉要在惰性节点上再 querySelectorAll 一次(菜单项绑定) */
+function epDom() {
+  const nodes = {};
+  const leaf = () => ({ value: '', style: {}, dataset: {}, onclick: null, onchange: null, closest: () => null, querySelector: () => null, querySelectorAll: () => [] });
+  return {
+    innerHTML: '', value: '', style: {}, dataset: {}, onclick: null, onchange: null,
+    querySelector: sel => (nodes[sel] = nodes[sel] || leaf()),
+    querySelectorAll: () => [],
+  };
+}
 const commandsTests = [
   { name: 'execute:未注册命令返回 unknown-command', fn: async () => {
     const sb = loadCommands();
@@ -3719,6 +3770,178 @@ const commandsTests = [
     assertEq(JSON.stringify(got.duplicates), JSON.stringify(ref.duplicates.map(d => ({ id: d.id, seats: d.n, keepOrder: d.keepOrder }))),
       '重复面只该换单位词(n → seats),别的一格都不许改口径,实际:' + JSON.stringify(got.duplicates));
     assertEq(rows.map(x => x.id).join(','), 'a,b,a,a', '扫描是纯扫描:入参一个字段都不许改(落库由弹窗按计划逐条写)');
+  } },
+  { name: '分镜面那条去重入口:四视图与剪辑台共用的集级顶栏上真长出来,点开只预览、确认那一下才改 id(一行不删、零计费;uiSel 与镜头组落到同一行,旧审片报告那几条退回首行只报不改)', fn() {
+    /* 镜头侧那条命令此前只在 CLI/MCP 上:同 id 多行在分镜表里与两个不同镜头长得一模一样,
+     * 页面上要发现它只剩批量生成那句 note 一条路。本条钉的是页面上这条入口,与主体库那条逐格同形
+     * (只在真有重复时露出并报出要改几行、点开是预览、按下确认才落库、首行留原 id、一行不删、零计费),
+     * 实质差别三格:挂在分集级(带 epid)、单位词是"行"、引用面要多量三处——
+     *   ep.uiSel     按 id 取首行,首行留的就是原 id → 去重前后同一行;
+     *   镜头组       归属记在镜头行自己的 groupId 上、指的是组 id 不是镜头 id → 改镜头 id 碰不到它;
+     *   lastReview.perShot  按行出条目、行对位靠"第几条同 id = 第几行同 id"(Domain.reviewRows)
+     *                → 同 id 只剩一行之后那几条真会退回首行。这一处与 CLI shots-dedupe 现口径一致,
+     *                  本槽只在预览里把会塌几条现算现报,一个字不改报告(改审片合入是另一问)。
+     * 「四视图都看得见」不靠读代码断言:四视图 + 剪辑台五条路各真渲一遍。 */
+    const sb = loadEpisodeWs();
+    const D = require('../js/domain.js');
+    const mkShot = (id, name) => ({ id, order: 0, name, plot: name, camera: '固定镜头', duration: 5,
+      characters: [], props: [], scene: '', prompt: '', confirm: true, video: { status: 'none' }, history: [] });
+    const p = { id: 'p1', name: '脏剧', style: '漫剧', subjects: [], episodes: [{
+      id: 'ep1', title: '第一集', content: '正文', sbConfig: {}, uiSel: 'dup',
+      groups: [{ id: 'g1', name: '井边', scene: '枯井', chars: [] }],
+      shots: [mkShot('dup', 'A-首行'), mkShot('solo', 'B-不重复'), mkShot('dup', 'C-第二行'), mkShot('dup', 'D-第三行')],
+      lastReview: { avg: 7, perShot: [
+        { shotId: 'dup', score: 8, reportId: 'r1' }, { shotId: 'solo', score: 9, reportId: 'r2' },
+        { shotId: 'dup', score: 5, reportId: 'r3' }, { shotId: 'dup', score: 6, reportId: 'r4' },
+      ] },
+    }] };
+    const ep = p.episodes[0];
+    ep.shots[0].groupId = 'g1'; ep.shots[2].groupId = 'g1';
+    sb.__proj = p;
+    // ① 入口:四视图 + 剪辑台五条路各渲一遍,五条路都看得见(集级顶栏只挂一处,而少挂一处就有一条路看不见)
+    ['board', 'shots', 'cut', 'bb', 'groups'].forEach(vmode => {
+      sb.Store.state.settings.epViewMode = vmode;
+      const box = epDom();
+      sb.Views.episode(box, 'p1', 'ep1');
+      assert(/data-x="shotdedupe"/.test(box.innerHTML),
+        '视图 ' + vmode + ' 上看不见去重入口(四视图与剪辑台共用集级顶栏那一行,挂漏一处就有一条进来的路看不见)');
+      assert(/镜头 id 去重\(2\)/.test(box.innerHTML), '视图 ' + vmode + ' 的入口上得报出要改几行(三行同 id → 留首行、改后两行),实际:'
+        + (box.innerHTML.match(/[^>]*去重[^<]*/) || [''])[0]);
+    });
+    // 引用面逐处解析成"落到第几行":去重前后拿同一把尺子量
+    const refs = () => JSON.stringify({
+      uiSel: ep.shots.findIndex(s => s.id === ep.uiSel),
+      group: ep.shots.map(s => s.groupId || '-').join(','),
+      reviewRows: D.reviewRows(ep).map(t => t.i).join(','),
+      revise: D.reviseTargets(ep).map(t => t.order + '@' + t.score).join(','),
+    });
+    const before = refs();
+    assertEq(before, JSON.stringify({ uiSel: 0, group: 'g1,-,g1,-', reviewRows: '0,1,2,3', revise: '3@5,4@6' }),
+      '夹具前提:选中镜落在首行、镜头组两行在册、旧报告四条各归各行(后两条低分各指第 3/4 行),实际:' + before);
+    sb.Store.state.settings.epViewMode = 'shots';
+    const main = epDom();
+    sb.Views.episode(main, 'p1', 'ep1');
+    // ② 点开只预览:重复面三样都报出来、改名计划逐行点名,而一个字不写库
+    const saves = sb.Store._saves;
+    main.querySelector('[data-x=shotdedupe]').onclick();
+    assertEq(sb.__modals.length, 1, '点入口须开一个弹窗(沿用 U.openModal 那一套)');
+    const dry = sb.__modals[0];
+    assert(/dup/.test(dry.opt.body) && /3 行/.test(dry.opt.body) && /第 1 镜「A-首行」/.test(dry.opt.body),
+      '预览得报出重复的是哪个 id、几行、哪一行留原 id,三样都要:' + dry.opt.body);
+    assert(/第 3 镜「C-第二行」/.test(dry.opt.body) && /第 4 镜「D-第三行」/.test(dry.opt.body) && !/第 2 镜「B-不重复」/.test(dry.opt.body),
+      '改名计划得逐行点名(改的是撞车那两行,不重复的那一行不许进计划):' + dry.opt.body);
+    // 旧报告那一格:会塌几条得现算现报(报错了比不报更坏——用户是照这一屏点头的)
+    assert(/有 2 条逐镜结论/.test(dry.opt.body),
+      '预览须报出旧审片报告会有几条退回首行(本例 4 条里有 2 条现在落在首行之外),实际:' + dry.opt.body);
+    assert(/重跑一次整集审片/.test(dry.opt.body), '既然只报不改,就得把"要让逐行结论回位该怎么做"一起说清:' + dry.opt.body);
+    assert(/一并删光/.test(dry.opt.body), '删除语义那笔代价照旧说清(单镜删除按 id 匹配,同 id 那几行一并删光)');
+    assertEq(sb.Store._saves, saves, '预览这一屏不许写库(这条入口的"可撤销"就落在这一格上)');
+    assertEq(dry.closed, 0, '预览这一屏不许自己关掉(它就是那道确认闸的正面)');
+    assertEq(ep.shots.map(s => s.id).join(','), 'dup,solo,dup,dup', '预览之后表里一个 id 都不许变');
+    // ③ 确认闸:取消那一下同样不写库
+    dry.m.querySelector('[data-x=cancel]').onclick();
+    assertEq(dry.closed, 1, '取消得把弹窗关掉');
+    assertEq(sb.Store._saves, saves, '取消不许写库');
+    assertEq(ep.shots.map(s => s.id).join(','), 'dup,solo,dup,dup', '取消之后表里一个 id 都不许变');
+    assertEq(refs(), before, '取消之后引用面一处都不许动');
+    // ④ 再点开、按确认才落库:首行留原 id、撞车行改发新 id、一行不删、内容不动
+    main.querySelector('[data-x=shotdedupe]').onclick();
+    assertEq(sb.__modals.length, 2, '取消之后再点入口,得能再开一次(取消不是"处理过了")');
+    const go = sb.__modals[1];
+    const preview = go.opt.body.match(/sh_u\d+/g) || [];
+    assertEq(preview.length, 2, '预览里那两个新 id 取不到(展示形状改了就同轮改这里),实际:' + JSON.stringify(preview));
+    go.m.querySelector('[data-x=apply]').onclick();
+    assertEq(go.closed, 1, '落库之后得把弹窗关掉');
+    assertEq(sb.Store._saves, saves + 1, '确认那一下恰好写一次库');
+    assertEq(ep.shots.length, 4, '去重是改 id、不是替用户删行:一行都不许少(同 id 那几行各有各的画面与提示词)');
+    assertEq(ep.shots[0].id, 'dup', '首行留原 id(引用全靠它继续解析到同一行)');
+    assertEq(ep.shots[1].id, 'solo', '不重复的那一行一个字都不许动');
+    assertEq(new Set(ep.shots.map(s => s.id)).size, 4, '落库后四行四个 id,一个不重');
+    assert(/^sh_/.test(ep.shots[2].id) && /^sh_/.test(ep.shots[3].id),
+      '撞车的后续行须改发新 id(前缀对齐新建镜头那一处):' + JSON.stringify(ep.shots.map(s => s.id)));
+    assertEq(ep.shots.map(s => s.name).join(','), 'A-首行,B-不重复,C-第二行,D-第三行', '只改 id,一行的内容都不许动');
+    assertEq(preview.filter(id => ep.shots.some(s => s.id === id)).length, 0,
+      '新 id 是确认那一下现发的:预览那批只是示意值,隔着一次重算不许拿它落库,实际:' + JSON.stringify(preview));
+    // ⑤ 引用面:选中镜与镜头组落到同一行;旧报告那几条真退回首行,而库形态一个字没被偷偷改
+    const after = JSON.parse(refs());
+    assertEq(after.uiSel, 0, '当前选中镜(ep.uiSel)按 id 取首行,而首行留的就是原 id:去重前后同一行');
+    assertEq(after.group, 'g1,-,g1,-', '镜头组归属记在镜头行自己身上、指的是组 id:改镜头 id 碰不到它,一处不该动');
+    assertEq(after.reviewRows, '0,1,0,0',
+      '旧报告那几条按 id 解析退回首行,与 CLI shots-dedupe 现口径一致(预览里已把这个数报给用户,本槽只报不改):实际 ' + after.reviewRows);
+    assertEq(after.revise, '1@5,1@6', '重抽名单跟着按首行算(同上,只报不改;要回位得重跑整集审片)');
+    assertEq(JSON.stringify(ep.lastReview.perShot.map(x => x.shotId + '/' + x.reportId)),
+      JSON.stringify(['dup/r1', 'solo/r2', 'dup/r3', 'dup/r4']),
+      '报告本身一个字都不许改:引用会塌就在预览里说清,不许偷偷改库形态来凑对位');
+    assertEq(sb.__toasts.filter(t => /改发新 id/.test(t)).length, 1,
+      '改完得如实说改了几行(静默改寻址键等于把用户的脚本悄悄弄失配),实际:' + JSON.stringify(sb.__toasts));
+    // ⑥ 纯改表零上游:一笔任务、一分钱都不许有
+    assertEq(sb.__tasks.length + sb.__charges.length, 0,
+      '纯改分镜表、零上游零 LLM:不许登记生成任务也不许扣一分钱,实际:' + JSON.stringify({ tasks: sb.__tasks, charges: sb.__charges }));
+    // ⑦ 收拾干净之后入口自己消失(落库那一下真重渲了页面),再扫一遍也没得可改
+    assert(!/data-x="shotdedupe"/.test(main.innerHTML),
+      '去重完那一下页面得重渲、入口跟着消失(表里没有重复时不该挂着这个按钮)');
+    assertEq(sb.SB.dedupeShotScan(ep.shots).plan.length, 0, '干净的表上再扫一遍,一行都不该再改');
+    assertEq(sb.SB.dedupeShotScan(ep.shots).unique, 4,
+      'unique 报的仍是这一趟扫描前的 id 数(落库后必然等于 total),口径与两条命令逐字同形、没被这条入口改掉');
+  } },
+  { name: '分镜面那条去重入口不许另抄一份规则:页面这一端只注入自己的发号器与单位词,规则仍现取 Domain.dupIdScan;「旧报告会塌几条」那句只现取 Domain.reviewRows(纯改表零计费)', fn() {
+    /* 行为面那条钉的是"入口在、预览不写库、确认才写";这一条钉的是它凭什么与 CLI 那条命令一致——
+     * 「首行留原 id、后面每处撞车各发一个新 id」这套规则只在派生一份,页面这一端注入的只有
+     * Store.uid 那个发号器与镜头侧的单位词。抄一份到页面上行为可以完全一样,只有源级这条接得住。
+     * 另钉两件本槽的分寸:预览里那句"旧报告会塌几条"只许拿 Domain.reviewRows 在两棵表上各跑一遍现算,
+     * 页面上不许另数一套"第几条同 id"(数错了用户是照这一屏点头的);纯改表不许被顺手套上任务/扣费。 */
+    const src = fs.readFileSync(path.join(ROOT, 'js', 'storyboard.js'), 'utf8');
+    const segOf = (head, tail) => {
+      const i = src.indexOf(head);
+      assert(i >= 0, 'js/storyboard.js 找不到「' + head + '」(挪窝或改名就同轮改这里,别把本条留成恒真)');
+      const rest = src.slice(i + head.length);
+      const j = rest.indexOf(tail);
+      assert(j > 100, 'js/storyboard.js「' + head + '」那一段取不到(同上),实测 ' + j + ' 字');
+      return rest.slice(0, j);
+    };
+    // 扫描段:委托派生 + 注入自己那一端的发号器与单位词,不许再攒一份"谁是首行"的记账
+    const scan = blankNonCode(segOf('function dedupeShotScan(', '\n  /*'), true);
+    assert(scan.includes('Domain.dupIdScan('),
+      '页面这一端的扫描须委托 Domain.dupIdScan(几处各写一份规则迟早对同一份脏数据给出几种计划):' + scan);
+    assert(/Store\.uid\('sh'\)/.test(scan), '得注入浏览器那一端的发号器(前缀对齐新建镜头那一处):' + scan);
+    assert(scan.includes('rows:'), '单位词在这一层换上(分镜表里没有"位"):' + scan);
+    assertEq((scan.match(/new Map\(|new Set\(/g) || []).length, 0,
+      '扫描段又攒了一份"谁是首行"的记账,那是派生的活(抄回来两端就能各判一套):' + scan);
+    assertEq((scan.match(/keepOrder/g) || []).length, 2,
+      '扫描段里 keepOrder 只该出现两次(透传派生那一份:键名 + d.keepOrder):' + scan);
+    // 行对位那句:同一份 Domain.reviewRows 在两棵表上各跑一遍,页面上不许另数一套序数
+    const coll = blankNonCode(segOf('function reviewCollapseCnt(', '\n  /*'), true);
+    assertEq(coll.split('Domain.reviewRows(').length - 1, 2,
+      '"会塌几条"须由同一份 Domain.reviewRows 在当下这棵表与按计划改过 id 的表上各跑一遍现算:' + coll);
+    assert(!/nth|seen\[|shotId/.test(coll),
+      '不许在页面上另数一套"第几条同 id"(那是 Domain.reviewRows 的活,两份序数一漂预览里那个数就不作数了):' + coll);
+    // 弹窗段:预览与落库同调一个扫描;写库只此一处且排在确认那一下;纯改表不许挂计费
+    const open = blankNonCode(segOf('function openShotDedupe(', '\n  /* ================= 分集工作区'), true);
+    assert(!/Tasks\.run|billingAction|operationId|COST\.|U\.charge|requireCredits/.test(open),
+      '纯改分镜表、零上游零 LLM,不许走计费路径:' + open);
+    assertEq((open.match(/dedupeShotScan\(/g) || []).length, 2,
+      '预览读一份、落库前按当下那棵树重算一份,两条路都得调同一个扫描(各写一份计算迟早漂):' + open);
+    assertEq((open.match(/Store\.save\(\)/g) || []).length, 1, '写库只许有一处:' + open);
+    assert(open.indexOf('Store.save()') > open.indexOf('[data-x=apply]'),
+      '写库那一句须落在确认按钮的 handler 里(开弹窗即写就把预览那一档吃掉了):' + open);
+    assert(!/lastReview\s*=|perShot\s*=|perShot\.forEach|uiSel\s*=/.test(open),
+      '引用会塌只许在预览文案里说清:弹窗段不许顺手改报告或改选中镜(那是审片合入那一问,不在本入口里偷偷做):' + open);
+    // 入口:露不露、报几行由同一份扫描现算;只挂集级顶栏那一处,且那一处排在视图分档之前
+    const skel = blankNonCode(src, true);
+    assert(/dedupeShotScan\(ep\.shots\)/.test(skel),
+      '入口露不露、报几行得由同一份扫描现算(另拿一句"看着像重复"的判断顶,页面上那个数就与弹窗里的计划漂开)');
+    assertEq((skel.match(/\$\{dedupeBtn\}/g) || []).length, 1,
+      '入口只该插一处(四视图与剪辑台共用集级顶栏那一行);要往各视图自己的头部再挂就同轮改这里');
+    const tpl = skel.slice(skel.indexOf('main.innerHTML = `'));
+    const upto = tpl.slice(0, tpl.indexOf('${dedupeBtn}'));
+    assert(upto.length > 100 && upto.length < tpl.length, '入口在模板里的位置取不到(同上),实测 ' + upto.length + ' 字');
+    assert(!/vm === |showBoard/.test(upto),
+      '入口须挂在视图分档之前那一行集级顶栏上:排到分档之后就有视图看不见它(行为面另有五条路各渲一遍)');
+    // 对照面:CLI 那条命令还在(本入口的形状就是照它写的),删除语义与逐镜删那一句本槽都没动
+    assert(/CMD\['shots-dedupe'\]/.test(fs.readFileSync(path.join(ROOT, 'cli.js'), 'utf8')),
+      '对照面:CLI 那条 shots-dedupe 得还在(页面这条入口的形状就是照它写的)');
+    assert(/ep\.shots = ep\.shots\.filter\(x => x\.id !== sel\.id\)/.test(fs.readFileSync(path.join(ROOT, 'js', 'sb-views.js'), 'utf8')),
+      '删除语义一字未动:单镜删除仍按 id 匹配、会清掉同 id 的每一行(那是删除语义不是去重语义,本槽不碰它,只在预览里说清)');
   } },
   { name: 'generateVideos 点名重复 id 真跑那一趟:两端回执都说出行数并点名 shots-dedupe(选人闸仍按行筛,一行都不许少跑)', fn: async () => {
     /* 上面三条(导入设闸 / 逃生舱不设闸 / shots-dedupe 是存量出口)管的是表本身,这一条管**生成那一拍**:
@@ -9662,6 +9885,11 @@ const GUARD_TOPICS = [
     why: '主体库页面那条去重入口与 CLI 同读一份规则:页面这一端只注入自己的发号器(Store.uid)与单位词,'
       + '预览与落库同调一个扫描、写库只在确认那一下——把规则抄到页面上行为可以完全一样,'
       + '而两份计算一旦漂,用户照预览点的那个头就不作数了' },
+  { id: 'dedupe-shots-ui-single', anchors: ['function openShotDedupe(', 'Domain.reviewRows('],
+    why: '分镜面那条去重入口与 CLI 同读一份规则(页面只注入 Store.uid 那个发号器与镜头侧单位词),'
+      + '而预览里那句「旧审片报告会塌几条」只许拿 Domain.reviewRows 在两棵表上各跑一遍现算——'
+      + '页面上另数一套「第几条同 id」的话,那个数与审片消费面读出来的行对位就是两套,'
+      + '而这条入口"只报不改"的全部分量都压在那个数报得准上' },
 ];
 /* ---- 下限、销号台账与花名册:让「撤掉一条登记」这件事非留痕不可 ----
  * 上面那张表只登记"此刻在册"的主题,而撤登记此前只有一个下限数字守着,两种改法都一条不红:
@@ -9675,7 +9903,7 @@ const GUARD_TOPICS = [
  *   3. 销号必须显式落笔——编号搬进 GUARD_TOPICS_CLOSED 并写下闭合理由,锚点原样搬过来,
  *      好让"这道护栏是真没了,还是被别的主题接手了"事后仍判得出来。
  * 有意不禁新登记主题:在册多出花名册没有的号一条不红,加主题照旧只改上面那张表。 */
-const TOPIC_FLOOR = 22;
+const TOPIC_FLOOR = 23;
 const GUARD_TOPICS_CLOSED = [
   /* 形状:{ id: '主题编号', anchors: [原样搬过来], why: '这道护栏原本守什么',
    *        closed: '为什么可以不守了(被守的那一面已不存在 / 判据并进了哪一条)',
@@ -13879,7 +14107,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-      [['单元测试', 703, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+      [['单元测试', 705, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -14287,7 +14515,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 301;
+    const FLOOR = 302;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
