@@ -4264,12 +4264,20 @@ const commandsTests = [
       '两句说明各得说清代价(按 id 只取得到首位/首行,而批量补图与批量生成逐位/逐行计费),不然光一个数读不出为什么要收拾');
     assert(/主体 id 去重/.test(main.innerHTML) && /镜头 id 去重/.test(main.innerHTML),
       '两句说明各得点名去哪儿收拾(只报警不给活路等于没说)');
+    /* 点过去那一页上真挂了逐位/逐行小标的,那一句得说出来(只报一个总数的话,"是哪几张卡撞了"仍得自己找);
+     * 镜头那枚落到「分集」列表、那一屏挂的是集级角标不是小标,故它有意不说这句 */
+    assert(/data-x="pdupsubj"[^>]*title="[^"]*撞车的每一位卡片上另有一枚小标"/.test(main.innerHTML),
+      '主体那枚得说清撞车的每一位卡片上另有一枚小标,实际:' + (main.innerHTML.match(/data-x="pdupsubj"[^>]*/) || [''])[0]);
+    assert(!/data-x="pdupshot"[^>]*title="[^"]*另有一枚小标"/.test(main.innerHTML),
+      '镜头那枚落到「分集」列表(那一屏是集级角标,不是逐行小标),不许跟着说"另有一枚小标"');
     assertEq((main.innerHTML.match(/主体 id 重复 \d+ 行|镜头 id 重复 \d+ 位/g) || []).length, 0,
       '两侧单位词不许对调:主体库数"位"、分镜表数"行"');
     // ② 分集卡片:撞车那几集各一枚报自己那一集几行,干净那一集一枚不挂
     const epTags = [...String(main.innerHTML).matchAll(/data-epdup="([^"]*)"[^>]*>🧹 id 重复 (\d+) 行/g)].map(m => m[1] + ':' + m[2]);
     assertEq(epTags.join(' | '), 'ep1:2 | ep3:1',
       '分集列表上撞车那几集各得挂一枚报自己那一集要改几行(干净的那一集一枚不挂),实际:' + JSON.stringify(epTags));
+    assert(/data-epdup="ep1"[^>]*title="[^"]*撞车的每一行卡片上另有一枚小标"/.test(main.innerHTML),
+      '分集卡片那枚点进本集工作区,那一屏逐行都挂了小标,这句得说出来,实际:' + (main.innerHTML.match(/data-epdup="ep1"[^>]*/) || [''])[0]);
     // ③ 八个 tab 都看得见:角标挂在 tab 行(八个 tab 共用它),不是挂在某个 tab 的内容体里
     const tabs = ['制片', '剧本', '导演', '主体', '分集', '成片库', '剧壳', '切片'];
     tabs.forEach(t => {
