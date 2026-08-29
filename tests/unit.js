@@ -9545,6 +9545,58 @@ const contractTests = [
     left.forEach(l => assert(/Tasks\.start\(|U\.charge\(/.test(l),
       '剩下的 order 读法只许在任务名与扣费摘要这类落库文本上,展示面一处都不许留:' + l.trim().slice(0, 60)));
   } },
+  { name: '分镜面展示镜号(源级):三文件的弹窗页头与清单行标签都取 Domain.shotNo,落库文本与瞬时字符串两族照旧留 order', fn() {
+    /* 审片面收完之后,分镜工作区自己那批"镜头 N"还读 order:同一镜在缩略图上是第三镜、
+     * 点开「更多工具」页头写着「镜头 1」(order 自称 0)。本槽只收**持久渲染在屏上的那一族**——
+     * 弹窗页头(七处 sb-views + 两处 sb-gen)与清单行标签(sb-gen 批量结果失败行、sb-batch 待确认行两处),
+     * 一律走已有的 Domain.shotNo,展示层不另抄一份对位。
+     * 有意留着不动的是另外三族,判据两个方向都钉住,后续槽真要收就得同轮改这条:
+     *   ① 落库文本:任务名 / 扣费退费摘要 / 任务中心留痕与上传文件名 / opIds 标签 / 入库默认主体名 / 便捷工具预填名;
+     *   ② 提示词与占位图标注(模型读的那份、烧进素材内容的那份);
+     *   ③ 瞬时字符串:toast / confirm / 进度坞行 / 浏览器下载名——整族留下一槽,别一半一半地漂。 */
+    const src = {};
+    ['sb-views', 'sb-gen', 'sb-batch'].forEach(n => { src[n] = fs.readFileSync(path.join(ROOT, 'js', n + '.js'), 'utf8'); });
+    /* 逐处按字面锚定到它自己那一行:改了页头文案就同轮改这里,别把本条留成恒真 */
+    const sites = [
+      ['sb-views', "'＠ 引用资产 · 镜头'", '引用资产弹窗页头'],
+      ['sb-views', "'分镜提示词(镜头 '", '分镜提示词弹窗页头'],
+      ['sb-views', "'历史提示词(镜头 '", '历史提示词弹窗页头'],
+      ['sb-views', "'按指令改 · 镜头'", '按指令改弹窗页头'],
+      ['sb-views', "'存为主体形态 · 镜头'", '存为主体形态弹窗页头'],
+      ['sb-views', "'存入资产库 · 镜头'", '存入资产库弹窗页头'],
+      ['sb-views', "'更多工具(镜头 '", '更多工具弹窗页头'],
+      ['sb-gen', '`历史版本 · 镜头 ', '历史版本弹窗页头'],
+      ['sb-gen', '`首帧海选 · 镜头', '首帧海选弹窗页头'],
+      ['sb-gen', '镜头 ${Domain.shotNo(ep.shots, f.s)', '批量生成结果的失败清单行'],
+      ['sb-batch', 'flex:none">镜头 ', 'sb-batch 待确认清单行'],
+    ];
+    sites.forEach(([file, anchor, label]) => {
+      const hit = src[file].split('\n').filter(l => l.includes(anchor));
+      assert(hit.length >= 1, label + '按字面锚不到(文案变了就同轮改这条判据):' + anchor);
+      hit.forEach(l => {
+        assert(/Domain\.shotNo\(ep\.shots, /.test(l), label + '的镜号应取 Domain.shotNo(表内实位):' + l.trim().slice(0, 80));
+        assert(!/\.order \+ 1/.test(l), label + '不许再按 order 字段出镜号(增删镜/换序后与实位漂移)');
+      });
+    });
+    assertEq(src['sb-batch'].split('\n').filter(l => l.includes('flex:none">镜头 ')).length, 2,
+      'sb-batch 的待确认清单行恰两处(确认闸与出片前置检查各一份,只收一处就会两块面报不同的号)');
+    /* 往下削的方向:剩下的 order 读法里一处都不许是弹窗页头或清单行标签 */
+    ['sb-views', 'sb-gen', 'sb-batch'].forEach(n => {
+      src[n].split('\n').filter(l => /\.order \+ 1/.test(l)).forEach(l => {
+        assert(!/title:|tag cyan">镜头/.test(l),
+          'js/' + n + '.js 的弹窗页头与清单行标签不许退回读 order:' + l.trim().slice(0, 80));
+      });
+    });
+    /* 往上收的方向:这几处是落库文本或素材内容,顺手一起改同样当场点名 */
+    assert(/data-f="name" value="\$\{U\.esc\('镜头' \+ \(s\.order \+ 1\)/.test(src['sb-views']),
+      '存入资产库的默认主体名是要落库的名字,应照旧按 s.order 记(与页头那个实位号有意不同源)');
+    assert(/__toolPrefill = \{[^\n]*镜头\$\{s\.order \+ 1\}/.test(src['sb-views']),
+      '便捷工具预填名要带进任务名,应照旧按 s.order 记');
+    assert(/label: \(kind === 'first' \? '首帧' : '尾帧'\) \+ ' · 镜头' \+ \(s\.order \+ 1\)/.test(src['sb-gen']),
+      '首尾帧占位图上烧的标注是素材内容(图一旦生成就定死),应照旧按 s.order 记');
+    assert(/label: '镜头' \+ \(s\.order \+ 1\)/.test(src['sb-batch']),
+      'opIds 里的镜头标签是任务留痕,应照旧按 s.order 记');
+  } },
   { name: '修订闭环重抽面单源:server/CLI/助手摘要/问题中心都不自筛低分镜,CLI 不摘回执 lowShots 当 shotIds', fn() {
     /* G-03 这一面钉的是"该重抽哪几镜由编排层派生":判据(达标线 / 报告判旧 / 与分镜表取交集 / 定稿不重抽)
      * 只在 Domain.reviseTargets 一份里,四处消费点谁抄回一份 score < 7 或把回执里的 lowShots 当名单用都红在这里。 */
@@ -15221,6 +15273,75 @@ const skillsTests = [
     assertEq(await sb.Review.reviewShot(p, ep, rows[2]), null, '生成中的镜头照旧拦住不审');
     assertEq(sb.__toasts.join('/'), '镜头3 视频仍在生成中,请生成完成后再审片', '拦截提示的镜号应报第三镜');
     assertEq(sb.__charges.length, 0, '拦截仍在扣费之前(镜号换取法不碰计费)');
+  } },
+  { name: '分镜面弹窗页头镜号按实位:六处页头都报自己那一镜(入库默认主体名照旧按落库 order 记)', fn() {
+    /* 分镜工作区右栏那批弹窗页头此前一律读 s.order:缩略图上点的是第三镜,开出来的页头写着
+     * 「镜头 1」(末行 order 自称 0)。六处页头改取 Domain.shotNo 后与缩略图/时间轴报同一个号;
+     * 同一个弹窗里那条要落库的默认主体名有意仍按 order 记——这一格反着钉住"顺手多收一处"。 */
+    const sb = loadSbViewsRight();
+    const modals = [];
+    sb.U.openModal = o => { modals.push(o); };
+    sb.Store.myGroups = () => [];
+    const mk = (id, order) => ({ id, order, name: '', plot: '阿茶推门', prompt: '提示词' + id, camera: '固定镜头',
+      duration: 5, characters: [], scene: '', props: [], history: [], promptHistory: [], image: '/uploads/gen/' + id + '.png' });
+    // order 字段与实位对不上:三行分别自称 5/9/0(实位 1/2/3),取的是末行(自称第一镜)
+    const rows = [mk('sh_a', 5), mk('sh_b', 9), mk('sh_c', 0)];
+    const ep = { id: 'ep1', title: '第一集', shots: rows, sbConfig: {} };
+    const p = { id: 'p1', name: '逆袭', style: '漫剧', episodes: [ep],
+      subjects: [{ id: 'sj1', name: '阿茶', kind: 'character', image: '/uploads/ref/a.png', forms: [] }] };
+    const s = rows[2];
+    sb.SBViews.openPromptPanel(p, ep, s, null, false);
+    assertEq(modals[0].title, '分镜提示词(镜头 3)', '提示词面板页头应报第三镜(读 order 字段时是 1)');
+    sb.SBViews.openPromptHistory(ep, s);
+    assertEq(modals[1].title, '历史提示词(镜头 3)', '历史提示词页头应报第三镜');
+    sb.SBViews.openAssetPicker(p, ep, s, null);
+    assertEq(modals[2].title, '＠ 引用资产 · 镜头3', '引用资产页头应报第三镜');
+    sb.SBViews.openMoreTools(p, ep, s);
+    assertEq(modals[3].title, '更多工具(镜头 3)', '更多工具页头应报第三镜');
+    /* 「更多工具」里点进去的两处入库面同口径(它们的 ep 是从这一层透下去的) */
+    const tool = name => {
+      const cells = [{ dataset: { tool: name }, onclick: null }];
+      modals[3].onMount({ querySelectorAll: sel => (sel === '[data-tool]' ? cells : []), querySelector: () => ({}) }, () => {});
+      cells[0].onclick();
+    };
+    tool('存入资产库');
+    assertEq(modals[4].title, '存入资产库 · 镜头3', '存入资产库页头应报第三镜');
+    assert(String(modals[4].body).includes(`value="镜头1·阿茶推门"`),
+      '同一个弹窗里要落库的默认主体名照旧按 s.order 记(顺手改成实位号就会与已入库那批对不上),实际:'
+      + (String(modals[4].body).match(/value="[^"]*"/) || [''])[0]);
+    tool('存为主体形态');
+    assertEq(modals[5].title, '存为主体形态 · 镜头3', '存为主体形态页头应报第三镜');
+    assertEq(sb.__charges.length, 0, '镜号换取法不碰计费');
+  } },
+  { name: '生成链路页头与批量清单行镜号按实位:历史版本/首帧海选页头、批量失败行、待确认行同报实位号', fn: async () => {
+    /* sb-gen / sb-batch 这两条上"画在屏上"的镜号:历史版本与首帧海选页头、批量生成结果的失败清单行、
+     * 批量出片前的待确认清单行。待确认行有两份(确认闸与出片前置检查),报的号不许分家。
+     * 同批 order 字段一律与实位对不上,故这几处若退回读字段就报出 6/10/1 那种号。 */
+    const sb = loadSbGen();
+    sb.Media.friendlyError = e => ({ msg: String((e && e.message) || e) });
+    sb.PH.gridCells = () => ['c1', 'c2', 'c3', 'c4'];
+    sb.U.thumb = f => f;
+    loadFile(sb, 'sb-batch.js'); // 待确认清单行经 SB.openConfirmGateModal 真跑一遍
+    const modals = [];
+    sb.U.openModal = o => { modals.push(o); };
+    const mk = (id, order) => ({ id, order, plot: '阿茶推门', prompt: '提示词' + id, camera: '固定镜头',
+      duration: 5, characters: [], scene: '', props: [], history: [{ time: '2026-08-22 12:00:00', model: 'seedance-x', prompt: 'p', frame: '/uploads/f.png', type: '文生视频' }] });
+    // order 字段与实位对不上:三行分别自称 5/9/0(实位 1/2/3)
+    const rows = [mk('sh_a', 5), mk('sh_b', 9), mk('sh_c', 0)];
+    const ep = { id: 'ep1', title: '第一集', shots: rows, sbConfig: {} };
+    const p = { id: 'p1', name: '逆袭', style: '漫剧', episodes: [ep], subjects: [] };
+    sb.SBGen.openVersions(p, ep, rows[2], null);
+    assertEq(modals[0].title, '历史版本 · 镜头 3(1 版)', '历史版本页头应报第三镜(读 order 字段时是 1)');
+    sb.__mediaReady = false; // 离线宫格:本条只看页头,不进真实上游
+    await sb.SBGen.genShotFramePick(p, ep, rows[2], null);
+    assertEq(modals[1].title, '首帧海选 · 镜头3(4 选 1)', '首帧海选页头应报第三镜');
+    sb.SBGen.openBatchRetryModal(p, ep, null, 3, [{ s: rows[1], err: new Error('上游审核拦截') }, { s: rows[2], err: new Error('超时') }]);
+    assertEq([...String(modals[2].body).matchAll(/flex:none">镜头 ([^<]*)</g)].map(x => x[1]).join(','), '2,3',
+      '批量结果的失败清单行按实位出(读 order 字段时是 10,1)');
+    sb.SB.openConfirmGateModal(p, ep, null, rows, rows, {}, () => {});
+    assertEq([...String(modals[3].body).matchAll(/flex:none">镜头 ([^<]*)</g)].map(x => x[1]).join(','), '1,2,3',
+      '待确认清单行按实位出(读 order 字段时是 6,10,1)');
+    assertEq(sb.__charges.length, 0, '离线宫格不扣费,镜号换取法也不碰计费');
   } },
   { name: '离线评审按行对位:时间码从本行之前累起,景别衔接比的是本行的上一镜', fn: async () => {
     /* 本地模拟评审那几条硬检查也是展示面:时间码按 id 断在首行时,同 id 后几行的"关键问题定位"
