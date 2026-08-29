@@ -5424,6 +5424,68 @@ const commandsTests = [
     assert(/主体不存在/.test(gone2.r.result.failed[0].error),
       '走的仍是 findSubject 那个出口,不另造第二个错误说法:' + JSON.stringify(gone2.r.result.failed[0]));
   } },
+  { name: 'subject.generateImage 并发改的是 id 不是人:同 id 一位不剩时按名兜底真取到那一位(不止是报错那一半)', fn: async () => {
+    /* 上一条第 ⑤ 档只走到 nthSubject 兜底的**报错**那一半(同 id 一位不剩、名字也对不上,如实进 failed 报「主体不存在」),
+     * 而它委托回 findSubject 的另一半——库里没有 id === sid 的位、却有一位名字正是 sid ——树上一条判据都没走过:
+     * 把那句委托换成就地抛「主体不存在」,错话一字不差、现跑一条都不红,而按名引用那一路当场断掉;
+     * 换成"退回库里第一位"同样不红,那是认错人还照报成功。
+     * 并发改表的真实形态正是这一种:跑到一半别处把同 id 那几位重新发了 id(subjects-dedupe --apply、整表重导都这么改),
+     * 人还在库里、名字一个字没变,而本轮按 id 数出来的位一个不剩。这里钉那一轮**真取到人**:
+     * 图与提示词落在名字对得上的那一位身上,序数越不越界都一样(按名那一路本就不认序数)。
+     * 落库面照旧读 clone 语义的 disk 夹具:编排层只在自己手里那份快照上改一改也会看起来"落库了"。 */
+    const namedSubs = () => [
+      { id: '林晚', name: '林晚·少年', kind: 'character' }, { id: 'solo', name: 'B-不重复', kind: 'character' },
+      { id: '林晚', name: '林晚·青年', kind: 'character' },
+      { id: '林晚', name: '林晚', kind: 'character' }, // 名字正是那个 id 字面:按名兜底认的就是这一位
+    ];
+    const seats = subs => subs.map(s => s.name + '|' + (s.image || '无图')).join(' , ');
+    /* 第 round 轮开跑前别处把同 id 那几位重新发一遍 id(已到手的图原样留着;rename 为真时连名字一起改) */
+    const reId = async (round, rename) => {
+      const sb = loadCli();
+      const fx = cliDisk(sb);
+      fx.disk.projects[0].subjects = namedSubs();
+      sb.__imgs = [];
+      sb.genImage = async () => { sb.__imgs.push(1); return { url: '/uploads/img/g' + sb.__imgs.length + '.png' }; };
+      const origWp = sb.withProject;
+      let n = 0, k = 0;
+      sb.withProject = async (pid, flags, fn) => {
+        if (++n === round) {
+          fx.disk.projects[0].subjects = fx.disk.projects[0].subjects.map(s => s.id !== '林晚' ? s
+            : Object.assign({}, s, { id: 'sub_' + (++k), name: rename ? s.name + '(改过名)' : s.name }));
+        }
+        return origWp(pid, flags, fn);
+      };
+      const r = await sb.EXEC['subject.generateImage'].run({ pid: 'p1', subjectIds: ['林晚'] }, {});
+      return { r, subs: fx.disk.projects[0].subjects, imgs: sb.__imgs.length };
+    };
+    // ① 末轮开跑前改的 id:序数 2 越界、同 id 一位不剩,按名字仍够得着那一位,这一轮的图就落在它身上
+    const late = await reId(3, false);
+    assertEq(late.subs.map(s => s.id).join(','), 'sub_1,solo,sub_2,sub_3',
+      '前提:改完 id 后库里一个 id === "林晚" 的位都不剩(按 id 那一路已经走不通)');
+    assertEq(late.r.result.failed.length, 0,
+      '人还在库里、名字没变,这一轮不许报「主体不存在」(委托回 findSubject 那一半断掉就红在这里):'
+      + JSON.stringify(late.r.result.failed));
+    assertEq(seats(late.subs), '林晚·少年|/uploads/img/g1.png , B-不重复|无图 , 林晚·青年|/uploads/img/g2.png , 林晚|/uploads/img/g3.png',
+      '末轮那张图得落在名字与点名串对得上的那一位身上(退回库里第一位就是认错人:前两轮的图会被顶掉),实际:' + seats(late.subs));
+    assertEq(late.imgs + '/' + late.r.result.landed, '3/3', '三笔钱三位到手图,landed 照实数:' + JSON.stringify(late.r.result));
+    const named = late.subs[3];
+    assert(named.prompt && named.prompt.includes('林晚') && !named.prompt.includes('少年'),
+      '缺省提示词按取到那一位自己的名字拼(取错位这里就成了别位那份):' + JSON.stringify(named.prompt));
+    // ② 首轮就改的 id:序数没越界(nth=0)同样走按名那一路——它认的是名字,不认第几位,三轮认的是同一位
+    const early = await reId(1, false);
+    assertEq(early.r.result.failed.length, 0, '首轮就够不着 id 时同样不许报「主体不存在」:' + JSON.stringify(early.r.result.failed));
+    assertEq(seats(early.subs), '林晚·少年|无图 , B-不重复|无图 , 林晚·青年|无图 , 林晚|/uploads/img/g3.png',
+      '三轮都按名认到同一位,图落在它身上(按名那一路本就不按序数分位):' + seats(early.subs));
+    assertEq(early.r.result.ok + '/' + early.r.result.landed, '3/1',
+      'ok 照数三次引擎调用(那三笔钱都真花了),landed 如实报只落到 1 位:' + JSON.stringify(early.r.result));
+    // ③ 对照:连名字一起改了才是真找不到人——有这一格,①②那两句绿才是"按名认到人"而不是"随便退回一位"
+    const gone = await reId(3, true);
+    assertEq(gone.r.result.failed.length, 1, '名字也一起改掉时这一轮如实失败(退费口在 Tasks/服务端),不许顶替着写图');
+    assert(/主体不存在/.test(gone.r.result.failed[0].error),
+      '走的仍是 findSubject 那个出口,不另造第二个错误说法:' + JSON.stringify(gone.r.result.failed[0]));
+    assertEq(seats(gone.subs), '林晚·少年(改过名)|/uploads/img/g1.png , B-不重复|无图 , 林晚·青年(改过名)|/uploads/img/g2.png , 林晚(改过名)|无图',
+      '这一轮一位都没被顶替着写图,前两轮各自那一位的图原样留着:' + seats(gone.subs));
+  } },
   { name: '回执 ok 与 landed 各说一件事:ok 数引擎调用成功次数、landed 数产物真落到几位/几行,共位那一趟岔开并经 note 说清', fn: async () => {
     /* 上面两条钉的是"扣几笔就得有几位/几行到手",而它们都只在**表没被别处改过**时成立:
      * 并发改表那一趟(序数越界按兜底退回首位)引擎实收 3 次全成功,回执报 ok:3 failed:[],
@@ -15403,7 +15465,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-      [['单元测试', 721, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+      [['单元测试', 722, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
