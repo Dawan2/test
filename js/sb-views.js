@@ -49,8 +49,27 @@
       : `<span data-cfm="${s.id}" style="${base}background:rgba(120,128,140,.88);cursor:pointer" title="待确认:点击确认本镜剧情与提示词;未确认镜头不参与批量生成">待确认</span>`;
   }
 
+  /* ---- 分镜卡片上那枚同 id 重复标记:同 id 那几行在卡片上与几个不同镜头长得一模一样(画面、提示词、
+   * 出片状态各是各的,撞的只是那个看不见的 id),故顶栏那个总数之外,撞车的每一行自己也报出「第几行 / 共几行」
+   * ——不然"有 N 行要改"落到卡片上仍是"哪几张卡不知道"。
+   * 位次只读同一份扫描派生(Domain.dupIdMarks 收下顶栏那个数同读的扫描),页面不再扫第二遍;单位词(行)在这一层换上。
+   * 共几行是全表口径:视图里当下渲出来几行不影响这个数。
+   * 五档视图里渲得出分镜行的是三档,故挂两处:分镜视频与剪辑台共用下面这张缩略图卡,镜头组那条分镜时间线
+   * 另挂一处(js/shotgroups.js);分镜脚本渲的是场次与节拍、节拍板渲的是五段节拍,两档一行分镜都不渲,
+   * 那两档上看得见的仍是顶栏那条去重入口。
+   * 纯展示,不改任何字段:收拾它仍走顶栏那道预览 + 确认闸。 ---- */
+  function dupRowTag(marks, row) {
+    const mk = marks && marks[row];
+    if (!mk) return '';
+    const fate = mk.nth === 1 ? '这一行留原 id' : '去重时这一行改发新 id,画面与提示词一个字不动';
+    return `<span class="tag yellow" style="margin-top:3px;font-size:10px;padding:1px 7px" title="本集分镜表里共 ${mk.total} 行镜头共用 id「${U.esc(mk.id)}」:`
+      + `这是其中第 ${mk.nth} 行,${fate}。`
+      + `按 id 取镜的地方只找得到第 1 行,而批量生成按行逐行跑、逐行计费;收拾存量走顶栏「🧹 镜头 id 去重」`
+      + `(先看计划,确认才改)。">🧹 id 重复 第 ${mk.nth}/${mk.total} 行</span>`;
+  }
+
   /* ---- 单镜缩略图块(分镜视频/剪辑两视图共用;column 时补 width:100% 撑满竖列) ---- */
-  function shotThumbHTML(p, ep, s, i, sel, col) {
+  function shotThumbHTML(p, ep, s, i, sel, col, marks) {
     const sm = window.__selMode;
     const f = (Store.shotVideoReady(s) && s.video.frame) || s.image; // 统一就绪判定:在线时模拟占位帧不作缩略图
     const svurl = Store.shotVideoReady(s) && s.video.url;
@@ -69,6 +88,7 @@
           ${vstat === 'generating' ? `<div class="ws-gen"><span class="spinner"></span>生成中<span data-wait="${s.id}"></span>${s.video.upstreamId ? `<span class="ws-cancel" data-cancel="${s.id}" title="取消生成:积分退回,上游结果不再交付">✕ 取消</span>` : ''}</div>` : shotStatusHTML(p, s)}
         </div>
         <div class="ws-thumb-name">${(() => { const g = s.groupId && (ep.groups || []).find(x => x.id === s.groupId); return g ? `<span style="color:hsl(${U.hashColor(g.id) % 360},70%,55%)" title="镜头组:${U.esc(g.name)}">●</span> ` : ''; })()}${i + 1}. ${U.esc((s.name || s.plot || '镜头' + (i + 1)).slice(0, 10))}</div>
+        ${dupRowTag(marks, (ep.shots || []).indexOf(s))}
       </div>`;
   }
 
@@ -144,10 +164,10 @@
   }
 
 
-  function centerHTML(p, ep, sel, selIdx, doneCnt) {
+  function centerHTML(p, ep, sel, selIdx, doneCnt, dupMarks) {
     const layout = (Store.state.settings || {}).centerLayout === 'column' ? 'column' : 'strip';
     /* 单镜缩略图/播放器/进度条均为共用件(剪辑视图同用),见上方 shotThumbHTML/playerBlockHTML/progressBlockHTML */
-    const thumbOf = (s, i, col) => shotThumbHTML(p, ep, s, i, sel, col);
+    const thumbOf = (s, i, col) => shotThumbHTML(p, ep, s, i, sel, col, dupMarks);
     const playerHTML = playerBlockHTML(p, ep, sel, selIdx);
     const progressHTML = progressBlockHTML(p, ep, doneCnt);
     const headHTML = `
@@ -207,7 +227,7 @@
   }
 
   /* 中栏(剪辑):播放器 + 带转场槽的时间轴(槽位在后一镜之前,点击设置该镜与前一镜的转场) */
-  function cutHTML(p, ep, sel, selIdx, doneCnt) {
+  function cutHTML(p, ep, sel, selIdx, doneCnt, dupMarks) {
     return `
     <div class="row" style="margin-bottom:8px;gap:8px">
       <b class="crumb" data-x="rename" title="点击改名" style="margin:0">${selIdx + 1}.${U.esc(sel.name || (sel.plot || '').slice(0, 12) || '镜头' + (selIdx + 1))} ✏</b>
@@ -217,7 +237,7 @@
     ${playerBlockHTML(p, ep, sel, selIdx)}
     <div class="ws-strip-wrap">
       <div class="ws-strip" data-strip>
-        ${ep.shots.map((s, i) => shotThumbHTML(p, ep, s, i, sel, false) + (i < ep.shots.length - 1 ? `
+        ${ep.shots.map((s, i) => shotThumbHTML(p, ep, s, i, sel, false, dupMarks) + (i < ep.shots.length - 1 ? `
         <div class="cut-slot ${ep.shots[i + 1].transition ? 'on' : ''}" data-tslot="${ep.shots[i + 1].id}" title="转场:镜头${i + 1} → ${i + 2}(点击设置)">${ep.shots[i + 1].transition ? '⤳ ' + U.esc(ep.shots[i + 1].transition) : '⇄'}</div>` : '')).join('')}
         <div class="ws-thumb ws-thumb-add" data-x="addshot" title="末尾新增分镜">＋</div>
       </div>
@@ -1359,5 +1379,5 @@
     });
   }
 
-  window.SBViews = { scriptTrackHTML, scriptRefHTML, shotThumbHTML, shotStatusHTML, playerBlockHTML, progressBlockHTML, versCardHTML, centerHTML, rightHTML, cutHTML, cutRightHTML, openTransPicker, bindCenter, bindRight, openPromptPanel, favPrompt, openPromptHistory, openPromptTool, openAssetPicker, smartLinkAssets, attachAssetName, assetChipsHTML, assetsInText, assetNamesOf, recognizedRefs, openMoreTools, openQuickEdit, openArtSuffix, artSuffixOf, artSuffixApp, downloadShot };
+  window.SBViews = { scriptTrackHTML, scriptRefHTML, shotThumbHTML, shotStatusHTML, dupRowTag, playerBlockHTML, progressBlockHTML, versCardHTML, centerHTML, rightHTML, cutHTML, cutRightHTML, openTransPicker, bindCenter, bindRight, openPromptPanel, favPrompt, openPromptHistory, openPromptTool, openAssetPicker, smartLinkAssets, attachAssetName, assetChipsHTML, assetsInText, assetNamesOf, recognizedRefs, openMoreTools, openQuickEdit, openArtSuffix, artSuffixOf, artSuffixApp, downloadShot };
 })();

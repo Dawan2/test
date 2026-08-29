@@ -143,8 +143,10 @@
     });
   }
 
-  /* ---------- 镜头组视图(分集工作区中栏「镜头组」tab,页内挂载;box=中栏容器) ---------- */
-  ShotGroups.renderInto = function (box, p, ep, main) {
+  /* ---------- 镜头组视图(分集工作区中栏「镜头组」tab,页内挂载;box=中栏容器) ----------
+   * dupMarks 是集级顶栏那一份扫描派生出的逐行位次(Domain.dupIdMarks),本视图只渲不算:
+   * 下面那条分镜时间线是这一档唯一渲得出分镜行的地方,同 id 那几行的重复标记挂在它上面。 */
+  ShotGroups.renderInto = function (box, p, ep, main, dupMarks) {
     renderPanel();
     function renderPanel() {
       const gs = groupsOf(ep);
@@ -212,6 +214,7 @@
         <div class="row" style="gap:8px;padding:6px 4px;border-bottom:1px solid var(--border);align-items:center">
           <span class="small muted" style="width:34px;flex:none">#${i + 1}</span>
           <span class="small grow" style="cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" data-tlshot="${s.id}" title="点击定位到该分镜(切到分镜视频视图)">${U.esc(s.name || (s.plot || '').slice(0, 24) || '镜头' + (i + 1))}</span>
+          ${SBViews.dupRowTag(dupMarks, ep.shots.indexOf(s))}
           <span class="small muted" style="flex:none">${(window.SB && SB.estShotDuration ? SB.estShotDuration(s) : (s.duration || 5))}s</span>
           <select class="select small" style="width:170px;flex:none" data-tlmove="${s.id}">
             <option value="">未分组</option>

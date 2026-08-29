@@ -140,8 +140,13 @@
     const f0 = ep.shots[0];
     const inheritPrevOn = !!(ep.sbConfig.inheritPrevEp && prevTail && f0 && (!f0.firstFrame || f0.__inheritPrevEp));
     /* 存量重复镜头 id 的入口:同 id 多行在分镜表里与两个不同镜头长得一样,故只在表里真有重复时露出来并报出行数。
-     * 挂在集级顶栏这一行(四视图与剪辑台共用它),故只此一处四视图都看得见——各视图自己那个中栏头部不用再挂。 */
-    const dupRows = dedupeShotScan(ep.shots).plan.length;
+     * 挂在集级顶栏这一行(四视图与剪辑台共用它),故只此一处四视图都看得见——各视图自己那个中栏头部不用再挂。
+     * 整页只扫一遍分镜表:顶栏这个数与分镜卡片上那几枚「第几行 / 共几行」小标同读这一份扫描,
+     * 逐行位次由 Domain.dupIdMarks 从它现派生(页面不再扫第二遍,也不再自己数一遍谁是首行);
+     * 顶栏数的是要改几行(首行不算),卡片标的是撞了 id 的每一行。 */
+    const dupScan = dedupeShotScan(ep.shots);
+    const dupRows = dupScan.plan.length;
+    const dupMarks = Domain.dupIdMarks(dupScan);
     const dedupeBtn = dupRows ? `<button class="btn sm" data-x="shotdedupe" title="本集有 ${dupRows} 行镜头与在前的行共用同一个 id(按 id 只取得到首行、批量生成却逐行计费);点开先看计划,确认才改 id,一行不删、零积分">🧹 镜头 id 去重(${dupRows})</button>` : '';
 
     main.innerHTML = `
@@ -258,7 +263,7 @@
             <div class="tab ${vm === 'board' ? 'active' : ''}" data-vtab="board">📋 分镜脚本</div>
             <div class="tab ${vm === 'shots' ? 'active' : ''}" data-vtab="shots">🎞 分镜视频</div>`}
           </div>
-          ${vm === 'bb' ? '<div data-bbview></div>' : vm === 'groups' ? '<div data-sgview></div>' : showBoard ? SB.scriptBoardHTML(p, ep) : sel ? (vm === 'cut' ? SBViews.cutHTML(p, ep, sel, selIdx, doneCnt) : SBViews.centerHTML(p, ep, sel, selIdx, doneCnt)) : `
+          ${vm === 'bb' ? '<div data-bbview></div>' : vm === 'groups' ? '<div data-sgview></div>' : showBoard ? SB.scriptBoardHTML(p, ep) : sel ? (vm === 'cut' ? SBViews.cutHTML(p, ep, sel, selIdx, doneCnt, dupMarks) : SBViews.centerHTML(p, ep, sel, selIdx, doneCnt, dupMarks)) : `
           <div class="empty" style="padding-top:80px"><div class="ico">🎬</div>
             <p>本集还没有分镜。</p>
             <div class="row" style="justify-content:center;gap:8px;margin-top:12px">
@@ -399,7 +404,7 @@
     main.querySelectorAll('[data-vtab]').forEach(t => t.onclick = () => setViewMode(t.dataset.vtab));
     // 节拍板/镜头组:页内挂载(内容模块各自渲染进中栏容器)
     if (vm === 'bb' && window.BeatBoard) BeatBoard.render(main.querySelector('[data-bbview]'), p, ep, main);
-    if (vm === 'groups' && window.ShotGroups) ShotGroups.renderInto(main.querySelector('[data-sgview]'), p, ep, main);
+    if (vm === 'groups' && window.ShotGroups) ShotGroups.renderInto(main.querySelector('[data-sgview]'), p, ep, main, dupMarks);
     if ((vm === 'shots' || vm === 'cut') && sel) SBViews.bindCenter(main, p, ep, sel, selIdx), SBViews.bindRight(main, p, ep, sel, selIdx); // 分镜视频/剪辑两视图绑定分镜控件
 
     /* ---- 快捷键:←/→ 切换分镜,g 生成当前镜(焦点在表单控件或有弹窗时不响应) ---- */
