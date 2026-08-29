@@ -3765,6 +3765,61 @@ const commandsTests = [
     assertEq(seats(fx3.subsOf('p2')), 'A-首位|无图',
       '取到的既然是没图那一位,副本就得如实没图,不许顺手替用户捡后几位的图:' + seats(fx3.subsOf('p2')));
   } },
+  { name: 'CLI subject-image 按名字点名够得着后几位:同 id 多位时图与提示词落在点到那一位身上(按 id 点名照旧落第 1 位)', fn: async () => {
+    /* 上一条把 subject-copy 那条按名的绕路钉住了,而补图这一路此前树上一条判据都没有:
+     * findSubject 收成只认 id(把 `|| x.name === sid` 摘掉),点名后几位当场变成"主体不存在"而现跑一条都不红;
+     * 反过来把取数改成按第几位取,按 id 点名落到的位也会静静换人。本条只钉现跑语义、一个字不改它——
+     * 按 id 点名照旧落第 1 位(同 id 多位是脏数据,收拾它的路是 subjects-dedupe,不是让这条命令改口径),
+     * 后面几位现成的出口就是按各自的名字点,那是绕路不是缺陷。
+     * 写回面读的是 clone 语义的 disk 夹具:命令只在自己手里那份快照上改一改也会看起来"落库了",
+     * 共享同一个对象既量不出真假,也量不出改的是哪一位。
+     * 图源取 --url 与 --gen 两路:量的是"取哪一位、写回哪一位",故上传那一路不重复量一遍(它多的只是取图这一步)。 */
+    const clone = x => JSON.parse(JSON.stringify(x));
+    const dupSubs = () => [
+      { id: 'dup', name: 'A-首位', kind: 'character', image: '/uploads/img/a.png', prompt: '提示词A', description: '设定A' },
+      { id: 'solo', name: 'B-不重复', kind: 'character', image: '/uploads/img/b.png', prompt: '提示词B' },
+      { id: 'dup', name: 'C-第二位', kind: 'character', image: '/uploads/img/c.png', description: '设定C' },
+      { id: 'dup', name: 'D-第三位', kind: 'character' },
+    ];
+    const seats = subs => subs.map(s => s.name + '|' + (s.image || '无图')).join(' , ');
+    const oneProj = subs => {
+      const sb = loadCli();
+      const disk = { projects: [{ id: 'p1', subjects: subs, episodes: [] }], settings: {} };
+      sb.stateGet = async () => ({ rev: 0, state: clone(disk) });
+      sb.withProject = async (pid, flags, fn) => {
+        const live = clone(disk.projects[0]);
+        const ret = await fn(live, clone(disk));
+        disk.projects[0] = live;
+        return { ret };
+      };
+      sb.genImage = async () => ({ url: '/uploads/img/gen.png' });
+      return { sb, subs: () => disk.projects[0].subjects };
+    };
+    // ① 按名字点名 C:图落在第 2 位身上,别的位一个字不动(名字对上了却把图写到首位这种错法接不住)
+    const fx = oneProj(dupSubs());
+    const r = await fx.sb.CMD['subject-image'](['p1', 'C-第二位'], { url: '/uploads/img/new.png' });
+    assertEq(seats(fx.subs()), 'A-首位|/uploads/img/a.png , B-不重复|/uploads/img/b.png , C-第二位|/uploads/img/new.png , D-第三位|无图',
+      '按名字点名得能够着第 2 位、新图只落在它身上(按名引用那一路不许被收成只认 id),实际:' + seats(fx.subs()));
+    assertEq(r.name + '|' + r.image, 'C-第二位|/uploads/img/new.png', '回执报的就是点到那一位与它到手的图:' + JSON.stringify(r));
+    assertEq(r.id, 'dup', '回执报的 id 就是那几位共用的那个(它分不出第几位,能分的是名字):' + JSON.stringify(r));
+    // ② 按 id 点名照旧落第 1 位:这一格是对照面——只有它在,①才量得出"够得着后几位",而不是"随便落一位"
+    const fx2 = oneProj(dupSubs());
+    const r2 = await fx2.sb.CMD['subject-image'](['p1', 'dup'], { url: '/uploads/img/new.png' });
+    assertEq(seats(fx2.subs()), 'A-首位|/uploads/img/new.png , B-不重复|/uploads/img/b.png , C-第二位|/uploads/img/c.png , D-第三位|无图',
+      '按 id 点名落的是第 1 位(改成按第几位取就是静静换人):' + seats(fx2.subs()));
+    assertEq(r2.name, 'A-首位', '回执报的源就是第 1 位(findSubject 首位语义),实际:' + JSON.stringify(r2));
+    // ③ --gen 那一路同形:提示词按点到那一位自己的名字与设定拼,图与提示词都写在它身上、首位那份原样不动
+    const fx3 = oneProj(dupSubs());
+    const r3 = await fx3.sb.CMD['subject-image'](['p1', 'C-第二位'], { gen: true });
+    const got = fx3.subs()[2];
+    assertEq(got.name + '|' + got.image, 'C-第二位|/uploads/img/gen.png', '生成的图落在第 2 位身上:' + JSON.stringify(got));
+    assert(got.prompt && got.prompt.includes('C-第二位') && got.prompt.includes('设定C'),
+      '缺省提示词按点到那一位自己的名字与设定拼(取错位这里就成了首位那份):' + JSON.stringify(got.prompt));
+    assert(!got.prompt.includes('设定A'), '不许掺进首位的设定:' + JSON.stringify(got.prompt));
+    assertEq(fx3.subs()[0].image + '|' + fx3.subs()[0].prompt, '/uploads/img/a.png|提示词A',
+      '首位的图与提示词一个字不动(生图那一路把产物写回首位是同一个错法):' + JSON.stringify(fx3.subs()[0]));
+    assertEq(r3.name + '|' + r3.image, 'C-第二位|/uploads/img/gen.png', '回执与落库那一位对得上:' + JSON.stringify(r3));
+  } },
   { name: '两条去重命令同读一份规则:镜头侧与主体侧的扫描都委托 Domain.dupIdScan,首位留原 id 那套口径不许两端各抄一份', fn() {
     /* 主体侧那条出口是照镜头那条写的,而「首次出现留原 id、后面每处撞车各发一个新 id」这套规则一旦各抄一份,
      * 两条命令迟早对同一份脏数据给出两种计划(改哪一位、留哪一位),而用户是照 dry-run 那份点头的。
@@ -15348,7 +15403,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-      [['单元测试', 720, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+      [['单元测试', 721, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
@@ -15756,7 +15811,7 @@ action 二选一:
     assertEq(waves.length, declared, '目录里的 wNN-*.md 份数应等于 README 明写的份数(文件连同索引行一起删掉、份数没跟着改即红)');
     assertEq(rows.length, declared, '索引表里的 wNN-*.md 行数应等于 README 明写的份数');
     // 下限:记账件只增不减。把明写份数一并改小以迁就删除时,红在这一条上(改它就得先改这个字面,不再是删两处即静默)
-    const FLOOR = 327;
+    const FLOOR = 328;
     assert(waves.length >= FLOOR, '记账件份数不得少于 ' + FLOOR + '(实测 ' + waves.length + ');新开一槽记账时把下限抬到当轮实况');
     assert(declared >= FLOOR, 'README 明写的份数不得少于 ' + FLOOR + '(实测 ' + declared + ')');
     // 逐份点名同样再走一遍:本条自足,不借道散文链接
