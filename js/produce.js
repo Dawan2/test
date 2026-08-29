@@ -310,13 +310,19 @@
      * 问题中心/分集页均分不更新;snapshotHash 用 wf-core 同口径(重抽后按最新视频状态计算) */
     const reviewed = targets.filter(s => lastRep.has(s));
     if (reviewed.length) {
+      /* 子集复审(命令层 shotIds 点名、批量生成后只审这一批)按镜头行合并进上一轮:没被本批点名的行
+       * 留住上一轮那条,本批覆盖对应行;点名的是全表时仍是整表覆盖。合并与均分取 WfCore 那一份,
+       * 与服务端 /api/wf/smart-review 同一套行对位——本处再写一遍就是第二份口径。 */
+      const batch = shots || ep.shots;
+      const prevPer = batch.length < (ep.shots || []).length && ep.lastReview ? (ep.lastReview.perShot || []) : null;
+      const merged = WfCore.mergeReviewPerShot(prevPer, reviewed.map(s => ({ shot: s, report: lastRep.get(s) })), ep.shots || []);
       ep.lastReview = {
         time: Store.now(),
-        avg: Math.round(reviewed.reduce((a, s) => a + lastRep.get(s).score, 0) / reviewed.length * 10) / 10,
-        snapshotHash: window.WfCore && WfCore.reviewSnapshotHashOf ? WfCore.reviewSnapshotHashOf(ep) : undefined,
+        avg: merged.avg,
+        snapshotHash: WfCore.reviewSnapshotHashOf(ep),
         sourceRev: ep.contentRev || 0,
         graphRev: ep.graphRev || 0,
-        perShot: reviewed.map(s => ({ shotId: s.id, order: s.order, score: lastRep.get(s).score, reportId: lastRep.get(s).id, videoInputHash: lastRep.get(s).videoInputHash || '' })),
+        perShot: merged.perShot,
         common: { summary: '', issues: [] }, // 闭环不做整集共性汇总/四维评审(结构规整,整集报告页防空指针)
         cut: null,
       };

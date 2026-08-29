@@ -245,6 +245,9 @@ function loadProduce() {
     },
   };
   loadFile(sb, 'domain.js'); // preflight 工作流状态单源(运行期引用)
+  loadFile(sb, 'prompts.js');   // wf-core 浏览器 UMD 依赖(与 index.html 同顺序)
+  loadFile(sb, 'knowledge.js');
+  loadFile(sb, 'wf-core.js');   // 审片写回的逐镜条目合并与快照哈希现取 WfCore(双端单源)
   loadFile(sb, 'produce.js');
   loadFile(sb, 'cmd-registry.js'); // 命令元数据单源(与 index.html 同顺序)
   loadFile(sb, 'commands.js'); // oneClickProduce/跑批经 Commands.execute('episode.produce') 编排(与浏览器同顺序:produce 之后)
@@ -1991,6 +1994,50 @@ const produceTests = [
     await sb.SB.autoSmartReview({ id: 'p1', subjects: [] }, ep, null, ep.shots, true);
     assertEq(ep.lastReview.perShot.length, 1, '只有真审过的那一行出条目');
     assertEq(ep.lastReview.perShot[0].order, 0, '出条目的是行1(order 0),不是没审成的行2');
+  } },
+  { name: 'autoSmartReview:命令层点名子集复审时,没被点名的行留住上一轮那条(同 id 里的兄弟行按行序数对位)', fn: async () => {
+    /* 闭环此前是整表覆盖写回:命令层用 shotIds 点名子集跑它时,ep.lastReview 被这一批整份替换,
+     * 没被点名的行上一轮那条一起没了——整集报告凭空少行、均分按剩下的行算、发布门与重抽面跟着走样。
+     * 服务端 /api/wf/smart-review 的子集复审早就是合并语义,两端于是各说各话。
+     * 夹具让两种错法给出不同缺件:行0(同 id 首行)已定稿故本轮审不到,序数若在"本轮报告"上数
+     * 而不在分镜表行上数,换掉的会是行0 那条、行1 的旧条目反倒留着。 */
+    const sb = loadProduce();
+    const rows = [makeShot(0, { id: 'dup', final: true }), makeShot(1, { id: 'dup' }), makeShot(2, { id: 'solo' })];
+    const ep = makeEp({ content: '剧本正文', composed: false, shots: rows, sbConfig: { maxRetry: 1 } });
+    ep.lastReview = { time: 't', avg: 7.7, perShot: [
+      { shotId: 'dup', order: 0, score: 6, reportId: 'q0', videoInputHash: '' },
+      { shotId: 'dup', order: 1, score: 9, reportId: 'q1', videoInputHash: '' },
+      { shotId: 'solo', order: 2, score: 8, reportId: 'q2', videoInputHash: '' },
+    ] };
+    const p = { id: 'p1', episodes: [ep], subjects: [] };
+    sb.__proj = p;
+    sb.__reviewSeq = { dup: [9.5] };
+    const r = await sb.Commands.execute('episode.smartReview', { pid: 'p1', epid: 'ep1', shotIds: ['dup'], quiet: true });
+    assertEq(r.ok, true); assertEq(r.result.targets, 1, '点名 dup 时可审的只有没定稿的那一行');
+    const per = ep.lastReview.perShot;
+    assertEq(per.length, 3, '三行条目一条不少(整表覆盖时这里只剩本批那一条)');
+    assertEq(JSON.stringify(per.map(x => [x.order, x.score, x.reportId])),
+      JSON.stringify([[0, 6, 'q0'], [1, 9.5, 'rv#0'], [2, 8, 'q2']]),
+      '本批只换得动行1;行0(同 id 已定稿的兄弟行)与行2 原样留着');
+    assertEq(ep.lastReview.avg, 7.8, '均分按合并后的三行算((6+9.5+8)/3),不是本批那一条');
+  } },
+  { name: 'autoSmartReview:整表跑仍是整表覆盖(审不到的行不靠上一轮条目续命,与服务端整集复审同档)', fn: async () => {
+    /* 合并只是子集复审那一档的语义:不点名镜集时这一趟就是这一集当下的整份结论,
+     * 上一轮里那些如今已定稿/已删/未出片的行不许再挂在报告上冒充"审过了"。 */
+    const sb = loadProduce();
+    const rows = [makeShot(0), makeShot(1, { final: true })];
+    const ep = makeEp({ content: '剧本正文', composed: false, shots: rows, sbConfig: { maxRetry: 1 } });
+    ep.lastReview = { time: 't', avg: 4, perShot: [
+      { shotId: 'sh1', order: 1, score: 4, reportId: 'old1' },
+      { shotId: 'gone', order: 2, score: 3, reportId: 'old2' },
+    ] };
+    sb.__proj = { id: 'p1', episodes: [ep], subjects: [] };
+    sb.__reviewSeq = { sh0: [8] };
+    const r = await sb.Commands.execute('episode.smartReview', { pid: 'p1', epid: 'ep1', quiet: true });
+    assertEq(r.ok, true);
+    assertEq(JSON.stringify(ep.lastReview.perShot.map(x => [x.order, x.score])), '[[0,8]]',
+      '整表跑只留这一趟真审到的行');
+    assertEq(ep.lastReview.avg, 8, '均分就是这一趟那一份');
   } },
   { name: 'autoSmartReview:quiet 不建 dock;非 quiet 建 dock', fn: async () => {
     const sb = loadProduce();
@@ -9322,6 +9369,37 @@ const contractTests = [
       '同 id 多行时每一条的 fixes 取自己那一行的报告(取首行即红)');
     assertEq(WfCore.reviseSubset(dup).map(x => x.nth).join(','), '0,1', 'nth 原样带给回写侧,编排层不另数一遍序数');
   } },
+  { name: '子集审片结果合入全表单源:WfCore.mergeReviewPerShot 按行对位,两端写回都读这一份', fn() {
+    /* 「子集复审只换本批那几行、其余沿用上一轮」这件事此前只长在服务端那一段里,浏览器闭环是整表覆盖:
+     * 命令层点名子集跑 autoSmartReview 时,没被点名的行上一轮那条一并没了。合并收进 WfCore 之后,
+     * 两端写回同读这一份;谁在自己那段里再手数一遍序数、或退回按 shotId 去重,都红在这里。 */
+    const WfCore = require('../js/wf-core.js');
+    const rows = [{ id: 'dup', order: 0 }, { id: 'dup', order: 1 }, { id: 'solo', order: 2 }];
+    const prev = [
+      { shotId: 'dup', order: 0, score: 6, reportId: 'q0', videoInputHash: 'h0' },
+      { shotId: 'dup', order: 1, score: 9, reportId: 'q1', videoInputHash: 'h1' },
+      { shotId: 'solo', order: 2, score: 8, reportId: 'q2', videoInputHash: 'h2' },
+      { shotId: 'gone', order: 3, score: 3, reportId: 'q3', videoInputHash: 'h3' }, // 报告写下之后被删掉的镜
+    ];
+    const sub = WfCore.mergeReviewPerShot(prev, [{ shot: rows[1], report: { id: 'n1', score: 5, videoInputHash: 'h1b' } }], rows);
+    assertEq(JSON.stringify(sub.perShot.map(x => [x.shotId, x.order, x.score, x.reportId])),
+      JSON.stringify([['dup', 0, 6, 'q0'], ['dup', 1, 5, 'n1'], ['solo', 2, 8, 'q2']]),
+      '本批只覆盖点到的那一行:同 id 的兄弟行按行序数留着,已不在分镜表的行随行丢弃');
+    assertEq(sub.avg, 6.3, '均分按合并后的行算((6+5+8)/3)');
+    assertEq(sub.perShot[1].videoInputHash, 'h1b', '被换掉那一行的版本指纹取本轮那份');
+    const full = WfCore.mergeReviewPerShot(null, [{ shot: rows[2], report: { id: 'n2', score: 7 } }], rows);
+    assertEq(JSON.stringify(full.perShot.map(x => [x.shotId, x.score])), JSON.stringify([['solo', 7]]),
+      'prev 为空 = 整表跑:上一轮那些行不许续命');
+    assertEq(full.perShot[0].videoInputHash, '', '报告没带版本指纹时落空串(不是 undefined 混进落库结构)');
+    const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    const prod = fs.readFileSync(path.join(ROOT, 'js', 'produce.js'), 'utf8');
+    assert(/WfCore\.mergeReviewPerShot\(/.test(srv), '/api/wf/smart-review 的 perShot 应经 WfCore.mergeReviewPerShot 合并');
+    assert(/WfCore\.mergeReviewPerShot\(/.test(prod), '浏览器 autoSmartReview 的写回应经 WfCore.mergeReviewPerShot 合并');
+    [['server.js', srv], ['js/produce.js', prod]].forEach(([rel, src]) => {
+      assertEq((src.match(/'#'\s*\+/g) || []).length, 0, rel + ' 不许在写回侧自己再拼一遍 id#nth 行键(对位口径只在 WfCore 一处)');
+      assertEq((src.match(/perShot:\s*reviewed\.map|perShot:\s*newPer/g) || []).length, 0, rel + ' 不许绕过合并直接把本批条目当整表写回');
+    });
+  } },
   { name: '修订闭环重抽面单源:server/CLI/助手摘要/问题中心都不自筛低分镜,CLI 不摘回执 lowShots 当 shotIds', fn() {
     /* G-03 这一面钉的是"该重抽哪几镜由编排层派生":判据(达标线 / 报告判旧 / 与分镜表取交集 / 定稿不重抽)
      * 只在 Domain.reviseTargets 一份里,四处消费点谁抄回一份 score < 7 或把回执里的 lowShots 当名单用都红在这里。 */
@@ -12884,7 +12962,7 @@ action 二选一:
      * `tests/e2e.js` 仍在对账之外(它按 tab 列表循环登记,行首点数本就不等于实跑条数),故也不设下限。 */
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     const reportLines = rel => (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(/^[ \t]*report\(/gm) || []).length;
-    [['单元测试', 673, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
+    [['单元测试', 676, Object.values(SUITES).reduce((n, t) => n + t.length, 0), /单元测试[((](\d+) 项断言/g],
       ['集成测试', 152, reportLines('tests/integration.js'), /服务器级集成测试[^)]*扩至 (\d+) 项断言/g],
       ['CLI 冒烟', 117, reportLines('tests/cli.smoke.js'), /CLI 真实服务端冒烟[^)]*扩至 (\d+) 项断言/g],
     ].forEach(([label, floor, live, docRe]) => {
