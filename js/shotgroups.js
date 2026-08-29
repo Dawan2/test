@@ -211,7 +211,7 @@
       <b class="small">🕐 分镜时间线(${ep.shots.length} 镜 · ${totalDur(ep.shots)}s)</b>
       <div style="margin-top:8px">
         ${ep.shots.map((s, i) => `
-        <div class="row" style="gap:8px;padding:6px 4px;border-bottom:1px solid var(--border);align-items:center">
+        <div class="row" data-row="${ep.shots.indexOf(s)}" style="gap:8px;padding:6px 4px;border-bottom:1px solid var(--border);align-items:center">
           <span class="small muted" style="width:34px;flex:none">#${i + 1}</span>
           <span class="small grow" style="cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" data-tlshot="${s.id}" title="点击定位到该分镜(切到分镜视频视图)">${U.esc(s.name || (s.plot || '').slice(0, 24) || '镜头' + (i + 1))}</span>
           ${SBViews.dupRowTag(dupMarks, ep.shots.indexOf(s))}
@@ -225,6 +225,8 @@
 
       /* ---- 事件 ---- */
       const rerender = () => renderPanel();
+      // 分镜行那枚重复小标的跳转:这一档的落点在同一条时间线上(渲的是整张分镜表),与另两档同读一处定位动作
+      SBViews.bindDupJump(box);
       // 定位到分镜:选中该镜并切回「分镜视频」视图
       const locate = sid => {
         ep.uiSel = sid;

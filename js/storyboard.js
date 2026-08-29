@@ -411,6 +411,10 @@
     if (vm === 'bb' && window.BeatBoard) BeatBoard.render(main.querySelector('[data-bbview]'), p, ep, main);
     if (vm === 'groups' && window.ShotGroups) ShotGroups.renderInto(main.querySelector('[data-sgview]'), p, ep, main, dupMarks);
     if ((vm === 'shots' || vm === 'cut') && sel) SBViews.bindCenter(main, p, ep, sel, selIdx), SBViews.bindRight(main, p, ep, sel, selIdx); // 分镜视频/剪辑两视图绑定分镜控件
+    /* 卡片小标那条跳转:分镜视频与剪辑台共用中栏那条缩略图带,故这两档在这里绑一处;
+     * 镜头组那条分镜时间线自己重渲(每渲一遍重挂),那一处在 ShotGroups.renderInto 里绑。
+     * 少绑一档就有一档点了没反应——落点动作三档同读 SBViews.bindDupJump 那一处。 */
+    if (vm === 'shots' || vm === 'cut') SBViews.bindDupJump(main);
 
     /* ---- 快捷键:←/→ 切换分镜,g 生成当前镜(焦点在表单控件或有弹窗时不响应) ---- */
     if (window.__epKeyH) document.removeEventListener('keydown', window.__epKeyH);
